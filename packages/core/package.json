@@ -3,5 +3,13 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": "./src/index.ts"
+  "exports": {
+    ".": "./src/index.ts",
+    "./cli-auth": "./src/cli-auth.ts",
+    "./extension-auth": "./src/extension-auth.ts",
+    "./links": "./src/links.ts"
+  },
+  "dependencies": {
+    "effect": "~4.1.0"
+  }
 }

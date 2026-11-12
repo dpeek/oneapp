@@ -1,0 +1,72 @@
+:root {
+  color-scheme: light dark;
+  font-family: Inter, system-ui, sans-serif;
+  color: light-dark(#202235, #f1f2fa);
+  background: light-dark(#f7f7fb, #181924);
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  box-sizing: border-box;
+  width: 19rem;
+  padding: 1rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.125rem;
+}
+
+p {
+  margin: 0;
+}
+
+p:empty {
+  display: none;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.primary {
+  color: white;
+  background: #4b43ad;
+  border: 0;
+  border-radius: 0.4rem;
+  padding: 0.625rem 0.75rem;
+  font-weight: 600;
+}
+
+.actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.actions a,
+.secondary {
+  color: light-dark(#474094, #bfbbff);
+}
+
+.secondary {
+  background: none;
+  border: 0;
+  padding: 0.25rem 0;
+}
+
+[role="alert"] {
+  color: light-dark(#a42020, #ff9797);
+}

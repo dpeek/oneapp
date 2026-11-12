@@ -1,6 +1,6 @@
-import { accounts, authTables } from "./database.ts";
+import { authTables } from "./database.ts";
 
-export { accounts };
+export { accounts, cliTokens, extensionTokens, links } from "./database.ts";
 export const {
   identifiers,
   credentials,

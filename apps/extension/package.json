@@ -7,6 +7,8 @@
     "build": "bun ./build.ts"
   },
   "dependencies": {
-    "@oneapp/ui": "workspace:*"
+    "@oneapp/core": "workspace:*",
+    "effect": "~4.1.0",
+    "foldkit": "0.170.0"
   }
 }

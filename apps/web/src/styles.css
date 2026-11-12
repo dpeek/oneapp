@@ -27,3 +27,58 @@ button {
 [role="alert"] {
   color: light-dark(#a42020, #ff9797);
 }
+
+.links {
+  margin-block-start: 2rem;
+}
+
+.saved-links {
+  list-style: none;
+  padding: 0;
+}
+
+.saved-links li {
+  border-block-end: 1px solid light-dark(#ddd, #444);
+  display: grid;
+  gap: 0.25rem;
+  padding-block: 0.75rem;
+}
+
+.saved-links a {
+  overflow-wrap: anywhere;
+}
+
+.saved-links time {
+  font-size: 0.875rem;
+}
+
+#cli-access,
+#extension-access {
+  margin-block-start: 2rem;
+}
+
+.cli-tokens {
+  list-style: none;
+  padding: 0;
+}
+
+.cli-tokens li {
+  align-items: start;
+  border-block-end: 1px solid light-dark(#ddd, #444);
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  padding-block: 0.75rem;
+}
+
+dialog {
+  max-width: min(26rem, calc(100% - 3rem));
+}
+
+dialog textarea {
+  box-sizing: border-box;
+  display: block;
+  font-family: monospace;
+  margin-block: 0.5rem 1rem;
+  width: 100%;
+}

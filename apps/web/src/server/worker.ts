@@ -3,7 +3,10 @@ import { Effect, Layer, Redacted } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
 import { Account } from "../auth-contract.ts";
 import { AppAuth, authHttp } from "./auth.ts";
-import { authDependencies } from "./database.ts";
+import { cliTokenRoutes } from "./cli-tokens.ts";
+import { authDependencies, databaseLayer } from "./database.ts";
+import { extensionAccessRoutes } from "./extension-access.ts";
+import { linksRoutes } from "./links.ts";
 
 const health = HttpRouter.add(
   "GET",
@@ -43,13 +46,24 @@ export default {
     }
 
     const http = authHttp(env.APP_ORIGIN);
+    const database = databaseLayer(env.DB);
     const dependencies = authDependencies(
-      env.DB,
+      database,
       Redacted.make(env.AUTH_SECRET),
     );
     const app = HttpRouter.toWebHandler(
-      Layer.mergeAll(health, me.pipe(http.middleware), http.routes()).pipe(
+      Layer.mergeAll(
+        health,
+        Layer.mergeAll(
+          me,
+          linksRoutes(http),
+          cliTokenRoutes(http),
+          extensionAccessRoutes(http),
+        ).pipe(http.middleware),
+        http.routes(),
+      ).pipe(
         Layer.provide(http.layer.pipe(Layer.provide(dependencies))),
+        HttpRouter.provideRequest(database),
         Layer.provide(HttpServer.layerServices),
       ),
       {

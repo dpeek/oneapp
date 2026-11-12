@@ -3,7 +3,7 @@ import { Auth, Password } from "@yielded/auth";
 import * as Alchemy from "alchemy";
 import { Config, Effect, Layer, Redacted } from "effect";
 import { AppAuth, ownerId } from "./auth.ts";
-import { authDependencies } from "./database.ts";
+import { authDependencies, databaseLayer } from "./database.ts";
 
 export const provisionOwner = (resource: Cloudflare.D1.Database) =>
   Alchemy.Action(
@@ -47,7 +47,7 @@ export const provisionOwner = (resource: Cloudflare.D1.Database) =>
         }
         const secret = yield* Config.Redacted("AUTH_SECRET");
         const db = yield* database.raw;
-        const dependencies = authDependencies(db, secret);
+        const dependencies = authDependencies(databaseLayer(db), secret);
 
         yield* Effect.gen(function* () {
           const auth = yield* AppAuth;

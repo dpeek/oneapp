@@ -2,7 +2,7 @@ import * as D1Client from "@effect/sql-d1/D1Client";
 import { AuthPersistence } from "@yielded/auth-persistence-drizzle/D1";
 import { Auth, Schema as AuthSchema } from "@yielded/auth";
 import { Effect, Layer, type Redacted } from "effect";
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import {
   AppAuth,
   ClaimsLive,
@@ -19,6 +19,53 @@ export const accounts = sqliteTable("accounts", {
   active: integer({ mode: "boolean" }).notNull(),
   securityRevision: text("security_revision").notNull(),
 });
+
+export const cliTokens = sqliteTable(
+  "cli_tokens",
+  {
+    id: text().primaryKey().notNull(),
+    ownerId: text("owner_id")
+      .notNull()
+      .references(() => accounts.id),
+    label: text().notNull(),
+    digest: text().notNull().unique(),
+    createdAt: integer("created_at").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+  },
+  (table) => [
+    index("cli_tokens_owner_created_at").on(table.ownerId, table.createdAt),
+  ],
+);
+
+export const extensionTokens = sqliteTable(
+  "extension_tokens",
+  {
+    id: text().primaryKey().notNull(),
+    ownerId: text("owner_id")
+      .notNull()
+      .references(() => accounts.id),
+    digest: text().notNull().unique(),
+    createdAt: integer("created_at").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    revokedAt: integer("revoked_at"),
+  },
+  (table) => [index("extension_tokens_owner").on(table.ownerId)],
+);
+
+export const links = sqliteTable(
+  "links",
+  {
+    id: text().primaryKey().notNull(),
+    ownerId: text("owner_id")
+      .notNull()
+      .references(() => accounts.id),
+    url: text().notNull(),
+    savedAt: integer("saved_at").notNull(),
+  },
+  (table) => [
+    index("links_owner_saved_at").on(table.ownerId, table.savedAt, table.id),
+  ],
+);
 
 const Persistence = AuthPersistence.make(AppAuth);
 
@@ -49,12 +96,15 @@ const PersistenceLive = Persistence.layer.pipe(
   ),
 );
 
+export const databaseLayer = (db: D1Client.D1ClientConfig["db"]) =>
+  D1Client.layer({ db });
+
 export const authDependencies = (
-  db: D1Client.D1ClientConfig["db"],
+  database: ReturnType<typeof databaseLayer>,
   secret: Redacted.Redacted<string>,
 ) =>
   Layer.mergeAll(
-    PersistenceLive.pipe(Layer.provide(D1Client.layer({ db }))),
+    PersistenceLive.pipe(Layer.provide(database)),
     ClaimsLive,
     PasswordLive,
     OwnerPasswordPolicy,

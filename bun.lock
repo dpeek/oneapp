@@ -20,15 +20,22 @@
     "apps/cli": {
       "name": "@oneapp/cli",
       "version": "0.0.0",
+      "bin": {
+        "one": "./src/index.ts",
+      },
       "dependencies": {
+        "@effect/platform-bun": "~4.1.0",
         "@oneapp/core": "workspace:*",
+        "effect": "~4.1.0",
       },
     },
     "apps/extension": {
       "name": "@oneapp/extension",
       "version": "0.0.0",
       "dependencies": {
-        "@oneapp/ui": "workspace:*",
+        "@oneapp/core": "workspace:*",
+        "effect": "~4.1.0",
+        "foldkit": "0.170.0",
       },
     },
     "apps/web": {
@@ -47,6 +54,9 @@
     "packages/core": {
       "name": "@oneapp/core",
       "version": "0.0.0",
+      "dependencies": {
+        "effect": "~4.1.0",
+      },
     },
     "packages/ui": {
       "name": "@oneapp/ui",

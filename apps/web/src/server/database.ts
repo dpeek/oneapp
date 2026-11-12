@@ -30,11 +30,26 @@ export const cliTokens = sqliteTable(
     label: text().notNull(),
     digest: text().notNull().unique(),
     createdAt: integer("created_at").notNull(),
-    expiresAt: integer("expires_at").notNull(),
+    expiresAt: integer("expires_at"),
   },
   (table) => [
     index("cli_tokens_owner_created_at").on(table.ownerId, table.createdAt),
   ],
+);
+
+export const cliLogins = sqliteTable(
+  "cli_logins",
+  {
+    id: text().primaryKey().notNull(),
+    digest: text().notNull().unique(),
+    code: text().notNull(),
+    label: text().notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    ownerId: text("owner_id").references(() => accounts.id),
+    deniedAt: integer("denied_at"),
+    redeemedAt: integer("redeemed_at"),
+  },
+  (table) => [index("cli_logins_expires_at").on(table.expiresAt)],
 );
 
 export const extensionTokens = sqliteTable(
@@ -46,7 +61,7 @@ export const extensionTokens = sqliteTable(
       .references(() => accounts.id),
     digest: text().notNull().unique(),
     createdAt: integer("created_at").notNull(),
-    expiresAt: integer("expires_at").notNull(),
+    expiresAt: integer("expires_at"),
     revokedAt: integer("revoked_at"),
   },
   (table) => [index("extension_tokens_owner").on(table.ownerId)],

@@ -14,7 +14,6 @@ import { SqlClient } from "effect/sql";
 import { jsonError, privateHeaders } from "./api-response.ts";
 import { AppAuth, type authHttp } from "./auth.ts";
 
-const lifetimeMillis = 30 * 24 * 60 * 60 * 1000;
 const isSecret = Schema.is(ExtensionSecret);
 const isRequestId = Schema.is(ExtensionRequestId);
 
@@ -38,7 +37,8 @@ export const requireExtensionToken = Effect.gen(function* () {
   const [token] = yield* sql<typeof ExtensionAccess.Type & { ownerId: string }>`
     SELECT t.id, t.owner_id AS "ownerId", t.created_at AS "createdAt", t.expires_at AS "expiresAt"
     FROM extension_tokens t JOIN accounts a ON a.id = t.owner_id
-    WHERE t.digest = ${digest} AND t.revoked_at IS NULL AND t.expires_at > ${now} AND a.active = 1
+    WHERE t.digest = ${digest} AND t.revoked_at IS NULL
+      AND (t.expires_at IS NULL OR t.expires_at > ${now}) AND a.active = 1
   `;
   if (!token) return yield* new InvalidExtensionToken();
   return token;
@@ -62,7 +62,8 @@ export const extensionAccessRoutes = (http: ReturnType<typeof authHttp>) =>
         const tokens = yield* sql<typeof ExtensionAccess.Type>`
           SELECT id, created_at AS "createdAt", expires_at AS "expiresAt"
           FROM extension_tokens
-          WHERE owner_id = ${session.subjectId} AND revoked_at IS NULL AND expires_at > ${now}
+          WHERE owner_id = ${session.subjectId} AND revoked_at IS NULL
+            AND (expires_at IS NULL OR expires_at > ${now})
           ORDER BY created_at DESC, id DESC
         `;
         return yield* HttpServerResponse.schemaJson(ExtensionAccessList)(
@@ -93,8 +94,8 @@ export const extensionAccessRoutes = (http: ReturnType<typeof authHttp>) =>
             const now = yield* Clock.currentTimeMillis;
             const sql = yield* SqlClient.SqlClient;
             const [token] = yield* sql<{ id: string }>`
-            INSERT INTO extension_tokens (id, owner_id, digest, created_at, expires_at)
-            VALUES (${id}, ${session.subjectId}, ${digest}, ${now}, ${now + lifetimeMillis})
+            INSERT INTO extension_tokens (id, owner_id, digest, created_at)
+            VALUES (${id}, ${session.subjectId}, ${digest}, ${now})
             ON CONFLICT DO NOTHING RETURNING id
           `;
             if (!token)

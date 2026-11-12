@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { appName, defaultServerUrl } from "@oneapp/core";
-import { CliTokenSecret, currentCliTokenPath } from "@oneapp/core/cli-auth";
+import { currentCliTokenPath } from "@oneapp/core/cli-auth";
 import { Link, LinkList, SaveLink, linksPath } from "@oneapp/core/links";
-import { Console, Effect, Redacted, Schema } from "effect";
-import { Argument, Command, Flag, Prompt } from "effect/cli";
+import { Console, Effect } from "effect";
+import { Argument, Command, Flag } from "effect/cli";
 import { readResponse, request, requireSuccess } from "./api.ts";
 import {
   clearToken,
@@ -13,9 +13,9 @@ import {
   storeCredentials,
 } from "./credentials.ts";
 import { CliError } from "./errors.ts";
+import { browserLogin, manualLogin } from "./login.ts";
 import { version } from "../package.json";
 
-const isToken = Schema.is(CliTokenSecret);
 const terminalUrl = (url: string) =>
   url.replace(/\p{Cc}/gu, (character) => encodeURIComponent(character));
 
@@ -32,12 +32,16 @@ const login = Command.make(
       Flag.withDefault(true),
       Flag.withDescription("Open the OneApp access page"),
     ),
+    manualToken: Flag.Boolean("manual-token").pipe(
+      Flag.withDefault(false),
+      Flag.withDescription("Paste a token created in OneApp instead"),
+    ),
+    name: Flag.String("name").pipe(
+      Flag.withDefault("OneApp CLI"),
+      Flag.withDescription("Name to show under CLI access"),
+    ),
   },
-  Effect.fnUntraced(function* ({ server, browser }) {
-    if (!process.stdin.isTTY)
-      return yield* new CliError({
-        message: "Run one auth login in an interactive terminal.",
-      });
+  Effect.fnUntraced(function* ({ server, browser, manualToken, name }) {
     const origin = yield* Effect.try({
       try: () => serverOrigin(server),
       catch: () =>
@@ -45,43 +49,13 @@ const login = Command.make(
           message: "Use an HTTPS server origin, or HTTP for localhost.",
         }),
     });
-    const accessUrl = `${origin}/#cli-access`;
-    yield* Console.log(`Create a CLI token under CLI access at ${accessUrl}`);
-    if (browser) {
-      yield* Effect.sync(() => {
-        const opener =
-          process.platform === "darwin"
-            ? ["open"]
-            : process.platform === "win32"
-              ? ["rundll32.exe", "url.dll,FileProtocolHandler"]
-              : ["xdg-open"];
-        try {
-          Bun.spawn([...opener, accessUrl], {
-            stdout: "ignore",
-            stderr: "ignore",
-          }).unref();
-        } catch {
-          // The URL is already available if a browser opener is unavailable.
-        }
-      });
-    }
-    const entered = yield* Prompt.Hidden({ message: "Paste the CLI token" });
-    const value = Redacted.value(entered).trim();
-    if (!isToken(value))
-      return yield* new CliError({
-        message: "Paste the CLI token created in OneApp.",
-      });
-    const token = Redacted.make(value);
-    const response = yield* request(origin, token, currentCliTokenPath);
-    yield* requireSuccess(response);
+    const token = yield* manualToken
+      ? manualLogin(origin, browser)
+      : browserLogin(origin, browser, name);
     yield* storeCredentials(origin, token);
     yield* Console.log(`Signed in to ${origin}`);
   }),
-).pipe(
-  Command.withDescription(
-    "Save a OneApp CLI token in your OS credential store",
-  ),
-);
+).pipe(Command.withDescription("Connect the CLI to your OneApp account"));
 
 const logout = Command.make(
   "logout",

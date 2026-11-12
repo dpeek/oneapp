@@ -82,3 +82,22 @@ dialog textarea {
   margin-block: 0.5rem 1rem;
   width: 100%;
 }
+
+.cli-approval {
+  margin-block-start: 2rem;
+}
+
+.cli-approval code {
+  display: inline-block;
+  padding: 0.5rem 0.75rem;
+  background: light-dark(#eee, #303030);
+  border-radius: 0.25rem;
+  font-size: 1.25rem;
+  letter-spacing: 0.08em;
+}
+
+.cli-approval-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-block-start: 1rem;
+}

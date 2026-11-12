@@ -17,7 +17,7 @@ export const ExtensionApproval = Schema.Struct({
 export const ExtensionAccess = Schema.Struct({
   id: ExtensionRequestId,
   createdAt: Schema.Int,
-  expiresAt: Schema.Int,
+  expiresAt: Schema.NullOr(Schema.Int),
 });
 export const ExtensionAccessList = Schema.Array(ExtensionAccess);
 

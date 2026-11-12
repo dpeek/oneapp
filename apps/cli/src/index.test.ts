@@ -26,7 +26,17 @@ it("allows login without a server flag and advertises the default origin", () =>
   expect(help.exitCode).toBe(0);
   expect(help.stdout.toString()).toContain("https://app.dpeek.com");
 
-  const login = Bun.spawnSync(command, { stdin: "ignore", stderr: "pipe" });
+  const browserLogin = Bun.spawnSync([...command, "--name", ""], {
+    stdin: "ignore",
+    stderr: "pipe",
+  });
+  expect(browserLogin.exitCode).toBe(1);
+  expect(browserLogin.stderr.toString()).toContain("Use a device name");
+
+  const login = Bun.spawnSync([...command, "--manual-token"], {
+    stdin: "ignore",
+    stderr: "pipe",
+  });
 
   expect(login.exitCode).toBe(1);
   expect(login.stderr.toString()).toContain("in an interactive terminal");

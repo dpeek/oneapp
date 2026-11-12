@@ -1,8 +1,10 @@
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
+import { cliLoginPath } from "@oneapp/core/cli-auth";
 import { Effect, Layer, Redacted } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
 import { Account } from "../auth-contract.ts";
 import { AppAuth, authHttp } from "./auth.ts";
+import { cliLoginRoutes } from "./cli-login.ts";
 import { cliTokenRoutes } from "./cli-tokens.ts";
 import { authDependencies, databaseLayer } from "./database.ts";
 import { extensionAccessRoutes } from "./extension-access.ts";
@@ -44,6 +46,25 @@ export default {
         );
       }
     }
+    if (
+      request.method === "POST" &&
+      (path === cliLoginPath ||
+        (path.startsWith(cliLoginPath + "/") && path.endsWith("/poll")))
+    ) {
+      const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+      const action = path === cliLoginPath ? "start" : "poll";
+      if (
+        !(await env.CLI_LOGIN_LIMIT.limit({ key: `${action}:${ip}` })).success
+      ) {
+        return Response.json(
+          { error: "Too many CLI login requests" },
+          {
+            status: 429,
+            headers: { "cache-control": "no-store", "retry-after": "10" },
+          },
+        );
+      }
+    }
 
     const http = authHttp(env.APP_ORIGIN);
     const database = databaseLayer(env.DB);
@@ -58,6 +79,7 @@ export default {
           me,
           linksRoutes(http),
           cliTokenRoutes(http),
+          cliLoginRoutes(http),
           extensionAccessRoutes(http),
         ).pipe(http.middleware),
         http.routes(),

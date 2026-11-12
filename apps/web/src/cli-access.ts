@@ -222,7 +222,11 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
                               h.strong([], [token.label]),
                               h.div(
                                 [],
-                                [`Expires ${date.format(token.expiresAt)}`],
+                                [
+                                  token.expiresAt === null
+                                    ? "Active until revoked"
+                                    : `Expires ${date.format(token.expiresAt)}`,
+                                ],
                               ),
                             ],
                           ),

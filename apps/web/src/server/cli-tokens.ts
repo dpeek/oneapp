@@ -14,9 +14,8 @@ import { SqlClient } from "effect/sql";
 import { jsonError, privateHeaders } from "./api-response.ts";
 import { AppAuth, type authHttp } from "./auth.ts";
 
-const tokenLifetimeMillis = 30 * 24 * 60 * 60 * 1000;
 const isTokenSecret = Schema.is(CliTokenSecret);
-const digestToken = Effect.fnUntraced(function* (secret: string) {
+export const digestToken = Effect.fnUntraced(function* (secret: string) {
   const bytes = new TextEncoder().encode(secret);
   const digest = yield* Effect.promise(() =>
     crypto.subtle.digest("SHA-256", bytes),
@@ -26,20 +25,24 @@ const digestToken = Effect.fnUntraced(function* (secret: string) {
 
 export class InvalidCliToken extends Data.TaggedError("InvalidCliToken")<{}> {}
 
-export const requireCliToken = Effect.gen(function* () {
+export const requireCliDigest = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
   const secret = /^Bearer (\S+)$/iu.exec(
     request.headers.authorization ?? "",
   )?.[1];
   if (!isTokenSecret(secret)) return yield* new InvalidCliToken();
 
-  const digest = yield* digestToken(secret);
+  return yield* digestToken(secret);
+});
+
+export const requireCliToken = Effect.gen(function* () {
+  const digest = yield* requireCliDigest;
   const now = yield* Clock.currentTimeMillis;
   const sql = yield* SqlClient.SqlClient;
   const [token] = yield* sql<typeof CliToken.Type & { ownerId: string }>`
     SELECT t.id, t.owner_id AS "ownerId", t.label, t.created_at AS "createdAt", t.expires_at AS "expiresAt"
     FROM cli_tokens t JOIN accounts a ON a.id = t.owner_id
-    WHERE t.digest = ${digest} AND t.expires_at > ${now} AND a.active = 1
+    WHERE t.digest = ${digest} AND (t.expires_at IS NULL OR t.expires_at > ${now}) AND a.active = 1
   `;
   if (!token) return yield* new InvalidCliToken();
   return token;
@@ -63,7 +66,8 @@ export const cliTokenRoutes = (http: ReturnType<typeof authHttp>) => {
         const sql = yield* SqlClient.SqlClient;
         const tokens = yield* sql<typeof CliToken.Type>`
         SELECT id, label, created_at AS "createdAt", expires_at AS "expiresAt"
-        FROM cli_tokens WHERE owner_id = ${session.subjectId} AND expires_at > ${now}
+        FROM cli_tokens
+        WHERE owner_id = ${session.subjectId} AND (expires_at IS NULL OR expires_at > ${now})
         ORDER BY created_at DESC, id DESC
       `;
         return yield* HttpServerResponse.schemaJson(CliTokenList)(tokens, {
@@ -100,7 +104,7 @@ export const cliTokenRoutes = (http: ReturnType<typeof authHttp>) => {
               id: crypto.randomUUID(),
               label: input.value.label,
               createdAt,
-              expiresAt: createdAt + tokenLifetimeMillis,
+              expiresAt: null,
             };
             const sql = yield* SqlClient.SqlClient;
             yield* sql`

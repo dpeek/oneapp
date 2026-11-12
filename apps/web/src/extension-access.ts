@@ -205,7 +205,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
             h.p(
               [],
               [
-                "Allow this Chrome extension to save links to your account for 30 days.",
+                "Allow this Chrome extension to save links to your account until you revoke access.",
               ],
             ),
             button("Connect", Message.RequestedApproval()),
@@ -233,7 +233,11 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
                             ),
                             h.div(
                               [],
-                              [`Expires ${date.format(connection.expiresAt)}`],
+                              [
+                                connection.expiresAt === null
+                                  ? "Active until revoked"
+                                  : `Expires ${date.format(connection.expiresAt)}`,
+                              ],
                             ),
                           ],
                         ),

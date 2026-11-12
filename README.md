@@ -59,7 +59,9 @@ one auth logout
 
 `one auth login` defaults to `https://app.dpeek.com`. Pass `--server <url>` for a different deployment.
 
-In the signed-in web app, open **CLI access**, create a named token, and paste it into the hidden prompt. The token expires after 30 days and authorizes reading and saving links. The CLI stores it in your OS credential store via `Bun.secrets`, keyed by server origin. Logout revokes the active token, and you can revoke any device’s token from the web app.
+The CLI opens a browser approval page and waits for your decision. Check that the code on the page matches your terminal, then choose **Connect CLI**. The request expires after five minutes. Use `--no-browser` to print the approval link for use on another device and `--name <label>` to name this device. To paste a token you created under **CLI access**, use `one auth login --manual-token`.
+
+New CLI tokens authorize reading and saving links until revoked. The CLI stores the token in your OS credential store via `Bun.secrets`, keyed by server origin. Logout revokes the active token, and you can revoke any device’s token from the web app.
 
 ## Chrome extension
 
@@ -67,4 +69,4 @@ Run `bun run --filter @oneapp/extension build`. In Chrome, open `chrome://extens
 
 Open OneApp from the Chrome toolbar and select **Connect to OneApp**. Approve the connection in the OneApp tab, signing in first if needed. On the page you want to keep, open the extension and select **Save this tab**. Saved links appear in the web app and in `one links list`.
 
-The extension credential expires after 30 days and only allows saving links. Use **Disconnect** in Chrome or **Manage extension access** in the web app to revoke it.
+New extension credentials only allow saving links and stay active until revoked. Use **Disconnect** in Chrome or **Manage extension access** in the web app to revoke one. Credentials issued under the previous 30-day policy keep their original expiry.

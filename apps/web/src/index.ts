@@ -7,6 +7,7 @@ import type { Document, HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import { Account, AuthApi } from "./auth-contract.ts";
 import * as CliAccess from "./cli-access.ts";
+import * as CliLogin from "./cli-login.ts";
 import * as ExtensionAccess from "./extension-access.ts";
 import { readLinks, saveLink } from "./links-client.ts";
 
@@ -15,6 +16,7 @@ const Model = Schema.Struct({
   links: Schema.NullOr(LinkList),
   linkUrl: Schema.String,
   cliAccess: CliAccess.Model,
+  cliLogin: Schema.NullOr(CliLogin.Model),
   extensionAccess: ExtensionAccess.Model,
   pending: Schema.Boolean,
   error: Schema.NullOr(Schema.String),
@@ -31,6 +33,7 @@ const Message = defineMessageUnion({
   LoadedLinks: { links: LinkList },
   SavedLink: { link: Link },
   GotCliAccessMessage: { message: CliAccess.Message },
+  GotCliLoginMessage: { message: CliLogin.Message },
   GotExtensionAccessMessage: { message: ExtensionAccess.Message },
   RequestFailed: { error: Schema.String },
 });
@@ -50,6 +53,14 @@ const foldCliAccess = Update.foldChild({
     model.account ? Option.some(model.cliAccess) : Option.none(),
   write: (model, cliAccess) => ({ ...model, cliAccess }),
   toParentMessage: toCliAccessMessage,
+});
+const toCliLoginMessage = (message: typeof CliLogin.Message.Type) =>
+  Message.GotCliLoginMessage({ message });
+const foldCliLogin = Update.foldChild({
+  update: CliLogin.update,
+  read: (model: Model) => Option.fromNullishOr(model.cliLogin),
+  write: (model, cliLogin) => ({ ...model, cliLogin }),
+  toParentMessage: toCliLoginMessage,
 });
 const toExtensionAccessMessage = (
   message: typeof ExtensionAccess.Message.Type,
@@ -193,6 +204,7 @@ const init: Runtime.ApplicationInit<Model, Message> = () => ({
     links: null,
     linkUrl: "",
     cliAccess: CliAccess.initial,
+    cliLogin: CliLogin.initial(),
     extensionAccess: ExtensionAccess.initial(),
     pending: true,
     error: null,
@@ -216,18 +228,22 @@ const update = (model: Model, message: Message) =>
             model: { ...model, pending: true, error: null },
             commands: [SignOut({})],
           },
-    LoadedAccount: ({ account }) => ({
-      model: {
+    LoadedAccount: ({ account }) => {
+      const cliLogin = CliLogin.initial();
+      const next: Model = {
         account,
         links: null,
         linkUrl: "",
         cliAccess: CliAccess.initial,
+        cliLogin,
         extensionAccess: ExtensionAccess.initial(),
-        pending: account !== null,
+        pending: account !== null && cliLogin === null,
         error: null,
-      },
-      commands: account === null ? [] : [LoadLinks({})],
-    }),
+      };
+      if (account && cliLogin)
+        return foldCliLogin(next, CliLogin.Message.Requested());
+      return { model: next, commands: account ? [LoadLinks({})] : [] };
+    },
     ChangedLinkUrl: ({ url }) => ({ model: { ...model, linkUrl: url } }),
     SubmittedLink: () => {
       if (model.pending || !model.account || !model.links) return { model };
@@ -270,6 +286,7 @@ const update = (model: Model, message: Message) =>
       model: { ...model, pending: false, error },
     }),
     GotCliAccessMessage: ({ message }) => foldCliAccess(model, message),
+    GotCliLoginMessage: ({ message }) => foldCliLogin(model, message),
     GotExtensionAccessMessage: ({ message }) =>
       foldExtensionAccess(model, message),
   });
@@ -352,29 +369,41 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
                   h.Disabled(
                     model.pending ||
                       model.cliAccess.pending ||
-                      model.extensionAccess.pending,
+                      model.extensionAccess.pending ||
+                      model.cliLogin?.pending === true,
                   ),
                   h.OnClick(Message.ClickedSignOut()),
                 ],
                 ["Sign out"],
               ),
-              ...(model.extensionAccess.approvalId
-                ? []
-                : [
-                    linksView(model, h),
+              ...(model.cliLogin
+                ? [
                     h.submodel({
-                      slotId: "cli-access",
-                      view: CliAccess.view,
-                      model: model.cliAccess,
-                      toParentMessage: toCliAccessMessage,
+                      slotId: "cli-login",
+                      view: CliLogin.view,
+                      model: model.cliLogin,
+                      toParentMessage: toCliLoginMessage,
+                    }),
+                  ]
+                : [
+                    ...(model.extensionAccess.approvalId
+                      ? []
+                      : [
+                          linksView(model, h),
+                          h.submodel({
+                            slotId: "cli-access",
+                            view: CliAccess.view,
+                            model: model.cliAccess,
+                            toParentMessage: toCliAccessMessage,
+                          }),
+                        ]),
+                    h.submodel({
+                      slotId: "extension-access",
+                      view: ExtensionAccess.view,
+                      model: model.extensionAccess,
+                      toParentMessage: toExtensionAccessMessage,
                     }),
                   ]),
-              h.submodel({
-                slotId: "extension-access",
-                view: ExtensionAccess.view,
-                model: model.extensionAccess,
-                toParentMessage: toExtensionAccessMessage,
-              }),
             ],
           )
         : h.form(
@@ -384,9 +413,11 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
               h.OnSubmit(Message.SubmittedSignIn()),
             ],
             [
-              ...(model.extensionAccess.approvalId
-                ? [h.p([], ["Sign in to connect the OneApp extension."])]
-                : []),
+              ...(model.cliLogin
+                ? [h.p([], ["Sign in to connect the OneApp CLI."])]
+                : model.extensionAccess.approvalId
+                  ? [h.p([], ["Sign in to connect the OneApp extension."])]
+                  : []),
               h.label([h.For("email")], ["Email"]),
               h.input([
                 h.Id("email"),

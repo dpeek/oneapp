@@ -41,6 +41,10 @@ export const Web = Cloudflare.Worker(
           namespaceId: 1001,
           simple: { limit: 10, period: 60 },
         }),
+        CLI_LOGIN_LIMIT: Cloudflare.RateLimit("CliLoginLimit", {
+          namespaceId: 1002,
+          simple: { limit: 30, period: 60 },
+        }),
       },
     };
   }),

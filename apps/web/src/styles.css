@@ -1,0 +1,29 @@
+:root {
+  color-scheme: light dark;
+  font-family: Inter, system-ui, sans-serif;
+}
+
+main {
+  max-width: 24rem;
+  margin: 12vh auto 0;
+  padding: 0 1rem;
+}
+
+form {
+  display: grid;
+  gap: 0.75rem;
+}
+
+input,
+button {
+  padding: 0.65rem;
+  font: inherit;
+}
+
+button {
+  justify-self: start;
+}
+
+[role="alert"] {
+  color: light-dark(#a42020, #ff9797);
+}

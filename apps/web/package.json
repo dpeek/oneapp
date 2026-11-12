@@ -1,0 +1,13 @@
+{
+  "name": "@oneapp/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun ./src/index.html",
+    "build": "bun build ./src/index.html --outdir ./dist --minify"
+  },
+  "dependencies": {
+    "@oneapp/ui": "workspace:*"
+  }
+}

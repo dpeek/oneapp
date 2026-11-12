@@ -1,0 +1,13 @@
+{
+  "name": "@oneapp/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun ./src/index.ts",
+    "build": "bun build ./src/index.ts --compile --outfile ./dist/one"
+  },
+  "dependencies": {
+    "@oneapp/core": "workspace:*"
+  }
+}

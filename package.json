@@ -1,0 +1,24 @@
+{
+  "name": "oneapp",
+  "private": true,
+  "packageManager": "bun@1.4.4",
+  "engines": {
+    "bun": ">=1.4.4"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "bun run --parallel --filter './apps/*' build",
+    "test": "bun --bun vitest run",
+    "test:watch": "bun --bun vitest",
+    "verify": "bun fmt && bun check && bun run test"
+  },
+  "devDependencies": {
+    "@effect/vitest": "~4.1.0",
+    "@types/bun": "1.4.4",
+    "effect": "~4.1.0",
+    "vitest": "^5.1.0"
+  }
+}

@@ -78,9 +78,9 @@ OneApp serves Streamable HTTP at `https://app.dpeek.com/mcp`. The `list_links` t
 Register the server with Codex:
 
 ```sh
-codex mcp add oneapp --url https://app.dpeek.com/mcp --oauth-client-id oneapp-codex
+codex mcp add oneapp --url https://app.dpeek.com/mcp
 ```
 
-Approve access in your browser. If the approval page doesn't open, run `codex mcp login oneapp`. Start a new Codex session to use the tools. For a setup that used `ONEAPP_MCP_TOKEN`, remove that MCP registration and add it again with the OAuth client ID above.
+Codex supplies its client ID automatically through its OAuth client metadata. Approve access in your browser. If the approval page doesn't open, run `codex mcp login oneapp`. Start a new Codex session to use the tools. For a setup that used `ONEAPP_MCP_TOKEN`, remove that MCP registration and add it again with the command above.
 
 Access tokens refresh automatically within the 30-day grant. Open **Manage MCP access** in the web app to revoke a grant.

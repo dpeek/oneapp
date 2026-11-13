@@ -4,6 +4,12 @@ export const mcpLoginPath = "/connect/mcp";
 export const mcpLoginQuery = "connect-mcp";
 export const mcpAuthorizePath = "/oauth/mcp/authorize";
 export const mcpGrantsPath = "/api/mcp-grants";
+export const codexClientId = "oneapp-codex";
+export const codexMetadataOrigin = "https://chatgpt.com";
+export const isCodexMetadataId = (id: string) =>
+  /^https:\/\/chatgpt\.com\/oauth\/codex(?:\/[A-Za-z0-9_-]{12})?\/client\.json$/u.test(
+    id,
+  );
 
 export const McpGrantId = Schema.String.check(
   Schema.isPattern(/^[A-Za-z0-9_-]{43}$/u),

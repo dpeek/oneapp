@@ -2,6 +2,8 @@ import { Effect, Schema } from "effect";
 import { Command, Submodel, type Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";
 import {
+  codexClientId,
+  isCodexMetadataId,
   McpGrantId,
   McpGrantList,
   mcpGrantsPath,
@@ -119,7 +121,8 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
                         h.strong(
                           [],
                           [
-                            grant.clientId === "oneapp-codex"
+                            grant.clientId === codexClientId ||
+                            isCodexMetadataId(grant.clientId)
                               ? "Codex"
                               : grant.clientId,
                           ],

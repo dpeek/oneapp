@@ -10,6 +10,9 @@ import {
 } from "effect/http";
 import { SqlClient } from "effect/sql";
 import {
+  codexClientId,
+  codexMetadataOrigin,
+  isCodexMetadataId,
   McpGrant,
   McpGrantId,
   McpGrantList,
@@ -28,11 +31,18 @@ import {
 export const LinksAccess = OAuthScope.make("links:read-write");
 export const mcpOAuth = OAuthServer.make("mcp", { scopes: [LinksAccess] });
 const codexClient = {
-  clientId: "oneapp-codex",
+  clientId: codexClientId,
   name: "Codex",
   applicationType: "native",
   grantTypes: ["authorization_code", "refresh_token"],
 } as const;
+
+const fetchCodexMetadata = (...[input, init]: Parameters<typeof fetch>) => {
+  const url = input instanceof Request ? input.url : String(input);
+  if (!isCodexMetadataId(url))
+    return Promise.reject(new Error("Unsupported OAuth client metadata URL"));
+  return fetch(input, { ...init, credentials: "omit", redirect: "manual" });
+};
 
 const BrowserIdentity = Layer.effect(
   mcpOAuth.Identity,
@@ -70,6 +80,7 @@ export const mcpOAuthLayer = (
         origin,
         resource,
         loginPath: mcpLoginPath,
+        clientMetadata: { allowedOrigins: [codexMetadataOrigin] },
         clients: [
           {
             ...codexClient,
@@ -84,7 +95,16 @@ export const mcpOAuthLayer = (
     }),
   ).pipe(
     Layer.provide(BrowserIdentity),
-    Layer.provide(FetchHttpClient.layer),
+    Layer.provide(
+      FetchHttpClient.layer.pipe(
+        Layer.provide(
+          Layer.succeed(
+            FetchHttpClient.Fetch,
+            fetchCodexMetadata as typeof fetch,
+          ),
+        ),
+      ),
+    ),
     Layer.provide(OAuthServerPersistence.layer),
     Layer.provide(CryptoLive),
   );

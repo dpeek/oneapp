@@ -2,7 +2,13 @@ import * as D1Client from "@effect/sql-d1/D1Client";
 import { AuthPersistence } from "@yielded/auth-persistence-drizzle/D1";
 import { Auth, Schema as AuthSchema } from "@yielded/auth";
 import { Effect, Layer, type Redacted } from "effect";
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import {
+  index,
+  integer,
+  primaryKey,
+  sqliteTable,
+  text,
+} from "drizzle-orm/sqlite-core";
 import {
   AppAuth,
   ClaimsLive,
@@ -80,6 +86,29 @@ export const links = sqliteTable(
   (table) => [
     index("links_owner_saved_at").on(table.ownerId, table.savedAt, table.id),
   ],
+);
+
+export const oauthGrants = sqliteTable(
+  "yielded_oauth_server",
+  {
+    namespace: text().notNull(),
+    grantId: text("grant_id").notNull(),
+    version: text().notNull(),
+    revoked: integer().notNull().default(0),
+    expiresAt: integer("expires_at_millis").notNull(),
+    payload: text().notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.namespace, table.grantId] })],
+);
+
+export const oauthAssertions = sqliteTable(
+  "yielded_oauth_client_assertion",
+  {
+    namespace: text().notNull(),
+    assertionId: text("assertion_id").notNull(),
+    expiresAt: integer("expires_at_millis").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.namespace, table.assertionId] })],
 );
 
 const Persistence = AuthPersistence.make(AppAuth);

@@ -53,7 +53,8 @@ button {
 }
 
 #cli-access,
-#extension-access {
+#extension-access,
+#mcp-access {
   margin-block-start: 2rem;
 }
 

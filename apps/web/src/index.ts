@@ -10,6 +10,8 @@ import * as CliAccess from "./cli-access.ts";
 import * as CliLogin from "./cli-login.ts";
 import * as ExtensionAccess from "./extension-access.ts";
 import { readLinks, saveLink } from "./links-client.ts";
+import * as McpAccess from "./mcp-access.ts";
+import { mcpAuthorizePath, mcpLoginQuery } from "./mcp-access-contract.ts";
 
 const Model = Schema.Struct({
   account: Schema.NullOr(Account),
@@ -18,6 +20,7 @@ const Model = Schema.Struct({
   cliAccess: CliAccess.Model,
   cliLogin: Schema.NullOr(CliLogin.Model),
   extensionAccess: ExtensionAccess.Model,
+  mcpAccess: McpAccess.Model,
   pending: Schema.Boolean,
   error: Schema.NullOr(Schema.String),
 });
@@ -35,11 +38,14 @@ const Message = defineMessageUnion({
   GotCliAccessMessage: { message: CliAccess.Message },
   GotCliLoginMessage: { message: CliLogin.Message },
   GotExtensionAccessMessage: { message: ExtensionAccess.Message },
+  GotMcpAccessMessage: { message: McpAccess.Message },
   RequestFailed: { error: Schema.String },
 });
 type Message = typeof Message.Type;
 
 const AuthClient = Client.make(AuthApi, { baseUrl: window.location.origin });
+const connectingMcp =
+  new URL(window.location.href).searchParams.get(mcpLoginQuery) === "1";
 const savedAtFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeStyle: "short",
@@ -71,6 +77,15 @@ const foldExtensionAccess = Update.foldChild({
     model.account ? Option.some(model.extensionAccess) : Option.none(),
   write: (model, extensionAccess) => ({ ...model, extensionAccess }),
   toParentMessage: toExtensionAccessMessage,
+});
+const toMcpAccessMessage = (message: typeof McpAccess.Message.Type) =>
+  Message.GotMcpAccessMessage({ message });
+const foldMcpAccess = Update.foldChild({
+  update: McpAccess.update,
+  read: (model: Model) =>
+    model.account ? Option.some(model.mcpAccess) : Option.none(),
+  write: (model, mcpAccess) => ({ ...model, mcpAccess }),
+  toParentMessage: toMcpAccessMessage,
 });
 
 const readAccount = Effect.tryPromise(async () => {
@@ -122,6 +137,7 @@ const SignIn = Command.define("SignIn", {
       const client = yield* AuthClient;
       yield* client.auth.signIn({ email, password });
       const account = yield* readAccount;
+      if (account && connectingMcp) window.location.replace(mcpAuthorizePath);
       return account
         ? Message.LoadedAccount({ account })
         : Message.RequestFailed({
@@ -206,6 +222,7 @@ const init: Runtime.ApplicationInit<Model, Message> = () => ({
     cliAccess: CliAccess.initial,
     cliLogin: CliLogin.initial(),
     extensionAccess: ExtensionAccess.initial(),
+    mcpAccess: McpAccess.initial,
     pending: true,
     error: null,
   },
@@ -237,6 +254,7 @@ const update = (model: Model, message: Message) =>
         cliAccess: CliAccess.initial,
         cliLogin,
         extensionAccess: ExtensionAccess.initial(),
+        mcpAccess: McpAccess.initial,
         pending: account !== null && cliLogin === null,
         error: null,
       };
@@ -287,6 +305,7 @@ const update = (model: Model, message: Message) =>
     }),
     GotCliAccessMessage: ({ message }) => foldCliAccess(model, message),
     GotCliLoginMessage: ({ message }) => foldCliLogin(model, message),
+    GotMcpAccessMessage: ({ message }) => foldMcpAccess(model, message),
     GotExtensionAccessMessage: ({ message }) =>
       foldExtensionAccess(model, message),
   });
@@ -358,6 +377,13 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
     [],
     [
       h.h1([], [appName]),
+      ...(connectingMcp
+        ? [
+            model.account
+              ? h.a([h.Href(mcpAuthorizePath)], ["Continue to MCP approval"])
+              : h.p([], ["Sign in to connect Codex to OneApp."]),
+          ]
+        : []),
       model.account
         ? h.section(
             [],
@@ -370,6 +396,7 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
                     model.pending ||
                       model.cliAccess.pending ||
                       model.extensionAccess.pending ||
+                      model.mcpAccess.pending ||
                       model.cliLogin?.pending === true,
                   ),
                   h.OnClick(Message.ClickedSignOut()),
@@ -395,6 +422,12 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
                             view: CliAccess.view,
                             model: model.cliAccess,
                             toParentMessage: toCliAccessMessage,
+                          }),
+                          h.submodel({
+                            slotId: "mcp-access",
+                            view: McpAccess.view,
+                            model: model.mcpAccess,
+                            toParentMessage: toMcpAccessMessage,
                           }),
                         ]),
                     h.submodel({

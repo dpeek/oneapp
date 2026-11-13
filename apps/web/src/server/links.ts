@@ -29,15 +29,24 @@ const linkOwner = (allowExtension: boolean) =>
 
 const authRequired = () => jsonError(401, "Sign in required");
 
-const listLinks = Effect.gen(function* () {
-  const owner = yield* linkOwner(false);
+export const listSavedLinks = Effect.fnUntraced(function* (
+  ownerId: string,
+  limit = -1,
+  offset = 0,
+) {
   const sql = yield* SqlClient.SqlClient;
-  const links = yield* sql<typeof Link.Type>`
+  return yield* sql<typeof Link.Type>`
     SELECT id, url, saved_at AS "savedAt"
     FROM links
-    WHERE owner_id = ${owner.id}
+    WHERE owner_id = ${ownerId}
     ORDER BY saved_at DESC, id DESC
+    LIMIT ${limit} OFFSET ${offset}
   `;
+});
+
+const listLinks = Effect.gen(function* () {
+  const owner = yield* linkOwner(false);
+  const links = yield* listSavedLinks(owner.id);
   return yield* HttpServerResponse.schemaJson(LinkList)(links, {
     headers: privateHeaders,
   });
@@ -48,6 +57,23 @@ const listLinks = Effect.gen(function* () {
     InvalidExtensionToken: invalidExtensionResponse,
   }),
 );
+
+export const insertSavedLink = Effect.fnUntraced(function* (
+  ownerId: string,
+  url: typeof SaveLink.Type.url,
+) {
+  const link = {
+    id: crypto.randomUUID(),
+    url,
+    savedAt: yield* Clock.currentTimeMillis,
+  };
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    INSERT INTO links (id, owner_id, url, saved_at)
+    VALUES (${link.id}, ${ownerId}, ${link.url}, ${link.savedAt})
+  `;
+  return link;
+});
 
 const saveLink = Effect.fnUntraced(function* (ownerId: string) {
   const request = yield* HttpServerRequest.HttpServerRequest;
@@ -71,16 +97,7 @@ const saveLink = Effect.fnUntraced(function* (ownerId: string) {
       "Enter a valid HTTP or HTTPS URL without credentials",
     );
 
-  const link = {
-    id: crypto.randomUUID(),
-    url: input.value.url,
-    savedAt: yield* Clock.currentTimeMillis,
-  };
-  const sql = yield* SqlClient.SqlClient;
-  yield* sql`
-    INSERT INTO links (id, owner_id, url, saved_at)
-    VALUES (${link.id}, ${ownerId}, ${link.url}, ${link.savedAt})
-  `;
+  const link = yield* insertSavedLink(ownerId, input.value.url);
   return yield* HttpServerResponse.schemaJson(Link)(link, {
     status: 201,
     headers: privateHeaders,

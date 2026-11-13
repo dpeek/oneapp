@@ -9,6 +9,13 @@ import { cliTokenRoutes } from "./cli-tokens.ts";
 import { authDependencies, databaseLayer } from "./database.ts";
 import { extensionAccessRoutes } from "./extension-access.ts";
 import { linksRoutes } from "./links.ts";
+import { mcpRoutes } from "./mcp.ts";
+import {
+  mcpGrantRoutes,
+  mcpLoginRoute,
+  mcpOAuth,
+  mcpOAuthLayer,
+} from "./mcp-oauth.ts";
 
 const health = HttpRouter.add(
   "GET",
@@ -36,13 +43,30 @@ const me = HttpRouter.add(
 
 export default {
   async fetch(request: Request, env: WorkerEnv) {
-    const path = new URL(request.url).pathname;
-    if (path === "/api/auth/signIn" && request.method === "POST") {
-      const key = request.headers.get("CF-Connecting-IP") ?? "unknown";
+    const url = new URL(request.url);
+    const path = url.pathname;
+    const signingIn = path === "/api/auth/signIn" && request.method === "POST";
+    const oauthRequest =
+      (path === mcpOAuth.paths.authorize &&
+        url.searchParams.has("response_type")) ||
+      ([mcpOAuth.paths.token, mcpOAuth.paths.revoke].some(
+        (route) => route === path,
+      ) &&
+        request.method === "POST");
+    if (signingIn || oauthRequest) {
+      const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+      const key = signingIn ? ip : `mcp-oauth:${ip}`;
       if (!(await env.AUTH_LIMIT.limit({ key })).success) {
         return Response.json(
-          { error: "Too many sign-in attempts" },
-          { status: 429 },
+          {
+            error: signingIn
+              ? "Too many sign-in attempts"
+              : "Too many OAuth requests",
+          },
+          {
+            status: 429,
+            headers: { "cache-control": "no-store", "retry-after": "10" },
+          },
         );
       }
     }
@@ -75,15 +99,25 @@ export default {
     const app = HttpRouter.toWebHandler(
       Layer.mergeAll(
         health,
+        mcpOAuth.routes,
+        mcpLoginRoute,
+        mcpRoutes(env.APP_ORIGIN),
         Layer.mergeAll(
           me,
           linksRoutes(http),
           cliTokenRoutes(http),
           cliLoginRoutes(http),
           extensionAccessRoutes(http),
+          mcpGrantRoutes(http, env.APP_ORIGIN),
         ).pipe(http.middleware),
         http.routes(),
       ).pipe(
+        Layer.provideMerge(
+          mcpOAuthLayer(
+            env.APP_ORIGIN,
+            Redacted.make(env.MCP_OAUTH_SECRET),
+          ).pipe(Layer.provide(database)),
+        ),
         Layer.provide(http.layer.pipe(Layer.provide(dependencies))),
         HttpRouter.provideRequest(database),
         Layer.provide(HttpServer.layerServices),

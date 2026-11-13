@@ -25,7 +25,9 @@ export const AppAuth = Auth.make(AuthApi, {
   defaultStrategy: "password",
 });
 
-export const authHttp = (origin: string) => Http.make(AppAuth, { origin });
+export const sessionCookieName = "__Host-effect-auth-session";
+export const authHttp = (origin: string) =>
+  Http.make(AppAuth, { origin, cookie: { name: sessionCookieName } });
 
 export const ownerId = AuthSchema.SubjectId.make("owner");
 

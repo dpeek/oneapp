@@ -28,7 +28,7 @@ Run `bun fmt` to format and `bun check` to type-check. `bun run test` runs Vites
 
 The Alchemy stack deploys the Foldkit web app and Effect API to one Worker. It creates a D1 database per stage, applies the committed Drizzle migrations, and provisions the owner through Yielded Auth.
 
-Create a private, Git-ignored `.env.preview` from `.env.example` and set its permissions with `chmod 600 .env.preview`. Use the Cloudflare account ID, the name of your authenticated `cf` profile, and the owner's email address. Generate `OWNER_PASSWORD` and `AUTH_SECRET` separately with `bun -e 'console.log(require("node:crypto").randomBytes(32).toString("base64url"))'`. Keep both values stable for that stage. The password is used only during provisioning and the database stores its verifier. The session secret is a Worker secret.
+Create a private, Git-ignored `.env.preview` from `.env.example` and set its permissions with `chmod 600 .env.preview`. Use the Cloudflare account ID, the name of your authenticated `cf` profile, and the owner's email address. Generate `OWNER_PASSWORD`, `AUTH_SECRET`, and `MCP_OAUTH_SECRET` separately with `bun -e 'console.log(require("node:crypto").randomBytes(32).toString("base64url"))'`. Keep the values stable for that stage. The password is used only during provisioning and the database stores its verifier. The session and OAuth signing keys are Worker secrets.
 
 ```sh
 bun --env-file=.env.preview run deploy --stage preview
@@ -70,3 +70,17 @@ Run `bun run --filter @oneapp/extension build`. In Chrome, open `chrome://extens
 Open OneApp from the Chrome toolbar and select **Connect to OneApp**. Approve the connection in the OneApp tab, signing in first if needed. On the page you want to keep, open the extension and select **Save this tab**. Saved links appear in the web app and in `one links list`.
 
 New extension credentials only allow saving links and stay active until revoked. Use **Disconnect** in Chrome or **Manage extension access** in the web app to revoke one. Credentials issued under the previous 30-day policy keep their original expiry.
+
+## MCP
+
+OneApp serves Streamable HTTP at `https://app.dpeek.com/mcp`. The `list_links` tool returns links newest first with a `nextOffset` for paging. The `save_link` tool adds an HTTP or HTTPS URL to the same collection.
+
+Register the server with Codex:
+
+```sh
+codex mcp add oneapp --url https://app.dpeek.com/mcp --oauth-client-id oneapp-codex
+```
+
+Approve access in your browser. If the approval page doesn't open, run `codex mcp login oneapp`. Start a new Codex session to use the tools. For a setup that used `ONEAPP_MCP_TOKEN`, remove that MCP registration and add it again with the OAuth client ID above.
+
+Access tokens refresh automatically within the 30-day grant. Open **Manage MCP access** in the web app to revoke a grant.

@@ -15,7 +15,14 @@ export const Web = Cloudflare.Worker(
       main: "./apps/web/src/server/worker.ts",
       assets: {
         directory: "./apps/web/dist",
-        runWorkerFirst: ["/api", "/api/*"],
+        runWorkerFirst: [
+          "/api",
+          "/api/*",
+          "/mcp",
+          "/oauth/mcp/*",
+          "/.well-known/*",
+          "/connect/mcp",
+        ],
       },
       compatibility: { date: "2026-11-01", flags: ["nodejs_compat"] },
       domain: Option.getOrUndefined(domain),
@@ -37,6 +44,7 @@ export const Web = Cloudflare.Worker(
         DB: Database,
         APP_ORIGIN: Cloudflare.Worker.URL,
         AUTH_SECRET: Config.Redacted("AUTH_SECRET"),
+        MCP_OAUTH_SECRET: Config.Redacted("MCP_OAUTH_SECRET"),
         AUTH_LIMIT: Cloudflare.RateLimit("AuthLimit", {
           namespaceId: 1001,
           simple: { limit: 10, period: 60 },

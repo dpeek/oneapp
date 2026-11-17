@@ -131,11 +131,25 @@ body:has(.app-shell) {
   overflow-wrap: anywhere;
 }
 
-.account-email,
-.account-password {
-  padding-block-end: 1rem;
-  margin-block-end: 1rem;
-  border-block-end: 1px solid var(--border);
+.account-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  justify-content: space-between;
+  gap: 0.875rem;
+}
+
+.account-status {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.account-status p:last-child {
+  margin-block-end: 0;
+}
+
+.account-address {
+  font-weight: 600;
 }
 
 .account-hint {
@@ -143,34 +157,53 @@ body:has(.app-shell) {
   font-size: 0.875rem;
 }
 
-.account-password h3 {
-  margin: 0 0 0.5rem;
-  font-size: 1rem;
-}
-
-.account-password form,
-.account-email form {
+.account-verification {
   max-width: 26rem;
-}
-
-.account-email form {
-  margin-block-end: 0.75rem;
-}
-
-.account-password label,
-.account-email-change label {
-  display: grid;
-  gap: 0.375rem;
-}
-
-.account-email-change {
-  margin-block-start: 0.75rem;
+  margin-block-start: 1rem;
 }
 
 .account-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
+}
+
+.account-dialog {
+  box-sizing: border-box;
+  width: min(30rem, calc(100% - 2rem));
+  max-height: calc(100dvh - 2rem);
+  overflow: auto;
+  padding: clamp(1rem, 4vw, 1.5rem);
+  border: 1px solid var(--border);
+  border-radius: 0.875rem;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.account-dialog::backdrop {
+  background: rgb(10 11 18 / 65%);
+}
+
+:root:has(.account-dialog[open]) {
+  overflow: hidden;
+}
+
+.account-dialog h3 {
+  margin: 0 0 0.875rem;
+  font-size: 1.125rem;
+}
+
+.account-dialog label {
+  display: grid;
+  gap: 0.375rem;
+}
+
+.account-dialog form p {
+  margin: 0;
+}
+
+.account-dialog [role="alert"] {
+  margin: 0.75rem 0 0;
 }
 
 .page a {

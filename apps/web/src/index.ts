@@ -388,6 +388,11 @@ const update = (
       const account = model.account;
       if (!account) return { model };
       const settings = model.accountSettings;
+      const focusAccountElement = (selector: string) =>
+        Command.mapMessage(
+          AccountSettings.FocusElement({ selector }),
+          toAccountSettingsMessage,
+        );
       const start = (
         pending: NonNullable<typeof settings.pending>,
         command: NonNullable<Update.Return<Model, Message>["commands"]>[number],
@@ -439,13 +444,15 @@ const update = (
                 )
               : { model },
           ChangePassword: () =>
-            start(
-              "password",
-              Command.mapMessage(
-                AccountSettings.ChangePassword({}),
-                toAccountSettingsMessage,
-              ),
-            ),
+            settings.dialog === "password"
+              ? start(
+                  "password",
+                  Command.mapMessage(
+                    AccountSettings.ChangePassword({}),
+                    toAccountSettingsMessage,
+                  ),
+                )
+              : { model },
           CodeSent: ({ verification }) =>
             verification
               ? {
@@ -462,38 +469,55 @@ const update = (
           EmailVerified: verified,
           PasswordChanged: () =>
             signedOut("Password changed. Sign in with your new password."),
-          OpenEmailChange: () => ({
-            model: {
-              ...model,
-              accountSettings: {
-                ...settings,
-                editingEmail: true,
-                emailChange: null,
-                error: "",
-              },
-            },
-          }),
-          CloseEmailChange: () => ({
-            model: {
-              ...model,
-              accountSettings: {
-                ...settings,
-                editingEmail: false,
-                emailChange: null,
-                error: "",
-              },
-            },
-          }),
+          OpenDialog: ({ dialog }) =>
+            model.pending ||
+            settings.pending ||
+            (dialog === "email" && !account.emailDeliveryEnabled)
+              ? { model }
+              : {
+                  model: {
+                    ...model,
+                    accountSettings: {
+                      ...settings,
+                      dialog,
+                      emailChange: null,
+                      error: "",
+                    },
+                  },
+                  ...(dialog === "email" && settings.dialog === "email"
+                    ? { commands: [focusAccountElement("#new-email")] }
+                    : {}),
+                },
+          CloseDialog: () =>
+            settings.dialog && !model.pending && !settings.pending
+              ? {
+                  model: {
+                    ...model,
+                    accountSettings: {
+                      ...settings,
+                      dialog: null,
+                      emailChange: null,
+                      error: "",
+                    },
+                  },
+                  commands: [
+                    focusAccountElement(`#open-${settings.dialog}-dialog`),
+                  ],
+                }
+              : { model },
+          DialogUpdated: () => ({ model }),
           SubmitEmailChange: () =>
-            start(
-              "send-email-change",
-              Command.mapMessage(
-                AccountSettings.SubmitEmailChange({}),
-                toAccountSettingsMessage,
-              ),
-            ),
+            settings.dialog === "email" && !settings.emailChange
+              ? start(
+                  "send-email-change",
+                  Command.mapMessage(
+                    AccountSettings.SubmitEmailChange({}),
+                    toAccountSettingsMessage,
+                  ),
+                )
+              : { model },
           ConfirmEmailChange: () =>
-            settings.emailChange
+            settings.dialog === "email" && settings.emailChange
               ? start(
                   "confirm-email-change",
                   Command.mapMessage(
@@ -513,6 +537,7 @@ const update = (
                 emailChange: change,
               },
             },
+            commands: [focusAccountElement("#email-change-code")],
           }),
           EmailChanged: ({ oldAddressNotified }) =>
             signedOut(
@@ -700,20 +725,20 @@ const settingsView = (model: Model, h: HtmlBuilder<Message>) =>
                 model.pending,
                 h,
                 toAccountSettingsMessage,
+                h.button(
+                  [
+                    h.Type("button"),
+                    h.Disabled(
+                      model.pending ||
+                        model.accountSettings.pending !== null ||
+                        model.connectedClients.pending,
+                    ),
+                    h.OnClick(Message.ClickedSignOut()),
+                  ],
+                  ["Sign out"],
+                ),
               )
             : []),
-          h.button(
-            [
-              h.Type("button"),
-              h.Disabled(
-                model.pending ||
-                  model.accountSettings.pending !== null ||
-                  model.connectedClients.pending,
-              ),
-              h.OnClick(Message.ClickedSignOut()),
-            ],
-            ["Sign out"],
-          ),
         ],
       ),
       h.submodel({

@@ -81,7 +81,7 @@ Run `bun run --filter @oneapp/extension build`. In Chrome, open `chrome://extens
 
 Open OneApp from the Chrome toolbar and select **Connect to OneApp**. Approve the connection in the OneApp tab, signing in first if needed. On the page you want to keep, open the extension and select **Save this tab**. Saved links appear in the web app and in `one links list`.
 
-New extension credentials only allow saving links and stay active until revoked. Use **Disconnect** in Chrome or **Manage extension access** in the web app to revoke one. Credentials issued under the previous 30-day policy keep their original expiry.
+New extension credentials only allow saving links and stay active until revoked. Use **Disconnect** in Chrome or **Settings → Connected clients** in the web app to revoke one. Credentials issued under the previous 30-day policy keep their original expiry.
 
 ## MCP
 
@@ -97,4 +97,4 @@ Codex supplies its client ID automatically through its OAuth client metadata. Ap
 
 OneApp requests approval for `links:read` and `links:write` by default. For read-only access, run `codex mcp login oneapp --scopes links:read`. To reconnect a grant issued under the old scopes, run `codex mcp login oneapp`, approve access, then start a new Codex session.
 
-Access tokens refresh automatically within the 30-day grant. Open **Settings → MCP access** in the web app to revoke a grant.
+Access tokens refresh automatically within the 30-day grant. Open **Settings → Connected clients** in the web app to revoke a grant.

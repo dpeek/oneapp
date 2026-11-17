@@ -13,7 +13,7 @@ import {
 } from "@oneapp/core/links";
 import { EmailDelivery } from "@yielded/auth";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
-import { ConfigProvider, Effect, Redacted } from "effect";
+import { ConfigProvider, Effect, Redacted, Schema } from "effect";
 import { Base64Url } from "effect/encoding";
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import {
@@ -21,7 +21,11 @@ import {
   emailVerificationPath,
   passwordChangePath,
 } from "../account-contract.ts";
-import { codexClientId, mcpGrantsPath } from "../mcp-access-contract.ts";
+import {
+  codexClientId,
+  McpGrantList,
+  mcpGrantsPath,
+} from "../mcp-access-contract.ts";
 import {
   passwordResetPath,
   resetPasswordPage,
@@ -379,8 +383,10 @@ it("issues MCP link scopes and exposes only the tools a grant authorises", async
     scopes_supported: [linksReadScope, linksWriteScope],
   });
 
+  const connectedAfter = Date.now();
   const full = await connect();
-  const read = (await connect([linksReadScope])).access_token;
+  const readGrant = await connect([linksReadScope]);
+  const read = readGrant.access_token;
   const write = (await connect([linksWriteScope])).access_token;
   expect(await names(full.access_token)).toEqual([
     "delete_link",
@@ -406,6 +412,27 @@ it("issues MCP link scopes and exposes only the tools a grant authorises", async
       ?.structuredContent,
   ).toEqual({ id: link.id });
 
+  const listGrants = async () => {
+    const response = await call(mcpGrantsPath, undefined, session);
+    expect(response.status).toBe(200);
+    return Schema.decodeUnknownSync(McpGrantList)(await response.json());
+  };
+  const grants = await listGrants();
+  expect(grants).toHaveLength(3);
+  for (const grant of grants) {
+    expect(grant.createdAt).toBeGreaterThanOrEqual(connectedAfter);
+    expect(grant.createdAt).toBeLessThanOrEqual(Date.now());
+    expect(grant.expiresAt - grant.createdAt).toBe(30 * 86_400_000);
+  }
+  const refreshed = await form(mcpOAuth.paths.token, {
+    grant_type: "refresh_token",
+    client_id: codexClientId,
+    resource,
+    refresh_token: readGrant.refresh_token,
+  });
+  expect(refreshed.status, await refreshed.clone().text()).toBe(200);
+  expect(await listGrants()).toEqual(grants);
+
   sqlite.run(
     `UPDATE yielded_oauth_server SET payload = json_set(payload, '$.authorization.scopes', json('["links:read-write","links:delete"]')) WHERE json_array_length(payload, '$.authorization.scopes') = 2`,
   );
@@ -421,9 +448,7 @@ it("issues MCP link scopes and exposes only the tools a grant authorises", async
     refresh_token: full.refresh_token,
   });
   expect(await refresh.json()).toMatchObject({ error: "invalid_grant" });
-  expect(
-    await (await call(mcpGrantsPath, undefined, session)).json(),
-  ).toHaveLength(2);
+  expect(await listGrants()).toHaveLength(2);
 });
 
 it("verifies the signed-in address and changes the password with session invalidation", async () => {

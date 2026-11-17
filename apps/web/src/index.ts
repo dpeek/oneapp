@@ -7,11 +7,10 @@ import type { Document, HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import * as AccountSettings from "./account-settings.ts";
 import { Account, AuthApi } from "./auth-contract.ts";
-import * as CliAccess from "./cli-access.ts";
 import * as CliLogin from "./cli-login.ts";
+import * as ConnectedClients from "./connected-clients.ts";
 import * as ExtensionAccess from "./extension-access.ts";
 import { deleteLink, readLinks, saveLink } from "./links-client.ts";
-import * as McpAccess from "./mcp-access.ts";
 import { mcpAuthorizePath, mcpLoginQuery } from "./mcp-access-contract.ts";
 import { navigationView } from "./navigation.ts";
 import * as PasswordRecovery from "./password-recovery.ts";
@@ -34,10 +33,9 @@ const Model = Schema.Struct({
   links: Schema.NullOr(LinkList),
   linkUrl: Schema.String,
   deletingLink: Schema.NullOr(Schema.String),
-  cliAccess: CliAccess.Model,
+  connectedClients: ConnectedClients.Model,
   cliLogin: Schema.NullOr(CliLogin.Model),
   extensionAccess: ExtensionAccess.Model,
-  mcpAccess: McpAccess.Model,
   pending: Schema.Boolean,
   error: Schema.NullOr(Schema.String),
 });
@@ -58,10 +56,9 @@ const Message = defineMessageUnion({
   LoadedLinks: { links: LinkList },
   SavedLink: { link: Link },
   DeletedLink: { id: Schema.String },
-  GotCliAccessMessage: { message: CliAccess.Message },
+  GotConnectedClientsMessage: { message: ConnectedClients.Message },
   GotCliLoginMessage: { message: CliLogin.Message },
   GotExtensionAccessMessage: { message: ExtensionAccess.Message },
-  GotMcpAccessMessage: { message: McpAccess.Message },
   RequestFailed: { error: Schema.String },
 });
 type Message = typeof Message.Type;
@@ -77,14 +74,15 @@ const isSaveLink = Schema.is(SaveLink);
 const toAccountSettingsMessage = (
   message: typeof AccountSettings.Message.Type,
 ) => Message.GotAccountSettingsMessage({ message });
-const toCliAccessMessage = (message: typeof CliAccess.Message.Type) =>
-  Message.GotCliAccessMessage({ message });
-const foldCliAccess = Update.foldChild({
-  update: CliAccess.update,
+const toConnectedClientsMessage = (
+  message: typeof ConnectedClients.Message.Type,
+) => Message.GotConnectedClientsMessage({ message });
+const foldConnectedClients = Update.foldChild({
+  update: ConnectedClients.update,
   read: (model: Model) =>
-    model.account ? Option.some(model.cliAccess) : Option.none(),
-  write: (model, cliAccess) => ({ ...model, cliAccess }),
-  toParentMessage: toCliAccessMessage,
+    model.account ? Option.some(model.connectedClients) : Option.none(),
+  write: (model, connectedClients) => ({ ...model, connectedClients }),
+  toParentMessage: toConnectedClientsMessage,
 });
 const toCliLoginMessage = (message: typeof CliLogin.Message.Type) =>
   Message.GotCliLoginMessage({ message });
@@ -103,15 +101,6 @@ const foldExtensionAccess = Update.foldChild({
     model.account ? Option.some(model.extensionAccess) : Option.none(),
   write: (model, extensionAccess) => ({ ...model, extensionAccess }),
   toParentMessage: toExtensionAccessMessage,
-});
-const toMcpAccessMessage = (message: typeof McpAccess.Message.Type) =>
-  Message.GotMcpAccessMessage({ message });
-const foldMcpAccess = Update.foldChild({
-  update: McpAccess.update,
-  read: (model: Model) =>
-    model.account ? Option.some(model.mcpAccess) : Option.none(),
-  write: (model, mcpAccess) => ({ ...model, mcpAccess }),
-  toParentMessage: toMcpAccessMessage,
 });
 
 const Navigate = Command.define("Navigate", {
@@ -292,20 +281,7 @@ const loadPage = (model: Model): Update.Return<Model, Message> => {
           commands: [LoadLinks({})],
         };
   }
-  const cli = foldCliAccess(model, CliAccess.Message.RequestedTokens());
-  const extension = foldExtensionAccess(
-    cli.model,
-    ExtensionAccess.Message.RequestedConnections(),
-  );
-  const mcp = foldMcpAccess(extension.model, McpAccess.Message.Requested());
-  return {
-    model: mcp.model,
-    commands: [
-      ...(cli.commands ?? []),
-      ...(extension.commands ?? []),
-      ...(mcp.commands ?? []),
-    ],
-  };
+  return foldConnectedClients(model, ConnectedClients.Message.Requested());
 };
 
 const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
@@ -318,10 +294,9 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     links: null,
     linkUrl: "",
     deletingLink: null,
-    cliAccess: CliAccess.initial,
+    connectedClients: ConnectedClients.initial,
     cliLogin: CliLogin.initial(),
     extensionAccess: ExtensionAccess.initial(),
-    mcpAccess: McpAccess.initial,
     pending: true,
     error: null,
   };
@@ -392,10 +367,9 @@ const update = (
         links: null,
         linkUrl: "",
         deletingLink: null,
-        cliAccess: CliAccess.initial,
+        connectedClients: ConnectedClients.initial,
         cliLogin,
         extensionAccess: ExtensionAccess.initial(),
-        mcpAccess: McpAccess.initial,
         pending: false,
         error: null,
       };
@@ -607,9 +581,9 @@ const update = (
     RequestFailed: ({ error }) => ({
       model: { ...model, deletingLink: null, pending: false, error },
     }),
-    GotCliAccessMessage: ({ message }) => foldCliAccess(model, message),
+    GotConnectedClientsMessage: ({ message }) =>
+      foldConnectedClients(model, message),
     GotCliLoginMessage: ({ message }) => foldCliLogin(model, message),
-    GotMcpAccessMessage: ({ message }) => foldMcpAccess(model, message),
     GotExtensionAccessMessage: ({ message }) =>
       foldExtensionAccess(model, message),
   });
@@ -727,9 +701,7 @@ const settingsView = (model: Model, h: HtmlBuilder<Message>) =>
               h.Disabled(
                 model.pending ||
                   model.accountSettings.pending !== null ||
-                  model.cliAccess.pending ||
-                  model.extensionAccess.pending ||
-                  model.mcpAccess.pending,
+                  model.connectedClients.pending,
               ),
               h.OnClick(Message.ClickedSignOut()),
             ],
@@ -738,22 +710,10 @@ const settingsView = (model: Model, h: HtmlBuilder<Message>) =>
         ],
       ),
       h.submodel({
-        slotId: "cli-access",
-        view: CliAccess.view,
-        model: model.cliAccess,
-        toParentMessage: toCliAccessMessage,
-      }),
-      h.submodel({
-        slotId: "extension-access",
-        view: ExtensionAccess.view,
-        model: model.extensionAccess,
-        toParentMessage: toExtensionAccessMessage,
-      }),
-      h.submodel({
-        slotId: "mcp-access",
-        view: McpAccess.view,
-        model: model.mcpAccess,
-        toParentMessage: toMcpAccessMessage,
+        slotId: "connected-clients",
+        view: ConnectedClients.view,
+        model: model.connectedClients,
+        toParentMessage: toConnectedClientsMessage,
       }),
     ],
   );

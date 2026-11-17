@@ -278,23 +278,45 @@ button {
   font-size: 0.875rem;
 }
 
-.cli-tokens {
-  list-style: none;
-  padding: 0;
-}
-
-.cli-tokens li {
-  align-items: start;
-  border-block-end: 1px solid light-dark(#ddd, #444);
-  display: flex;
-  gap: 1rem;
-  justify-content: space-between;
-  padding-block: 0.75rem;
-}
-
-.cli-tokens li > div {
+.connected-clients {
   min-width: 0;
+}
+
+.connections-table-container {
+  overflow-x: auto;
+}
+
+.connections-table-container:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.connections-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.connections-table :is(th, td) {
+  border-block-end: 1px solid var(--border);
+  padding: 0.625rem;
+  text-align: start;
+}
+
+.connections-table thead {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.connections-table th[scope="row"] {
   overflow-wrap: anywhere;
+}
+
+.connections-table :is(time, th[scope="col"]) {
+  white-space: nowrap;
+}
+
+.connections-table tr > :last-child {
+  text-align: end;
 }
 
 .cli-approval {

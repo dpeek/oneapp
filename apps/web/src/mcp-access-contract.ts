@@ -17,6 +17,7 @@ export const McpGrantId = Schema.String.check(
 export const McpGrant = Schema.Struct({
   id: McpGrantId,
   clientId: Schema.String,
+  createdAt: Schema.Int,
   expiresAt: Schema.Int,
 });
 export const McpGrantList = Schema.Array(McpGrant);

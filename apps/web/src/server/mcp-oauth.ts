@@ -126,6 +126,8 @@ export const mcpLoginRoute = HttpRouter.add(
 
 const owner = Effect.flatMap(AppAuth, (auth) => auth.requireSession);
 const authRequired = () => jsonError(401, "Sign in required");
+// Yielded Auth sets a 30-day grant expiry on MCP code redemption and keeps it on refresh.
+const mcpGrantLifetimeMillis = 30 * 86_400_000;
 
 export const mcpGrantRoutes = (
   http: ReturnType<typeof authHttp>,
@@ -143,6 +145,7 @@ export const mcpGrantRoutes = (
         const now = yield* Clock.currentTimeMillis;
         const grants = yield* sql<typeof McpGrant.Type>`
         SELECT grant_id AS id, json_extract(payload, '$.authorization.clientId') AS "clientId",
+               expires_at_millis - ${mcpGrantLifetimeMillis} AS "createdAt",
                expires_at_millis AS "expiresAt"
         FROM yielded_oauth_server
         WHERE namespace = ${namespace} AND revoked = 0 AND expires_at_millis > ${now}

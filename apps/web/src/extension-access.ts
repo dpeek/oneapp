@@ -1,5 +1,4 @@
 import {
-  ExtensionAccessList,
   ExtensionApproval,
   ExtensionRequestId,
   extensionAccessPath,
@@ -13,7 +12,6 @@ import { defineMessageUnion } from "foldkit/message";
 export const Model = Schema.Struct({
   approvalId: Schema.NullOr(ExtensionRequestId),
   approved: Schema.Boolean,
-  connections: Schema.NullOr(ExtensionAccessList),
   pending: Schema.Boolean,
   error: Schema.String,
 });
@@ -27,7 +25,6 @@ export function initial(): Model {
   return {
     approvalId: Schema.is(ExtensionRequestId)(id) ? id : null,
     approved: false,
-    connections: null,
     pending: false,
     error: "",
   };
@@ -35,20 +32,12 @@ export function initial(): Model {
 
 export const Message = defineMessageUnion({
   RequestedApproval: {},
-  RequestedConnections: {},
-  RequestedRevocation: { id: ExtensionRequestId },
   Approved: {},
-  Loaded: { connections: ExtensionAccessList },
-  Revoked: { id: ExtensionRequestId },
   Failed: { error: Schema.String },
 });
 type Message = typeof Message.Type;
 
 const csrf = { "x-effect-auth-csrf": "1" };
-const date = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "medium",
-  timeStyle: "short",
-});
 const fail = (error: string) => () => Effect.succeed(Message.Failed({ error }));
 const isApproval = Schema.is(ExtensionApproval);
 
@@ -114,42 +103,6 @@ const Approve = Command.define("ApproveChromeExtension", {
     ),
 });
 
-const Load = Command.define("LoadExtensionAccess", {
-  args: {},
-  messages: [Message.Loaded, Message.Failed],
-  execute: () =>
-    Effect.tryPromise(async (signal) => {
-      const response = await fetch(extensionAccessPath, {
-        cache: "no-store",
-        signal,
-      });
-      if (!response.ok) throw new Error("Could not load extension access");
-      return Message.Loaded({
-        connections: Schema.decodeUnknownSync(ExtensionAccessList)(
-          await response.json(),
-        ),
-      });
-    }).pipe(Effect.catch(fail("Could not load extension access. Try again."))),
-});
-
-const Revoke = Command.define("RevokeExtensionAccess", {
-  args: { id: ExtensionRequestId },
-  messages: [Message.Revoked, Message.Failed],
-  execute: ({ id }) =>
-    Effect.tryPromise(async (signal) => {
-      const response = await fetch(`${extensionAccessPath}/${id}`, {
-        method: "DELETE",
-        headers: csrf,
-        signal,
-      });
-      if (response.status !== 204)
-        throw new Error("Could not revoke extension access");
-      return Message.Revoked({ id });
-    }).pipe(
-      Effect.catch(fail("Could not revoke extension access. Try again.")),
-    ),
-});
-
 export const update = (model: Model, message: Message) => {
   const pending = { ...model, pending: true, error: "" };
   return Message.match<Update.Return<Model, Message>>(message, {
@@ -157,27 +110,8 @@ export const update = (model: Model, message: Message) => {
       model.pending || !model.approvalId
         ? { model }
         : { model: pending, commands: [Approve({ id: model.approvalId })] },
-    RequestedConnections: () =>
-      model.pending ? { model } : { model: pending, commands: [Load({})] },
-    RequestedRevocation: ({ id }) =>
-      model.pending
-        ? { model }
-        : { model: pending, commands: [Revoke({ id })] },
     Approved: () => ({
-      model: { ...model, approvalId: null, approved: true },
-      commands: [Load({})],
-    }),
-    Loaded: ({ connections }) => ({
-      model: { ...model, connections, pending: false },
-    }),
-    Revoked: ({ id }) => ({
-      model: {
-        ...model,
-        connections:
-          model.connections?.filter((connection) => connection.id !== id) ??
-          null,
-        pending: false,
-      },
+      model: { ...model, approvalId: null, approved: true, pending: false },
     }),
     Failed: ({ error }) => ({ model: { ...model, pending: false, error } }),
   });
@@ -192,14 +126,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
   return h.section(
     [h.Id("extension-access")],
     [
-      h.h2(
-        [],
-        [
-          model.approvalId
-            ? "Connect the OneApp extension"
-            : "Extension access",
-        ],
-      ),
+      h.h2([], ["Connect the OneApp extension"]),
       ...(model.approvalId
         ? [
             h.p(
@@ -210,53 +137,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
             ),
             button("Connect", Message.RequestedApproval()),
           ]
-        : model.connections === null
-          ? [
-              model.error
-                ? button(
-                    "Retry loading extension access",
-                    Message.RequestedConnections(),
-                  )
-                : h.p([h.Role("status")], ["Loading extension access…"]),
-            ]
-          : model.connections.length === 0
-            ? [h.p([], ["No connected extensions."])]
-            : [
-                h.ul(
-                  [h.Class("cli-tokens")],
-                  model.connections.map((connection) =>
-                    h.li(
-                      [h.Key(connection.id)],
-                      [
-                        h.div(
-                          [],
-                          [
-                            h.strong([], ["Chrome extension"]),
-                            h.div(
-                              [],
-                              [
-                                `Connected ${date.format(connection.createdAt)}`,
-                              ],
-                            ),
-                            h.div(
-                              [],
-                              [
-                                connection.expiresAt === null
-                                  ? "Active until revoked"
-                                  : `Expires ${date.format(connection.expiresAt)}`,
-                              ],
-                            ),
-                          ],
-                        ),
-                        button(
-                          "Revoke extension",
-                          Message.RequestedRevocation({ id: connection.id }),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ]),
+        : []),
       h.p(
         [h.Role("status")],
         [

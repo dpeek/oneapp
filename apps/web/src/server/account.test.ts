@@ -172,24 +172,26 @@ it("issues scoped CLI tokens and applies read and write scopes to the Links API"
     204,
   );
 
-  const issued = await call(
-    cliTokensPath,
-    { label: "Mac mini", scopes: cliLinkScopes },
-    session,
-  );
-  expect(issued.status).toBe(201);
-  const manual = (await issued.json()) as {
-    secret: string;
-    token: { id: string };
-  };
+  expect(
+    (
+      await call(
+        cliTokensPath,
+        { label: "Mac mini", scopes: cliLinkScopes },
+        session,
+      )
+    ).status,
+  ).toBe(404);
+  const tokens = await call(cliTokensPath, undefined, session);
+  expect(tokens.status).toBe(200);
+  expect(await tokens.json()).toMatchObject([{ id, label: "Laptop" }]);
   const save = await credential(secret, linksPath, "POST", {
     url: "https://example.com/",
   });
   expect(save.status).toBe(201);
   const link = (await save.json()) as { id: string };
-  expect(
-    await (await credential(manual.secret, linksPath)).json(),
-  ).toMatchObject([link]);
+  expect(await (await credential(secret, linksPath)).json()).toMatchObject([
+    link,
+  ]);
 
   sqlite.run("UPDATE cli_tokens SET scopes = ? WHERE id = ?", [
     JSON.stringify([linksReadScope]),
@@ -209,12 +211,26 @@ it("issues scoped CLI tokens and applies read and write scopes to the Links API"
 
   sqlite.run("UPDATE cli_tokens SET scopes = ? WHERE id = ?", [
     JSON.stringify([linksWriteScope]),
-    manual.token.id,
+    id,
   ]);
-  expect((await credential(manual.secret, linksPath)).status).toBe(403);
-  expect(
-    (await credential(manual.secret, linkPath(link.id), "DELETE")).status,
-  ).toBe(204);
+  expect((await credential(secret, linksPath)).status).toBe(403);
+  expect((await credential(secret, linkPath(link.id), "DELETE")).status).toBe(
+    204,
+  );
+
+  const revoked = await request(`${cliTokensPath}/${id}`, {
+    method: "DELETE",
+    headers: {
+      cookie: session,
+      origin: "https://oneapp.example",
+      "x-effect-auth-csrf": "1",
+    },
+  });
+  expect(revoked.status).toBe(204);
+  expect((await credential(secret, linksPath)).status).toBe(401);
+  expect((await credential(secret, `${approval}/poll`, "POST")).status).toBe(
+    410,
+  );
 
   const extensionSecret = `one_ext_${"b".repeat(43)}`;
   expect(

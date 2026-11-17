@@ -21,10 +21,6 @@ const CliLinkScopes = Schema.Tuple([
   Schema.Literal(linksReadScope),
   Schema.Literal(linksWriteScope),
 ]);
-export const CreateCliToken = Schema.Struct({
-  ...CliLoginRequest.fields,
-  scopes: CliLinkScopes,
-});
 export const CliToken = Schema.Struct({
   id: Schema.String,
   label: CliTokenLabel,
@@ -32,10 +28,6 @@ export const CliToken = Schema.Struct({
   expiresAt: Schema.NullOr(Schema.Int),
 });
 export const CliTokenList = Schema.Array(CliToken);
-export const IssuedCliToken = Schema.Struct({
-  token: CliToken,
-  secret: CliTokenSecret,
-});
 
 export const CliLoginId = Schema.String.check(Schema.isUUID(4));
 export const CliLoginApproval = Schema.Struct({

@@ -1,19 +1,16 @@
 import {
   CliLoginApproval,
   CliTokenLabel,
-  CliTokenSecret,
   cliLoginQuery,
   cliLoginInterval,
   cliLoginPath,
-  currentCliTokenPath,
 } from "@oneapp/core/cli-auth";
 import { Console, Effect, Redacted, Schema } from "effect";
-import { Prompt } from "effect/cli";
 import { Base64Url } from "effect/encoding";
 import { readResponse, request, requireSuccess } from "./api.ts";
 import { CliError } from "./errors.ts";
 
-export const openBrowser = (url: string) =>
+const openBrowser = (url: string) =>
   Effect.sync(() => {
     const command =
       process.platform === "darwin"
@@ -30,30 +27,6 @@ export const openBrowser = (url: string) =>
       // The URL is already printed when a browser opener is unavailable.
     }
   });
-
-export const manualLogin = Effect.fnUntraced(function* (
-  origin: string,
-  browser: boolean,
-) {
-  if (!process.stdin.isTTY)
-    return yield* new CliError({
-      message: "Run manual token login in an interactive terminal.",
-    });
-  const url = `${origin}/settings#cli-access`;
-  yield* Console.log(`Create a CLI token under CLI access at ${url}`);
-  if (browser) yield* openBrowser(url);
-  const entered = yield* Prompt.Hidden({ message: "Paste the CLI token" });
-  const value = Redacted.value(entered).trim();
-  if (!Schema.is(CliTokenSecret)(value))
-    return yield* new CliError({
-      message: "Paste the CLI token created in OneApp.",
-    });
-
-  const token = Redacted.make(value);
-  const response = yield* request(origin, token, currentCliTokenPath);
-  yield* requireSuccess(response);
-  return token;
-});
 
 const approvalExpired = () =>
   new CliError({

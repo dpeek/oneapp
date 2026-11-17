@@ -297,18 +297,6 @@ button {
   overflow-wrap: anywhere;
 }
 
-dialog {
-  max-width: min(26rem, calc(100% - 3rem));
-}
-
-dialog textarea {
-  box-sizing: border-box;
-  display: block;
-  font-family: monospace;
-  margin-block: 0.5rem 1rem;
-  width: 100%;
-}
-
 .cli-approval {
   margin-block-start: 2rem;
 }

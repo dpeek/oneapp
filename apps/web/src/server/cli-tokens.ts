@@ -2,14 +2,12 @@ import {
   CliToken,
   CliTokenList,
   CliTokenSecret,
-  CreateCliToken,
-  IssuedCliToken,
   cliTokensPath,
   currentCliTokenPath,
 } from "@oneapp/core/cli-auth";
 import { LinkScope } from "@oneapp/core/links";
-import { ByteSize, Clock, Data, Effect, Layer, Schema } from "effect";
-import { Base64Url, Hex } from "effect/encoding";
+import { Clock, Data, Effect, Layer, Schema } from "effect";
+import { Hex } from "effect/encoding";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { SqlClient } from "effect/sql";
 import { jsonError, privateHeaders } from "./api-response.ts";
@@ -19,7 +17,7 @@ const isTokenSecret = Schema.is(CliTokenSecret);
 const decodeScopes = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Array(LinkScope)),
 );
-export const digestToken = Effect.fnUntraced(function* (secret: string) {
+const digestToken = Effect.fnUntraced(function* (secret: string) {
   const bytes = new TextEncoder().encode(secret);
   const digest = yield* Effect.promise(() =>
     crypto.subtle.digest("SHA-256", bytes),
@@ -97,55 +95,6 @@ export const cliTokenRoutes = (http: ReturnType<typeof authHttp>) => {
           headers: privateHeaders,
         });
       }).pipe(Effect.catchTag("AuthenticationRequired", authRequired)),
-    ),
-    HttpRouter.add(
-      "POST",
-      cliTokensPath,
-      Effect.gen(function* () {
-        const session = yield* owner;
-        return yield* http.protect(
-          Effect.gen(function* () {
-            const input = yield* HttpServerRequest.schemaBodyJson(
-              CreateCliToken,
-            ).pipe(
-              Effect.provideService(
-                HttpServerRequest.MaxBodySize,
-                ByteSize.kibibytes(2),
-              ),
-              Effect.option,
-            );
-            if (input._tag === "None")
-              return yield* jsonError(
-                400,
-                "Provide a name of 1 to 60 characters and approve CLI link access",
-              );
-
-            const secret = `one_${Base64Url.encode(crypto.getRandomValues(new Uint8Array(32)))}`;
-            const digest = yield* digestToken(secret);
-            const createdAt = yield* Clock.currentTimeMillis;
-            const token = {
-              id: crypto.randomUUID(),
-              label: input.value.label,
-              createdAt,
-              expiresAt: null,
-            };
-            const sql = yield* SqlClient.SqlClient;
-            yield* sql`
-          INSERT INTO cli_tokens (id, owner_id, label, digest, created_at, expires_at, scopes)
-          VALUES (${token.id}, ${session.subjectId}, ${token.label}, ${digest}, ${token.createdAt}, ${token.expiresAt}, ${JSON.stringify(input.value.scopes)})
-        `;
-            return yield* HttpServerResponse.schemaJson(IssuedCliToken)(
-              { token, secret },
-              { status: 201, headers: privateHeaders },
-            );
-          }),
-        );
-      }).pipe(
-        Effect.catchTags({
-          AuthenticationRequired: authRequired,
-          HookDenied: denied,
-        }),
-      ),
     ),
     HttpRouter.add(
       "DELETE",

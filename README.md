@@ -71,7 +71,7 @@ one auth logout
 
 `one auth login` defaults to `https://app.dpeek.com`. Pass `--server <url>` for a different deployment.
 
-The CLI opens a browser approval page and waits for your decision. Check that the code on the page matches your terminal, then choose **Connect CLI**. The request expires after five minutes. Use `--no-browser` to print the approval link for use on another device and `--name <label>` to name this device. To paste a token you created under **CLI access**, use `one auth login --manual-token`.
+Run `one auth login` to start sign-in. The CLI opens a browser approval page and waits for your decision. Check that the code on the page matches your terminal, then choose **Connect CLI**. The request expires after five minutes. Use `--no-browser` to print the approval link for use on another device and `--name <label>` to name this device.
 
 New CLI tokens grant `links:read` to list links and `links:write` to save and delete links. Older CLI tokens issued without delete access are revoked by the scope migration. Run `one auth login` to reconnect. The CLI stores the token in your OS credential store via `Bun.secrets`, keyed by server origin. Logout revokes the active token, and you can revoke any device’s token from the web app.
 

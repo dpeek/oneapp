@@ -20,7 +20,7 @@ import {
   storeCredentials,
 } from "./credentials.ts";
 import { CliError } from "./errors.ts";
-import { browserLogin, manualLogin } from "./login.ts";
+import { browserLogin } from "./login.ts";
 import { version } from "../package.json";
 
 const terminalUrl = (url: string) =>
@@ -39,16 +39,12 @@ const login = Command.make(
       Flag.withDefault(true),
       Flag.withDescription("Open the OneApp access page"),
     ),
-    manualToken: Flag.Boolean("manual-token").pipe(
-      Flag.withDefault(false),
-      Flag.withDescription("Paste a token created in OneApp instead"),
-    ),
     name: Flag.String("name").pipe(
       Flag.withDefault("OneApp CLI"),
       Flag.withDescription("Name to show under CLI access"),
     ),
   },
-  Effect.fnUntraced(function* ({ server, browser, manualToken, name }) {
+  Effect.fnUntraced(function* ({ server, browser, name }) {
     const origin = yield* Effect.try({
       try: () => serverOrigin(server),
       catch: () =>
@@ -56,9 +52,7 @@ const login = Command.make(
           message: "Use an HTTPS server origin, or HTTP for localhost.",
         }),
     });
-    const token = yield* manualToken
-      ? manualLogin(origin, browser)
-      : browserLogin(origin, browser, name);
+    const token = yield* browserLogin(origin, browser, name);
     yield* storeCredentials(origin, token);
     yield* Console.log(`Signed in to ${origin}`);
   }),

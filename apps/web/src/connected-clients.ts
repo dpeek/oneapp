@@ -187,7 +187,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
   h.section(
     [h.Class("connected-clients")],
     [
-      h.h2([h.Id(headingId)], ["Connected clients"]),
+      h.h2([h.Id(headingId)], ["Clients"]),
       h.p(
         [h.Id("cli-access")],
         ["Run ", h.code([], ["one auth login"]), " to connect a CLI device."],

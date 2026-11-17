@@ -109,7 +109,7 @@ body:has(.app-shell) {
 }
 
 .links,
-.settings > section {
+.settings {
   padding: clamp(1rem, 3vw, 1.5rem);
   border: 1px solid var(--border);
   border-radius: 0.875rem;
@@ -313,6 +313,8 @@ button {
 
 .connected-clients {
   min-width: 0;
+  padding-block-start: 0.875rem;
+  border-block-start: 1px solid var(--border);
 }
 
 .connections-table-container {

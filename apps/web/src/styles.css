@@ -311,7 +311,7 @@ button {
   overflow-wrap: anywhere;
 }
 
-.connections-table :is(time, th[scope="col"]) {
+.connections-table th[scope="col"] {
   white-space: nowrap;
 }
 

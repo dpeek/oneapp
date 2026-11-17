@@ -20,7 +20,6 @@ const Connection = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   createdAt: Schema.Int,
-  expiresAt: Schema.NullOr(Schema.Int),
 });
 type Connection = typeof Connection.Type;
 const Connections = Schema.Array(Connection);
@@ -66,24 +65,30 @@ const readConnections = async (
   const body: unknown = await response.json();
   switch (type) {
     case "CLI":
-      return Schema.decodeUnknownSync(CliTokenList)(body).map((token) => ({
-        ...token,
-        type,
-        name: token.label,
-      }));
+      return Schema.decodeUnknownSync(CliTokenList)(body).map(
+        ({ id, createdAt, label }) => ({ id, createdAt, type, name: label }),
+      );
     case "Extension":
       return Schema.decodeUnknownSync(ExtensionAccessList)(body).map(
-        (connection) => ({ ...connection, type, name: "Chrome extension" }),
+        ({ id, createdAt }) => ({
+          id,
+          createdAt,
+          type,
+          name: "Chrome extension",
+        }),
       );
     case "MCP":
-      return Schema.decodeUnknownSync(McpGrantList)(body).map((grant) => ({
-        ...grant,
-        type,
-        name:
-          grant.clientId === codexClientId || isCodexMetadataId(grant.clientId)
-            ? "Codex"
-            : grant.clientId,
-      }));
+      return Schema.decodeUnknownSync(McpGrantList)(body).map(
+        ({ id, createdAt, clientId }) => ({
+          id,
+          createdAt,
+          type,
+          name:
+            clientId === codexClientId || isCodexMetadataId(clientId)
+              ? "Codex"
+              : clientId,
+        }),
+      );
   }
 };
 
@@ -176,20 +181,10 @@ export const update = (model: Model, message: Message) =>
     Failed: ({ error }) => ({ model: { ...model, pending: false, error } }),
   });
 
-const date = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "medium",
-  timeStyle: "short",
-});
 const headingId = "connected-clients-heading";
 
-export const view = Submodel.defineView<Model, Message>((model, h) => {
-  const time = (timestamp: number) =>
-    h.time(
-      [h.Datetime(new Date(timestamp).toISOString())],
-      [date.format(timestamp)],
-    );
-
-  return h.section(
+export const view = Submodel.defineView<Model, Message>((model, h) =>
+  h.section(
     [h.Class("connected-clients")],
     [
       h.h2([h.Id(headingId)], ["Connected clients"]),
@@ -217,13 +212,9 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
                         [
                           h.tr(
                             [],
-                            [
-                              "Client",
-                              "Type",
-                              "Connected",
-                              "Expires",
-                              "Actions",
-                            ].map((label) => h.th([h.Scope("col")], [label])),
+                            ["Client", "Type", "Actions"].map((label) =>
+                              h.th([h.Scope("col")], [label]),
+                            ),
                           ),
                         ],
                       ),
@@ -235,15 +226,6 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
                             [
                               h.th([h.Scope("row")], [connection.name]),
                               h.td([], [connection.type]),
-                              h.td([], [time(connection.createdAt)]),
-                              h.td(
-                                [],
-                                [
-                                  connection.expiresAt === null
-                                    ? "Until revoked"
-                                    : time(connection.expiresAt),
-                                ],
-                              ),
                               h.td(
                                 [],
                                 [
@@ -297,5 +279,5 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
         : []),
       h.p([h.Role("alert")], [model.error]),
     ],
-  );
-});
+  ),
+);

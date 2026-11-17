@@ -211,7 +211,14 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
             button("Connect", Message.RequestedApproval()),
           ]
         : model.connections === null
-          ? [button("Manage extension access", Message.RequestedConnections())]
+          ? [
+              model.error
+                ? button(
+                    "Retry loading extension access",
+                    Message.RequestedConnections(),
+                  )
+                : h.p([h.Role("status")], ["Loading extension access…"]),
+            ]
           : model.connections.length === 0
             ? [h.p([], ["No connected extensions."])]
             : [
@@ -259,6 +266,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
         ],
       ),
       h.p([h.Role("alert")], [model.error]),
+      ...(model.approved ? [h.a([h.Href("/links")], ["Back to Links"])] : []),
     ],
   );
 });

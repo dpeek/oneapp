@@ -99,14 +99,12 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
     [
       h.h2([], ["MCP access"]),
       model.grants === null
-        ? h.button(
-            [
-              h.Type("button"),
-              h.Disabled(model.pending),
-              h.OnClick(Message.Requested()),
-            ],
-            ["Manage MCP access"],
-          )
+        ? model.error
+          ? h.button(
+              [h.Type("button"), h.OnClick(Message.Requested())],
+              ["Retry loading MCP access"],
+            )
+          : h.p([h.Role("status")], ["Loading MCP access…"])
         : model.grants.length === 0
           ? h.p([], ["No connected MCP clients."])
           : h.ul(

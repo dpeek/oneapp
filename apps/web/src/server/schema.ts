@@ -1,6 +1,7 @@
 import { authTables } from "./database.ts";
 
 export {
+  accountEmailChanges,
   accounts,
   cliLogins,
   cliTokens,
@@ -16,4 +17,5 @@ export const {
   pending,
   passwords,
   proofs,
+  emailCredentials,
 } = authTables;

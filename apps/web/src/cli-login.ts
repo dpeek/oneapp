@@ -72,7 +72,7 @@ const Decide = Command.define("DecideCliLogin", {
           "x-effect-auth-csrf": "1",
           "content-type": "application/json",
         },
-        body: JSON.stringify({ approve }),
+        body: JSON.stringify({ approve, allowDelete: approve }),
         signal,
       });
       if (response.status === 410)
@@ -141,7 +141,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
               h.p(
                 [],
                 [
-                  `Allow ${model.approval.label} to read and save links until you revoke access.`,
+                  `Allow ${model.approval.label} to read, save, and delete links until you revoke access.`,
                 ],
               ),
               h.p(

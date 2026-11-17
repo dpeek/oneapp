@@ -1,12 +1,22 @@
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import { cliLoginPath } from "@oneapp/core/cli-auth";
+import { EmailDelivery } from "@yielded/auth";
+import { ProofDispatchScheduler } from "@yielded/auth/Proofs";
 import { Effect, Layer, Redacted } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
-import { Account } from "../auth-contract.ts";
-import { AppAuth, authHttp } from "./auth.ts";
+import { accountPath } from "../account-contract.ts";
+import {
+  forgotPasswordPage,
+  passwordResetPath,
+  resetPasswordPage,
+} from "../password-recovery-contract.ts";
+import { cloudflareEmail, disabledEmail } from "./account-email.ts";
+import { accountRoutes } from "./account.ts";
+import { authHttp } from "./auth.ts";
 import { cliLoginRoutes } from "./cli-login.ts";
 import { cliTokenRoutes } from "./cli-tokens.ts";
 import { authDependencies, databaseLayer } from "./database.ts";
+import { emailChangeRoutes } from "./email-change.ts";
 import { extensionAccessRoutes } from "./extension-access.ts";
 import { linksRoutes } from "./links.ts";
 import { mcpRoutes } from "./mcp.ts";
@@ -16,6 +26,11 @@ import {
   mcpOAuth,
   mcpOAuthLayer,
 } from "./mcp-oauth.ts";
+import { AccountPasswordPolicy } from "./password-policy.ts";
+import {
+  passwordRecoveryRoutes,
+  resetLinkRenderer,
+} from "./password-recovery.ts";
 
 const health = HttpRouter.add(
   "GET",
@@ -23,29 +38,47 @@ const health = HttpRouter.add(
   HttpServerResponse.json({ ok: true }),
 );
 
-const me = HttpRouter.add(
-  "GET",
-  "/api/me",
-  Effect.gen(function* () {
-    const auth = yield* AppAuth;
-    const session = yield* auth.requireSession;
-    return yield* HttpServerResponse.json({
-      id: Account.fields.id.make(session.subjectId),
-      email: session.claims.email,
-    });
-  }).pipe(
-    Effect.catchTag("AuthenticationRequired", () =>
-      HttpServerResponse.json({ error: "Sign in required" }, { status: 401 }),
-    ),
-    Effect.map(HttpServerResponse.setHeader("cache-control", "no-store")),
-  ),
-);
-
 export default {
-  async fetch(request: Request, env: WorkerEnv) {
+  async fetch(
+    request: Request,
+    env: WorkerEnv & {
+      ASSETS?: { fetch(request: Request): Promise<Response> };
+    },
+    context?: { waitUntil(promise: Promise<unknown>): void },
+  ) {
     const url = new URL(request.url);
     const path = url.pathname;
+    if (
+      (path === forgotPasswordPage || path === resetPasswordPage) &&
+      env.ASSETS
+    ) {
+      const method = request.method;
+      if (method !== "GET" && method !== "HEAD")
+        return new Response(null, {
+          status: 405,
+          headers: { allow: "GET, HEAD" },
+        });
+      const page = await env.ASSETS.fetch(
+        new Request(new URL("/", url), { method }),
+      );
+      const headers = new Headers(page.headers);
+      headers.set(
+        "cache-control",
+        EmailDelivery.linkLandingHeaders["Cache-Control"],
+      );
+      headers.set(
+        "referrer-policy",
+        EmailDelivery.linkLandingHeaders["Referrer-Policy"],
+      );
+      headers.set(
+        "content-security-policy",
+        "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+      );
+      return new Response(page.body, { status: page.status, headers });
+    }
     const signingIn = path === "/api/auth/signIn" && request.method === "POST";
+    const accountMutation =
+      path.startsWith(accountPath + "/") && request.method === "POST";
     const oauthRequest =
       (path === mcpOAuth.paths.authorize &&
         url.searchParams.has("response_type")) ||
@@ -53,15 +86,21 @@ export default {
         (route) => route === path,
       ) &&
         request.method === "POST");
-    if (signingIn || oauthRequest) {
+    if (signingIn || oauthRequest || accountMutation) {
       const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
-      const key = signingIn ? ip : `mcp-oauth:${ip}`;
+      const key = signingIn
+        ? ip
+        : accountMutation
+          ? `account:${ip}`
+          : `mcp-oauth:${ip}`;
       if (!(await env.AUTH_LIMIT.limit({ key })).success) {
         return Response.json(
           {
             error: signingIn
               ? "Too many sign-in attempts"
-              : "Too many OAuth requests",
+              : accountMutation
+                ? "Too many attempts. Try again shortly."
+                : "Too many OAuth requests",
           },
           {
             status: 429,
@@ -92,9 +131,37 @@ export default {
 
     const http = authHttp(env.APP_ORIGIN);
     const database = databaseLayer(env.DB);
+    const emailTransport =
+      env.ACCOUNT_EMAIL && env.EMAIL_FROM
+        ? cloudflareEmail(env.ACCOUNT_EMAIL, env.EMAIL_FROM)
+        : disabledEmail;
+    // Verification dispatch is inline and request-local. Report acceptance only
+    // when the provider received the message for this request.
+    let emailAccepted = false;
+    const emailDelivery: EmailDelivery.EmailDelivery["Service"] = {
+      send: (message) =>
+        emailTransport.send(message).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              emailAccepted = true;
+            }),
+          ),
+        ),
+    };
+    const secret = Redacted.make(env.AUTH_SECRET);
     const dependencies = authDependencies(
       database,
-      Redacted.make(env.AUTH_SECRET),
+      secret,
+      AccountPasswordPolicy,
+      emailDelivery,
+      path === passwordResetPath && context
+        ? Layer.succeed(ProofDispatchScheduler, {
+            schedule: (work) =>
+              Effect.sync(() => {
+                context.waitUntil(Effect.runPromise(work));
+              }),
+          })
+        : undefined,
     );
     const app = HttpRouter.toWebHandler(
       Layer.mergeAll(
@@ -103,7 +170,18 @@ export default {
         mcpLoginRoute,
         mcpRoutes(env.APP_ORIGIN),
         Layer.mergeAll(
-          me,
+          accountRoutes(http, {
+            enabled: emailTransport !== disabledEmail,
+            accepted: () => emailAccepted,
+            limit: (input) => env.ACCOUNT_EMAIL_LIMIT.limit(input),
+          }),
+          emailChangeRoutes(
+            http,
+            secret,
+            emailTransport !== disabledEmail,
+            (input) => env.ACCOUNT_EMAIL_LIMIT.limit(input),
+          ),
+          passwordRecoveryRoutes(http, emailTransport !== disabledEmail),
           linksRoutes(http),
           cliTokenRoutes(http),
           cliLoginRoutes(http),
@@ -118,7 +196,13 @@ export default {
             Redacted.make(env.MCP_OAUTH_SECRET),
           ).pipe(Layer.provide(database)),
         ),
-        Layer.provide(http.layer.pipe(Layer.provide(dependencies))),
+        Layer.provide(
+          http.layer.pipe(
+            Layer.provide(dependencies),
+            Layer.provide(resetLinkRenderer(env.APP_ORIGIN)),
+          ),
+        ),
+        HttpRouter.provideRequest(dependencies),
         HttpRouter.provideRequest(database),
         Layer.provide(HttpServer.layerServices),
       ),

@@ -7,5 +7,10 @@ await Bun.build({
   entrypoints: [fileURLToPath(new URL("./src/index.html", import.meta.url))],
   outdir: fileURLToPath(output),
   target: "browser",
+  publicPath: "/",
   minify: true,
 });
+await Bun.write(
+  new URL("mcp-consent.css", output),
+  Bun.file(new URL("./src/mcp-consent.css", import.meta.url)),
+);

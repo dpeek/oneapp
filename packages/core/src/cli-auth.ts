@@ -14,6 +14,7 @@ export const CliTokenLabel = Schema.Trimmed.check(
 );
 export const CreateCliToken = Schema.Struct({
   label: Schema.Trim.pipe(Schema.decodeTo(CliTokenLabel)),
+  allowDelete: Schema.optionalKey(Schema.Boolean),
 });
 export const CliToken = Schema.Struct({
   id: Schema.String,
@@ -34,5 +35,8 @@ export const CliLoginApproval = Schema.Struct({
   label: CliTokenLabel,
   expiresAt: Schema.Int,
 });
-export const CliLoginDecision = Schema.Struct({ approve: Schema.Boolean });
+export const CliLoginDecision = Schema.Struct({
+  approve: Schema.Boolean,
+  allowDelete: Schema.optionalKey(Schema.Boolean),
+});
 export const cliLoginInterval = 5_000;

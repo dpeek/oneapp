@@ -1,5 +1,11 @@
-import { Link, LinkList, SaveLink, linksPath } from "@oneapp/core/links";
-import { ByteSize, Clock, Effect, Layer } from "effect";
+import {
+  Link,
+  LinkId,
+  LinkList,
+  SaveLink,
+  linksPath,
+} from "@oneapp/core/links";
+import { ByteSize, Clock, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { SqlClient } from "effect/sql";
 import { jsonError, privateHeaders } from "./api-response.ts";
@@ -104,9 +110,54 @@ const saveLink = Effect.fnUntraced(function* (ownerId: string) {
   });
 });
 
+export const deleteSavedLink = Effect.fnUntraced(function* (
+  ownerId: string,
+  id: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql`
+    DELETE FROM links WHERE owner_id = ${ownerId} AND id = ${id}
+    RETURNING id
+  `;
+  return rows.length > 0;
+});
+
+const deleteLink = Effect.fnUntraced(function* (ownerId: string) {
+  const { id } = yield* HttpRouter.params;
+  if (!Schema.is(LinkId)(id)) return yield* jsonError(400, "Invalid link ID");
+  if (!(yield* deleteSavedLink(ownerId, id)))
+    return yield* jsonError(404, "Link not found");
+  return HttpServerResponse.empty({ status: 204, headers: privateHeaders });
+});
+
 export const linksRoutes = (http: ReturnType<typeof authHttp>) =>
   Layer.mergeAll(
     HttpRouter.add("GET", linksPath, listLinks),
+    HttpRouter.add(
+      "DELETE",
+      `${linksPath}/:id`,
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        if (request.headers.authorization !== undefined) {
+          const token = yield* requireCliToken;
+          if (token.canDelete !== 1)
+            return yield* jsonError(
+              403,
+              "Run one auth login again to grant permission to delete links",
+            );
+          return yield* deleteLink(token.ownerId);
+        }
+        const auth = yield* AppAuth;
+        const session = yield* auth.requireSession;
+        return yield* http.protect(deleteLink(session.subjectId));
+      }).pipe(
+        Effect.catchTags({
+          AuthenticationRequired: authRequired,
+          HookDenied: () => jsonError(403, "Request not allowed"),
+          InvalidCliToken: invalidTokenResponse,
+        }),
+      ),
+    ),
     HttpRouter.add(
       "POST",
       linksPath,

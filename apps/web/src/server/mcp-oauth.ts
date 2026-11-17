@@ -27,9 +27,13 @@ import {
   sessionCookieName,
   type authHttp,
 } from "./auth.ts";
+import { McpConsentRenderer } from "./mcp-consent.ts";
 
 export const LinksAccess = OAuthScope.make("links:read-write");
-export const mcpOAuth = OAuthServer.make("mcp", { scopes: [LinksAccess] });
+export const DeleteLinks = OAuthScope.make("links:delete");
+export const mcpOAuth = OAuthServer.make("mcp", {
+  scopes: [LinksAccess, DeleteLinks],
+});
 const codexClient = {
   clientId: codexClientId,
   name: "Codex",
@@ -95,6 +99,7 @@ export const mcpOAuthLayer = (
     }),
   ).pipe(
     Layer.provide(BrowserIdentity),
+    Layer.provide(McpConsentRenderer),
     Layer.provide(
       FetchHttpClient.layer.pipe(
         Layer.provide(

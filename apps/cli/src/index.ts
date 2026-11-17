@@ -2,7 +2,14 @@
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { appName, defaultServerUrl } from "@oneapp/core";
 import { currentCliTokenPath } from "@oneapp/core/cli-auth";
-import { Link, LinkList, SaveLink, linksPath } from "@oneapp/core/links";
+import {
+  Link,
+  LinkId,
+  LinkList,
+  SaveLink,
+  linkPath,
+  linksPath,
+} from "@oneapp/core/links";
 import { Console, Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { readResponse, request, requireSuccess } from "./api.ts";
@@ -95,8 +102,13 @@ const add = Command.make(
 
 const list = Command.make(
   "list",
-  {},
-  Effect.fnUntraced(function* () {
+  {
+    ids: Flag.Boolean("ids").pipe(
+      Flag.withDefault(false),
+      Flag.withDescription("Include the ID used by one links delete"),
+    ),
+  },
+  Effect.fnUntraced(function* ({ ids }) {
     const { origin, token } = yield* credentials;
     const response = yield* request(origin, token, linksPath);
     yield* requireSuccess(response);
@@ -104,10 +116,30 @@ const list = Command.make(
     if (links.length === 0) yield* Console.log("No saved links.");
     for (const link of links)
       yield* Console.log(
-        `${new Date(link.savedAt).toISOString()}  ${terminalUrl(link.url)}`,
+        `${ids ? `${link.id}  ` : ""}${new Date(link.savedAt).toISOString()}  ${terminalUrl(link.url)}`,
       );
   }),
 ).pipe(Command.withDescription("List saved links, newest first"));
+
+const deleteLink = Command.make(
+  "delete",
+  { id: Argument.String("id").pipe(Argument.withSchema(LinkId)) },
+  Effect.fnUntraced(function* ({ id }) {
+    const { origin, token } = yield* credentials;
+    const response = yield* request(origin, token, linkPath(id), {
+      method: "DELETE",
+    });
+    if (response.status === 404)
+      return yield* new CliError({ message: "Link not found." });
+    if (response.status === 403)
+      return yield* new CliError({
+        message:
+          "Run one auth login again to grant permission to delete links.",
+      });
+    yield* requireSuccess(response);
+    yield* Console.log(`Deleted ${id}`);
+  }),
+).pipe(Command.withDescription("Delete a saved link by ID"));
 
 const auth = Command.make("auth").pipe(
   Command.withDescription("Manage CLI access"),
@@ -115,7 +147,7 @@ const auth = Command.make("auth").pipe(
 );
 const links = Command.make("links").pipe(
   Command.withDescription("Manage saved links"),
-  Command.withSubcommands([add, list]),
+  Command.withSubcommands([add, list, deleteLink]),
 );
 
 Command.make("one").pipe(

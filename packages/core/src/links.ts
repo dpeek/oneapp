@@ -1,6 +1,9 @@
 import { Schema } from "effect";
 
 export const linksPath = "/api/links";
+export const LinkId = Schema.String.check(Schema.isUUID(4));
+export const linkPath = (id: string) =>
+  `${linksPath}/${encodeURIComponent(id)}`;
 
 const WebUrl = Schema.Trimmed.check(
   Schema.isMaxLength(2048),

@@ -1,7 +1,14 @@
 import * as D1Client from "@effect/sql-d1/D1Client";
 import { AuthPersistence } from "@yielded/auth-persistence-drizzle/D1";
-import { Auth, Schema as AuthSchema } from "@yielded/auth";
-import { Effect, Layer, type Redacted } from "effect";
+import {
+  Auth,
+  EmailDelivery,
+  Password,
+  Schema as AuthSchema,
+} from "@yielded/auth";
+import { ProofDispatchScheduler, ProofKeys } from "@yielded/auth/Proofs";
+import { Effect, Layer, Redacted } from "effect";
+import { Base64Url } from "effect/encoding";
 import {
   index,
   integer,
@@ -11,19 +18,33 @@ import {
 } from "drizzle-orm/sqlite-core";
 import {
   AppAuth,
+  AccountActionEvidence,
   ClaimsLive,
   CryptoLive,
-  DisabledPasswordManagement,
   ownerId,
-  OwnerPasswordPolicy,
   PasswordLive,
   passwordRequirement,
+  passwordRecoveryRequirement,
 } from "./auth.ts";
 
 export const accounts = sqliteTable("accounts", {
   id: text().primaryKey(),
   active: integer({ mode: "boolean" }).notNull(),
   securityRevision: text("security_revision").notNull(),
+});
+
+export const accountEmailChanges = sqliteTable("account_email_changes", {
+  subjectId: text("subject_id")
+    .primaryKey()
+    .notNull()
+    .references(() => accounts.id),
+  id: text().notNull(),
+  sessionId: text("session_id").notNull(),
+  securityRevision: text("security_revision").notNull(),
+  newEmail: text("new_email").notNull(),
+  digest: text().notNull(),
+  expiresAt: integer("expires_at").notNull(),
+  failedAttempts: integer("failed_attempts").notNull().default(0),
 });
 
 export const cliTokens = sqliteTable(
@@ -37,6 +58,9 @@ export const cliTokens = sqliteTable(
     digest: text().notNull().unique(),
     createdAt: integer("created_at").notNull(),
     expiresAt: integer("expires_at"),
+    canDelete: integer("can_delete", { mode: "boolean" })
+      .notNull()
+      .default(false),
   },
   (table) => [
     index("cli_tokens_owner_created_at").on(table.ownerId, table.createdAt),
@@ -54,6 +78,9 @@ export const cliLogins = sqliteTable(
     ownerId: text("owner_id").references(() => accounts.id),
     deniedAt: integer("denied_at"),
     redeemedAt: integer("redeemed_at"),
+    canDelete: integer("can_delete", { mode: "boolean" })
+      .notNull()
+      .default(false),
   },
   (table) => [index("cli_logins_expires_at").on(table.expiresAt)],
 );
@@ -123,6 +150,12 @@ const storage = Persistence.managed({
     securityRevision: "securityRevision",
     idCodec: AuthSchema.SubjectId,
     requirements: () => Effect.succeed(passwordRequirement),
+    actionRequirements: (_, action) =>
+      Effect.succeed(
+        action === "reset-password"
+          ? passwordRecoveryRequirement
+          : passwordRequirement,
+      ),
   },
 });
 
@@ -143,15 +176,65 @@ const PersistenceLive = Persistence.layer.pipe(
 export const databaseLayer = (db: D1Client.D1ClientConfig["db"]) =>
   D1Client.layer({ db });
 
+const accountVerificationKeys = (secret: Redacted.Redacted<string>) =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const encoder = new TextEncoder();
+      const key = yield* Effect.promise(() =>
+        crypto.subtle.importKey(
+          "raw",
+          encoder.encode(Redacted.value(secret)),
+          { name: "HMAC", hash: "SHA-256" },
+          false,
+          ["sign"],
+        ),
+      );
+      const derive = (label: string) =>
+        Effect.promise(() =>
+          crypto.subtle.sign("HMAC", key, encoder.encode(label)),
+        ).pipe(
+          Effect.map((bytes) => ({
+            activeKeyId: "v1",
+            keys: [
+              {
+                id: "v1",
+                material: Redacted.make(
+                  Base64Url.encode(new Uint8Array(bytes)),
+                ),
+              },
+            ],
+          })),
+        );
+      const proofKeys = yield* derive("oneapp/account-email/proof/v1");
+      const bindingKeys = yield* derive(
+        "oneapp/account-email/browser-binding/v1",
+      );
+      return Layer.merge(
+        ProofKeys.layer(proofKeys),
+        Auth.RequestBindingConfig.layer({
+          keyring: bindingKeys,
+          lifetimeMillis: 360_000,
+          generation: 1,
+        }),
+      );
+    }),
+  );
+
 export const authDependencies = (
   database: ReturnType<typeof databaseLayer>,
   secret: Redacted.Redacted<string>,
+  passwordPolicy: Layer.Layer<Password.CompromisedPasswords>,
+  emailDelivery: EmailDelivery.EmailDelivery["Service"],
+  proofDelivery = ProofDispatchScheduler.layerInline,
 ) =>
   Layer.mergeAll(
     PersistenceLive.pipe(Layer.provide(database)),
     ClaimsLive,
     PasswordLive,
-    OwnerPasswordPolicy,
-    DisabledPasswordManagement,
+    passwordPolicy,
+    AccountActionEvidence,
+    proofDelivery,
+    accountVerificationKeys(secret),
+    Layer.succeed(EmailDelivery.EmailDelivery, emailDelivery),
     Auth.AuthConfig.layer({ secret }),
   ).pipe(Layer.provideMerge(CryptoLive));

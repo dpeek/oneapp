@@ -39,7 +39,7 @@ export const manualLogin = Effect.fnUntraced(function* (
     return yield* new CliError({
       message: "Run manual token login in an interactive terminal.",
     });
-  const url = `${origin}/#cli-access`;
+  const url = `${origin}/settings#cli-access`;
   yield* Console.log(`Create a CLI token under CLI access at ${url}`);
   if (browser) yield* openBrowser(url);
   const entered = yield* Prompt.Hidden({ message: "Paste the CLI token" });

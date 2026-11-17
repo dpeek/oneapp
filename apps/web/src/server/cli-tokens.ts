@@ -39,8 +39,11 @@ export const requireCliToken = Effect.gen(function* () {
   const digest = yield* requireCliDigest;
   const now = yield* Clock.currentTimeMillis;
   const sql = yield* SqlClient.SqlClient;
-  const [token] = yield* sql<typeof CliToken.Type & { ownerId: string }>`
-    SELECT t.id, t.owner_id AS "ownerId", t.label, t.created_at AS "createdAt", t.expires_at AS "expiresAt"
+  const [token] = yield* sql<
+    typeof CliToken.Type & { ownerId: string; canDelete: number }
+  >`
+    SELECT t.id, t.owner_id AS "ownerId", t.label, t.created_at AS "createdAt",
+           t.expires_at AS "expiresAt", t.can_delete AS "canDelete"
     FROM cli_tokens t JOIN accounts a ON a.id = t.owner_id
     WHERE t.digest = ${digest} AND (t.expires_at IS NULL OR t.expires_at > ${now}) AND a.active = 1
   `;
@@ -108,8 +111,8 @@ export const cliTokenRoutes = (http: ReturnType<typeof authHttp>) => {
             };
             const sql = yield* SqlClient.SqlClient;
             yield* sql`
-          INSERT INTO cli_tokens (id, owner_id, label, digest, created_at, expires_at)
-          VALUES (${token.id}, ${session.subjectId}, ${token.label}, ${digest}, ${token.createdAt}, ${token.expiresAt})
+          INSERT INTO cli_tokens (id, owner_id, label, digest, created_at, expires_at, can_delete)
+          VALUES (${token.id}, ${session.subjectId}, ${token.label}, ${digest}, ${token.createdAt}, ${token.expiresAt}, ${input.value.allowDelete === true ? 1 : 0})
         `;
             return yield* HttpServerResponse.schemaJson(IssuedCliToken)(
               { token, secret },

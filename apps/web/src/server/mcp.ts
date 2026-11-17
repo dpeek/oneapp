@@ -4,13 +4,13 @@ import {
   type CallToolResult,
 } from "@modelcontextprotocol/server";
 import { appName } from "@oneapp/core";
-import { Link, LinkList, SaveLink } from "@oneapp/core/links";
+import { Link, LinkId, LinkList, SaveLink } from "@oneapp/core/links";
 import { Context, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { SqlClient } from "effect/sql";
 import { jsonError, privateHeaders } from "./api-response.ts";
-import { insertSavedLink, listSavedLinks } from "./links.ts";
-import { LinksAccess, mcpOAuth } from "./mcp-oauth.ts";
+import { deleteSavedLink, insertSavedLink, listSavedLinks } from "./links.ts";
+import { DeleteLinks, LinksAccess, mcpOAuth } from "./mcp-oauth.ts";
 
 const maximumPageSize = 100;
 const ListOptions = Schema.Struct({
@@ -26,6 +26,8 @@ const LinkPage = Schema.Struct({
   nextOffset: Schema.NullOr(Schema.Int),
 });
 const SavedLink = Schema.Struct({ link: Link });
+const DeleteLinkInput = Schema.Struct({ id: LinkId });
+const DeletedLink = Schema.Struct({ id: LinkId });
 
 const standardSchema = <S extends Schema.ConstraintDecoder<unknown>>(
   schema: S,
@@ -42,9 +44,43 @@ const toolFailure = (text: string): CallToolResult => ({
   isError: true,
 });
 
-const createServer = (ownerId: string, sql: SqlClient.SqlClient) => {
+const createServer = (
+  ownerId: string,
+  sql: SqlClient.SqlClient,
+  canDelete: boolean,
+) => {
   const run = Effect.runPromiseWith(Context.make(SqlClient.SqlClient, sql));
   const server = new McpServer({ name: appName, version: "1.0.0" });
+  server.registerTool(
+    "delete_link",
+    {
+      title: "Delete a saved link",
+      description: "Delete one saved link by its ID from list_links.",
+      inputSchema: standardSchema(DeleteLinkInput),
+      outputSchema: standardSchema(DeletedLink),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    ({ id }, { mcpReq: { signal } }) =>
+      canDelete
+        ? run(
+            deleteSavedLink(ownerId, id).pipe(
+              Effect.match({
+                onSuccess: (deleted) =>
+                  deleted ? result({ id }) : toolFailure("Link not found."),
+                onFailure: () => toolFailure("Could not delete the link."),
+              }),
+            ),
+            { signal },
+          )
+        : toolFailure(
+            "Reconnect OneApp with the links:delete permission to delete links.",
+          ),
+  );
   server.registerTool(
     "list_links",
     {
@@ -97,6 +133,22 @@ const createServer = (ownerId: string, sql: SqlClient.SqlClient) => {
   return server;
 };
 
+const advertiseDeleteScope = HttpRouter.middleware((effect) =>
+  Effect.map(effect, (response) => {
+    const challenge = response.headers["www-authenticate"];
+    return response.status === 401 && challenge
+      ? HttpServerResponse.setHeader(
+          response,
+          "www-authenticate",
+          challenge.replace(
+            `scope="${LinksAccess}"`,
+            `scope="${LinksAccess} ${DeleteLinks}"`,
+          ),
+        )
+      : response;
+  }),
+);
+
 export const mcpRoutes = (origin: string) =>
   HttpRouter.add(
     "*",
@@ -118,7 +170,12 @@ export const mcpRoutes = (origin: string) =>
       if (!account) return yield* jsonError(403, "Account is inactive");
       const webRequest = yield* HttpServerRequest.toWeb(request);
       const handler = createMcpHandler(
-        () => createServer(access.subjectId, sql),
+        () =>
+          createServer(
+            access.subjectId,
+            sql,
+            access.scopes.includes(DeleteLinks),
+          ),
         {
           maxRequestBodySize: 16 * 1024,
           maxSubscriptions: 0,
@@ -140,4 +197,8 @@ export const mcpRoutes = (origin: string) =>
         HttpServerResponse.setHeaders(privateHeaders),
       );
     }),
-  ).pipe(Layer.provide(mcpOAuth.middleware([LinksAccess]).layer));
+  ).pipe(
+    Layer.provide(
+      mcpOAuth.middleware([LinksAccess]).combine(advertiseDeleteScope).layer,
+    ),
+  );

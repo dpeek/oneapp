@@ -4,6 +4,8 @@ import { Schema } from "effect";
 export const Account = Schema.Struct({
   id: Schema.String.pipe(Schema.brand("AccountId")),
   email: Schema.String,
+  emailVerified: Schema.Boolean,
+  emailDeliveryEnabled: Schema.Boolean,
 });
 
 export const AuthApi = AuthContract.make("oneapp/Auth", {

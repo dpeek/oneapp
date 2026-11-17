@@ -74,7 +74,7 @@ const IssueToken = Command.define("IssueCliToken", {
       const response = await fetch(cliTokensPath, {
         method: "POST",
         headers: { ...csrf, "content-type": "application/json" },
-        body: JSON.stringify({ label }),
+        body: JSON.stringify({ label, allowDelete: true }),
         signal,
       });
       if (!response.ok) throw new Error("Could not issue CLI token");
@@ -179,17 +179,16 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
     [
       h.h2([], ["CLI access"]),
       model.tokens === null
-        ? h.button(
-            [
-              h.Type("button"),
-              h.Disabled(model.pending),
-              h.OnClick(Message.RequestedTokens()),
-            ],
-            [model.pending ? "Loading…" : "Manage CLI access"],
-          )
+        ? model.error
+          ? h.button(
+              [h.Type("button"), h.OnClick(Message.RequestedTokens())],
+              ["Retry loading CLI access"],
+            )
+          : h.p([h.Role("status")], ["Loading CLI access…"])
         : h.div(
             [],
             [
+              h.p([], ["New CLI tokens can read, save, and delete links."]),
               h.form(
                 [h.Method("post"), h.OnSubmit(Message.SubmittedToken())],
                 [

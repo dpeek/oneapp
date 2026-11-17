@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { linksReadScope, linksWriteScope } from "./links.ts";
 
 export const cliTokensPath = "/api/cli-tokens";
 export const currentCliTokenPath = `${cliTokensPath}/current`;
@@ -12,9 +13,17 @@ export const CliTokenLabel = Schema.Trimmed.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(60),
 );
-export const CreateCliToken = Schema.Struct({
+export const CliLoginRequest = Schema.Struct({
   label: Schema.Trim.pipe(Schema.decodeTo(CliTokenLabel)),
-  allowDelete: Schema.optionalKey(Schema.Boolean),
+});
+export const cliLinkScopes = [linksReadScope, linksWriteScope] as const;
+const CliLinkScopes = Schema.Tuple([
+  Schema.Literal(linksReadScope),
+  Schema.Literal(linksWriteScope),
+]);
+export const CreateCliToken = Schema.Struct({
+  ...CliLoginRequest.fields,
+  scopes: CliLinkScopes,
 });
 export const CliToken = Schema.Struct({
   id: Schema.String,
@@ -35,8 +44,8 @@ export const CliLoginApproval = Schema.Struct({
   label: CliTokenLabel,
   expiresAt: Schema.Int,
 });
-export const CliLoginDecision = Schema.Struct({
-  approve: Schema.Boolean,
-  allowDelete: Schema.optionalKey(Schema.Boolean),
-});
+export const CliLoginDecision = Schema.Union([
+  Schema.Struct({ approve: Schema.Literal(true), scopes: CliLinkScopes }),
+  Schema.Struct({ approve: Schema.Literal(false) }),
+]);
 export const cliLoginInterval = 5_000;

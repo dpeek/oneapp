@@ -1,3 +1,4 @@
+import { linksReadScope, linksWriteScope } from "@oneapp/core/links";
 import { OAuthScope, OAuthServer } from "@yielded/auth";
 import { OAuthServerPersistence } from "@yielded/auth-persistence";
 import { Clock, Effect, Layer, Redacted, Schema } from "effect";
@@ -29,10 +30,11 @@ import {
 } from "./auth.ts";
 import { McpConsentRenderer } from "./mcp-consent.ts";
 
-export const LinksAccess = OAuthScope.make("links:read-write");
-export const DeleteLinks = OAuthScope.make("links:delete");
+export const ReadLinks = OAuthScope.make(linksReadScope);
+export const WriteLinks = OAuthScope.make(linksWriteScope);
+export const mcpLinkScopes = [ReadLinks, WriteLinks] as const;
 export const mcpOAuth = OAuthServer.make("mcp", {
-  scopes: [LinksAccess, DeleteLinks],
+  scopes: mcpLinkScopes,
 });
 const codexClient = {
   clientId: codexClientId,
@@ -146,6 +148,11 @@ export const mcpGrantRoutes = (
         WHERE namespace = ${namespace} AND revoked = 0 AND expires_at_millis > ${now}
           AND json_extract(payload, '$.status') = 'Active'
           AND json_extract(payload, '$.subjectId') = ${session.subjectId}
+          AND json_array_length(payload, '$.authorization.scopes') > 0
+          AND NOT EXISTS (
+            SELECT 1 FROM json_each(payload, '$.authorization.scopes')
+            WHERE value NOT IN (${ReadLinks}, ${WriteLinks})
+          )
         ORDER BY expires_at_millis DESC, grant_id
       `;
         return yield* HttpServerResponse.schemaJson(McpGrantList)(grants, {

@@ -2,21 +2,28 @@ import {
   Link,
   LinkId,
   LinkList,
+  type LinkScope,
   SaveLink,
   linksPath,
+  linksReadScope,
+  linksWriteScope,
 } from "@oneapp/core/links";
 import { ByteSize, Clock, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { SqlClient } from "effect/sql";
 import { jsonError, privateHeaders } from "./api-response.ts";
 import { AppAuth, type authHttp } from "./auth.ts";
-import { invalidTokenResponse, requireCliToken } from "./cli-tokens.ts";
+import {
+  insufficientCliScopeResponse,
+  invalidTokenResponse,
+  requireCliScope,
+} from "./cli-tokens.ts";
 import {
   invalidExtensionResponse,
   requireExtensionToken,
 } from "./extension-access.ts";
 
-const linkOwner = (allowExtension: boolean) =>
+const linkOwner = (scope: typeof LinkScope.Type, allowExtension = false) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     if (request.headers.authorization !== undefined) {
@@ -24,7 +31,7 @@ const linkOwner = (allowExtension: boolean) =>
         allowExtension &&
         /^Bearer one_ext_/iu.test(request.headers.authorization)
           ? yield* requireExtensionToken
-          : yield* requireCliToken;
+          : yield* requireCliScope(scope);
       return { id: token.ownerId, browserSession: false };
     }
 
@@ -51,7 +58,7 @@ export const listSavedLinks = Effect.fnUntraced(function* (
 });
 
 const listLinks = Effect.gen(function* () {
-  const owner = yield* linkOwner(false);
+  const owner = yield* linkOwner(linksReadScope);
   const links = yield* listSavedLinks(owner.id);
   return yield* HttpServerResponse.schemaJson(LinkList)(links, {
     headers: privateHeaders,
@@ -60,6 +67,7 @@ const listLinks = Effect.gen(function* () {
   Effect.catchTags({
     AuthenticationRequired: authRequired,
     InvalidCliToken: invalidTokenResponse,
+    InsufficientCliScope: insufficientCliScopeResponse,
     InvalidExtensionToken: invalidExtensionResponse,
   }),
 );
@@ -137,24 +145,16 @@ export const linksRoutes = (http: ReturnType<typeof authHttp>) =>
       "DELETE",
       `${linksPath}/:id`,
       Effect.gen(function* () {
-        const request = yield* HttpServerRequest.HttpServerRequest;
-        if (request.headers.authorization !== undefined) {
-          const token = yield* requireCliToken;
-          if (token.canDelete !== 1)
-            return yield* jsonError(
-              403,
-              "Run one auth login again to grant permission to delete links",
-            );
-          return yield* deleteLink(token.ownerId);
-        }
-        const auth = yield* AppAuth;
-        const session = yield* auth.requireSession;
-        return yield* http.protect(deleteLink(session.subjectId));
+        const owner = yield* linkOwner(linksWriteScope);
+        const remove = deleteLink(owner.id);
+        return yield* owner.browserSession ? http.protect(remove) : remove;
       }).pipe(
         Effect.catchTags({
           AuthenticationRequired: authRequired,
           HookDenied: () => jsonError(403, "Request not allowed"),
           InvalidCliToken: invalidTokenResponse,
+          InsufficientCliScope: insufficientCliScopeResponse,
+          InvalidExtensionToken: invalidExtensionResponse,
         }),
       ),
     ),
@@ -162,7 +162,7 @@ export const linksRoutes = (http: ReturnType<typeof authHttp>) =>
       "POST",
       linksPath,
       Effect.gen(function* () {
-        const owner = yield* linkOwner(true);
+        const owner = yield* linkOwner(linksWriteScope, true);
         const save = saveLink(owner.id);
         return yield* owner.browserSession ? http.protect(save) : save;
       }).pipe(
@@ -170,6 +170,7 @@ export const linksRoutes = (http: ReturnType<typeof authHttp>) =>
           AuthenticationRequired: authRequired,
           HookDenied: () => jsonError(403, "Request not allowed"),
           InvalidCliToken: invalidTokenResponse,
+          InsufficientCliScope: insufficientCliScopeResponse,
           InvalidExtensionToken: invalidExtensionResponse,
         }),
       ),

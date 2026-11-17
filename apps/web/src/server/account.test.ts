@@ -1,19 +1,33 @@
 import { expect, it, vi } from "@effect/vitest";
-import { linksPath } from "@oneapp/core/links";
+import {
+  cliLinkScopes,
+  cliLoginPath,
+  cliTokensPath,
+} from "@oneapp/core/cli-auth";
+import { extensionAccessPath, digestSecret } from "@oneapp/core/extension-auth";
+import {
+  linkPath,
+  linksPath,
+  linksReadScope,
+  linksWriteScope,
+} from "@oneapp/core/links";
 import { EmailDelivery } from "@yielded/auth";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { ConfigProvider, Effect, Redacted } from "effect";
+import { Base64Url } from "effect/encoding";
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import {
   emailChangePath,
   emailVerificationPath,
   passwordChangePath,
 } from "../account-contract.ts";
+import { codexClientId, mcpGrantsPath } from "../mcp-access-contract.ts";
 import {
   passwordResetPath,
   resetPasswordPage,
 } from "../password-recovery-contract.ts";
 import { ensureOwner } from "./provision-owner.ts";
+import { mcpOAuth } from "./mcp-oauth.ts";
 import worker from "./worker.ts";
 
 const email = "owner@example.net";
@@ -53,6 +67,7 @@ const setup = async (sqlite: Database) => {
     MCP_OAUTH_SECRET: "y".repeat(43),
     AUTH_LIMIT: { limit: async () => ({ success: true }) },
     ACCOUNT_EMAIL_LIMIT: { limit: async () => ({ success: true }) },
+    CLI_LOGIN_LIMIT: { limit: async () => ({ success: true }) },
     EMAIL_FROM: "accounts@oneapp.example",
     ASSETS: { fetch: async () => new Response("<html></html>") },
     ACCOUNT_EMAIL: {
@@ -77,26 +92,26 @@ const setup = async (sqlite: Database) => {
     AUTH_SECRET: env.AUTH_SECRET,
   });
 
+  const request = (path: string, init: RequestInit) =>
+    worker.fetch(new Request(new URL(path, env.APP_ORIGIN), init), env, {
+      waitUntil: (work) => deliveries.push(work),
+    });
   const call = (
     path: string,
     body?: object,
     cookie?: string,
     origin = env.APP_ORIGIN,
   ) =>
-    worker.fetch(
-      new Request(new URL(path, env.APP_ORIGIN), {
-        method: body === undefined ? "GET" : "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-effect-auth-csrf": "1",
-          origin,
-          ...(cookie ? { cookie } : {}),
-        },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      }),
-      env,
-      { waitUntil: (work) => deliveries.push(work) },
-    );
+    request(path, {
+      method: body === undefined ? "GET" : "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-effect-auth-csrf": "1",
+        origin,
+        ...(cookie ? { cookie } : {}),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
   const signIn = (candidate: string, address = email) =>
     call("/api/auth/signIn", {
       payload: { email: address, password: candidate },
@@ -109,6 +124,7 @@ const setup = async (sqlite: Database) => {
 
   return {
     call,
+    request,
     signIn,
     cookies,
     messages,
@@ -120,6 +136,279 @@ const setup = async (sqlite: Database) => {
     },
   };
 };
+
+it("issues scoped CLI tokens and applies read and write scopes to the Links API", async () => {
+  using sqlite = new Database(":memory:");
+  const { call, request, signIn, cookies } = await setup(sqlite);
+  const session = cookies(await signIn(password));
+  const credential = (
+    secret: string,
+    path: string,
+    method = "GET",
+    body?: object,
+  ) =>
+    request(path, {
+      method,
+      headers: {
+        authorization: `Bearer ${secret}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+  const secret = `one_${"a".repeat(43)}`;
+  const start = await credential(secret, cliLoginPath, "POST", {
+    label: "Laptop",
+  });
+  expect(start.status).toBe(201);
+  const { id } = (await start.json()) as { id: string };
+  const approval = `${cliLoginPath}/${id}`;
+  expect((await call(approval, { approve: true }, session)).status).toBe(400);
+  expect(
+    (await call(approval, { approve: true, scopes: cliLinkScopes }, session))
+      .status,
+  ).toBe(204);
+  expect((await credential(secret, `${approval}/poll`, "POST")).status).toBe(
+    204,
+  );
+
+  const issued = await call(
+    cliTokensPath,
+    { label: "Mac mini", scopes: cliLinkScopes },
+    session,
+  );
+  expect(issued.status).toBe(201);
+  const manual = (await issued.json()) as {
+    secret: string;
+    token: { id: string };
+  };
+  const save = await credential(secret, linksPath, "POST", {
+    url: "https://example.com/",
+  });
+  expect(save.status).toBe(201);
+  const link = (await save.json()) as { id: string };
+  expect(
+    await (await credential(manual.secret, linksPath)).json(),
+  ).toMatchObject([link]);
+
+  sqlite.run("UPDATE cli_tokens SET scopes = ? WHERE id = ?", [
+    JSON.stringify([linksReadScope]),
+    id,
+  ]);
+  expect((await credential(secret, linksPath)).status).toBe(200);
+  expect(
+    (
+      await credential(secret, linksPath, "POST", {
+        url: "https://example.org/",
+      })
+    ).status,
+  ).toBe(403);
+  expect((await credential(secret, linkPath(link.id), "DELETE")).status).toBe(
+    403,
+  );
+
+  sqlite.run("UPDATE cli_tokens SET scopes = ? WHERE id = ?", [
+    JSON.stringify([linksWriteScope]),
+    manual.token.id,
+  ]);
+  expect((await credential(manual.secret, linksPath)).status).toBe(403);
+  expect(
+    (await credential(manual.secret, linkPath(link.id), "DELETE")).status,
+  ).toBe(204);
+
+  const extensionSecret = `one_ext_${"b".repeat(43)}`;
+  expect(
+    (
+      await call(
+        extensionAccessPath,
+        {
+          id: crypto.randomUUID(),
+          digest: await digestSecret(extensionSecret),
+        },
+        session,
+      )
+    ).status,
+  ).toBe(204);
+  const extensionSave = await credential(extensionSecret, linksPath, "POST", {
+    url: "https://example.org/",
+  });
+  expect(extensionSave.status).toBe(201);
+  const extensionLink = (await extensionSave.json()) as { id: string };
+  expect((await credential(extensionSecret, linksPath)).status).toBe(401);
+  expect(
+    (await credential(extensionSecret, linkPath(extensionLink.id), "DELETE"))
+      .status,
+  ).toBe(401);
+});
+
+it("issues MCP link scopes and exposes only the tools a grant authorises", async () => {
+  using sqlite = new Database(":memory:");
+  const { call, request, signIn, cookies } = await setup(sqlite);
+  const session = cookies(await signIn(password));
+  const origin = "https://oneapp.example";
+  const resource = `${origin}/mcp`;
+  const redirectUri = "http://127.0.0.1:52127/callback";
+  const form = (
+    path: string,
+    fields: Record<string, string>,
+    cookie?: string,
+  ) =>
+    request(path, {
+      method: "POST",
+      headers: { origin, ...(cookie ? { cookie } : {}) },
+      body: new URLSearchParams(fields),
+    });
+
+  const connect = async (scopes?: string[]) => {
+    const verifier = Base64Url.encode(
+      crypto.getRandomValues(new Uint8Array(32)),
+    );
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(verifier),
+    );
+    const authorization = new URLSearchParams({
+      response_type: "code",
+      client_id: codexClientId,
+      redirect_uri: redirectUri,
+      resource,
+      code_challenge_method: "S256",
+      code_challenge: Base64Url.encode(new Uint8Array(digest)),
+      ...(scopes === undefined ? {} : { scope: scopes.join(" ") }),
+    });
+    const start = await request(
+      `${mcpOAuth.paths.authorize}?${authorization}`,
+      { headers: { cookie: session } },
+    );
+    expect(start.status).toBe(303);
+    const consentCookie = [session, cookies(start)].join("; ");
+    const consent = await request(mcpOAuth.paths.authorize, {
+      headers: { cookie: consentCookie },
+    });
+    expect(consent.status).toBe(200);
+    const csrf = (await consent.text()).match(
+      /name="csrf" value="([^"]+)"/,
+    )?.[1];
+    expect(csrf).toBeDefined();
+    const approved = await form(
+      mcpOAuth.paths.authorize,
+      { decision: "approve", csrf: csrf! },
+      consentCookie,
+    );
+    expect(approved.status, await approved.clone().text()).toBe(303);
+    const code = new URL(
+      approved.headers.get("location") ?? "",
+    ).searchParams.get("code");
+    expect(code).toBeTruthy();
+    const issued = await form(mcpOAuth.paths.token, {
+      grant_type: "authorization_code",
+      client_id: codexClientId,
+      redirect_uri: redirectUri,
+      resource,
+      code: code!,
+      code_verifier: verifier,
+    });
+    expect(issued.status, await issued.clone().text()).toBe(200);
+    const grant = (await issued.json()) as {
+      access_token: string;
+      refresh_token: string;
+      scope: string;
+    };
+    expect(grant.scope).toBe(
+      (scopes ?? [linksReadScope, linksWriteScope]).join(" "),
+    );
+    return grant;
+  };
+
+  const mcp = async (token: string, method: string, params = {}) => {
+    const response = await request("/mcp", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+        "mcp-protocol-version": "2025-06-18",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    });
+    const body = await response.text();
+    expect(response.status, body).toBe(200);
+    const data = response.headers
+      .get("content-type")
+      ?.startsWith("text/event-stream")
+      ? body.match(/^data: (.+)$/m)?.[1]
+      : body;
+    return JSON.parse(data ?? "") as {
+      error?: { message: string };
+      result?: { tools?: { name: string }[]; structuredContent?: unknown };
+    };
+  };
+  const names = async (token: string) =>
+    (await mcp(token, "tools/list")).result?.tools
+      ?.map(({ name }) => name)
+      .sort();
+  const useTool = (token: string, name: string, args = {}) =>
+    mcp(token, "tools/call", { name, arguments: args });
+
+  const challenge = await request("/mcp", { method: "POST" });
+  expect(challenge.status).toBe(401);
+  expect(challenge.headers.get("www-authenticate")).toContain(
+    `scope="${linksReadScope} ${linksWriteScope}"`,
+  );
+  const metadata = await request(
+    "/.well-known/oauth-protected-resource/mcp",
+    {},
+  );
+  expect(await metadata.json()).toMatchObject({
+    scopes_supported: [linksReadScope, linksWriteScope],
+  });
+
+  const full = await connect();
+  const read = (await connect([linksReadScope])).access_token;
+  const write = (await connect([linksWriteScope])).access_token;
+  expect(await names(full.access_token)).toEqual([
+    "delete_link",
+    "list_links",
+    "save_link",
+  ]);
+  expect(await names(read)).toEqual(["list_links"]);
+  expect(await names(write)).toEqual(["delete_link", "save_link"]);
+
+  const url = "https://example.com/";
+  const saved = await useTool(write, "save_link", { url });
+  const { link } = saved.result?.structuredContent as { link: { id: string } };
+  expect((await useTool(read, "save_link", { url })).error).toBeDefined();
+  expect(
+    (await useTool(read, "delete_link", { id: link.id })).error,
+  ).toBeDefined();
+  expect((await useTool(write, "list_links")).error).toBeDefined();
+  expect(
+    (await useTool(read, "list_links")).result?.structuredContent,
+  ).toMatchObject({ links: [link] });
+  expect(
+    (await useTool(write, "delete_link", { id: link.id })).result
+      ?.structuredContent,
+  ).toEqual({ id: link.id });
+
+  sqlite.run(
+    `UPDATE yielded_oauth_server SET payload = json_set(payload, '$.authorization.scopes', json('["links:read-write","links:delete"]')) WHERE json_array_length(payload, '$.authorization.scopes') = 2`,
+  );
+  const old = await request("/mcp", {
+    method: "POST",
+    headers: { authorization: `Bearer ${full.access_token}` },
+  });
+  expect(old.status).toBe(401);
+  const refresh = await form(mcpOAuth.paths.token, {
+    grant_type: "refresh_token",
+    client_id: codexClientId,
+    resource,
+    refresh_token: full.refresh_token,
+  });
+  expect(await refresh.json()).toMatchObject({ error: "invalid_grant" });
+  expect(
+    await (await call(mcpGrantsPath, undefined, session)).json(),
+  ).toHaveLength(2);
+});
 
 it("verifies the signed-in address and changes the password with session invalidation", async () => {
   using sqlite = new Database(":memory:");

@@ -3,6 +3,7 @@ import {
   CliTokenLabel,
   CliTokenList,
   IssuedCliToken,
+  cliLinkScopes,
   cliTokensPath,
 } from "@oneapp/core/cli-auth";
 import { Effect, Schema } from "effect";
@@ -74,7 +75,7 @@ const IssueToken = Command.define("IssueCliToken", {
       const response = await fetch(cliTokensPath, {
         method: "POST",
         headers: { ...csrf, "content-type": "application/json" },
-        body: JSON.stringify({ label, allowDelete: true }),
+        body: JSON.stringify({ label, scopes: cliLinkScopes }),
         signal,
       });
       if (!response.ok) throw new Error("Could not issue CLI token");

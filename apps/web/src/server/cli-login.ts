@@ -3,7 +3,7 @@ import {
   CliLoginApproval,
   CliLoginDecision,
   CliLoginId,
-  CreateCliToken,
+  CliLoginRequest,
   cliLoginPath,
 } from "@oneapp/core/cli-auth";
 import { ByteSize, Clock, Effect, Layer, Schema } from "effect";
@@ -37,7 +37,7 @@ const readInput = <A>(schema: Schema.Decoder<A>) =>
 
 const start = Effect.gen(function* () {
   const digest = yield* requireCliDigest;
-  const input = yield* readInput(CreateCliToken);
+  const input = yield* readInput(CliLoginRequest);
   if (input._tag === "None")
     return yield* jsonError(400, "Enter a CLI name of 1 to 60 characters");
   const now = yield* Clock.currentTimeMillis;
@@ -109,11 +109,11 @@ const poll = Effect.gen(function* () {
     // Consume the approval in the same batch as issuance so a revoked token cannot be reissued.
     yield* sql.batch([
       sql`
-        INSERT INTO cli_tokens (id, owner_id, label, digest, created_at, can_delete)
-        SELECT l.id, l.owner_id, l.label, l.digest, ${now}, l.can_delete
+        INSERT INTO cli_tokens (id, owner_id, label, digest, created_at, scopes)
+        SELECT l.id, l.owner_id, l.label, l.digest, ${now}, l.scopes
         FROM cli_logins l JOIN accounts a ON a.id = l.owner_id
         WHERE l.id = ${id} AND l.digest = ${digest} AND l.expires_at > ${now}
-          AND l.denied_at IS NULL AND l.redeemed_at IS NULL AND a.active = 1
+          AND l.denied_at IS NULL AND l.redeemed_at IS NULL AND l.scopes IS NOT NULL AND a.active = 1
         ON CONFLICT DO NOTHING
       `,
       sql`
@@ -151,7 +151,7 @@ export const cliLoginRoutes = (http: ReturnType<typeof authHttp>) =>
             UPDATE cli_logins
             SET owner_id = ${decision.value.approve ? session.subjectId : null},
                 denied_at = ${decision.value.approve ? null : now},
-                can_delete = ${decision.value.approve && decision.value.allowDelete === true ? 1 : 0}
+                scopes = ${decision.value.approve ? JSON.stringify(decision.value.scopes) : null}
             WHERE id = ${id} AND expires_at > ${now}
               AND owner_id IS NULL AND denied_at IS NULL
             RETURNING id

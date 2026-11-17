@@ -1,6 +1,7 @@
 import {
   CliLoginApproval,
   CliLoginId,
+  cliLinkScopes,
   cliLoginQuery,
   cliLoginPath,
 } from "@oneapp/core/cli-auth";
@@ -72,7 +73,9 @@ const Decide = Command.define("DecideCliLogin", {
           "x-effect-auth-csrf": "1",
           "content-type": "application/json",
         },
-        body: JSON.stringify({ approve, allowDelete: approve }),
+        body: JSON.stringify(
+          approve ? { approve, scopes: cliLinkScopes } : { approve },
+        ),
         signal,
       });
       if (response.status === 410)

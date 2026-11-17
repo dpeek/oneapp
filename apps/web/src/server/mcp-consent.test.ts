@@ -1,4 +1,5 @@
 import { expect, it } from "@effect/vitest";
+import { linksReadScope, linksWriteScope } from "@oneapp/core/links";
 import { Schema } from "@yielded/auth";
 import { renderMcpConsent } from "./mcp-consent.ts";
 
@@ -9,7 +10,7 @@ it("escapes consent metadata and preserves the approval form", () => {
     registered: false,
     subjectId: Schema.SubjectId.make("owner"),
     resource: "https://app.dpeek.com/mcp",
-    scopes: ["links:read-write", "links:delete", "<custom>"],
+    scopes: [linksReadScope, linksWriteScope, "<custom>"],
     redirectUri: "http://127.0.0.1:55162/callback",
     action: "/oauth/mcp/authorize",
     loginPath: "/connect/mcp",
@@ -18,8 +19,8 @@ it("escapes consent metadata and preserves the approval form", () => {
 
   expect(html).not.toContain("<img");
   expect(html).toContain("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;");
-  expect(html).toContain("Read and save your links");
-  expect(html).toContain("Delete your saved links");
+  expect(html).toContain("Read your saved links");
+  expect(html).toContain("Save and delete your links");
   expect(html).toContain("&lt;custom&gt;");
   expect(html).toContain('method="post" action="/oauth/mcp/authorize"');
   expect(html).toContain('name="csrf" value="token&quot;&amp;"');

@@ -73,7 +73,7 @@ one auth logout
 
 The CLI opens a browser approval page and waits for your decision. Check that the code on the page matches your terminal, then choose **Connect CLI**. The request expires after five minutes. Use `--no-browser` to print the approval link for use on another device and `--name <label>` to name this device. To paste a token you created under **CLI access**, use `one auth login --manual-token`.
 
-New CLI tokens authorize reading, saving, and deleting links until revoked. Run `one auth login` again to grant delete access to a CLI that was already signed in. The CLI stores the token in your OS credential store via `Bun.secrets`, keyed by server origin. Logout revokes the active token, and you can revoke any device’s token from the web app.
+New CLI tokens grant `links:read` to list links and `links:write` to save and delete links. Older CLI tokens issued without delete access are revoked by the scope migration. Run `one auth login` to reconnect. The CLI stores the token in your OS credential store via `Bun.secrets`, keyed by server origin. Logout revokes the active token, and you can revoke any device’s token from the web app.
 
 ## Chrome extension
 
@@ -85,7 +85,7 @@ New extension credentials only allow saving links and stay active until revoked.
 
 ## MCP
 
-OneApp serves Streamable HTTP at `https://app.dpeek.com/mcp`. The `list_links` tool returns links newest first with a `nextOffset` for paging. The `save_link` tool adds an HTTP or HTTPS URL, and `delete_link` removes a saved link by ID.
+OneApp serves Streamable HTTP at `https://app.dpeek.com/mcp`. The `links:read` scope exposes `list_links`, which returns links newest first with a `nextOffset` for paging. The `links:write` scope exposes `save_link` and `delete_link`.
 
 Register the server with Codex:
 
@@ -95,5 +95,6 @@ codex mcp add oneapp --url https://app.dpeek.com/mcp
 
 Codex supplies its client ID automatically through its OAuth client metadata. Approve access in your browser. If the approval page doesn't open, run `codex mcp login oneapp`. Start a new Codex session to use the tools. For a setup that used `ONEAPP_MCP_TOKEN`, remove that MCP registration and add it again with the command above.
 
+OneApp requests approval for `links:read` and `links:write` by default. For read-only access, run `codex mcp login oneapp --scopes links:read`. To reconnect a grant issued under the old scopes, run `codex mcp login oneapp`, approve access, then start a new Codex session.
+
 Access tokens refresh automatically within the 30-day grant. Open **Settings → MCP access** in the web app to revoke a grant.
-For an existing Codex connection, run `codex mcp login oneapp --scopes links:read-write,links:delete` to approve deletion, then start a new Codex session.

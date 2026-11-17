@@ -22,6 +22,7 @@ import { linksRoutes } from "./links.ts";
 import { mcpRoutes } from "./mcp.ts";
 import {
   mcpGrantRoutes,
+  mcpLinkScopes,
   mcpLoginRoute,
   mcpOAuth,
   mcpOAuthLayer,
@@ -212,6 +213,15 @@ export default {
     );
 
     try {
+      if (
+        request.method === "GET" &&
+        path === mcpOAuth.paths.authorize &&
+        url.searchParams.get("response_type") === "code" &&
+        !url.searchParams.has("scope")
+      ) {
+        url.searchParams.set("scope", mcpLinkScopes.join(" "));
+        return await app.handler(new Request(url, request));
+      }
       return await app.handler(request);
     } finally {
       await app.dispose();

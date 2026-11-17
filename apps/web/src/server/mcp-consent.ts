@@ -1,4 +1,5 @@
 import { appName } from "@oneapp/core";
+import { linksReadScope, linksWriteScope } from "@oneapp/core/links";
 import { OAuthServer } from "@yielded/auth";
 import { Effect, Layer } from "effect";
 
@@ -18,10 +19,10 @@ export const renderMcpConsent = (consent: OAuthServer.Consent) => {
     : `<div><dt>Client</dt><dd>${escapeHtml(new URL(consent.clientId).hostname)}</dd></div>`;
   const permissions = consent.scopes
     .map((scope) =>
-      scope === "links:read-write"
-        ? "<li>Read and save your links</li>"
-        : scope === "links:delete"
-          ? "<li>Delete your saved links</li>"
+      scope === linksReadScope
+        ? "<li>Read your saved links</li>"
+        : scope === linksWriteScope
+          ? "<li>Save and delete your links</li>"
           : `<li>${escapeHtml(scope)}</li>`,
     )
     .join("");

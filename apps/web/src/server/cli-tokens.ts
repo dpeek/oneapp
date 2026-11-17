@@ -7,6 +7,7 @@ import {
   cliTokensPath,
   currentCliTokenPath,
 } from "@oneapp/core/cli-auth";
+import { LinkScope } from "@oneapp/core/links";
 import { ByteSize, Clock, Data, Effect, Layer, Schema } from "effect";
 import { Base64Url, Hex } from "effect/encoding";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -15,6 +16,9 @@ import { jsonError, privateHeaders } from "./api-response.ts";
 import { AppAuth, type authHttp } from "./auth.ts";
 
 const isTokenSecret = Schema.is(CliTokenSecret);
+const decodeScopes = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Array(LinkScope)),
+);
 export const digestToken = Effect.fnUntraced(function* (secret: string) {
   const bytes = new TextEncoder().encode(secret);
   const digest = yield* Effect.promise(() =>
@@ -24,6 +28,9 @@ export const digestToken = Effect.fnUntraced(function* (secret: string) {
 });
 
 export class InvalidCliToken extends Data.TaggedError("InvalidCliToken")<{}> {}
+class InsufficientCliScope extends Data.TaggedError("InsufficientCliScope")<{
+  scope: typeof LinkScope.Type;
+}> {}
 
 export const requireCliDigest = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
@@ -40,16 +47,29 @@ export const requireCliToken = Effect.gen(function* () {
   const now = yield* Clock.currentTimeMillis;
   const sql = yield* SqlClient.SqlClient;
   const [token] = yield* sql<
-    typeof CliToken.Type & { ownerId: string; canDelete: number }
+    typeof CliToken.Type & { ownerId: string; scopes: string }
   >`
     SELECT t.id, t.owner_id AS "ownerId", t.label, t.created_at AS "createdAt",
-           t.expires_at AS "expiresAt", t.can_delete AS "canDelete"
+           t.expires_at AS "expiresAt", t.scopes
     FROM cli_tokens t JOIN accounts a ON a.id = t.owner_id
     WHERE t.digest = ${digest} AND (t.expires_at IS NULL OR t.expires_at > ${now}) AND a.active = 1
   `;
   if (!token) return yield* new InvalidCliToken();
   return token;
 });
+
+export const requireCliScope = Effect.fnUntraced(function* (
+  scope: typeof LinkScope.Type,
+) {
+  const token = yield* requireCliToken;
+  const scopes = decodeScopes(token.scopes);
+  if (scopes._tag === "None" || !scopes.value.includes(scope))
+    return yield* new InsufficientCliScope({ scope });
+  return token;
+});
+
+export const insufficientCliScopeResponse = ({ scope }: InsufficientCliScope) =>
+  jsonError(403, `CLI token requires ${scope}. Run one auth login again.`);
 
 export const invalidTokenResponse = () =>
   jsonError(401, "CLI token is invalid, expired, or revoked");
@@ -97,7 +117,7 @@ export const cliTokenRoutes = (http: ReturnType<typeof authHttp>) => {
             if (input._tag === "None")
               return yield* jsonError(
                 400,
-                "Enter a name of 1 to 60 characters",
+                "Provide a name of 1 to 60 characters and approve CLI link access",
               );
 
             const secret = `one_${Base64Url.encode(crypto.getRandomValues(new Uint8Array(32)))}`;
@@ -111,8 +131,8 @@ export const cliTokenRoutes = (http: ReturnType<typeof authHttp>) => {
             };
             const sql = yield* SqlClient.SqlClient;
             yield* sql`
-          INSERT INTO cli_tokens (id, owner_id, label, digest, created_at, expires_at, can_delete)
-          VALUES (${token.id}, ${session.subjectId}, ${token.label}, ${digest}, ${token.createdAt}, ${token.expiresAt}, ${input.value.allowDelete === true ? 1 : 0})
+          INSERT INTO cli_tokens (id, owner_id, label, digest, created_at, expires_at, scopes)
+          VALUES (${token.id}, ${session.subjectId}, ${token.label}, ${digest}, ${token.createdAt}, ${token.expiresAt}, ${JSON.stringify(input.value.scopes)})
         `;
             return yield* HttpServerResponse.schemaJson(IssuedCliToken)(
               { token, secret },

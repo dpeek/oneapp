@@ -1,5 +1,9 @@
 import { Schema } from "effect";
 
+export const linksReadScope = "links:read";
+export const linksWriteScope = "links:write";
+export const LinkScope = Schema.Literals([linksReadScope, linksWriteScope]);
+
 export const linksPath = "/api/links";
 export const LinkId = Schema.String.check(Schema.isUUID(4));
 export const linkPath = (id: string) =>

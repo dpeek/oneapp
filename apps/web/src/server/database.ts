@@ -58,9 +58,7 @@ export const cliTokens = sqliteTable(
     digest: text().notNull().unique(),
     createdAt: integer("created_at").notNull(),
     expiresAt: integer("expires_at"),
-    canDelete: integer("can_delete", { mode: "boolean" })
-      .notNull()
-      .default(false),
+    scopes: text().notNull().default("[]"),
   },
   (table) => [
     index("cli_tokens_owner_created_at").on(table.ownerId, table.createdAt),
@@ -78,9 +76,7 @@ export const cliLogins = sqliteTable(
     ownerId: text("owner_id").references(() => accounts.id),
     deniedAt: integer("denied_at"),
     redeemedAt: integer("redeemed_at"),
-    canDelete: integer("can_delete", { mode: "boolean" })
-      .notNull()
-      .default(false),
+    scopes: text(),
   },
   (table) => [index("cli_logins_expires_at").on(table.expiresAt)],
 );

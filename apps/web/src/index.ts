@@ -28,6 +28,7 @@ const pageFor = (url: Url.Url): Page =>
 const Model = Schema.Struct({
   page: Page,
   account: Schema.NullOr(Account),
+  sessionCheck: Schema.Literals(["checking", "failed", "resolved"]),
   accountSettings: AccountSettings.Model,
   signInNotice: Schema.NullOr(Schema.String),
   links: Schema.NullOr(LinkList),
@@ -45,6 +46,8 @@ const Message = defineMessageUnion({
   RequestedUrl: { request: Navigation.UrlRequest },
   ChangedUrl: { url: Url.Url },
   NavigationFinished: {},
+  RetriedSessionCheck: {},
+  SessionCheckFailed: {},
   SubmittedSignIn: {},
   ClickedSignOut: {},
   LoadedAccount: { account: Schema.NullOr(Account) },
@@ -128,17 +131,11 @@ const readAccount = Effect.tryPromise(async () => {
 
 const LoadAccount = Command.define("LoadAccount", {
   args: {},
-  messages: [Message.LoadedAccount, Message.RequestFailed],
+  messages: [Message.LoadedAccount, Message.SessionCheckFailed],
   execute: () =>
     readAccount.pipe(
       Effect.map((account) => Message.LoadedAccount({ account })),
-      Effect.catch(() =>
-        Effect.succeed(
-          Message.RequestFailed({
-            error: "Could not load your account. Reload to retry.",
-          }),
-        ),
-      ),
+      Effect.catch(() => Effect.succeed(Message.SessionCheckFailed())),
     ),
 });
 
@@ -289,6 +286,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
   const model: Model = {
     page,
     account: null,
+    sessionCheck: "checking",
     accountSettings: AccountSettings.initial,
     signInNotice: null,
     links: null,
@@ -297,7 +295,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     connectedClients: ConnectedClients.initial,
     cliLogin: CliLogin.initial(),
     extensionAccess: ExtensionAccess.initial(),
-    pending: true,
+    pending: false,
     error: null,
   };
   const commands: NonNullable<
@@ -343,8 +341,16 @@ const update = (
         : loadPage({ ...model, page, error: null });
     },
     NavigationFinished: () => ({ model }),
+    RetriedSessionCheck: () =>
+      model.sessionCheck === "failed"
+        ? {
+            model: { ...model, sessionCheck: "checking" },
+            commands: [LoadAccount({})],
+          }
+        : { model },
+    SessionCheckFailed: () => ({ model: { ...model, sessionCheck: "failed" } }),
     SubmittedSignIn: () =>
-      model.pending
+      model.sessionCheck !== "resolved" || model.pending
         ? { model }
         : {
             model: { ...model, pending: true, error: null },
@@ -362,6 +368,7 @@ const update = (
       const next: Model = {
         page: model.page,
         account,
+        sessionCheck: "resolved",
         accountSettings: AccountSettings.initial,
         signInNotice: null,
         links: null,
@@ -767,6 +774,26 @@ const approvalView = (model: Model, h: HtmlBuilder<Message>) => {
 };
 
 const view = (model: Model, h: HtmlBuilder<Message>): Document => {
+  if (model.sessionCheck !== "resolved") {
+    return {
+      title: appName,
+      body: h.main(
+        [h.Class("standalone")],
+        [
+          h.h1([], [appName]),
+          ...(model.sessionCheck === "checking"
+            ? [h.p([h.Role("status")], ["Checking your session…"])]
+            : [
+                h.p([h.Role("alert")], ["Could not check your session."]),
+                h.button(
+                  [h.Type("button"), h.OnClick(Message.RetriedSessionCheck())],
+                  ["Retry"],
+                ),
+              ]),
+        ],
+      ),
+    };
+  }
   const error = h.p([h.Role("alert")], [model.error ?? ""]);
   if (!model.account || isApproval(model)) {
     return {

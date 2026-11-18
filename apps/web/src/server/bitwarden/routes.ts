@@ -11,6 +11,7 @@ import { BitwardenDeviceId } from "../../bitwarden-device-contract.ts";
 import { privateHeaders } from "../api-response.ts";
 import {
   type PersonalVault,
+  readPersonalItem,
   readPersonalItems,
   readPersonalVault,
 } from "../vault/personal.ts";
@@ -19,6 +20,7 @@ import {
   approveAuthorization,
   type BrowserIdentity,
   changePersonalItem,
+  editPersonalItem,
   readDeviceByAccess,
   redeemAuthorization,
   refreshDevice,
@@ -31,7 +33,7 @@ import * as Wire from "./wire.ts";
 const connectorScript = "/identity/oneapp-connector.js";
 const ciphersPath = "/api/ciphers";
 const cipherItemPath =
-  /^\/api\/ciphers\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/(delete|restore))?$/u;
+  /^\/api\/ciphers\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/(delete|restore|details))?$/u;
 const apiPaths = [
   "/api/config",
   ciphersPath,
@@ -173,10 +175,9 @@ const writeItem = async (
       400,
     );
   return itemChangeResponse(
-    await changePersonalItem(db, accessDigest, vault, cipherId, {
-      kind: "edit",
+    await editPersonalItem(db, accessDigest, vault, cipherId, {
+      ...item,
       expectedRevision: revision,
-      item,
     }),
   );
 };
@@ -350,8 +351,17 @@ export const bitwardenFetch = async (
   const [, cipherId, lifecycle] = cipherItemPath.exec(path) ?? [];
   if (!cipherId && !apiPaths.includes(path))
     return error("unsupported_endpoint", 404);
-  const method = cipherId ? "PUT" : path === ciphersPath ? "POST" : "GET";
-  if (request.method !== method) return error("method_not_allowed", 405);
+  const methods = cipherId
+    ? lifecycle === "details"
+      ? ["GET"]
+      : lifecycle
+        ? ["PUT"]
+        : ["GET", "PUT"]
+    : path === ciphersPath
+      ? ["GET", "POST"]
+      : ["GET"];
+  if (!methods.includes(request.method))
+    return error("method_not_allowed", 405);
   if (path === "/api/config") return json(Wire.config(env.APP_ORIGIN));
   const access = request.headers
     .get("authorization")
@@ -369,6 +379,16 @@ export const bitwardenFetch = async (
       }),
       lifecycle === "delete",
     );
+  if (request.method === "GET" && cipherId) {
+    const item = await readPersonalItem(env.DB, vault.id, cipherId);
+    return item ? json(Wire.cipher(item)) : error("cipher_not_found", 404);
+  }
+  if (request.method === "GET" && path === ciphersPath)
+    return json({
+      object: "list",
+      data: (await readPersonalItems(env.DB, vault.id)).map(Wire.cipher),
+      continuationToken: null,
+    });
   if (cipherId || path === ciphersPath)
     return writeItem(request, env.DB, vault, accessDigest, cipherId);
 

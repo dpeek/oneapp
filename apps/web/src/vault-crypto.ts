@@ -224,7 +224,7 @@ export const encryptNoteFields = async (
   notes: await encryptOptionalText(note, key),
 });
 
-const encryptNewItem = async <Fields extends object>(
+export const encryptNewItem = async <Fields extends object>(
   userKey: VaultKey,
   encryptFields: (key: VaultKey) => Promise<Fields>,
 ) => {

@@ -13,14 +13,17 @@ import {
   VaultLifecycleChange,
   VaultSnapshot,
 } from "../../vault-items-contract.ts";
+import { itemContent, validateDetails } from "../../vault-item-content.ts";
 import { jsonError, privateHeaders } from "../api-response.ts";
 import { AppAuth, type authHttp } from "../auth.ts";
 import {
   changePersonalItem,
   createPersonalItem,
+  editPersonalItem,
   editPersonalLogin,
   type PersonalItem,
   type PersonalVault,
+  readPersonalItem,
   readPersonalItems,
   readPersonalVault,
 } from "./personal.ts";
@@ -32,10 +35,11 @@ const itemFields = (item: PersonalItem) => ({
   notes: item.details.notes ?? null,
   requiresMasterPassword: item.details.reprompt === 1,
   revision: item.revisionAt,
+  details: item.details,
 });
 
 const projectItem = (item: PersonalItem) => {
-  if (item.type === 2) return { ...itemFields(item), type: item.type };
+  if (item.type !== 1) return { ...itemFields(item), type: item.type };
   const { username, password, uris } = item.details.credentials;
   return {
     ...itemFields(item),
@@ -156,6 +160,28 @@ export const vaultItemRoutes = (
       ),
     ),
     HttpRouter.add(
+      "GET",
+      `${vaultItemsPath}/:id`,
+      Effect.gen(function* () {
+        const session = yield* requireSession;
+        const { id } = yield* HttpRouter.params;
+        if (!isItemId(id))
+          return yield* jsonError(404, "Vault item not found.");
+        const vault = yield* Effect.tryPromise(() =>
+          readPersonalVault(db, session.subjectId),
+        );
+        if (!vault) return yield* noVault();
+        const item = yield* Effect.tryPromise(() =>
+          readPersonalItem(db, vault.id, id),
+        );
+        if (!item) return yield* jsonError(404, "Vault item not found.");
+        return yield* HttpServerResponse.schemaJson(VaultItem)(
+          projectItem(item),
+          { headers: privateHeaders },
+        );
+      }).pipe(Effect.catchTags(itemWriteErrors)),
+    ),
+    HttpRouter.add(
       "POST",
       vaultItemsPath,
       http
@@ -166,6 +192,11 @@ export const vaultItemRoutes = (
             if (input._tag === "None")
               return yield* jsonError(400, "Encrypted vault item is invalid.");
             const { keyId, name, wrappedKey } = input.value;
+            if (
+              "details" in input.value &&
+              !validateDetails(input.value.type, input.value.details)
+            )
+              return yield* jsonError(400, "Encrypted vault item is invalid.");
             const vault = yield* Effect.tryPromise(() =>
               readPersonalVault(db, session.subjectId),
             );
@@ -176,27 +207,38 @@ export const vaultItemRoutes = (
                 db,
                 vault.id,
                 browserAuthorization(vault, session),
-                input.value.type === 1
+                "details" in input.value
                   ? {
-                      type: 1,
                       name,
                       wrappedKey,
-                      details: {
-                        credentials: {
-                          username: input.value.username,
-                          password: input.value.password,
-                          uris: input.value.website
-                            ? [{ ...input.value.website, match: hostUriMatch }]
-                            : [],
-                        },
-                      },
+                      ...itemContent(input.value.type, input.value.details),
                     }
-                  : {
-                      type: 2,
-                      name,
-                      wrappedKey,
-                      details: { notes: input.value.notes },
-                    },
+                  : input.value.type === 1
+                    ? {
+                        type: 1,
+                        name,
+                        wrappedKey,
+                        details: {
+                          credentials: {
+                            username: input.value.username,
+                            password: input.value.password,
+                            uris: input.value.website
+                              ? [
+                                  {
+                                    ...input.value.website,
+                                    match: hostUriMatch,
+                                  },
+                                ]
+                              : [],
+                          },
+                        },
+                      }
+                    : {
+                        type: 2,
+                        name,
+                        wrappedKey,
+                        details: { notes: input.value.notes },
+                      },
               ),
             );
             if (!saved) return yield* staleVault();
@@ -224,6 +266,8 @@ export const vaultItemRoutes = (
             if (input._tag === "None")
               return yield* jsonError(400, "Encrypted vault item is invalid.");
             const { keyId, ...edit } = input.value;
+            if ("details" in edit && !validateDetails(edit.type, edit.details))
+              return yield* jsonError(400, "Encrypted vault item is invalid.");
             const vault = yield* Effect.tryPromise(() =>
               readPersonalVault(db, session.subjectId),
             );
@@ -231,16 +275,25 @@ export const vaultItemRoutes = (
             if (keyId !== vault.keyId) return yield* staleVault();
             const authorization = browserAuthorization(vault, session);
             const result = yield* Effect.tryPromise(() =>
-              edit.type === 1
-                ? editPersonalLogin(db, authorization, id, edit)
-                : changePersonalItem(db, authorization, id, {
-                    kind: "edit_note",
+              "details" in edit
+                ? editPersonalItem(db, authorization, id, {
                     ...edit,
-                  }),
+                    keepPasswordHistory: true,
+                  })
+                : edit.type === 1
+                  ? editPersonalLogin(db, authorization, id, edit)
+                  : changePersonalItem(db, authorization, id, {
+                      kind: "edit_note",
+                      ...edit,
+                    }),
             );
             return yield* changeResponse(
               result,
-              edit.type === 1 ? "login" : "note",
+              edit.type === 1
+                ? "login"
+                : (edit.type ?? 2) === 2
+                  ? "note"
+                  : "item",
             );
           }),
         )

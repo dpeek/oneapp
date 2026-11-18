@@ -1,13 +1,17 @@
 import { Schema } from "effect";
 import {
   EncryptedVaultValue,
-  WrappedItemKey,
-} from "../../vault-items-contract.ts";
-import {
+  ExtraItemType,
+  extraItemTypes,
+  encryptedTypeData,
+  itemContent,
   ItemMetadata,
+  ItemType,
+  itemTypes,
   LoginCredentials,
   LoginPasswordHistory,
-} from "../vault/item.ts";
+  WrappedItemKey,
+} from "../../vault-item-content.ts";
 
 const optionalId = Schema.optionalKey(
   Schema.NullOr(Schema.String.check(Schema.isUUID())),
@@ -20,10 +24,9 @@ const emptyArray = Schema.optionalKey(
   Schema.NullOr(Schema.Array(Schema.Never)),
 );
 
-const common = {
+const envelope = Schema.Struct({
   name: EncryptedVaultValue,
   key: WrappedItemKey,
-  ...ItemMetadata,
   encryptedFor: optionalId,
   encryptedByKeyId: Schema.optionalKey(
     Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/u))),
@@ -33,73 +36,81 @@ const common = {
   archivedDate: empty,
   lastKnownRevisionDate: Schema.optionalKey(Schema.NullOr(Schema.String)),
   data: empty,
-  card: empty,
-  identity: empty,
-  sshKey: empty,
-  bankAccount: empty,
-  driversLicense: empty,
-  passport: empty,
   attachments: emptyObject,
   attachments2: emptyObject,
-};
-
-const LoginRequest = Schema.Struct({
-  ...common,
-  type: Schema.Literal(1),
-  login: Schema.Struct({
-    ...LoginCredentials.fields,
-    fido2Credentials: emptyArray,
-  }),
-  secureNote: empty,
-  passwordHistory: LoginPasswordHistory,
 });
 
-const SecureNoteRequest = Schema.Struct({
-  ...common,
-  type: Schema.Literal(2),
-  login: empty,
-  secureNote: Schema.Struct({ type: Schema.Literal(0) }),
-  passwordHistory: emptyArray,
+const metadata = Schema.Struct(ItemMetadata);
+const login = Schema.Struct({
+  ...LoginCredentials.fields,
+  fido2Credentials: emptyArray,
 });
-
-const decode = Schema.decodeUnknownSync(
-  Schema.Union([LoginRequest, SecureNoteRequest]),
+const note = Schema.Struct({ type: Schema.Literal(0) });
+const nonLoginHistory = Schema.Struct({ passwordHistory: emptyArray });
+const loginHistory = Schema.Struct({ passwordHistory: LoginPasswordHistory });
+const typeDecoders = new Map(
+  extraItemTypes.map((type) => [
+    type,
+    Schema.decodeUnknownSync(encryptedTypeData(type)),
+  ]),
 );
+const isType = Schema.is(ItemType);
+const isExtraType = Schema.is(ExtraItemType);
 
-export const decodeItem = (body: string) => {
+export const decodeCipher = (input: unknown) => {
   try {
-    const item = decode(JSON.parse(body));
-    const {
-      name,
-      key,
-      encryptedFor,
-      encryptedByKeyId,
-      lastKnownRevisionDate,
-      notes,
-      favorite,
-      reprompt,
-      fields,
-    } = item;
-    const envelope = {
+    if (input === null || typeof input !== "object" || Array.isArray(input))
+      return null;
+    const cipher = input as Record<string, unknown>;
+    const { type } = cipher;
+    if (!isType(type)) return null;
+    const payloadKey = itemTypes[type].wire;
+    if (
+      Object.values(itemTypes).some(
+        ({ wire }) => wire !== payloadKey && cipher[wire] != null,
+      )
+    )
+      return null;
+
+    const { name, key, encryptedFor, encryptedByKeyId, lastKnownRevisionDate } =
+      Schema.decodeUnknownSync(envelope)(cipher);
+    const properties = Schema.decodeUnknownSync(metadata)(cipher);
+    const payload = cipher[payloadKey];
+    if (type === 1) {
+      if (payload != null) {
+        const { fido2Credentials: _, ...credentials } =
+          Schema.decodeUnknownSync(login)(payload);
+        Object.assign(properties, { credentials });
+      }
+      Object.assign(properties, Schema.decodeUnknownSync(loginHistory)(cipher));
+    } else {
+      Schema.decodeUnknownSync(nonLoginHistory)(cipher);
+      if (payload != null && type === 2)
+        Schema.decodeUnknownSync(note)(payload);
+      if (payload != null && isExtraType(type)) {
+        const decode = typeDecoders.get(type)!;
+        Object.assign(properties, {
+          data: decode(payload, { onExcessProperty: "error" }),
+        });
+      }
+    }
+    if (payload == null && lastKnownRevisionDate == null) return null;
+    return {
       name,
       wrappedKey: key,
       encryptedFor,
       encryptedByKeyId,
       lastKnownRevisionDate,
+      ...itemContent(type, properties),
     };
-    const metadata = { notes, favorite, reprompt, fields };
-    if (item.type === 2)
-      return { ...envelope, type: item.type, details: metadata };
-    const { fido2Credentials: _, ...credentials } = item.login;
-    return {
-      ...envelope,
-      type: item.type,
-      details: {
-        credentials,
-        ...metadata,
-        passwordHistory: item.passwordHistory,
-      },
-    };
+  } catch {
+    return null;
+  }
+};
+
+export const decodeItem = (body: string) => {
+  try {
+    return decodeCipher(JSON.parse(body));
   } catch {
     return null;
   }

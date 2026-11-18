@@ -1,3 +1,4 @@
+import { itemTypes } from "../../vault-item-content.ts";
 import type { PersonalItem, PersonalVault } from "../vault/personal.ts";
 import type { GrantIdentity } from "./tokens.ts";
 
@@ -89,7 +90,9 @@ export const cipher = (item: PersonalItem) => ({
         passwordHistory: item.details.passwordHistory ?? [],
         login: { ...item.details.credentials, fido2Credentials: [] },
       }
-    : { secureNote: { type: 0 } }),
+    : item.type === 2
+      ? { secureNote: { type: 0 } }
+      : { [itemTypes[item.type].wire]: item.details.data }),
 });
 
 export const sync = (

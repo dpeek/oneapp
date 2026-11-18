@@ -4,6 +4,7 @@ import {
   decryptVaultText,
   encryptLogin,
   encryptNoteFields,
+  encryptNewItem,
   encryptOptionalText,
   encryptSecureNote,
   encryptVaultText,
@@ -22,6 +23,16 @@ import {
   VaultSecureNote,
   VaultSnapshot,
 } from "./vault-items-contract.ts";
+import {
+  extraItemTypes,
+  itemTypes,
+  type ItemType,
+} from "./vault-item-content.ts";
+import {
+  decryptItemDetails,
+  uriMatchLabels,
+  vaultItemEditor,
+} from "./vault-item-editor.ts";
 import { vaultPasswordMaximum } from "./vault-setup-contract.ts";
 
 export const vaultReader = CustomElement.define({
@@ -117,14 +128,15 @@ const readTitle = async (item: Item, userKey: VaultKey) =>
 
 const readItemDetails = async (item: Item, userKey: VaultKey) => {
   const key = await unwrapVaultKey(item.wrappedKey, userKey);
-  const notes = await readText(item.notes, key);
-  if (item.type === 2) return { notes, login: null };
+  const properties = await decryptItemDetails(item.details, key);
+  const notes = properties.notes ?? null;
+  if (item.type !== 1) return { notes, login: null, properties, key };
   const [username, password, uris] = await Promise.all([
     readText(item.username, key),
     readText(item.password, key),
     Promise.all(item.uris.map((uri) => decryptVaultText(uri, key))),
   ]);
-  return { notes, login: { username, password, uris } };
+  return { notes, login: { username, password, uris }, properties, key };
 };
 type ItemDetails = Awaited<ReturnType<typeof readItemDetails>>;
 
@@ -260,6 +272,7 @@ class VaultReader extends HTMLElement {
           action("New Login", () => this.#showLoginForm()),
           action("New Secure Note", () => this.#showNoteForm()),
           action("Trash", this.#showTrash),
+          action("Other item types", () => this.#showItemTypes()),
         );
     const list = create("ul");
     list.className = "vault-items";
@@ -271,10 +284,7 @@ class VaultReader extends HTMLElement {
       const button = action(entry.title ?? "Unreadable item", () =>
         this.#open(entry),
       );
-      row.append(
-        button,
-        create("span", entry.item.type === 1 ? "Login" : "Secure Note"),
-      );
+      row.append(button, create("span", itemTypes[entry.item.type].label));
       list.append(row);
     }
     this.replaceChildren(
@@ -455,11 +465,60 @@ class VaultReader extends HTMLElement {
     );
   }
 
+  #showItemTypes() {
+    this.#stopWork();
+    const choices = create("ul");
+    for (const type of extraItemTypes) {
+      const row = create("li");
+      row.append(
+        action(itemTypes[type].label, () => this.#showDetailedForm(type)),
+      );
+      choices.append(row);
+    }
+    this.replaceChildren(
+      this.#toolbar(this.#showList),
+      create("h3", "New item"),
+      choices,
+    );
+  }
+
+  #showDetailedForm(
+    type: ItemType,
+    edit?: EditTarget & { details: ItemDetails },
+  ) {
+    const editor = vaultItemEditor(type, edit?.details.properties ?? {});
+    this.#showItemForm(
+      itemTypes[type].label,
+      [],
+      async (title, key) => {
+        const encrypt = async (itemKey: VaultKey) => ({
+          type,
+          name:
+            title === edit?.title
+              ? edit.item.name
+              : await encryptVaultText(title, itemKey),
+          details: await editor.encrypt(itemKey, edit?.item.details),
+        });
+        return edit
+          ? {
+              expectedRevision: edit.item.revision,
+              ...(await encrypt(
+                await unwrapVaultKey(edit.item.wrappedKey, key, "encrypt"),
+              )),
+            }
+          : encryptNewItem(key, encrypt);
+      },
+      edit,
+      editor.element,
+    );
+  }
+
   #showItemForm(
-    label: "Login" | "Secure Note",
+    label: string,
     fields: readonly ItemField[],
     encrypt: (title: string, key: VaultKey) => Promise<object>,
     edit?: EditTarget,
+    properties?: HTMLElement,
   ) {
     const vault = this.#vault;
     if (!vault) return;
@@ -470,7 +529,8 @@ class VaultReader extends HTMLElement {
     title.required = true;
     title.value = edit?.title ?? "";
     const inputs: readonly ItemField[] = [["Title", title], ...fields];
-    const item = label === "Login" ? "login" : "note";
+    const item =
+      label === "Login" ? "login" : label === "Secure Note" ? "note" : "item";
     const saveLabel = `Save ${label}`;
     const save = create("button", saveLabel);
     save.type = "submit";
@@ -479,6 +539,11 @@ class VaultReader extends HTMLElement {
     const setBusy = (status?: string) => {
       save.disabled = status !== undefined;
       for (const [, input] of inputs) input.readOnly = save.disabled;
+      properties
+        ?.querySelectorAll<HTMLInputElement>("input, textarea, select, button")
+        .forEach((input) => {
+          input.disabled = save.disabled;
+        });
       save.textContent = status ?? saveLabel;
       if (reload) reload.disabled = save.disabled;
     };
@@ -535,7 +600,12 @@ class VaultReader extends HTMLElement {
           () => showError(failure),
         );
       });
-    form.append(...inputs.map(itemField), save, error);
+    form.append(
+      ...inputs.map(itemField),
+      ...(properties ? [properties] : []),
+      save,
+      error,
+    );
     if (reload) {
       reload.hidden = true;
       form.append(reload);
@@ -667,20 +737,89 @@ class VaultReader extends HTMLElement {
       fields.append(create("dt", label), content);
       return content;
     };
+    const mask = (label: string, value: string, content: HTMLElement) => {
+      const rendered = create("span", "••••••••");
+      const toggle = action(`Show ${label}`, () => {
+        const hidden = toggle.textContent?.startsWith("Show");
+        rendered.textContent = hidden ? value : "••••••••";
+        toggle.textContent = `${hidden ? "Hide" : "Show"} ${label}`;
+      });
+      content.append(rendered, toggle);
+    };
     const login = details?.login;
     if (login) {
       if (login.username !== null) add("Username", login.username);
-      if (login.password !== null) {
-        let shown = false;
-        const password = create("span", "••••••••");
-        const toggle = action("Show password", () => {
-          shown = !shown;
-          password.textContent = shown ? login.password : "••••••••";
-          toggle.textContent = shown ? "Hide password" : "Show password";
-        });
-        add("Password", "").append(password, toggle);
+      if (login.password !== null)
+        mask("password", login.password, add("Password", ""));
+      const credentials = details?.properties.credentials;
+      if (credentials?.totp)
+        mask("TOTP seed", credentials.totp, add("TOTP seed", ""));
+      for (const { uri, match } of credentials?.uris ?? []) {
+        if (uri !== null)
+          add(
+            "Website",
+            match == null ? uri : `${uri} (${uriMatchLabels[match]})`,
+          );
       }
-      for (const uri of login.uris) add("Website", uri);
+    }
+    if (details) {
+      if (details.properties.favorite) add("Favourite", "Yes");
+      if (details.properties.reprompt === 1)
+        add("Master password reprompt", "Required");
+      for (const property of details.properties.fields ?? []) {
+        const label = property.name || "Custom field";
+        if (property.type === 1 && property.value != null)
+          mask(label, property.value, add(label, ""));
+        else if (property.type === 3)
+          add(
+            label,
+            property.linkedId == null
+              ? "Linked field"
+              : `Linked field ${property.linkedId}`,
+          );
+        else if (property.value != null) add(label, property.value);
+      }
+      for (const [name, label] of Object.entries(itemTypes[item.type].fields)) {
+        const value = details.properties.data?.[name];
+        if (value != null) mask(label, value, add(label, ""));
+      }
+      const history = item.details.passwordHistory ?? [];
+      if (history.length) {
+        const output = add("Password history", "");
+        const show = action("Show password history", () => {
+          void this.#run(
+            async () =>
+              Promise.all(
+                history.map(async ({ password, lastUsedDate }) => ({
+                  password: await readText(password ?? null, details.key),
+                  lastUsedDate,
+                })),
+              ),
+            (entries) => {
+              const list = create("ul");
+              for (const { password, lastUsedDate } of entries) {
+                if (password === null) continue;
+                const row = create(
+                  "li",
+                  lastUsedDate
+                    ? new Date(lastUsedDate).toLocaleDateString() + " "
+                    : "",
+                );
+                mask("previous password", password, row);
+                list.append(row);
+              }
+              output.replaceChildren(
+                action("Hide password history", () =>
+                  output.replaceChildren(show),
+                ),
+                list,
+              );
+            },
+            () => output.append(alert("Could not read password history.")),
+          );
+        });
+        output.append(show);
+      }
     }
     if (details?.notes != null) add("Notes", details.notes);
     const titleNode = create("h3", title ?? "Unreadable item");
@@ -691,15 +830,24 @@ class VaultReader extends HTMLElement {
         edit = action("Edit Secure Note", () =>
           this.#showNoteForm({ item, title, notes: details.notes }),
         );
-      else if (login)
+      else if (item.type === 1 && login)
         edit = action("Edit Login", () =>
           this.#showLoginForm({ item, title, login }),
+        );
+      else
+        edit = action(`Edit ${itemTypes[item.type].label}`, () =>
+          this.#showDetailedForm(item.type, { item, title, details }),
         );
     }
     this.replaceChildren(
       this.#toolbar(
         trashed ? this.#showTrash : this.#showList,
         edit,
+        !trashed && title !== null && details && item.type <= 2
+          ? action("Edit item fields", () =>
+              this.#showDetailedForm(item.type, { item, title, details }),
+            )
+          : undefined,
         action(trashed ? "Restore" : "Move to Trash", () =>
           this.#changeLifecycle(entry, details),
         ),

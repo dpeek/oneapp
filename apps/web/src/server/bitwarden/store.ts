@@ -1,6 +1,7 @@
 import type { WorkerEnv } from "../../../../../alchemy.run.ts";
 import {
   changePersonalItem as changeVaultItem,
+  editPersonalItem as editVaultItem,
   createPersonalItem,
   type EncryptedItem,
   type PersonalVault,
@@ -253,6 +254,14 @@ export const changePersonalItem = (
   id: string,
   change: Parameters<typeof changeVaultItem>[3],
 ) => changeVaultItem(db, deviceAuthorization(vault, accessDigest), id, change);
+
+export const editPersonalItem = (
+  db: DB,
+  accessDigest: string,
+  vault: PersonalVault,
+  id: string,
+  edit: Parameters<typeof editVaultItem>[3],
+) => editVaultItem(db, deviceAuthorization(vault, accessDigest), id, edit);
 
 const readDeviceByRefresh = (db: DB, refreshDigest: string, now: number) =>
   db

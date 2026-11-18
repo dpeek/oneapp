@@ -8,7 +8,7 @@ import {
   vaultKdfIterations,
 } from "../../vault-setup-contract.ts";
 import { digest } from "../digest.ts";
-import type { ItemContent } from "./item.ts";
+import { itemContent, type ItemContent } from "../../vault-item-content.ts";
 import type { personalVaultItems, personalVaults } from "./tables.ts";
 
 export type PersonalVault = typeof personalVaults.$inferSelect;
@@ -31,7 +31,7 @@ const decodeStoredItem = ({
   ...row
 }: StoredPersonalItem): PersonalItem => ({
   ...row,
-  details: JSON.parse(details),
+  ...itemContent(row.type, JSON.parse(details)),
 });
 
 export const readPersonalVault = async (db: WorkerEnv["DB"], ownerId: string) =>
@@ -47,6 +47,20 @@ export const readPersonalVault = async (db: WorkerEnv["DB"], ownerId: string) =>
     )
     .bind(ownerId)
     .first<PersonalVault>();
+
+export const readPersonalItem = async (
+  db: WorkerEnv["DB"],
+  vaultId: string,
+  id: string,
+) => {
+  const row = await db
+    .prepare(
+      `SELECT ${personalItemColumns("l")} FROM personal_vault_logins l WHERE l.vault_id = ? AND l.id = ?`,
+    )
+    .bind(vaultId, id)
+    .first<StoredPersonalItem>();
+  return row ? decodeStoredItem(row) : null;
+};
 
 export const readPersonalItems = async (
   db: WorkerEnv["DB"],
@@ -129,7 +143,7 @@ export const initializePersonalVault = async (
 export type EncryptedItem = Pick<PersonalItem, "name" | "wrappedKey"> &
   ItemContent;
 
-type VaultAuthorization = {
+export type VaultAuthorization = {
   query: string;
   parameters: (now: number) => readonly (string | number)[];
 };
@@ -142,7 +156,11 @@ export const createPersonalItem = async (
 ) => {
   const serializedDetails = JSON.stringify(details);
   const createDigest = await digest(
-    JSON.stringify([name, wrappedKey, serializedDetails]),
+    JSON.stringify(
+      type <= 2
+        ? [name, wrappedKey, serializedDetails]
+        : [type, name, wrappedKey, serializedDetails],
+    ),
   );
   const now = Date.now();
   const id = crypto.randomUUID();
@@ -314,6 +332,69 @@ export const changePersonalItem = async (
       return { status: "updated", item } as const;
   }
   return { status: "conflict" } as const;
+};
+
+export const editPersonalItem = async (
+  db: WorkerEnv["DB"],
+  authorization: VaultAuthorization,
+  id: string,
+  edit: Pick<EncryptedItem, "type" | "name" | "details"> & {
+    wrappedKey?: string;
+    expectedRevision: number;
+    keepPasswordHistory?: boolean;
+  },
+) => {
+  const now = Date.now();
+  const row = await currentItem(db, authorization.query)
+    .bind(...authorization.parameters(now), id)
+    .first<StoredPersonalItem | { id: null }>();
+  if (!row) return { status: "unauthorized" } as const;
+  if (row.id === null) return { status: "not_found" } as const;
+  const item = decodeStoredItem(row);
+  if (item.type !== edit.type) return { status: "type_mismatch" } as const;
+  if (item.deletedAt !== null) return { status: "trashed" } as const;
+
+  const wrappedKey = edit.wrappedKey ?? item.wrappedKey;
+  const old = wrappedKey === item.wrappedKey ? item.details : {};
+  let details = {
+    ...old,
+    ...edit.details,
+    ...(edit.details.credentials && {
+      credentials: { ...old.credentials, ...edit.details.credentials },
+    }),
+    ...(edit.details.data && { data: { ...old.data, ...edit.details.data } }),
+  };
+  const matches = (current: PersonalItem) =>
+    current.name === edit.name &&
+    current.wrappedKey === wrappedKey &&
+    JSON.stringify(current.details) === JSON.stringify(details);
+  if (edit.keepPasswordHistory && matches(item))
+    return { status: "updated", item } as const;
+  if (item.revisionAt !== edit.expectedRevision)
+    return { status: "conflict" } as const;
+  const previousPassword = old.credentials?.password;
+  const newPassword = details.credentials?.password;
+  if (
+    edit.keepPasswordHistory &&
+    previousPassword != null &&
+    previousPassword !== newPassword
+  ) {
+    const changedAt = new Date(now).toISOString();
+    details = {
+      ...details,
+      credentials: { ...details.credentials, passwordRevisionDate: changedAt },
+      passwordHistory: [
+        { password: previousPassword, lastUsedDate: changedAt },
+        ...(details.passwordHistory ?? []).slice(0, 4),
+      ],
+    };
+  }
+  return changePersonalItem(db, authorization, id, {
+    kind: "edit",
+    expectedRevision: edit.expectedRevision,
+    item: { name: edit.name, wrappedKey, ...itemContent(item.type, details) },
+    alreadyApplied: edit.keepPasswordHistory ? matches : undefined,
+  });
 };
 
 type LoginEdit = Omit<typeof EditVaultLogin.Type, "keyId" | "type">;

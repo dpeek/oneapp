@@ -5,7 +5,7 @@ import {
   text,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
-import type { ItemContent } from "./item.ts";
+import type { ItemContent } from "../../vault-item-content.ts";
 import { accounts } from "../database.ts";
 
 export const personalVaults = sqliteTable("personal_vaults", {

@@ -39,6 +39,7 @@ import {
   vaultLifecyclePath,
   VaultSnapshot,
 } from "../vault-items-contract.ts";
+import { extraItemTypes, itemTypes } from "../vault-item-content.ts";
 import { createVaultSetup } from "../vault-crypto.ts";
 import { deviceLifetimeMillis, randomSecret } from "./bitwarden/tokens.ts";
 import { digest } from "./digest.ts";
@@ -770,13 +771,25 @@ it("scopes Bitwarden and web writes to the current account and vault", async () 
   `);
   seedVault.run(vaultId, "owner", email, keyId);
   seedVault.run(otherVaultId, "other", "other@example.net", keyId);
+  const encrypted = (bytes: number, fill = 0) => {
+    const block = (length: number) =>
+      Buffer.alloc(length, fill).toString("base64");
+    return `2.${block(16)}|${block(bytes)}|${block(32)}`;
+  };
+  const legacyDetails = {
+    credentials: {
+      username: encrypted(16, 40),
+      password: encrypted(16, 41),
+      uris: [{ uri: encrypted(16, 42), match: null }],
+    },
+  };
   const seedLogin = sqlite.query(`
     INSERT INTO personal_vault_logins (id, vault_id, name, wrapped_key, details, created_at, revision_at)
-    VALUES (?, ?, 'encrypted', 'wrapped', '{"credentials":{"username":"encrypted","password":"encrypted","uris":[{"uri":"encrypted","match":null}]}}', 1, 1)
+    VALUES (?, ?, 'encrypted', 'wrapped', ?, 1, 1)
   `);
-  seedLogin.run(itemId, vaultId);
+  seedLogin.run(itemId, vaultId, JSON.stringify(legacyDetails));
   const otherItemId = crypto.randomUUID();
-  seedLogin.run(otherItemId, otherVaultId);
+  seedLogin.run(otherItemId, otherVaultId, JSON.stringify(legacyDetails));
 
   const callback = `${origin}/sso-connector.html`;
   const verifier = "v".repeat(64);
@@ -875,11 +888,6 @@ it("scopes Bitwarden and web writes to the current account and vault", async () 
   };
   expect(snapshot.ciphers.map(({ id }) => id)).toEqual([itemId]);
 
-  const encrypted = (bytes: number, fill = 0) => {
-    const block = (length: number) =>
-      Buffer.alloc(length, fill).toString("base64");
-    return `2.${block(16)}|${block(bytes)}|${block(32)}`;
-  };
   const login = {
     type: 1,
     encryptedFor: vaultId,
@@ -1184,7 +1192,7 @@ it("scopes Bitwarden and web writes to the current account and vault", async () 
   const webVault = await request(vaultItemsPath, { headers: { cookie } });
   expect(webVault.status).toBe(200);
   expect(webVault.headers.get("cache-control")).toBe("no-store");
-  expect(await webVault.json()).toEqual({
+  expect(await webVault.json()).toMatchObject({
     keyId,
     wrappedKey: "wrapped",
     kdfSalt: email,
@@ -1221,9 +1229,10 @@ it("scopes Bitwarden and web writes to the current account and vault", async () 
         notes: null,
         requiresMasterPassword: false,
         revision: 1,
-        username: "encrypted",
-        password: "encrypted",
-        uris: ["encrypted"],
+        username: legacyDetails.credentials.username,
+        password: legacyDetails.credentials.password,
+        uris: legacyDetails.credentials.uris.map(({ uri }) => uri),
+        details: legacyDetails,
       },
     ],
   });
@@ -1268,7 +1277,7 @@ it("scopes Bitwarden and web writes to the current account and vault", async () 
     type: 2;
     revision: number;
   };
-  expect(webItem).toEqual({
+  expect(webItem).toMatchObject({
     id: expect.any(String),
     type: 2,
     name: webNote.name,
@@ -1356,7 +1365,7 @@ it("scopes Bitwarden and web writes to the current account and vault", async () 
   expect(savedEdit.status).toBe(200);
   expect(savedEdit.headers.get("cache-control")).toBe("no-store");
   const editedInWeb = (await savedEdit.json()) as { revision: number };
-  expect(editedInWeb).toEqual({
+  expect(editedInWeb).toMatchObject({
     id: savedNote.id,
     type: 2,
     name: webEdit.name,
@@ -1442,7 +1451,7 @@ it("scopes Bitwarden and web writes to the current account and vault", async () 
   expect(createdLogin.status).toBe(201);
   expect(createdLogin.headers.get("cache-control")).toBe("no-store");
   const savedWebLogin = (await createdLogin.json()) as { id: string };
-  expect(savedWebLogin).toEqual({
+  expect(savedWebLogin).toMatchObject({
     id: expect.any(String),
     type: 1,
     name: webLogin.name,
@@ -1569,7 +1578,7 @@ it("scopes Bitwarden and web writes to the current account and vault", async () 
   expect(clearedWebLogin).toMatchObject({ uris: [login.login.uris[1]!.uri] });
   expect(await (await putLogin(removeWebsite)).json()).toEqual(clearedWebLogin);
   const afterClear = await readLogin();
-  expect(afterClear).toEqual({
+  expect(afterClear).toMatchObject({
     ...afterWebRotation,
     revisionDate: new Date(clearedWebLogin.revision).toISOString(),
     login: { ...afterWebRotation.login, uris: [login.login.uris[1]] },
@@ -1711,6 +1720,139 @@ it("scopes Bitwarden and web writes to the current account and vault", async () 
   expect((await readWebVault()).items).toContainEqual(
     await webNoteRestore.json(),
   );
+
+  const getCipher = (id: string) =>
+    request(`/api/ciphers/${id}`, {
+      headers: { authorization: `Bearer ${issued.access_token}` },
+    });
+  const getWebItem = (id: string) =>
+    request(vaultItemPath(id), { headers: { cookie } });
+  expect((await getCipher(otherItemId)).status).toBe(404);
+  expect((await getWebItem(otherItemId)).status).toBe(404);
+  for (const type of extraItemTypes) {
+    const { wire, fields } = itemTypes[type];
+    const data = Object.fromEntries(
+      Object.keys(fields).map((field, index) => [
+        field,
+        encrypted(16, index + 40),
+      ]),
+    );
+    const firstKey = Object.keys(data)[0]!;
+    const properties = {
+      name: encrypted(16, type),
+      favorite: true,
+      notes: encrypted(16, 32),
+    };
+    const cipher = {
+      ...properties,
+      type,
+      key: encrypted(80, type),
+      [wire]: data,
+    };
+    expect(
+      (await save(issued.access_token, { ...cipher, login: {} })).status,
+    ).toBe(400);
+    expect(
+      (
+        await save(issued.access_token, {
+          ...cipher,
+          [wire]: { ...data, invalidField: encrypted(16) },
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await save(issued.access_token, {
+          ...cipher,
+          [wire]: { ...data, [firstKey]: "plaintext" },
+        })
+      ).status,
+    ).toBe(400);
+
+    const saved = await save(issued.access_token, cipher);
+    expect(saved.status).toBe(200);
+    const original = (await saved.json()) as {
+      id: string;
+      revisionDate: string;
+    };
+    expect(await (await getCipher(original.id)).json()).toEqual(original);
+    const put = await request(vaultItemPath(original.id), {
+      method: "PUT",
+      headers: {
+        cookie,
+        origin,
+        "content-type": "application/json",
+        "x-effect-auth-csrf": "1",
+      },
+      body: JSON.stringify({
+        keyId,
+        type,
+        name: properties.name,
+        expectedRevision: Date.parse(original.revisionDate),
+        details: { data: { [firstKey]: null } },
+      }),
+    });
+    expect(put.status).toBe(200);
+    const expectedData = { ...data, [firstKey]: null };
+    expect(await (await getWebItem(original.id)).json()).toMatchObject({
+      id: original.id,
+      type,
+      wrappedKey: cipher.key,
+      details: { data: expectedData, notes: properties.notes, favorite: true },
+    });
+
+    const current = (await (
+      await getCipher(original.id)
+    ).json()) as typeof original;
+    const updated = await write(
+      issued.access_token,
+      {
+        type,
+        name: properties.name,
+        key: cipher.key,
+        favorite: false,
+        lastKnownRevisionDate: current.revisionDate,
+      },
+      original.id,
+    );
+    expect(updated.status).toBe(200);
+    expect(await updated.json()).toMatchObject({
+      id: original.id,
+      type,
+      key: cipher.key,
+      notes: properties.notes,
+      favorite: false,
+      [wire]: expectedData,
+    });
+    const synced = (await (
+      await sync(issued.access_token)
+    ).json()) as typeof snapshot;
+    expect(synced.ciphers.find(({ id }) => id === original.id)).toMatchObject({
+      id: original.id,
+      [wire]: expectedData,
+    });
+
+    const webCreate = await call(
+      vaultItemsPath,
+      {
+        ...properties,
+        favorite: undefined,
+        notes: undefined,
+        keyId,
+        type,
+        wrappedKey: encrypted(80, type + 16),
+        details: { data },
+      },
+      cookie,
+    );
+    expect(webCreate.status).toBe(201);
+    const { id } = (await webCreate.json()) as { id: string };
+    expect(await (await getCipher(id)).json()).toMatchObject({
+      id,
+      type,
+      [wire]: data,
+    });
+  }
 
   const refresh = {
     grant_type: "refresh_token",

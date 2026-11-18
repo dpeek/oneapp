@@ -1,4 +1,12 @@
 import { Schema } from "effect";
+import {
+  EncryptedVaultValue,
+  ExtraItemType,
+  ItemDetails,
+  ItemType,
+  WrappedItemKey,
+} from "./vault-item-content.ts";
+export { EncryptedVaultValue, WrappedItemKey } from "./vault-item-content.ts";
 import { VaultSetup } from "./vault-setup-contract.ts";
 
 export const vaultItemsPath = "/api/vault/items";
@@ -9,20 +17,6 @@ export const vaultLifecyclePath = (id: string, action: VaultLifecycleAction) =>
   `${vaultItemPath(id)}/${action}`;
 export const vaultItemBodyLimit = 128 * 1024;
 export const VaultItemId = Schema.String.check(Schema.isUUID());
-
-// Personal vaults currently use Bitwarden's authenticated type-2 encrypted strings.
-export const EncryptedVaultValue = Schema.String.check(
-  Schema.isMaxLength(vaultItemBodyLimit),
-  Schema.isPattern(
-    /^2\.[A-Za-z0-9+/]{22}==\|[A-Za-z0-9+/]{22,}={0,2}\|[A-Za-z0-9+/]{43}=$/u,
-  ),
-);
-
-export const WrappedItemKey = Schema.String.check(
-  Schema.isPattern(
-    /^2\.[A-Za-z0-9+/]{22}==\|[A-Za-z0-9+/]{107}=\|[A-Za-z0-9+/]{43}=$/u,
-  ),
-);
 
 const encryptedItem = {
   keyId: VaultSetup.fields.keyId,
@@ -56,9 +50,15 @@ const CreateVaultLogin = Schema.Struct({
   type: Schema.Literal(1),
   website: EncryptedWebsite,
 });
+const CreateDetailedItem = Schema.Struct({
+  ...encryptedItem,
+  type: ItemType,
+  details: ItemDetails,
+});
 export const CreateVaultItem = Schema.Union([
   CreateVaultLogin,
   CreateVaultNote,
+  CreateDetailedItem,
 ]);
 
 const editItem = {
@@ -82,7 +82,16 @@ export const EditVaultLogin = Schema.Struct({
     }),
   ),
 });
-export const EditVaultItem = Schema.Union([EditVaultLogin, EditVaultNote]);
+const EditDetailedItem = Schema.Struct({
+  ...editItem,
+  type: ItemType,
+  details: ItemDetails,
+});
+export const EditVaultItem = Schema.Union([
+  EditVaultLogin,
+  EditVaultNote,
+  EditDetailedItem,
+]);
 export const hostUriMatch = 1;
 
 const itemFields = {
@@ -91,6 +100,7 @@ const itemFields = {
   wrappedKey: Schema.String,
   notes: Schema.NullOr(Schema.String),
   requiresMasterPassword: Schema.Boolean,
+  details: ItemDetails,
   revision: ItemRevision,
 };
 
@@ -106,7 +116,12 @@ export const VaultLogin = Schema.Struct({
   password: Schema.NullOr(Schema.String),
   uris: Schema.Array(Schema.String),
 });
-export const VaultItem = Schema.Union([VaultLogin, VaultSecureNote]);
+const VaultOtherItem = Schema.Struct({ ...itemFields, type: ExtraItemType });
+export const VaultItem = Schema.Union([
+  VaultLogin,
+  VaultSecureNote,
+  VaultOtherItem,
+]);
 
 export const VaultSnapshot = Schema.Struct({
   keyId: VaultSetup.fields.keyId,

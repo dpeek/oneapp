@@ -1,0 +1,1 @@
+ALTER TABLE `personal_vault_logins` ADD `deleted_at` integer;

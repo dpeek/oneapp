@@ -3,7 +3,12 @@ import { cliLoginPath } from "@oneapp/core/cli-auth";
 import { EmailDelivery } from "@yielded/auth";
 import { ProofDispatchScheduler } from "@yielded/auth/Proofs";
 import { Effect, Layer, Redacted } from "effect";
-import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
+import {
+  HttpRouter,
+  HttpServer,
+  HttpServerRequest,
+  HttpServerResponse,
+} from "effect/http";
 import { accountPath } from "../account-contract.ts";
 import {
   forgotPasswordPage,
@@ -12,7 +17,9 @@ import {
 } from "../password-recovery-contract.ts";
 import { cloudflareEmail, disabledEmail } from "./account-email.ts";
 import { accountRoutes } from "./account.ts";
-import { authHttp } from "./auth.ts";
+import { AppAuth, authHttp, sessionCookieName } from "./auth.ts";
+import { bitwardenFetch, isBitwardenPath } from "./bitwarden/routes.ts";
+import { privateHeaders } from "./api-response.ts";
 import { cliLoginRoutes } from "./cli-login.ts";
 import { cliTokenRoutes } from "./cli-tokens.ts";
 import { authDependencies, databaseLayer } from "./database.ts";
@@ -32,6 +39,7 @@ import {
   passwordRecoveryRoutes,
   resetLinkRenderer,
 } from "./password-recovery.ts";
+import { vaultSetupRoutes } from "./vault/setup.ts";
 
 const health = HttpRouter.add(
   "GET",
@@ -164,6 +172,33 @@ export default {
           })
         : undefined,
     );
+    if (isBitwardenPath(path)) {
+      try {
+        return await bitwardenFetch(request, url, env, () => {
+          const cookie =
+            HttpServerRequest.fromWeb(request).cookies[sessionCookieName];
+          if (cookie === undefined) return Promise.resolve(null);
+          return Effect.runPromise(
+            Effect.flatMap(AppAuth, (auth) =>
+              auth.verifySession(Redacted.make(cookie)),
+            ).pipe(
+              Effect.map((session) => ({
+                ownerId: session.subjectId,
+                sessionId: session.sessionId,
+                securityRevision: session.securityRevision,
+              })),
+              Effect.catchTag("SessionInvalid", () => Effect.succeed(null)),
+              Effect.provide(AppAuth.layer.pipe(Layer.provide(dependencies))),
+            ),
+          );
+        });
+      } catch {
+        return Response.json(
+          { error: "temporarily_unavailable" },
+          { status: 503, headers: privateHeaders },
+        );
+      }
+    }
     const app = HttpRouter.toWebHandler(
       Layer.mergeAll(
         health,
@@ -184,6 +219,7 @@ export default {
           ),
           passwordRecoveryRoutes(http, emailTransport !== disabledEmail),
           linksRoutes(http),
+          vaultSetupRoutes(http, env.DB),
           cliTokenRoutes(http),
           cliLoginRoutes(http),
           extensionAccessRoutes(http),

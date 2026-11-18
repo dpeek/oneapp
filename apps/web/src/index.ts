@@ -1,3 +1,7 @@
+import {
+  authorizationFromFragment,
+  bitwardenSignInQuery,
+} from "./bitwarden-connection.ts";
 import { appName } from "@oneapp/core";
 import { Link, LinkList, SaveLink } from "@oneapp/core/links";
 import * as Client from "@yielded/auth/Client";
@@ -15,21 +19,27 @@ import { mcpAuthorizePath, mcpLoginQuery } from "./mcp-access-contract.ts";
 import { navigationView } from "./navigation.ts";
 import * as PasswordRecovery from "./password-recovery.ts";
 import { forgotPasswordPage } from "./password-recovery-contract.ts";
+import { vaultPath } from "./vault-setup-contract.ts";
+import * as VaultSetup from "./vault-setup.ts";
 
-const Page = Schema.Literals(["links", "settings"]);
+const Page = Schema.Literals(["links", "vault", "settings"]);
 type Page = typeof Page.Type;
-const pageFor = (url: Url.Url): Page =>
-  url.pathname === "/settings" ||
-  url.pathname === "/settings/" ||
-  (url.pathname === "/" && Option.getOrUndefined(url.hash) === "cli-access")
+const pageFor = (url: Url.Url): Page => {
+  if (url.pathname === vaultPath || url.pathname === `${vaultPath}/`)
+    return "vault";
+  return url.pathname === "/settings" ||
+    url.pathname === "/settings/" ||
+    (url.pathname === "/" && Option.getOrUndefined(url.hash) === "cli-access")
     ? "settings"
     : "links";
+};
 
 const Model = Schema.Struct({
   page: Page,
   account: Schema.NullOr(Account),
   sessionCheck: Schema.Literals(["checking", "failed", "resolved"]),
   accountSettings: AccountSettings.Model,
+  vaultSetup: VaultSetup.Model,
   signInNotice: Schema.NullOr(Schema.String),
   links: Schema.NullOr(LinkList),
   linkUrl: Schema.String,
@@ -52,6 +62,7 @@ const Message = defineMessageUnion({
   ClickedSignOut: {},
   LoadedAccount: { account: Schema.NullOr(Account) },
   GotAccountSettingsMessage: { message: AccountSettings.Message },
+  GotVaultSetupMessage: { message: VaultSetup.Message },
   ChangedLinkUrl: { url: Schema.String },
   SubmittedLink: {},
   RequestedLinkDeletion: { id: Schema.String },
@@ -67,6 +78,11 @@ const Message = defineMessageUnion({
 type Message = typeof Message.Type;
 
 const AuthClient = Client.make(AuthApi, { baseUrl: window.location.origin });
+const initialUrl = new URL(window.location.href);
+const bitwardenAuthorization = authorizationFromFragment(initialUrl);
+const connectingBitwarden =
+  bitwardenAuthorization !== null &&
+  initialUrl.searchParams.get(bitwardenSignInQuery) === "1";
 const connectingMcp =
   new URL(window.location.href).searchParams.get(mcpLoginQuery) === "1";
 const savedAtFormat = new Intl.DateTimeFormat(undefined, {
@@ -77,6 +93,15 @@ const isSaveLink = Schema.is(SaveLink);
 const toAccountSettingsMessage = (
   message: typeof AccountSettings.Message.Type,
 ) => Message.GotAccountSettingsMessage({ message });
+const toVaultSetupMessage = (message: typeof VaultSetup.Message.Type) =>
+  Message.GotVaultSetupMessage({ message });
+const foldVaultSetup = Update.foldChild({
+  update: VaultSetup.update,
+  read: (model: Model) =>
+    model.account ? Option.some(model.vaultSetup) : Option.none(),
+  write: (model, vaultSetup) => ({ ...model, vaultSetup }),
+  toParentMessage: toVaultSetupMessage,
+});
 const toConnectedClientsMessage = (
   message: typeof ConnectedClients.Message.Type,
 ) => Message.GotConnectedClientsMessage({ message });
@@ -278,6 +303,8 @@ const loadPage = (model: Model): Update.Return<Model, Message> => {
           commands: [LoadLinks({})],
         };
   }
+  if (model.page === "vault")
+    return foldVaultSetup(model, VaultSetup.Message.Requested());
   return foldConnectedClients(model, ConnectedClients.Message.Requested());
 };
 
@@ -288,6 +315,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     account: null,
     sessionCheck: "checking",
     accountSettings: AccountSettings.initial,
+    vaultSetup: VaultSetup.initial,
     signInNotice: null,
     links: null,
     linkUrl: "",
@@ -301,7 +329,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
   const commands: NonNullable<
     Update.Return<Model, Message>["commands"]
   >[number][] = [LoadAccount({})];
-  if (url.pathname === "/" && !isApproval(model)) {
+  if (url.pathname === "/" && !connectingBitwarden && !isApproval(model)) {
     const hash = Option.getOrUndefined(url.hash);
     commands.push(
       Navigate({ href: `/${page}${hash ? "#" + hash : ""}`, mode: "replace" }),
@@ -320,7 +348,8 @@ const update = (
         request._tag === "Internal" &&
         !isApproval(model) &&
         (request.url.pathname === "/links" ||
-          request.url.pathname === "/settings")
+          request.url.pathname === "/settings" ||
+          request.url.pathname === vaultPath)
       ) {
         if (request.url.pathname === window.location.pathname) return { model };
         return {
@@ -370,6 +399,7 @@ const update = (
         account,
         sessionCheck: "resolved",
         accountSettings: AccountSettings.initial,
+        vaultSetup: VaultSetup.initial,
         signInNotice: null,
         links: null,
         linkUrl: "",
@@ -380,6 +410,11 @@ const update = (
         pending: false,
         error: null,
       };
+      if (account && connectingBitwarden)
+        return {
+          model: next,
+          commands: [Navigate({ href: bitwardenAuthorization, mode: "load" })],
+        };
       if (account && cliLogin)
         return foldCliLogin(next, CliLogin.Message.Requested());
       return loadPage(next);
@@ -613,6 +648,7 @@ const update = (
     RequestFailed: ({ error }) => ({
       model: { ...model, deletingLink: null, pending: false, error },
     }),
+    GotVaultSetupMessage: ({ message }) => foldVaultSetup(model, message),
     GotConnectedClientsMessage: ({ message }) =>
       foldConnectedClients(model, message),
     GotCliLoginMessage: ({ message }) => foldCliLogin(model, message),
@@ -827,6 +863,9 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
         [h.Class("standalone")],
         [
           h.h1([], [appName]),
+          ...(connectingBitwarden && !model.account
+            ? [h.p([], ["Sign in to connect Bitwarden to OneApp."])]
+            : []),
           ...(connectingMcp && !model.account
             ? [h.p([], ["Sign in to connect Codex to OneApp."])]
             : []),
@@ -839,7 +878,11 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
       ),
     };
   }
-  const title = model.page === "links" ? "Links" : "Settings";
+  const title = {
+    links: "Links",
+    vault: "Password vault",
+    settings: "Settings",
+  }[model.page];
   return {
     title: `${title} · ${appName}`,
     body: h.div(
@@ -852,7 +895,14 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
             h.h1([], [title]),
             model.page === "links"
               ? linksView(model, h)
-              : settingsView(model, h),
+              : model.page === "vault"
+                ? h.submodel({
+                    slotId: "vault-setup",
+                    view: VaultSetup.view,
+                    model: model.vaultSetup,
+                    toParentMessage: toVaultSetupMessage,
+                  })
+                : settingsView(model, h),
             error,
           ],
         ),
@@ -861,7 +911,9 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
   };
 };
 
-if (PasswordRecovery.isRecoveryPage(window.location.pathname)) {
+if (bitwardenAuthorization && !connectingBitwarden) {
+  window.location.replace(bitwardenAuthorization);
+} else if (PasswordRecovery.isRecoveryPage(window.location.pathname)) {
   PasswordRecovery.run(window.location.pathname);
 } else
   Runtime.run(

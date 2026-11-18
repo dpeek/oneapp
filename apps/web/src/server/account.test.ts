@@ -30,6 +30,8 @@ import {
   passwordResetPath,
   resetPasswordPage,
 } from "../password-recovery-contract.ts";
+import { vaultSetupPath } from "../vault-setup-contract.ts";
+import { createVaultSetup } from "../vault-setup-crypto.ts";
 import { ensureOwner } from "./provision-owner.ts";
 import { mcpOAuth } from "./mcp-oauth.ts";
 import worker from "./worker.ts";
@@ -50,6 +52,7 @@ const setup = async (sqlite: Database) => {
     return {
       execute,
       all: async () => execute(),
+      first: async () => execute().results[0] ?? null,
       raw: async () => sqlite.query(sql).values(...params),
     };
   };
@@ -736,3 +739,447 @@ it("recovers only a verified address with a single-use link and revokes browser 
     vi.unstubAllGlobals();
   }
 }, 20_000);
+
+it("scopes Bitwarden grants and login writes to the current account and vault", async () => {
+  using sqlite = new Database(":memory:");
+  const origin = "https://oneapp.example";
+  const { request, signIn, cookies } = await setup(sqlite);
+  const vaultId = crypto.randomUUID();
+  const itemId = crypto.randomUUID();
+  const otherVaultId = crypto.randomUUID();
+  const keyId = "0".repeat(32);
+  sqlite
+    .query(
+      "INSERT INTO accounts (id, active, security_revision) VALUES ('other', 1, '1')",
+    )
+    .run();
+  const seedVault = sqlite.query(`
+    INSERT INTO personal_vaults (id, owner_id, kdf_salt, kdf_iterations, wrapped_key, key_id,
+       wrapped_private_key, public_key, created_at, revision_at)
+    VALUES (?, ?, ?, 600000, 'wrapped', ?, 'wrapped-private', 'public', 1, 1)
+  `);
+  seedVault.run(vaultId, "owner", email, keyId);
+  seedVault.run(otherVaultId, "other", "other@example.net", keyId);
+  const seedLogin = sqlite.query(`
+    INSERT INTO personal_vault_logins (id, vault_id, name, wrapped_key, details, created_at, revision_at)
+    VALUES (?, ?, 'encrypted', 'wrapped', '{"credentials":{"username":"encrypted","password":"encrypted","uris":[{"uri":"encrypted","match":null}]}}', 1, 1)
+  `);
+  seedLogin.run(itemId, vaultId);
+  const otherItemId = crypto.randomUUID();
+  seedLogin.run(otherItemId, otherVaultId);
+
+  const callback = `${origin}/sso-connector.html`;
+  const verifier = "v".repeat(64);
+  const challenge = Base64Url.encode(
+    new Uint8Array(
+      await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)),
+    ),
+  );
+  const authorization = "/identity/connect/authorize";
+  const authorize = `${authorization}?${new URLSearchParams({
+    client_id: "browser",
+    redirect_uri: callback,
+    response_type: "code",
+    scope: "api offline_access",
+    state: `${"s".repeat(64)}:clientId=browser`,
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+  })}`;
+  const guest = await request(authorize, {});
+  expect(guest.status).toBe(303);
+  expect(
+    new URL(guest.headers.get("location")!).searchParams.get(
+      "connectBitwarden",
+    ),
+  ).toBe("1");
+
+  const cookie = cookies(await signIn(password));
+  const otherBrowser = cookies(await signIn(password));
+  const page = await request(authorize, { headers: { cookie } });
+  expect(page.status).toBe(200);
+  const approval = (await page.text()).match(
+    /name="approval" value="([^"]+)"/u,
+  )?.[1];
+  expect(approval).toBeDefined();
+
+  const form = (
+    path: string,
+    body: Record<string, string>,
+    headers: Record<string, string> = {},
+  ) =>
+    request(path, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        ...headers,
+      },
+      body: new URLSearchParams(body),
+    });
+  const consent = { approval: approval! };
+  expect(
+    (
+      await form(authorization, consent, {
+        cookie,
+        origin: "https://other.example",
+      })
+    ).status,
+  ).toBe(403);
+  expect(
+    (await form(authorization, consent, { cookie: otherBrowser, origin }))
+      .status,
+  ).toBe(400);
+  const approved = await form(authorization, consent, { cookie, origin });
+  expect(approved.status).toBe(303);
+  const code = new URL(approved.headers.get("location")!).searchParams.get(
+    "code",
+  )!;
+
+  const token = (body: Record<string, string>) =>
+    form("/identity/connect/token", { client_id: "browser", ...body });
+  const codeGrant = {
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: callback,
+    deviceIdentifier: "test-device",
+  };
+  expect(
+    (await token({ ...codeGrant, code_verifier: "x".repeat(64) })).status,
+  ).toBe(400);
+  const redemption = await Promise.all([
+    token({ ...codeGrant, code_verifier: verifier }),
+    token({ ...codeGrant, code_verifier: verifier }),
+  ]);
+  expect(redemption.map((response) => response.status).sort()).toEqual([
+    200, 400,
+  ]);
+  const issued = (await redemption.find((response) => response.ok)!.json()) as {
+    access_token: string;
+    refresh_token: string;
+  };
+  const sync = (accessToken: string) =>
+    request("/api/sync", {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  const snapshot = (await (await sync(issued.access_token)).json()) as {
+    ciphers: { id: string }[];
+  };
+  expect(snapshot.ciphers.map(({ id }) => id)).toEqual([itemId]);
+
+  const encrypted = (bytes: number, fill = 0) => {
+    const block = (length: number) =>
+      Buffer.alloc(length, fill).toString("base64");
+    return `2.${block(16)}|${block(bytes)}|${block(32)}`;
+  };
+  const login = {
+    type: 1,
+    encryptedFor: vaultId,
+    encryptedByKeyId: keyId,
+    name: encrypted(16),
+    key: encrypted(80),
+    notes: encrypted(16, 1),
+    favorite: true,
+    login: {
+      password: encrypted(16, 2),
+      uris: [
+        { uri: encrypted(32, 3), match: null, uriChecksum: encrypted(48, 4) },
+        { uri: encrypted(32, 5), match: 3 },
+      ],
+    },
+  };
+  const write = (accessToken: string, body: object, id?: string) =>
+    request(id ? `/api/ciphers/${id}` : "/api/ciphers", {
+      method: id ? "PUT" : "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify(body),
+    });
+  const save = (accessToken: string, body: object = login) =>
+    write(accessToken, body);
+  expect((await save("unknown")).status).toBe(401);
+  expect(
+    (await save(issued.access_token, { ...login, encryptedFor: otherVaultId }))
+      .status,
+  ).toBe(400);
+  expect(
+    (
+      await save(issued.access_token, {
+        ...login,
+        encryptedByKeyId: "1".repeat(32),
+      })
+    ).status,
+  ).toBe(409);
+  expect(
+    (await save(issued.access_token, { ...login, name: "plaintext" })).status,
+  ).toBe(400);
+  expect(
+    (
+      await save(issued.access_token, {
+        ...login,
+        organizationId: otherVaultId,
+      })
+    ).status,
+  ).toBe(400);
+  const saves = await Promise.all([
+    save(issued.access_token),
+    save(issued.access_token),
+  ]);
+  expect(saves.map((response) => response.status)).toEqual([200, 200]);
+  const created = (await saves[0]!.json()) as {
+    id: string;
+    creationDate: string;
+    revisionDate: string;
+    deletedDate: string | null;
+  };
+  expect(created).toMatchObject({
+    name: login.name,
+    key: login.key,
+    notes: login.notes,
+    favorite: true,
+    login: login.login,
+  });
+  expect(await saves[1]!.json()).toEqual(created);
+  expect(
+    sqlite
+      .query(
+        "SELECT vault_id, revision_at FROM personal_vault_logins WHERE id = ?",
+      )
+      .get(created.id),
+  ).toEqual({
+    vault_id: vaultId,
+    revision_at: Date.parse(created.revisionDate),
+  });
+  const revision = await request("/api/accounts/revision-date", {
+    headers: { authorization: `Bearer ${issued.access_token}` },
+  });
+  expect(await revision.json()).toBe(Date.parse(created.revisionDate));
+  const afterSave = (await (
+    await sync(issued.access_token)
+  ).json()) as typeof snapshot;
+  expect(afterSave.ciphers.map(({ id }) => id).sort()).toEqual(
+    [itemId, created.id].sort(),
+  );
+
+  const changed = {
+    ...login,
+    lastKnownRevisionDate: created.revisionDate,
+    login: { ...login.login, password: encrypted(16, 6) },
+  };
+  const edit = (body: object = changed, id = created.id) =>
+    write(issued.access_token, body, id);
+  expect((await edit(login)).status).toBe(400);
+  expect(
+    (await edit({ ...changed, lastKnownRevisionDate: "invalid" })).status,
+  ).toBe(400);
+  expect((await edit(changed, otherItemId)).status).toBe(404);
+  expect((await write("unknown", changed, created.id)).status).toBe(401);
+  expect((await edit({ ...changed, encryptedFor: otherVaultId })).status).toBe(
+    400,
+  );
+  const edits = await Promise.all([
+    edit(),
+    edit({ ...changed, login: { ...login.login, password: encrypted(16, 7) } }),
+  ]);
+  expect(edits.map((response) => response.status).sort()).toEqual([200, 409]);
+  const winner = edits.findIndex((response) => response.ok);
+  const edited = (await edits[winner]!.json()) as typeof created;
+  expect(edited).toMatchObject({
+    id: created.id,
+    creationDate: created.creationDate,
+    edit: true,
+    organizationUseTotp: false,
+    login: { ...login.login, password: encrypted(16, 6 + winner) },
+  });
+  expect(Date.parse(edited.revisionDate)).toBeGreaterThan(
+    Date.parse(created.revisionDate),
+  );
+  expect(await edits[1 - winner]!.json()).toMatchObject({
+    error: "stale_cipher",
+  });
+  expect(await (await save(issued.access_token)).json()).toEqual(edited);
+  expect((await edit()).status).toBe(409);
+  const afterEdit = (await (
+    await sync(issued.access_token)
+  ).json()) as typeof snapshot;
+  expect(afterEdit.ciphers.find(({ id }) => id === created.id)).toEqual(edited);
+  expect(
+    sqlite
+      .query("SELECT revision_at FROM personal_vaults WHERE id = ?")
+      .get(vaultId),
+  ).toEqual({ revision_at: Date.parse(edited.revisionDate) });
+
+  const lifecycle = (
+    action: "delete" | "restore",
+    id = created.id,
+    accessToken = issued.access_token,
+  ) =>
+    request(`/api/ciphers/${id}/${action}`, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  const readLogin = async () => {
+    const snapshot = (await (await sync(issued.access_token)).json()) as {
+      ciphers: (typeof created)[];
+    };
+    return snapshot.ciphers.find(({ id }) => id === created.id)!;
+  };
+  expect((await lifecycle("delete", otherItemId)).status).toBe(404);
+  expect((await lifecycle("restore", otherItemId)).status).toBe(404);
+  expect((await lifecycle("delete", created.id, "unknown")).status).toBe(401);
+  expect(await (await lifecycle("restore")).json()).toEqual(edited);
+
+  expect((await lifecycle("delete")).status).toBe(204);
+  const trashed = await readLogin();
+  expect(trashed).toEqual({
+    ...edited,
+    deletedDate: trashed.revisionDate,
+    revisionDate: trashed.revisionDate,
+    permissions: { delete: false, restore: true },
+  });
+  expect(Date.parse(trashed.revisionDate)).toBeGreaterThan(
+    Date.parse(edited.revisionDate),
+  );
+  expect((await lifecycle("delete")).status).toBe(204);
+  expect(await (await save(issued.access_token)).json()).toEqual(trashed);
+  for (const revision of [edited.revisionDate, trashed.revisionDate]) {
+    const rejected = await edit({
+      ...changed,
+      lastKnownRevisionDate: revision,
+    });
+    expect(rejected.status).toBe(409);
+    expect(await rejected.json()).toMatchObject({ error: "cipher_trashed" });
+  }
+  expect(await readLogin()).toEqual(trashed);
+  expect(
+    sqlite
+      .query("SELECT revision_at FROM personal_vaults WHERE id = ?")
+      .get(vaultId),
+  ).toEqual({ revision_at: Date.parse(trashed.revisionDate) });
+
+  const restore = await lifecycle("restore");
+  expect(restore.status).toBe(200);
+  const restored = (await restore.json()) as typeof created;
+  expect(restored).toEqual({ ...edited, revisionDate: restored.revisionDate });
+  expect(Date.parse(restored.revisionDate)).toBeGreaterThan(
+    Date.parse(trashed.revisionDate),
+  );
+  expect(await (await lifecycle("restore")).json()).toEqual(restored);
+  expect(
+    (await edit({ ...changed, lastKnownRevisionDate: edited.revisionDate }))
+      .status,
+  ).toBe(409);
+  expect(await readLogin()).toEqual(restored);
+  expect(
+    sqlite
+      .query("SELECT revision_at FROM personal_vaults WHERE id = ?")
+      .get(vaultId),
+  ).toEqual({ revision_at: Date.parse(restored.revisionDate) });
+
+  const refresh = {
+    grant_type: "refresh_token",
+    refresh_token: issued.refresh_token,
+  };
+  const rotated = await Promise.all([token(refresh), token(refresh)]);
+  expect(rotated.map((response) => response.status)).toEqual([200, 200]);
+  const successor = (await rotated[0]!.json()) as typeof issued;
+  expect(
+    ((await rotated[1]!.json()) as typeof issued).refresh_token ===
+      successor.refresh_token,
+  ).toBe(true);
+  expect(successor.refresh_token !== issued.refresh_token).toBe(true);
+  expect((await sync(successor.access_token)).status).toBe(200);
+  expect((await request("/api/sync", { method: "POST" })).status).toBe(405);
+  sqlite.query("UPDATE bitwarden_device_sessions SET retry_until = 0").run();
+  expect((await sync(issued.access_token)).status).toBe(401);
+  expect((await token(refresh)).status).toBe(400);
+
+  sqlite
+    .query(
+      "UPDATE accounts SET security_revision = 'changed' WHERE id = 'owner'",
+    )
+    .run();
+  expect((await sync(successor.access_token)).status).toBe(401);
+  expect((await save(successor.access_token)).status).toBe(401);
+  expect(
+    (await lifecycle("restore", created.id, successor.access_token)).status,
+  ).toBe(401);
+  expect(
+    (await write(successor.access_token, changed, created.id)).status,
+  ).toBe(401);
+  expect(
+    (await token({ ...refresh, refresh_token: successor.refresh_token }))
+      .status,
+  ).toBe(400);
+  expect((await token(refresh)).status).toBe(400);
+});
+
+it("initializes a personal vault once and preserves its keys on retries and concurrent setup", async () => {
+  using sqlite = new Database(":memory:");
+  const { call, cookies, signIn } = await setup(sqlite);
+  const [first, second] = await Promise.all([
+    createVaultSetup("first test vault password", email),
+    createVaultSetup("second test vault password", email),
+  ]);
+  expect((await call(vaultSetupPath)).status).toBe(401);
+  expect((await call(vaultSetupPath, first)).status).toBe(401);
+
+  const cookie = cookies(await signIn(password));
+  expect(await (await call(vaultSetupPath, undefined, cookie)).json()).toEqual({
+    initialized: false,
+    kdfSalt: email,
+  });
+  expect(
+    (await call(vaultSetupPath, first, cookie, "https://other.example")).status,
+  ).toBe(403);
+  expect(
+    (
+      await call(
+        vaultSetupPath,
+        { ...first, kdfSalt: "other@example.net" },
+        cookie,
+      )
+    ).status,
+  ).toBe(403);
+  expect(
+    (
+      await call(
+        vaultSetupPath,
+        { ...first, masterPassword: "unexpected" },
+        cookie,
+      )
+    ).status,
+  ).toBe(400);
+  expect(
+    (
+      await call(
+        vaultSetupPath,
+        { ...first, publicKey: "A".repeat(392) },
+        cookie,
+      )
+    ).status,
+  ).toBe(400);
+
+  const [left, right] = await Promise.all([
+    call(vaultSetupPath, first, cookie),
+    call(vaultSetupPath, second, cookie),
+  ]);
+  expect([left.status, right.status].sort()).toEqual([201, 409]);
+  const winner = left.status === 201 ? first : second;
+  const loser = left.status === 201 ? second : first;
+  expect((await call(vaultSetupPath, winner, cookie)).status).toBe(204);
+  expect((await call(vaultSetupPath, loser, cookie)).status).toBe(409);
+  expect(await (await call(vaultSetupPath, undefined, cookie)).json()).toEqual({
+    initialized: true,
+  });
+
+  const vaults = sqlite
+    .query("SELECT owner_id, key_id, wrapped_key FROM personal_vaults")
+    .all();
+  expect(vaults).toEqual([
+    { owner_id: "owner", key_id: winner.keyId, wrapped_key: winner.wrappedKey },
+  ]);
+  expect(sqlite.query("SELECT id FROM personal_vault_logins").all()).toEqual(
+    [],
+  );
+});

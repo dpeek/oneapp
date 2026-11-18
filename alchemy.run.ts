@@ -37,6 +37,9 @@ export const Web = Cloudflare.Worker(
         runWorkerFirst: [
           "/api",
           "/api/*",
+          "/identity/*",
+          "/notifications/*",
+          "/sso-connector.html",
           "/mcp",
           "/oauth/mcp/*",
           "/.well-known/*",

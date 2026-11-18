@@ -10,6 +10,14 @@ const destinations = [
     ],
   },
   {
+    page: "vault",
+    label: "Password vault",
+    paths: [
+      "M7.5 10V7a4.5 4.5 0 1 1 9 0v3",
+      "M6 10h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2ZM12 14v3",
+    ],
+  },
+  {
     page: "settings",
     label: "Settings",
     paths: [

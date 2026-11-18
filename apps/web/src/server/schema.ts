@@ -19,3 +19,8 @@ export const {
   proofs,
   emailCredentials,
 } = authTables;
+export {
+  bitwardenAuthorizations,
+  bitwardenDeviceSessions,
+} from "./bitwarden/tables.ts";
+export { personalVaultLogins, personalVaults } from "./vault/tables.ts";

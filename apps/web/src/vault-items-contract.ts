@@ -1,6 +1,7 @@
 import { AttachmentMetadata } from "./vault-attachment-contract.ts";
 import { Schema } from "effect";
 import {
+  EditableItemDetails,
   EncryptedVaultValue,
   ExtraItemType,
   ItemDetails,
@@ -54,7 +55,7 @@ const CreateVaultLogin = Schema.Struct({
 const CreateDetailedItem = Schema.Struct({
   ...encryptedItem,
   type: ItemType,
-  details: ItemDetails,
+  details: EditableItemDetails,
   folderId: Schema.optionalKey(Schema.NullOr(VaultItemId)),
 });
 export const CreateVaultItem = Schema.Union([
@@ -87,7 +88,7 @@ export const EditVaultLogin = Schema.Struct({
 const EditDetailedItem = Schema.Struct({
   ...editItem,
   type: ItemType,
-  details: ItemDetails,
+  details: EditableItemDetails,
 });
 export const EditVaultItem = Schema.Union([
   EditVaultLogin,

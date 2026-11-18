@@ -109,7 +109,10 @@ export const cipher = (item: PersonalItem) => ({
   ...(item.type === 1
     ? {
         passwordHistory: item.details.passwordHistory ?? [],
-        login: { ...item.details.credentials, fido2Credentials: [] },
+        login: {
+          ...item.details.credentials,
+          fido2Credentials: item.details.credentials.fido2Credentials ?? [],
+        },
       }
     : item.type === 2
       ? { secureNote: { type: 0 } }

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
 import { checkAttachmentCleanup, checkAttachments } from "./attachments.mjs";
-import { checkTransfers, restoreIntoFreshVault } from "./transfers.mjs";
+import {
+  captureFixturePasskey,
+  checkTransfers,
+  importFixturePasskey,
+  restoreIntoFreshVault,
+} from "./transfers.mjs";
 
 const {
   extension,
@@ -1374,7 +1379,17 @@ try {
       openItem,
       syncNow,
     });
-    vault.ciphers = transfer.withLicense.ciphers;
+    step = "registering and exporting a stock Bitwarden passkey";
+    transfer.passkey = await captureFixturePasskey({
+      app,
+      web: webVault,
+      source: first,
+      client,
+      password: masterPassword,
+      siteUrl: webLoginUrl,
+      syncNow,
+    });
+    vault.ciphers = transfer.passkey.sync.ciphers;
 
     step = "revoking the second Bitwarden profile in OneApp Settings";
     const devicesPath = "/api/bitwarden/devices";
@@ -1527,6 +1542,25 @@ try {
       app: destinationApp,
       password: masterPassword,
       ...transfer,
+    });
+    const { client: destinationClient } = await connectBitwarden(destination);
+    step = "unlocking Bitwarden in the destination profile";
+    await destinationClient
+      .getByLabel("Master password", { exact: false })
+      .first()
+      .fill(masterPassword);
+    await button(destinationClient, "Unlock").click();
+    await destinationClient.waitForURL((url) => url.hash.startsWith("#/tabs/"));
+    step = "importing, using, and removing a passkey in the destination vault";
+    await importFixturePasskey({
+      app: destinationApp,
+      profile: destination,
+      client: destinationClient,
+      password: masterPassword,
+      siteUrl: webLoginUrl,
+      fixture: transfer.passkey,
+      syncNow,
+      openItem,
     });
   }
 } catch (error) {

@@ -12,6 +12,22 @@ import {
   writePortableJson,
   writeProtectedExport,
 } from "./vault-portable.ts";
+import { decodeItem } from "./server/bitwarden/cipher-request.ts";
+
+const passkey = {
+  credentialId: "b64.CNcLdOn1RSKkJeXc1AEH5w",
+  keyType: "public-key",
+  keyAlgorithm: "ECDSA",
+  keyCurve: "P-256",
+  keyValue: "synthetic-test-private-key",
+  rpId: "one.example",
+  counter: "7",
+  discoverable: "true",
+  rpName: null,
+  userHandle: "dGVzdA",
+  userName: "disposable-user",
+  creationDate: "2026-01-01T00:00:00.000Z",
+};
 
 const vault = {
   encrypted: false,
@@ -34,6 +50,7 @@ const vault = {
         username: "disposable-user",
         password: "Synthetic password",
         totp: "SYNTHETICSEED",
+        fido2Credentials: [passkey],
         uris: [
           { uri: "https://one.example/a,b", match: 3 },
           { uri: "https://two.example", match: null },
@@ -60,6 +77,7 @@ it("round-trips portable JSON, CSV and password-protected JSON on the client", a
   );
   const csv = await readPortableVault(writePortableCsv(original));
   expect(csv.items).toHaveLength(1);
+  expect(csv.items[0]?.details.credentials?.fido2Credentials).toBeUndefined();
   expect(csv.items[0]?.details).toMatchObject({
     notes: "Line one\nLine two",
     credentials: {
@@ -75,6 +93,7 @@ it("round-trips portable JSON, CSV and password-protected JSON on the client", a
     "disposable-export-password",
   );
   expect(sealed).not.toContain("Synthetic password");
+  expect(sealed).not.toContain(passkey.keyValue);
   await expect(readPortableVault(sealed, "wrong")).rejects.toThrow(
     "file password",
   );
@@ -86,7 +105,7 @@ it("round-trips portable JSON, CSV and password-protected JSON on the client", a
 it("rejects unsupported records before sealing and sends only encrypted item values", async () => {
   const source = structuredClone(vault);
   source.items[0]!.login = {
-    ...source.items[0]!.login!,
+    ...source.items[0]!.login,
     fido2Credentials: [{}],
   } as (typeof source.items)[0]["login"];
   await expect(readPortableVault(JSON.stringify(source))).rejects.toThrow(
@@ -111,6 +130,9 @@ it("rejects unsupported records before sealing and sends only encrypted item val
     "Synthetic hidden value",
     "two.example",
     "Synthetic card number",
+    passkey.keyValue,
+    passkey.credentialId,
+    passkey.rpId,
   ])
     expect(body).not.toContain(value);
   expect(data.folderRelationships).toEqual([{ key: 0, value: 0 }]);
@@ -119,6 +141,18 @@ it("rejects unsupported records before sealing and sends only encrypted item val
   expect(await decryptVaultText(cipher.name, itemKey)).toEqual(
     vault.items[0]!.name,
   );
+  const savedPasskey = decodeItem(JSON.stringify(cipher), false)?.details
+    .credentials?.fido2Credentials?.[0];
+  expect(savedPasskey).toBeDefined();
+  const { creationDate, ...encryptedFields } = savedPasskey!;
+  expect(creationDate).toBe(passkey.creationDate);
+  for (const [field, ciphertext] of Object.entries(encryptedFields)) {
+    const value =
+      ciphertext == null
+        ? ciphertext
+        : await decryptVaultText(ciphertext, itemKey);
+    expect(value).toBe(passkey[field as keyof typeof passkey]);
+  }
   const cardCipher = data.ciphers[1]!;
   const cardDetails = (
     cardCipher as typeof cardCipher & { card: { expYear: string } }

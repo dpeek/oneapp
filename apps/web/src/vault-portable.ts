@@ -4,6 +4,9 @@ import {
   ItemType,
   itemTypes,
   optionalDate,
+  PasskeyCreationDate,
+  PasskeyList,
+  type EncryptedPasskey,
   type ItemDetails,
 } from "./vault-item-content.ts";
 import {
@@ -98,6 +101,89 @@ const plainLogin = Schema.Struct({
     }),
   ),
 });
+const plainPasskeys = Schema.Struct({
+  fido2Credentials: PasskeyList(
+    Schema.Struct({
+      credentialId: requiredSmallText,
+      keyType: requiredSmallText,
+      keyAlgorithm: requiredSmallText,
+      keyCurve: requiredSmallText,
+      keyValue: requiredSmallText,
+      rpId: requiredSmallText,
+      counter: Schema.String.check(
+        Schema.isPattern(/^\d{1,10}$/u),
+        Schema.makeFilter((counter) => Number(counter) <= 0xffff_ffff),
+      ),
+      discoverable: Schema.Literals(["true", "false"]),
+      userHandle: PlainText,
+      userName: PlainText,
+      userDisplayName: PlainText,
+      rpName: PlainText,
+      creationDate: PasskeyCreationDate,
+    }),
+  ),
+});
+const decodePasskeys = Schema.decodeUnknownSync(plainPasskeys);
+
+const transformPasskey = async (
+  passkey: EncryptedPasskey,
+  transform: (value: string) => Promise<string>,
+): Promise<EncryptedPasskey> => {
+  const optional = (value: string | null | undefined) =>
+    value == null ? value : transform(value);
+  const [
+    credentialId,
+    keyType,
+    keyAlgorithm,
+    keyCurve,
+    keyValue,
+    rpId,
+    counter,
+    discoverable,
+    userHandle,
+    userName,
+    userDisplayName,
+    rpName,
+  ] = await Promise.all([
+    transform(passkey.credentialId),
+    transform(passkey.keyType),
+    transform(passkey.keyAlgorithm),
+    transform(passkey.keyCurve),
+    transform(passkey.keyValue),
+    transform(passkey.rpId),
+    transform(passkey.counter),
+    transform(passkey.discoverable),
+    optional(passkey.userHandle),
+    optional(passkey.userName),
+    optional(passkey.userDisplayName),
+    optional(passkey.rpName),
+  ]);
+  return {
+    credentialId,
+    keyType,
+    keyAlgorithm,
+    keyCurve,
+    keyValue,
+    rpId,
+    counter,
+    discoverable,
+    ...(userHandle !== undefined && { userHandle }),
+    ...(userName !== undefined && { userName }),
+    ...(userDisplayName !== undefined && { userDisplayName }),
+    ...(rpName !== undefined && { rpName }),
+    creationDate: passkey.creationDate,
+  };
+};
+
+const transformPasskeys = async (
+  passkeys: readonly EncryptedPasskey[] | null | undefined,
+  transform: (value: string) => Promise<string>,
+) =>
+  passkeys == null
+    ? passkeys
+    : Promise.all(
+        passkeys.map((passkey) => transformPasskey(passkey, transform)),
+      );
 
 const failures = (index: number, reason: string) =>
   new Error(`Item ${index + 1} ${reason}.`);
@@ -180,10 +266,14 @@ const decodePortable = (raw: unknown): PortableVault => {
       if (!isObject(payload))
         throw failures(index, "has no supported type data");
       if (type === 1) {
-        if (present(payload.fido2Credentials))
-          throw failures(index, "contains a passkey");
         const { uris, ...credentials } =
           Schema.decodeUnknownSync(plainLogin)(payload);
+        let passkeys: typeof plainPasskeys.Type;
+        try {
+          passkeys = decodePasskeys(payload);
+        } catch {
+          throw failures(index, "contains an invalid passkey");
+        }
         return {
           id: id ?? undefined,
           type,
@@ -194,6 +284,7 @@ const decodePortable = (raw: unknown): PortableVault => {
             ...details,
             credentials: {
               ...credentials,
+              ...passkeys,
               uris: uris?.map(({ uri, match }) => ({
                 uri: uri ?? null,
                 match,
@@ -415,6 +506,7 @@ export const openPortableVault = async (
   snapshot: typeof VaultSnapshot.Type,
   key: VaultKey,
   signal?: AbortSignal,
+  includePasskeys = true,
 ): Promise<PortableVault> => {
   const folders = await Promise.all(
     snapshot.folders.map(async ({ id, name }) => ({
@@ -427,6 +519,12 @@ export const openPortableVault = async (
     signal?.throwIfAborted();
     const itemKey = await unwrapVaultKey(item.wrappedKey, key);
     const details = await decryptItemDetails(item.details, itemKey);
+    const fido2Credentials = includePasskeys
+      ? await transformPasskeys(
+          item.details.credentials?.fido2Credentials,
+          (value) => decryptVaultText(value, itemKey),
+        )
+      : undefined;
     const passwordHistory = await Promise.all(
       (item.details.passwordHistory ?? []).map(
         async ({ password, lastUsedDate }) => ({
@@ -445,7 +543,14 @@ export const openPortableVault = async (
         item.archivedAt === null
           ? null
           : new Date(item.archivedAt).toISOString(),
-      details: { ...details, passwordHistory },
+      details: {
+        ...details,
+        passwordHistory,
+        ...(details.credentials &&
+          fido2Credentials !== undefined && {
+            credentials: { ...details.credentials, fido2Credentials },
+          }),
+      },
     });
   }
   return { folders, items };
@@ -489,6 +594,10 @@ export const sealPortableVault = async (
           passwordHistory,
           ...metadata
         } = details;
+        const fido2Credentials = await transformPasskeys(
+          credentials?.fido2Credentials,
+          (value) => encryptVaultText(value, itemKey),
+        );
         const encrypted: Details = {
           ...metadata,
           notes: await seal(notes),
@@ -508,6 +617,7 @@ export const sealPortableVault = async (
           ...(credentials && {
             credentials: {
               ...credentials,
+              ...(fido2Credentials !== undefined && { fido2Credentials }),
               username: await seal(credentials.username),
               password: await seal(credentials.password),
               totp: await seal(credentials.totp),

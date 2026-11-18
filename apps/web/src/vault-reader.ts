@@ -730,7 +730,7 @@ class VaultReader extends HTMLElement {
       warning.textContent = protectedFile
         ? "Keep the export password. You’ll need it to import the file."
         : format.value === "csv"
-          ? "Download plaintext. CSV includes logins and Secure Notes with limited fields."
+          ? "Download plaintext logins and Secure Notes. CSV omits passkeys."
           : format.value === "zip"
             ? "Download a plaintext copy of your vault and attachments."
             : "Download a plaintext copy of your vault items and folders.";
@@ -776,7 +776,12 @@ class VaultReader extends HTMLElement {
           const key = await unlockVault(password, snapshot);
           signal.throwIfAborted();
           problem = "Could not read all items for export.";
-          const portable = await openPortableVault(snapshot, key, signal);
+          const portable = await openPortableVault(
+            snapshot,
+            key,
+            signal,
+            chosen !== "csv",
+          );
           if (chosen === "zip")
             return {
               format: "zip" as const,
@@ -1546,6 +1551,8 @@ class VaultReader extends HTMLElement {
       if (login.password !== null)
         mask("password", login.password, add("Password", ""));
       const credentials = details?.properties.credentials;
+      if (item.type === 1 && item.details.credentials?.fido2Credentials?.length)
+        add("Passkey", "Saved in this login");
       if (credentials?.totp)
         mask("TOTP seed", credentials.totp, add("TOTP seed", ""));
       for (const { uri, match } of credentials?.uris ?? []) {

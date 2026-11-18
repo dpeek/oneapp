@@ -16,16 +16,37 @@ export const WrappedItemKey = Schema.String.check(
 
 const Encrypted = EncryptedVaultValue;
 const optionalEncrypted = Schema.optionalKey(Schema.NullOr(Encrypted));
-export const optionalDate = Schema.optionalKey(
-  Schema.NullOr(
-    Schema.String.check(
-      Schema.isMaxLength(40),
-      Schema.isPattern(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,7})?Z$/u),
-    ),
-  ),
+const utcDate = Schema.String.check(
+  Schema.isMaxLength(40),
+  Schema.isPattern(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,7})?Z$/u),
+);
+export const optionalDate = Schema.optionalKey(Schema.NullOr(utcDate));
+export const PasskeyCreationDate = utcDate.check(
+  Schema.makeFilter((date) => Number.isFinite(Date.parse(date))),
 );
 
-export const LoginCredentials = Schema.Struct({
+const EncryptedPasskey = Schema.Struct({
+  credentialId: Encrypted,
+  keyType: Encrypted,
+  keyAlgorithm: Encrypted,
+  keyCurve: Encrypted,
+  keyValue: Encrypted,
+  rpId: Encrypted,
+  counter: Encrypted,
+  discoverable: Encrypted,
+  userHandle: optionalEncrypted,
+  userName: optionalEncrypted,
+  userDisplayName: optionalEncrypted,
+  rpName: optionalEncrypted,
+  creationDate: PasskeyCreationDate,
+});
+export type EncryptedPasskey = typeof EncryptedPasskey.Type;
+export const PasskeyList = <S extends Schema.Top>(schema: S) =>
+  Schema.optionalKey(
+    Schema.NullOr(Schema.Array(schema).check(Schema.isMaxLength(100))),
+  );
+
+const EditableLogin = Schema.Struct({
   username: optionalEncrypted,
   password: optionalEncrypted,
   totp: optionalEncrypted,
@@ -44,6 +65,11 @@ export const LoginCredentials = Schema.Struct({
       ).check(Schema.isMaxLength(100)),
     ),
   ),
+});
+
+export const LoginCredentials = Schema.Struct({
+  ...EditableLogin.fields,
+  fido2Credentials: PasskeyList(EncryptedPasskey),
 });
 
 export const ItemMetadata = {
@@ -195,13 +221,18 @@ export const encryptedTypeData = (type: typeof ExtraItemType.Type) =>
     ),
   );
 
-export const ItemDetails = Schema.Struct({
+export const EditableItemDetails = Schema.Struct({
   ...ItemMetadata,
   passwordHistory: LoginPasswordHistory,
-  credentials: Schema.optionalKey(LoginCredentials),
+  credentials: Schema.optionalKey(EditableLogin),
   data: Schema.optionalKey(
     Schema.Record(Schema.String, Schema.NullOr(Encrypted)),
   ),
+});
+
+export const ItemDetails = Schema.Struct({
+  ...EditableItemDetails.fields,
+  credentials: Schema.optionalKey(LoginCredentials),
 });
 
 export const validateDetails = (

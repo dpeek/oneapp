@@ -55,10 +55,6 @@ const envelope = Schema.Struct({
 });
 
 const metadata = Schema.Struct(ItemMetadata);
-const login = Schema.Struct({
-  ...LoginCredentials.fields,
-  fido2Credentials: emptyArray,
-});
 const note = Schema.Struct({ type: Schema.Literal(0) });
 const nonLoginHistory = Schema.Struct({ passwordHistory: emptyArray });
 const loginHistory = Schema.Struct({ passwordHistory: LoginPasswordHistory });
@@ -73,6 +69,14 @@ const typeDecoders = new Map(
 const isType = Schema.is(ItemType);
 const isAttachmentId = Schema.is(AttachmentId);
 const isExtraType = Schema.is(ExtraItemType);
+const decodeLogin = Schema.decodeUnknownSync(LoginCredentials);
+const fullLoginFields = [
+  "uris",
+  "username",
+  "password",
+  "totp",
+  "passwordRevisionDate",
+];
 
 export const decodeCipher = (input: unknown, allowPartial = false) => {
   try {
@@ -103,9 +107,18 @@ export const decodeCipher = (input: unknown, allowPartial = false) => {
     const payload = cipher[payloadKey];
     if (type === 1) {
       if (payload != null) {
-        const { fido2Credentials: _, ...credentials } =
-          Schema.decodeUnknownSync(login)(payload);
-        Object.assign(properties, { credentials });
+        const credentials = decodeLogin(payload);
+        // Stock Bitwarden omits the list when saving a full login after passkey removal.
+        const removesPasskeys =
+          credentials.fido2Credentials === undefined &&
+          fullLoginFields.every((field) =>
+            Object.hasOwn(payload as object, field),
+          );
+        Object.assign(properties, {
+          credentials: removesPasskeys
+            ? { ...credentials, fido2Credentials: [] }
+            : credentials,
+        });
       }
       Object.assign(properties, Schema.decodeUnknownSync(loginHistory)(cipher));
     } else {

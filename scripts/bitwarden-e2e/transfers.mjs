@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash, createPublicKey, randomBytes, verify } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { downloadBytes } from "./attachments.mjs";
 
@@ -320,7 +321,7 @@ export const checkTransfers = async ({
   console.log(
     "PASS Stock and OneApp exported JSON, CSV and password-protected JSON. Stock also exported account-restricted JSON.",
   );
-  return { withLicense, plain, toRestore, stockProtected };
+  return { plain, toRestore, stockProtected };
 };
 
 const canonical = (vault) => {
@@ -363,5 +364,207 @@ export const restoreIntoFreshVault = async ({
   assert.equal(await button(web, "Imported fixture login").count(), 2);
   console.log(
     "PASS A fresh vault recovered all supported OneApp export fields and accepted Bitwarden’s password-protected export.",
+  );
+};
+
+const passkeyName = "Disposable passkey login";
+const relyingPartyName = "OneApp passkey fixture";
+const fixtureUser = "passkey-fixture@example.net";
+const sha256 = (bytes) => createHash("sha256").update(bytes).digest();
+const fromBase64Url = (value) => Buffer.from(value, "base64url");
+
+const selectPasskey = (site) =>
+  site
+    .context()
+    .waitForEvent("page", { timeout: 20_000 })
+    .then(async (popup) => {
+      await popup
+        .locator("app-fido2-cipher-row button")
+        .filter({ hasText: passkeyName })
+        .click({ timeout: 20_000 });
+    });
+
+export const captureFixturePasskey = async ({
+  app,
+  web,
+  source,
+  client,
+  password,
+  siteUrl,
+  syncNow,
+}) => {
+  await app.bringToFront();
+  await button(web, "New Login").press("Enter");
+  await web.getByLabel("Title", { exact: true }).fill(passkeyName);
+  await web.getByLabel("Username", { exact: true }).fill(fixtureUser);
+  await web.getByLabel("Website", { exact: true }).fill(siteUrl);
+  await button(web, "Save Login").press("Enter");
+  await button(web, "Back to items").press("Enter");
+  await syncNow(source, client);
+
+  const site = await source.context.newPage();
+  await site.goto(siteUrl);
+  await site.bringToFront();
+  const challenge = randomBytes(32).toString("base64url");
+  const userHandle = randomBytes(32).toString("base64url");
+  const [{ publicKey, rawId }] = await Promise.all([
+    site.evaluate(
+      async ({ challenge, userHandle, fixtureUser, relyingPartyName }) => {
+        const credential = await navigator.credentials.create({
+          publicKey: PublicKeyCredential.parseCreationOptionsFromJSON({
+            rp: { name: relyingPartyName, id: location.hostname },
+            user: {
+              id: userHandle,
+              name: fixtureUser,
+              displayName: "Fixture User",
+            },
+            challenge,
+            pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+            authenticatorSelection: {
+              residentKey: "required",
+              userVerification: "discouraged",
+            },
+            attestation: "none",
+            timeout: 30_000,
+          }),
+        });
+        return {
+          publicKey: credential.toJSON().response.publicKey,
+          rawId: credential.id,
+        };
+      },
+      { challenge, userHandle, fixtureUser, relyingPartyName },
+    ),
+    selectPasskey(site),
+  ]);
+  await site.close();
+  const sync = await syncNow(source, client);
+  await client.bringToFront();
+  const exported = JSON.parse(await stockExport(client, password, "json"));
+  const item = exported.items.find(({ name }) => name === passkeyName);
+  const [passkey] = item.login.fido2Credentials;
+  assert.equal(passkey.rpId, new URL(siteUrl).hostname);
+  assert.equal(passkey.userHandle, userHandle);
+  assert.equal(passkey.counter, "0");
+  assert.ok(
+    sync.ciphers.some(({ login }) =>
+      login?.fido2Credentials?.[0]?.keyValue.startsWith("2."),
+    ),
+  );
+  // Exercise legacy nonzero counters with the same registered signing key.
+  passkey.counter = "1";
+  console.log(
+    "PASS Stock Bitwarden registered and exported a fixture passkey.",
+  );
+  return {
+    contents: JSON.stringify({ encrypted: false, folders: [], items: [item] }),
+    sync,
+    publicKey,
+    rawId,
+    userHandle,
+  };
+};
+
+export const importFixturePasskey = async ({
+  app,
+  profile,
+  client,
+  password,
+  siteUrl,
+  fixture,
+  syncNow,
+  openItem,
+}) => {
+  await app.bringToFront();
+  const web = app.locator("oneapp-vault-reader");
+  await importWeb(web, fixture.contents);
+  await button(web, passkeyName).press("Enter");
+  await web.getByText("Saved in this login", { exact: true }).waitFor();
+  await button(web, "Edit Login").press("Enter");
+  await web.getByLabel("Username", { exact: true }).fill("edited@example.net");
+  await button(web, "Save Login").press("Enter");
+  await web.getByText("edited@example.net", { exact: true }).waitFor();
+  await button(web, "Back to items").press("Enter");
+  const imported = (await syncNow(profile, client)).ciphers.find(
+    ({ login }) => login?.fido2Credentials?.length,
+  );
+  assert.ok(imported);
+
+  const site = await profile.context.newPage();
+  await site.goto(siteUrl);
+  await site.bringToFront();
+  const challenge = randomBytes(32).toString("base64url");
+  const [credential] = await Promise.all([
+    site.evaluate(
+      async ({ challenge, rawId }) => {
+        const result = await navigator.credentials.get({
+          publicKey: PublicKeyCredential.parseRequestOptionsFromJSON({
+            challenge,
+            rpId: location.hostname,
+            allowCredentials: [{ type: "public-key", id: rawId }],
+            userVerification: "preferred",
+            timeout: 30_000,
+          }),
+        });
+        return result.toJSON();
+      },
+      { challenge, rawId: fixture.rawId },
+    ),
+    selectPasskey(site),
+  ]);
+  assert.equal(credential.rawId, fixture.rawId);
+  assert.equal(credential.response.userHandle, fixture.userHandle);
+  const clientData = fromBase64Url(credential.response.clientDataJSON);
+  const { type, origin, challenge: answered } = JSON.parse(clientData);
+  assert.equal(type, "webauthn.get");
+  assert.equal(origin, new URL(siteUrl).origin);
+  assert.equal(answered, challenge);
+  const authData = fromBase64Url(credential.response.authenticatorData);
+  assert.deepEqual(authData.subarray(0, 32), sha256(new URL(siteUrl).hostname));
+  assert.ok(
+    authData[32] & 1,
+    "The authenticator did not confirm user presence",
+  );
+  assert.equal(authData.readUInt32BE(33), 2);
+  assert.ok(
+    verify(
+      "sha256",
+      Buffer.concat([authData, sha256(clientData)]),
+      createPublicKey({
+        key: fromBase64Url(fixture.publicKey),
+        format: "der",
+        type: "spki",
+      }),
+      fromBase64Url(credential.response.signature),
+    ),
+    "Bitwarden's assertion signature did not match the registered public key",
+  );
+  await site.close();
+
+  await app.bringToFront();
+  const result = JSON.parse(await webExport(app, web, password, "json"));
+  const [saved] = result.items.find(({ name }) => name === passkeyName).login
+    .fido2Credentials;
+  const [original] = JSON.parse(fixture.contents).items[0].login
+    .fido2Credentials;
+  assert.ok(
+    isDeepStrictEqual(saved, { ...original, counter: "2" }),
+    "The re-exported passkey changed beyond the signature counter",
+  );
+  console.log(
+    "PASS A fresh Bitwarden profile signed in with an imported passkey and OneApp re-exported its updated counter.",
+  );
+
+  await openItem(client, passkeyName);
+  await button(client, "Edit").click();
+  await button(client, "Remove passkey").click();
+  await button(client.getByRole("dialog"), "Delete").click();
+  await button(client, "Save").click();
+  const removed = (await syncNow(profile, client)).ciphers.find(
+    ({ id }) => id === imported.id,
+  );
+  assert.deepEqual(removed.login.fido2Credentials, []);
+  console.log(
+    "PASS Removing the passkey in Bitwarden kept the login and cleared the passkey on sync.",
   );
 };

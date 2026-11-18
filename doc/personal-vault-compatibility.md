@@ -15,15 +15,16 @@ Target release is stock Bitwarden Chrome [2026.10.2](https://github.com/bitwarde
 | File metadata and upload | The [attachment button](https://github.com/bitwarden/clients/blob/browser-v2026.10.2/apps/browser/src/vault/popup/components/vault/attachments/open-attachments/open-attachments.component.ts) requires `hasPremiumFromAnySource`. Bearer on `POST /api/ciphers/{id}/attachment/v2` with encrypted `fileName`, wrapped `key`, encrypted byte count `fileSize`, `adminRequest: false` and `lastKnownRevisionDate`. Self-hosted response has `fileUploadType: 0`, `attachmentId`, `cipherResponse`, and `url`. The direct upload service uses Bearer `POST /api/ciphers/{id}/attachment/{attachmentId}`, calculated from the IDs, with encrypted multipart field `data`. | OneApp encrypts bytes locally. Exercise stock upload against the direct path and validate pending visibility, declared size, quota, replay, and revocation. |
 | File download and deletion | Bearer `GET /api/ciphers/{id}/attachment/{attachmentId}` returns `id`, `fileName`, `key`, `size`, `sizeName` and a temporary `url`. The client fetches that URL without a Bearer header. Bearer `DELETE` on the metadata route returns an object containing `cipher`. Ready metadata also rides in `cipher.attachments`. The alternate SDK attachment path is gated by `pm-28192-cipher-attachment-ops-to-sdk`, which defaults off. | Exercise both download directions, expired URL, cross-vault denial, deletion and permanent cleanup. The stock browser probe used the metadata GET and then fetched the signed URL without a bearer token. It sent the multipart upload through the direct POST path. |
 
-Personal writes reject organization and collection operations. Passkey import is out of scope until its lifecycle exists. Use disposable accounts, encrypted fixtures and synthetic file contents for all probes.
+Personal writes reject organization and collection operations. Use disposable accounts, encrypted fixtures and synthetic file contents for all probes.
 
 ## Portable formats
 
-- Bitwarden JSON carries all eight personal item types, non-trashed items, folders and folder membership, archive state, favourites, reprompt settings, custom fields, login URIs and match rules, TOTP seeds, and password history. Imported items receive new IDs and revisions. A personal import can reference an existing folder by ID only when that folder belongs to the destination vault. OneApp web imports create fresh folders and item copies even when the same source file is deliberately selected again.
+- Bitwarden JSON carries all eight personal item types, non-trashed items, folders and folder membership, archive state, favourites, reprompt settings, custom fields, login URIs and match rules, TOTP seeds, password history, and passkeys. Imported items receive new IDs and revisions. A personal import can reference an existing folder by ID only when that folder belongs to the destination vault. OneApp web imports create fresh folders and item copies even when the same source file is deliberately selected again.
 - Password-protected Bitwarden JSON carries the same data in an authenticated encrypted envelope. OneApp exports PBKDF2-SHA-256 at 600,000 iterations. Imports accept Bitwarden PBKDF2 from 5,000 to 2,000,000 iterations and Argon2id with 16–128 MiB of memory, 2–10 iterations and 1–16 lanes.
-- Bitwarden CSV carries logins and Secure Notes with named folders, favourites, notes, reprompt and archive state, text custom fields, login URIs, username, password and TOTP seed. CSV omits other item types, empty folders, field type and linked field metadata, URI match rules, and history.
+- Bitwarden CSV carries logins and Secure Notes with named folders, favourites, notes, reprompt and archive state, text custom fields, login URIs, username, password and TOTP seed. CSV omits passkeys, other item types, empty folders, field type and linked field metadata, URI match rules, and history.
 - OneApp accepts up to 500 items and 500 folders per import. The file and encrypted request each have a 1 MiB limit, and encrypted items have a 128 KiB limit. Replaying the same encrypted request returns the original outcome without duplicating data. The server checks every entry and relationship before writing.
-- Personal portable imports reject shared-vault content, passkeys, attachment references, and account-restricted exports. Files exported by either client omit Trash. Plaintext exports and file passwords stay in the browser.
+- Personal portable imports reject shared-vault content, attachment references, and account-restricted exports. Files exported by either client omit Trash. Plaintext exports and file passwords stay in the browser.
+- OneApp encrypts passkey values with the login’s item key. The stock Bitwarden extension can use synced passkeys and save signature-counter updates. For older passkeys with a nonzero counter, import a current snapshot so its counter is at least as high as the relying party’s last observed counter.
 
 ## Attachment storage and transfer
 
@@ -47,14 +48,14 @@ Bulk lifecycle requests accept up to 100 items. The stock extension’s release 
 
 ## Completion gate
 
-Verified on 18 November 2026 with Bun 1.4.4 and unmodified Bitwarden Chrome 2026.10.2. The harness used two isolated extension profiles, workerd, on-disk D1 and private R2, plus an independently initialized destination vault for reimport.
+Verified with Bun 1.4.4 and unmodified Bitwarden Chrome 2026.10.2. The harness used two isolated extension profiles, workerd, on-disk D1 and private R2, plus an independently initialized destination vault and profile for reimport.
 
 | Command | Result |
 | --- | --- |
 | `bun check` | Passed across 97 files. |
 | `bun run test` | Passed 28 tests across six files. |
 | `bun run build` | Passed for CLI, web and extension. |
-| `bun scripts/bitwarden-e2e/run.ts` | Passed. Covered stock SSO, offline unlock, autofill, encrypted mixed import, folder and lifecycle changes, attachment retry and restart, ZIP export, R2 cleanup, device revocation, refresh, and reimport into the destination vault. |
+| `bun scripts/bitwarden-e2e/run.ts` | Passed. Covered stock SSO, offline unlock, autofill, encrypted mixed import, folder and lifecycle changes, attachment retry and restart, ZIP export, R2 cleanup, device revocation, refresh, and reimport into the destination vault. Verified WebAuthn sign-in with an imported passkey, persisted counter updates, and passkey removal. |
 | `bun scripts/bitwarden-e2e/run.ts --seeded` | Passed. Migrated an existing encrypted D1 record, decrypted it offline in stock Bitwarden, exported it offline after local confirmation, and verified restart and token refresh. |
 
 The seeded run observed a background profile request disconnect during the deliberate Worker restart. Its post-restart sync and token checks passed.

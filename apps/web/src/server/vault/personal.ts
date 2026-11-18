@@ -428,8 +428,10 @@ export const editPersonalItem = async (
     return { status: "conflict" } as const;
   if (
     wrappedKey !== item.wrappedKey &&
-    attachments.size > 0 &&
-    edit.attachmentUpdates?.length !== attachments.size
+    ((attachments.size > 0 &&
+      edit.attachmentUpdates?.length !== attachments.size) ||
+      (item.details.credentials?.fido2Credentials?.length &&
+        edit.details.credentials?.fido2Credentials === undefined))
   )
     return { status: "conflict" } as const;
   const old = wrappedKey === item.wrappedKey ? item.details : {};

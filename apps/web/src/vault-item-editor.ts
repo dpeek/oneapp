@@ -1,4 +1,8 @@
-import type { ItemDetails, ItemType } from "./vault-item-content.ts";
+import type {
+  EditableItemDetails,
+  ItemDetails,
+  ItemType,
+} from "./vault-item-content.ts";
 import { itemTypes } from "./vault-item-content.ts";
 import {
   decryptVaultText,
@@ -7,7 +11,7 @@ import {
   type VaultKey,
 } from "./vault-crypto.ts";
 
-type Details = typeof ItemDetails.Type;
+type Details = typeof EditableItemDetails.Type;
 
 const mapText = async (
   values: Readonly<Record<string, string | null>>,
@@ -23,7 +27,7 @@ const mapText = async (
   );
 
 export const decryptItemDetails = async (
-  details: Details,
+  details: typeof ItemDetails.Type,
   key: VaultKey,
 ): Promise<Details> => {
   const read = (value: string | null | undefined) =>
@@ -41,7 +45,8 @@ export const decryptItemDetails = async (
     ),
     ...(credentials && {
       credentials: {
-        ...credentials,
+        autofillOnPageLoad: credentials.autofillOnPageLoad,
+        passwordRevisionDate: credentials.passwordRevisionDate,
         username: await read(credentials.username),
         password: await read(credentials.password),
         totp: await read(credentials.totp),

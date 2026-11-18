@@ -34,6 +34,8 @@ The runner exchanges encrypted attachments in both directions. It retries a lost
 
 The runner imports mixed synthetic records and folders through the stock import form, rotates a card’s title in Bitwarden, and checks folder movement, archive, bulk Trash and Restore, and a release-gated Driver’s License created in OneApp. It verifies both clients’ JSON, CSV and password-protected JSON exports and the stock account-restricted export. It imports protected exports into an independently initialized D1 vault and compares the resulting items and folders.
 
+The stock extension registers a disposable passkey on a local HTTPS site and exports it as Bitwarden JSON. OneApp imports it into the fresh vault and preserves it through a login edit. The extension signs a new WebAuthn challenge, the runner verifies the signature against the registered public key, and OneApp re-exports the updated signature counter. The runner then removes the passkey through Bitwarden and confirms the login remains.
+
 Both Bitwarden devices appear in **Settings → Clients**. The runner revokes the second profile through that screen, checks that the server rejects its access and refresh tokens, and verifies that the first profile still syncs.
 
 The runner restarts workerd with the restored item and checks that D1 held the vault, item, and device session. It also checks token rotation, duplicate-refresh handling, and sync of the saved revision with the refreshed access token.

@@ -316,6 +316,30 @@ try {
       : "PASS Bitwarden synced the web-created empty vault and unlocked it offline.",
   );
 
+  if (seeded) {
+    step = "confirming a stock Bitwarden export locally";
+    const exportUrl = new URL(client.url());
+    exportUrl.hash = "/export";
+    await client.goto(exportUrl.href);
+    await client.locator('select[formcontrolname="format"]').selectOption("json");
+    await context.setOffline(true);
+    await button(client, "Export").click();
+    const dialog = client.getByRole("dialog");
+    await dialog.locator('input[type="password"]').fill(masterPassword);
+    const exportDownload = client.waitForEvent("download");
+    await button(dialog, "Continue").click();
+    const download = await exportDownload;
+    const data = await new Response(await download.createReadStream()).json();
+    assert.equal(data.encrypted, false);
+    assert.equal(data.items.length, 1);
+    assert.equal(data.items[0].name, itemName);
+    assert.equal(data.items[0].login.username, itemUsername);
+    assert.equal(data.items[0].login.password, itemPassword);
+    await download.delete();
+    await context.setOffline(false);
+    console.log("PASS Bitwarden confirmed and exported the seeded login offline.");
+  }
+
   if (!seeded) {
     step = "saving a personal login in the first Bitwarden profile";
     const formUrl = new URL(client.url());

@@ -23,4 +23,9 @@ export {
   bitwardenAuthorizations,
   bitwardenDeviceSessions,
 } from "./bitwarden/tables.ts";
-export { personalVaultItems, personalVaults } from "./vault/tables.ts";
+export {
+  personalVaultDeletedItems,
+  personalVaultFolders,
+  personalVaultItems,
+  personalVaults,
+} from "./vault/tables.ts";

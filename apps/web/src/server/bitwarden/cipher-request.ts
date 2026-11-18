@@ -7,6 +7,7 @@ import {
   itemContent,
   ItemMetadata,
   ItemType,
+  optionalDate,
   itemTypes,
   LoginCredentials,
   LoginPasswordHistory,
@@ -32,8 +33,8 @@ const envelope = Schema.Struct({
     Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/u))),
   ),
   organizationId: empty,
-  folderId: empty,
-  archivedDate: empty,
+  folderId: optionalId,
+  archivedDate: optionalDate,
   lastKnownRevisionDate: Schema.optionalKey(Schema.NullOr(Schema.String)),
   data: empty,
   attachments: emptyObject,
@@ -72,8 +73,15 @@ export const decodeCipher = (input: unknown) => {
     )
       return null;
 
-    const { name, key, encryptedFor, encryptedByKeyId, lastKnownRevisionDate } =
-      Schema.decodeUnknownSync(envelope)(cipher);
+    const {
+      name,
+      key,
+      encryptedFor,
+      encryptedByKeyId,
+      lastKnownRevisionDate,
+      folderId,
+      archivedDate,
+    } = Schema.decodeUnknownSync(envelope)(cipher);
     const properties = Schema.decodeUnknownSync(metadata)(cipher);
     const payload = cipher[payloadKey];
     if (type === 1) {
@@ -98,6 +106,8 @@ export const decodeCipher = (input: unknown) => {
     return {
       name,
       wrappedKey: key,
+      folderId,
+      archivedDate,
       encryptedFor,
       encryptedByKeyId,
       lastKnownRevisionDate,

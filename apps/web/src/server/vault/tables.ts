@@ -39,6 +39,10 @@ export const personalVaultItems = sqliteTable(
     createdAt: integer("created_at").notNull(),
     revisionAt: integer("revision_at").notNull(),
     deletedAt: integer("deleted_at"),
+    archivedAt: integer("archived_at"),
+    folderId: text("folder_id").references(() => personalVaultFolders.id, {
+      onDelete: "set null",
+    }),
     type: integer().$type<ItemContent["type"]>().notNull().default(1),
   },
   (table) => [
@@ -48,4 +52,33 @@ export const personalVaultItems = sqliteTable(
       table.createDigest,
     ),
   ],
+);
+
+export const personalVaultFolders = sqliteTable(
+  "personal_vault_folders",
+  {
+    id: text().primaryKey(),
+    vaultId: text("vault_id")
+      .notNull()
+      .references(() => personalVaults.id, { onDelete: "cascade" }),
+    name: text().notNull(),
+    revisionAt: integer("revision_at").notNull(),
+    createDigest: text("create_digest"),
+  },
+  (table) => [
+    uniqueIndex("personal_vault_folder_create").on(
+      table.vaultId,
+      table.createDigest,
+    ),
+  ],
+);
+
+export const personalVaultDeletedItems = sqliteTable(
+  "personal_vault_deleted_items",
+  {
+    id: text().primaryKey(),
+    vaultId: text("vault_id")
+      .notNull()
+      .references(() => personalVaults.id, { onDelete: "cascade" }),
+  },
 );

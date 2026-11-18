@@ -40,6 +40,7 @@ import {
   passwordRecoveryRoutes,
   resetLinkRenderer,
 } from "./password-recovery.ts";
+import { vaultManagementRoutes } from "./vault/management.ts";
 import { vaultItemRoutes } from "./vault/items.ts";
 import { vaultSetupRoutes } from "./vault/setup.ts";
 
@@ -223,6 +224,7 @@ export default {
           linksRoutes(http),
           vaultSetupRoutes(http, env.DB),
           vaultItemRoutes(http, env.DB),
+          vaultManagementRoutes(http, env.DB),
           bitwardenDeviceRoutes(http),
           cliTokenRoutes(http),
           cliLoginRoutes(http),

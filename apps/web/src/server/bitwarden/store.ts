@@ -215,7 +215,10 @@ const authorizedVault = `
   WHERE v.id = ? AND v.owner_id = ? AND v.key_id = ?
     AND d.expires_at > ? AND ${activeAccess}
 `;
-const deviceAuthorization = (vault: PersonalVault, accessDigest: string) => ({
+export const deviceAuthorization = (
+  vault: PersonalVault,
+  accessDigest: string,
+) => ({
   query: authorizedVault,
   parameters: (now: number) => [
     vault.id,
@@ -238,7 +241,7 @@ export const savePersonalItem = (
   db: DB,
   accessDigest: string,
   vault: PersonalVault,
-  item: EncryptedItem,
+  item: EncryptedItem & { folderId?: string | null },
 ) =>
   createPersonalItem(
     db,

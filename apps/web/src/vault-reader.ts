@@ -15,6 +15,11 @@ import {
 } from "./vault-crypto.ts";
 import {
   vaultItemBodyLimit,
+  vaultBulkPath,
+  VaultFolder,
+  vaultFolderPath,
+  vaultFoldersPath,
+  type VaultBulkChange,
   VaultItem,
   vaultItemPath,
   vaultItemsPath,
@@ -44,6 +49,10 @@ export const vaultReader = CustomElement.define({
 type Snapshot = typeof VaultSnapshot.Type;
 type Item = Snapshot["items"][number];
 type ListedItem = { item: Item; title: string | null; trashed: boolean };
+type VaultView = "active" | "archive" | "trash";
+type Folder = typeof VaultFolder.Type;
+type ListedFolder = { folder: Folder; title: string };
+type BulkAction = (typeof VaultBulkChange.Type)["kind"];
 type EditTarget = { item: Item; title: string };
 type NoteEdit = EditTarget & {
   item: typeof VaultSecureNote.Type;
@@ -58,9 +67,10 @@ type ItemField = readonly [
   input: HTMLInputElement | HTMLTextAreaElement,
 ];
 type UnlockedVault = {
-  parameters: Omit<Snapshot, "items" | "trash">;
+  parameters: Omit<Snapshot, "items" | "trash" | "folders">;
   key: VaultKey;
   entries: ListedItem[];
+  folders: ListedFolder[];
 };
 
 const decodeSnapshot = Schema.decodeUnknownSync(VaultSnapshot);
@@ -140,9 +150,47 @@ const readItemDetails = async (item: Item, userKey: VaultKey) => {
 };
 type ItemDetails = Awaited<ReturnType<typeof readItemDetails>>;
 
+const openSnapshot = async (
+  snapshot: Snapshot,
+  key: VaultKey,
+): Promise<UnlockedVault> => {
+  const { items, trash, folders, ...parameters } = snapshot;
+  const [entries, listedFolders] = await Promise.all([
+    Promise.all(
+      [
+        ...items.map((item) => ({ item, trashed: false })),
+        ...trash.map((item) => ({ item, trashed: true })),
+      ].map(async (entry) => ({
+        ...entry,
+        title: await readTitle(entry.item, key).catch(() => null),
+      })),
+    ),
+    Promise.all(
+      folders.map(async (folder) => ({
+        folder,
+        title: await decryptVaultText(folder.name, key).catch(
+          () => "Unreadable folder",
+        ),
+      })),
+    ),
+  ]);
+  return {
+    parameters,
+    key,
+    entries,
+    folders: listedFolders.sort((a, b) => a.title.localeCompare(b.title)),
+  };
+};
+
+const writeHeaders = {
+  "content-type": "application/json",
+  "x-effect-auth-csrf": "1",
+};
+
 class VaultReader extends HTMLElement {
   #vault: UnlockedVault | null = null;
   #pending: AbortController | null = null;
+  #folderId: string | undefined;
 
   connectedCallback() {
     window.addEventListener("pagehide", this.#onPageHide);
@@ -167,6 +215,7 @@ class VaultReader extends HTMLElement {
   #clear() {
     this.#stopWork();
     this.#vault = null;
+    this.#folderId = undefined;
     this.querySelector("form")?.reset();
     this.replaceChildren();
   }
@@ -210,28 +259,11 @@ class VaultReader extends HTMLElement {
           if (response.status === 401)
             failure = "Sign in to OneApp to open your vault.";
           if (!response.ok) throw new Error("Vault fetch failed");
-          const { items, trash, ...parameters } = decodeSnapshot(
-            await response.json(),
-          );
+          const snapshot = decodeSnapshot(await response.json());
           failure = "Could not unlock the vault. Check your master password.";
-          const key = await unlockVault(password, parameters);
+          const key = await unlockVault(password, snapshot);
           signal.throwIfAborted();
-          const entries = await Promise.all(
-            [
-              ...items.map((item) => ({ item, trashed: false })),
-              ...trash.map((item) => ({ item, trashed: true })),
-            ].map(async (entry): Promise<ListedItem> => {
-              try {
-                return {
-                  ...entry,
-                  title: await readTitle(entry.item, key),
-                };
-              } catch {
-                return { ...entry, title: null };
-              }
-            }),
-          );
-          return { parameters, key, entries };
+          return openSnapshot(snapshot, key);
         },
         (vault) => {
           this.#vault = vault;
@@ -249,7 +281,11 @@ class VaultReader extends HTMLElement {
     if (back)
       toolbar.append(
         action(
-          back === this.#showTrash ? "Back to Trash" : "Back to items",
+          back === this.#showTrash
+            ? "Back to Trash"
+            : back === this.#showArchive
+              ? "Back to Archive"
+              : "Back to items",
           back,
         ),
       );
@@ -258,44 +294,336 @@ class VaultReader extends HTMLElement {
     return toolbar;
   }
 
-  #showList = (message?: string) => this.#showItems(false, message);
-  #showTrash = (message?: string) => this.#showItems(true, message);
+  #showList = (message?: string) => this.#showItems("active", message);
+  #showArchive = (message?: string) => this.#showItems("archive", message);
+  #showTrash = (message?: string) => this.#showItems("trash", message);
 
-  #showItems(trashed: boolean, message?: string) {
+  #viewFor(entry: ListedItem): VaultView {
+    return entry.trashed
+      ? "trash"
+      : entry.item.archivedAt !== null
+        ? "archive"
+        : "active";
+  }
+
+  #backFor(entry: ListedItem) {
+    return entry.trashed
+      ? this.#showTrash
+      : entry.item.archivedAt !== null
+        ? this.#showArchive
+        : this.#showList;
+  }
+
+  #folderOptions(all: boolean) {
+    const select = create("select");
+    if (all) select.add(new Option("All folders", "*"));
+    select.add(new Option("No folder", ""));
+    for (const { folder, title } of this.#vault?.folders ?? [])
+      select.add(new Option(title, folder.id));
+    return select;
+  }
+
+  #showItems(view: VaultView, message?: string, problem?: string) {
     this.#stopWork();
     const vault = this.#vault;
     if (!vault) return;
-    const toolbar = trashed
-      ? this.#toolbar(this.#showList)
-      : this.#toolbar(
-          undefined,
-          action("New Login", () => this.#showLoginForm()),
-          action("New Secure Note", () => this.#showNoteForm()),
-          action("Trash", this.#showTrash),
-          action("Other item types", () => this.#showItemTypes()),
-        );
+    const toolbar =
+      view === "active"
+        ? this.#toolbar(
+            undefined,
+            action("New Login", () => this.#showLoginForm()),
+            action("New Secure Note", () => this.#showNoteForm()),
+            action("Other item types", () => this.#showItemTypes()),
+            action("Folders", () => this.#showFolders()),
+            action("Archive", this.#showArchive),
+            action("Trash", this.#showTrash),
+          )
+        : this.#toolbar(this.#showList);
     const list = create("ul");
     list.className = "vault-items";
+    const filter = this.#folderOptions(true);
+    filter.value = this.#folderId ?? "*";
+    filter.addEventListener("change", () => {
+      this.#folderId = filter.value === "*" ? undefined : filter.value;
+      this.#showItems(view);
+    });
+    const folderFilter = create("label", "Folder ");
+    folderFilter.append(filter);
     const entries = vault.entries
-      .filter((entry) => entry.trashed === trashed)
+      .filter((entry) => this.#viewFor(entry) === view)
+      .filter(
+        ({ item }) =>
+          view !== "active" ||
+          this.#folderId === undefined ||
+          (item.folderId ?? "") === this.#folderId,
+      )
       .sort((a, b) => (a.title ?? "").localeCompare(b.title ?? ""));
+    const selected = new Set<ListedItem>();
+    const bulk = create("div");
+    bulk.className = "vault-toolbar";
+    const buttons: HTMLButtonElement[] = [];
+    const operation = (label: string, kind: BulkAction) => {
+      const button = action(label, () =>
+        this.#startBulk(view, [...selected], kind),
+      );
+      button.disabled = true;
+      buttons.push(button);
+      return button;
+    };
+    if (view === "trash")
+      bulk.append(
+        operation("Restore selected", "restore"),
+        operation("Permanently delete selected", "purge"),
+      );
+    else
+      bulk.append(
+        operation("Move selected to folder", "move"),
+        view === "active"
+          ? operation("Archive selected", "archive")
+          : operation("Unarchive selected", "unarchive"),
+        operation("Move selected to Trash", "trash"),
+      );
     for (const entry of entries) {
       const row = create("li");
-      const button = action(entry.title ?? "Unreadable item", () =>
-        this.#open(entry),
+      const select = create("input");
+      select.type = "checkbox";
+      select.setAttribute(
+        "aria-label",
+        `Select ${entry.title ?? "unreadable item"}`,
       );
-      row.append(button, create("span", itemTypes[entry.item.type].label));
+      select.addEventListener("change", () => {
+        if (select.checked) selected.add(entry);
+        else selected.delete(entry);
+        for (const button of buttons) button.disabled = selected.size === 0;
+      });
+      row.append(
+        select,
+        action(entry.title ?? "Unreadable item", () => this.#open(entry)),
+        create("span", itemTypes[entry.item.type].label),
+      );
       list.append(row);
     }
     this.replaceChildren(
       toolbar,
-      ...(trashed ? [create("h3", "Trash")] : []),
+      ...(view === "trash"
+        ? [create("h3", "Trash")]
+        : view === "archive"
+          ? [create("h3", "Archive")]
+          : [folderFilter]),
       ...(message ? [statusMessage(message)] : []),
-      list.childElementCount
-        ? list
-        : create("p", trashed ? "Trash is empty." : "Your vault is empty."),
+      ...(problem
+        ? [
+            alert(problem),
+            action("Reload vault", () =>
+              this.#refresh(() => this.#showItems(view)),
+            ),
+          ]
+        : []),
+      ...(list.childElementCount
+        ? [bulk, list]
+        : [create("p", "No items in this view.")]),
     );
     toolbar.querySelector("button")?.focus();
+  }
+
+  async #reload(vault: UnlockedVault, signal: AbortSignal) {
+    const response = await fetch(vaultItemsPath, { cache: "no-store", signal });
+    if (!response.ok) throw new Error("Vault reload failed");
+    const snapshot = decodeSnapshot(await response.json());
+    if (snapshot.keyId !== vault.parameters.keyId)
+      throw new Error("Vault key changed");
+    return openSnapshot(snapshot, vault.key);
+  }
+
+  #refresh(done: () => void) {
+    const vault = this.#vault;
+    if (!vault) return;
+    void this.#run(
+      (signal) => this.#reload(vault, signal),
+      (current) => {
+        this.#vault = current;
+        done();
+      },
+      () =>
+        this.append(
+          alert("Could not reload your vault. Lock and unlock to try again."),
+        ),
+    );
+  }
+
+  #startBulk(view: VaultView, entries: ListedItem[], kind: BulkAction) {
+    const folder = this.#folderOptions(false);
+    const execute = () =>
+      this.#applyBulk(view, entries, kind, folder.value || null);
+    if (kind === "move") {
+      if (entries.length === 1) folder.value = entries[0]!.item.folderId ?? "";
+      this.replaceChildren(
+        this.#toolbar(() => this.#showItems(view)),
+        create("h3", "Move to folder"),
+        folder,
+        action("Move items", execute),
+      );
+      folder.setAttribute("aria-label", "Destination folder");
+      folder.focus();
+    } else if (kind === "purge") {
+      this.replaceChildren(
+        this.#toolbar(() => this.#showItems(view)),
+        create("h3", "Permanently delete items?"),
+        create(
+          "p",
+          `Delete ${entries.length} selected item(s) permanently. This cannot be undone.`,
+        ),
+        action("Permanently delete", execute),
+        action("Cancel", () => this.#showItems(view)),
+      );
+    } else execute();
+  }
+
+  #applyBulk(
+    view: VaultView,
+    entries: ListedItem[],
+    kind: BulkAction,
+    folderId: string | null,
+  ) {
+    const vault = this.#vault;
+    if (!vault) return;
+    let problem = "Could not update the selected items. Try again.";
+    this.replaceChildren(this.#toolbar(), statusMessage("Updating items…"));
+    void this.#run(
+      async (signal) => {
+        const response = await fetch(vaultBulkPath, {
+          method: "PUT",
+          headers: writeHeaders,
+          signal,
+          body: JSON.stringify({
+            keyId: vault.parameters.keyId,
+            kind,
+            items: entries.map(({ item }) => ({
+              id: item.id,
+              revision: item.revision,
+            })),
+            ...(kind === "move" ? { folderId } : {}),
+          }),
+        });
+        if (response.status === 404 || response.status === 409)
+          problem =
+            "An item or folder changed. Reload your vault and select the items again.";
+        if (!response.ok) throw new Error("Vault selection update failed");
+        return this.#reload(vault, signal);
+      },
+      (current) => {
+        this.#vault = current;
+        this.#showItems(
+          view,
+          kind === "purge" ? "Items permanently deleted." : "Items updated.",
+        );
+      },
+      () => this.#showItems(view, undefined, problem),
+    );
+  }
+
+  #showFolders(message?: string) {
+    this.#stopWork();
+    const list = create("ul");
+    for (const entry of this.#vault?.folders ?? []) {
+      const row = create("li");
+      row.append(
+        create("span", entry.title),
+        action("Rename", () => this.#folderForm(entry)),
+        action("Delete folder", () => this.#folderForm(entry, true)),
+      );
+      list.append(row);
+    }
+    this.replaceChildren(
+      this.#toolbar(
+        this.#showList,
+        action("New folder", () => this.#folderForm()),
+      ),
+      create("h3", "Folders"),
+      ...(message ? [statusMessage(message)] : []),
+      list,
+    );
+  }
+
+  #folderForm(entry?: ListedFolder, deleting = false) {
+    const vault = this.#vault;
+    if (!vault) return;
+    const verb = deleting
+      ? "Delete folder"
+      : entry
+        ? "Rename folder"
+        : "New folder";
+    const form = create("form");
+    form.method = "post";
+    const input = create("input");
+    input.required = !deleting;
+    input.value = entry?.title ?? "";
+    const save = create("button", deleting ? "Delete folder" : "Save folder");
+    save.type = "submit";
+    const status = alert("");
+    status.hidden = true;
+    const back = () => this.#showFolders();
+    let sealed: string | undefined;
+    form.addEventListener("input", () => {
+      sealed = undefined;
+    });
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (save.disabled || (!deleting && !input.value.trim())) return;
+      save.disabled = true;
+      input.readOnly = true;
+      status.hidden = true;
+      let failure = "Could not save the folder. Try again.";
+      void this.#run(
+        async (signal) => {
+          sealed ??= JSON.stringify({
+            keyId: vault.parameters.keyId,
+            ...(entry ? { expectedRevision: entry.folder.revision } : {}),
+            ...(!deleting
+              ? { name: await encryptVaultText(input.value.trim(), vault.key) }
+              : {}),
+          });
+          const response = await fetch(
+            entry ? vaultFolderPath(entry.folder.id) : vaultFoldersPath,
+            {
+              method: deleting ? "DELETE" : entry ? "PUT" : "POST",
+              headers: writeHeaders,
+              body: sealed,
+              signal,
+            },
+          );
+          if (response.status === 409 || response.status === 404)
+            failure = "This folder changed. Reload your vault.";
+          if (!response.ok) throw new Error("Folder request failed");
+          return this.#reload(vault, signal);
+        },
+        (current) => {
+          this.#vault = current;
+          if (deleting && this.#folderId === entry?.folder.id)
+            this.#folderId = undefined;
+          this.#showFolders(
+            deleting
+              ? "Folder deleted. Its items are still in your vault."
+              : "Folder saved.",
+          );
+        },
+        () => {
+          save.disabled = false;
+          input.readOnly = false;
+          status.hidden = false;
+          status.textContent = failure;
+        },
+      );
+    });
+    form.append(
+      deleting
+        ? create("p", `Items in ${entry?.title} will move to No folder.`)
+        : itemField(["Folder name", input]),
+      save,
+      status,
+    );
+    this.replaceChildren(this.#toolbar(back), create("h3", verb), form);
+    (deleting ? save : input).focus();
   }
 
   #rememberItem(vault: UnlockedVault, entry: ListedItem) {
@@ -351,7 +679,7 @@ class VaultReader extends HTMLElement {
       (saved) => {
         this.#rememberItem(vault, saved);
         this.#showItems(
-          restoring,
+          this.#viewFor(entry),
           restoring ? "Restored to your vault." : "Moved to Trash.",
         );
       },
@@ -693,7 +1021,7 @@ class VaultReader extends HTMLElement {
       this.#showDetails(entry, null, "Could not read this item.");
       return;
     }
-    const back = entry.trashed ? this.#showTrash : this.#showList;
+    const back = this.#backFor(entry);
     const show = (password?: string) => {
       const status = create("p", "Opening item…");
       status.setAttribute("role", "status");
@@ -746,6 +1074,10 @@ class VaultReader extends HTMLElement {
       });
       content.append(rendered, toggle);
     };
+    const folder = this.#vault?.folders.find(
+      ({ folder }) => folder.id === item.folderId,
+    );
+    if (folder) add("Folder", folder.title);
     const login = details?.login;
     if (login) {
       if (login.username !== null) add("Username", login.username);
@@ -841,7 +1173,7 @@ class VaultReader extends HTMLElement {
     }
     this.replaceChildren(
       this.#toolbar(
-        trashed ? this.#showTrash : this.#showList,
+        this.#backFor(entry),
         edit,
         !trashed && title !== null && details && item.type <= 2
           ? action("Edit item fields", () =>
@@ -851,6 +1183,24 @@ class VaultReader extends HTMLElement {
         action(trashed ? "Restore" : "Move to Trash", () =>
           this.#changeLifecycle(entry, details),
         ),
+        trashed
+          ? action("Permanently delete", () =>
+              this.#startBulk("trash", [entry], "purge"),
+            )
+          : action(
+              item.archivedAt === null ? "Archive item" : "Unarchive item",
+              () =>
+                this.#startBulk(
+                  this.#viewFor(entry),
+                  [entry],
+                  item.archivedAt === null ? "archive" : "unarchive",
+                ),
+            ),
+        !trashed
+          ? action("Move to folder", () =>
+              this.#startBulk(this.#viewFor(entry), [entry], "move"),
+            )
+          : undefined,
       ),
       titleNode,
       ...(error ? [alert(error)] : []),

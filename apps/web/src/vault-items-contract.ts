@@ -54,6 +54,7 @@ const CreateDetailedItem = Schema.Struct({
   ...encryptedItem,
   type: ItemType,
   details: ItemDetails,
+  folderId: Schema.optionalKey(Schema.NullOr(VaultItemId)),
 });
 export const CreateVaultItem = Schema.Union([
   CreateVaultLogin,
@@ -102,6 +103,8 @@ const itemFields = {
   requiresMasterPassword: Schema.Boolean,
   details: ItemDetails,
   revision: ItemRevision,
+  folderId: Schema.NullOr(VaultItemId),
+  archivedAt: Schema.NullOr(ItemRevision),
 };
 
 export const VaultSecureNote = Schema.Struct({
@@ -123,6 +126,44 @@ export const VaultItem = Schema.Union([
   VaultOtherItem,
 ]);
 
+export const vaultFoldersPath = "/api/vault/folders";
+export const vaultBulkPath = "/api/vault/bulk";
+export const vaultFolderPath = (id: string) => `${vaultFoldersPath}/${id}`;
+export const VaultFolder = Schema.Struct({
+  id: VaultItemId,
+  name: EncryptedVaultValue,
+  revision: ItemRevision,
+});
+export const CreateVaultFolder = Schema.Struct({
+  keyId: encryptedItem.keyId,
+  name: EncryptedVaultValue,
+});
+export const EditVaultFolder = Schema.Struct({
+  ...CreateVaultFolder.fields,
+  expectedRevision: ItemRevision,
+});
+export const VaultItemSelection = Schema.Array(
+  Schema.Struct({ id: VaultItemId, revision: ItemRevision }),
+).check(Schema.isMinLength(1), Schema.isMaxLength(100));
+const bulkFields = { keyId: encryptedItem.keyId, items: VaultItemSelection };
+export const VaultBulkChange = Schema.Union([
+  Schema.Struct({
+    ...bulkFields,
+    kind: Schema.Literals([
+      "trash",
+      "restore",
+      "archive",
+      "unarchive",
+      "purge",
+    ]),
+  }),
+  Schema.Struct({
+    ...bulkFields,
+    kind: Schema.Literal("move"),
+    folderId: Schema.NullOr(VaultItemId),
+  }),
+]);
+
 export const VaultSnapshot = Schema.Struct({
   keyId: VaultSetup.fields.keyId,
   wrappedKey: Schema.String,
@@ -130,4 +171,5 @@ export const VaultSnapshot = Schema.Struct({
   kdfIterations: Schema.Int.check(Schema.isGreaterThan(0)),
   items: Schema.Array(VaultItem),
   trash: Schema.Array(VaultItem),
+  folders: Schema.Array(VaultFolder),
 });

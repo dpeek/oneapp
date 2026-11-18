@@ -33,6 +33,9 @@ import {
 } from "../password-recovery-contract.ts";
 import { vaultSetupPath } from "../vault-setup-contract.ts";
 import {
+  vaultBulkPath,
+  vaultFolderPath,
+  vaultFoldersPath,
   vaultItemPath,
   vaultItemsPath,
   type VaultLifecycleAction,
@@ -1853,6 +1856,159 @@ it("scopes Bitwarden and web writes to the current account and vault", async () 
       [wire]: data,
     });
   }
+
+  const folderName = encrypted(16, 81);
+  const newFolder = await call(
+    vaultFoldersPath,
+    { keyId, name: folderName },
+    cookie,
+  );
+  expect(newFolder.status).toBe(201);
+  const folder = (await newFolder.json()) as {
+    id: string;
+    name: string;
+    revision: number;
+  };
+  const authorized = { authorization: `Bearer ${issued.access_token}` };
+  const browserJson = {
+    cookie,
+    origin,
+    "content-type": "application/json",
+    "x-effect-auth-csrf": "1",
+  };
+  const deviceJson = { ...authorized, "content-type": "application/json" };
+  expect(
+    await (
+      await call(vaultFoldersPath, { keyId, name: folderName }, cookie)
+    ).json(),
+  ).toEqual(folder);
+  expect(
+    await (
+      await request(`/api/folders/${folder.id}`, { headers: authorized })
+    ).json(),
+  ).toMatchObject({ id: folder.id, name: folderName });
+  const rename = await request(`/api/folders/${folder.id}`, {
+    method: "PUT",
+    headers: deviceJson,
+    body: JSON.stringify({ name: encrypted(16, 82) }),
+  });
+  expect(rename.status).toBe(200);
+  const renamed = (await rename.json()) as { revisionDate: string };
+  const browse = async (id: string) =>
+    (await (await getWebItem(id)).json()) as {
+      id: string;
+      revision: number;
+      folderId: string | null;
+      archivedAt: number | null;
+    };
+  const select = (
+    ids: { id: string; revision: number }[],
+    kind: string,
+    extra = {},
+  ) =>
+    request(vaultBulkPath, {
+      method: "PUT",
+      headers: browserJson,
+      body: JSON.stringify({
+        keyId,
+        kind,
+        items: ids.map(({ id, revision }) => ({ id, revision })),
+        ...extra,
+      }),
+    });
+  const initial = await Promise.all([browse(restored.id), browse(webItem.id)]);
+  const otherFolder = crypto.randomUUID();
+  sqlite.run("INSERT INTO personal_vault_folders VALUES (?, ?, ?, 1, NULL)", [
+    otherFolder,
+    otherVaultId,
+    encrypted(16, 83),
+  ]);
+  const beforeMove = vaultRevision.get(vaultId);
+  expect(
+    (await select(initial, "move", { folderId: otherFolder })).status,
+  ).toBe(404);
+  expect(
+    (
+      await select([initial[0]!, { id: otherItemId, revision: 1 }], "move", {
+        folderId: folder.id,
+      })
+    ).status,
+  ).toBe(404);
+  expect(
+    (
+      await select([initial[0]!, { ...initial[1]!, revision: 1 }], "move", {
+        folderId: folder.id,
+      })
+    ).status,
+  ).toBe(409);
+  expect(vaultRevision.get(vaultId)).toEqual(beforeMove);
+  const move = await select(initial, "move", { folderId: folder.id });
+  expect(move.status).toBe(200);
+  const moved = await Promise.all([browse(restored.id), browse(webItem.id)]);
+  expect(moved.every(({ folderId }) => folderId === folder.id)).toBe(true);
+  expect(moved[0]!.revision).toBe(moved[1]!.revision);
+  expect((await select(initial, "move", { folderId: folder.id })).status).toBe(
+    200,
+  );
+  expect(vaultRevision.get(vaultId)).toEqual({
+    revision_at: moved[0]!.revision,
+  });
+
+  const archive = await request("/api/ciphers/archive", {
+    method: "PUT",
+    headers: deviceJson,
+    body: JSON.stringify({ ids: moved.map(({ id }) => id) }),
+  });
+  expect(archive.status).toBe(200);
+  const archived = await Promise.all([browse(restored.id), browse(webItem.id)]);
+  expect(archived.every(({ archivedAt }) => archivedAt !== null)).toBe(true);
+  expect((await select(archived, "unarchive")).status).toBe(200);
+  const unarchived = await Promise.all([
+    browse(restored.id),
+    browse(webItem.id),
+  ]);
+  expect(unarchived.every(({ archivedAt }) => archivedAt === null)).toBe(true);
+
+  const removeFolder = (expectedRevision: number) =>
+    request(vaultFolderPath(folder.id), {
+      method: "DELETE",
+      headers: browserJson,
+      body: JSON.stringify({ keyId, expectedRevision }),
+    });
+  expect((await removeFolder(folder.revision)).status).toBe(409);
+  expect((await removeFolder(Date.parse(renamed.revisionDate))).status).toBe(
+    204,
+  );
+  const detached = await Promise.all([browse(restored.id), browse(webItem.id)]);
+  expect(detached.every(({ folderId }) => folderId === null)).toBe(true);
+  expect(detached[0]!.revision).toBeGreaterThan(unarchived[0]!.revision);
+  expect((await readWebVault()).folders).toEqual([]);
+
+  expect((await select(detached, "purge")).status).toBe(409);
+  expect((await select(detached, "trash")).status).toBe(200);
+  const trashSelection = await Promise.all([
+    browse(restored.id),
+    browse(webItem.id),
+  ]);
+  const bulkRestore = await request("/api/ciphers/restore", {
+    method: "PUT",
+    headers: deviceJson,
+    body: JSON.stringify({ ids: trashSelection.map(({ id }) => id) }),
+  });
+  expect(bulkRestore.status).toBe(200);
+  expect((await readWebVault()).items).toEqual(
+    expect.arrayContaining(
+      trashSelection.map(({ id }) => expect.objectContaining({ id })),
+    ),
+  );
+  const chosen = [await browse(webItem.id)];
+  expect((await select(chosen, "trash")).status).toBe(200);
+  const toPurge = [await browse(webItem.id)];
+  expect((await select(toPurge, "purge")).status).toBe(200);
+  const purgeRevision = vaultRevision.get(vaultId);
+  expect((await select(toPurge, "purge")).status).toBe(200);
+  expect(vaultRevision.get(vaultId)).toEqual(purgeRevision);
+  expect((await getCipher(webItem.id)).status).toBe(404);
 
   const refresh = {
     grant_type: "refresh_token",

@@ -1,4 +1,5 @@
 import { itemTypes } from "../../vault-item-content.ts";
+import type { PersonalFolder } from "../vault/folders.ts";
 import type { PersonalItem, PersonalVault } from "../vault/personal.ts";
 import type { GrantIdentity } from "./tokens.ts";
 
@@ -74,7 +75,9 @@ export const cipher = (item: PersonalItem) => ({
   deletedDate:
     item.deletedAt === null ? null : new Date(item.deletedAt).toISOString(),
   organizationId: null,
-  folderId: null,
+  folderId: item.folderId,
+  archivedDate:
+    item.archivedAt === null ? null : new Date(item.archivedAt).toISOString(),
   notes: item.details.notes ?? null,
   favorite: item.details.favorite ?? false,
   // The client SDK requires a boolean when decrypting the update response.
@@ -95,14 +98,27 @@ export const cipher = (item: PersonalItem) => ({
       : { [itemTypes[item.type].wire]: item.details.data }),
 });
 
+export const folder = (record: PersonalFolder) => ({
+  id: record.id,
+  name: record.name,
+  revisionDate: new Date(record.revisionAt).toISOString(),
+  object: "folder",
+});
+export const list = <A>(data: A[]) => ({
+  object: "list",
+  data,
+  continuationToken: null,
+});
+
 export const sync = (
   vault: PersonalVault,
   identity: GrantIdentity,
   items: PersonalItem[],
+  folders: PersonalFolder[],
 ) => ({
   profile: profile(vault, identity),
   ciphers: items.map(cipher),
-  folders: [],
+  folders: folders.map(folder),
   collections: [],
   policies: [],
   policiesNew: [],

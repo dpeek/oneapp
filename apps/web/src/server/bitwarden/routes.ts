@@ -8,6 +8,9 @@ import {
   bitwardenTokenPath,
 } from "../../bitwarden-connection.ts";
 import { BitwardenDeviceId } from "../../bitwarden-device-contract.ts";
+import { contentType, error, json, readBody } from "./http.ts";
+import { isManagementPath, manageVault } from "./management.ts";
+import { readFolder, readFolders } from "../vault/folders.ts";
 import { privateHeaders } from "../api-response.ts";
 import {
   type PersonalVault,
@@ -21,6 +24,7 @@ import {
   type BrowserIdentity,
   changePersonalItem,
   editPersonalItem,
+  deviceAuthorization,
   readDeviceByAccess,
   redeemAuthorization,
   refreshDevice,
@@ -47,12 +51,9 @@ export const isBitwardenPath = (path: string) =>
   path.startsWith("/identity/") ||
   path.startsWith("/notifications/") ||
   apiPaths.includes(path) ||
-  cipherItemPath.test(path);
+  cipherItemPath.test(path) ||
+  isManagementPath(path);
 
-const json = (body: unknown, status = 200) =>
-  Response.json(body, { status, headers: privateHeaders });
-const error = (message: string, status = 400) =>
-  json({ error: message }, status);
 const html = (body: string, status = 200, form = false) =>
   new Response(
     `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Connect Bitwarden to OneApp</title><main>${body}</main></html>`,
@@ -77,27 +78,6 @@ const secretShape = /^[a-zA-Z0-9_-]{43}$/u;
 const verifierShape = /^[a-zA-Z0-9._~-]{43,128}$/u;
 const isDeviceId = Schema.is(BitwardenDeviceId);
 const deviceNameShape = /^[\p{L}\p{N}][\p{L}\p{N} ._()-]{0,63}$/u;
-
-const readBody = async (request: Request, limit: number) => {
-  const reader = request.body?.getReader();
-  if (!reader) return null;
-  const text = new TextDecoder();
-  let body = "";
-  let size = 0;
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) return body + text.decode();
-    size += value.byteLength;
-    if (size > limit) {
-      await reader.cancel();
-      return null;
-    }
-    body += text.decode(value, { stream: true });
-  }
-};
-
-const contentType = (request: Request) =>
-  request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
 
 const readForm = async (request: Request) => {
   if (contentType(request) !== "application/x-www-form-urlencoded") return null;
@@ -156,6 +136,8 @@ const writeItem = async (
     return error("invalid_cipher");
   if (item.encryptedByKeyId != null && item.encryptedByKeyId !== vault.keyId)
     return error("stale_vault_key", 409);
+  if (item.folderId != null && !(await readFolder(db, vault.id, item.folderId)))
+    return error("folder_not_found", 404);
   if (!cipherId) {
     const saved = await savePersonalItem(db, accessDigest, vault, item);
     return saved ? json(Wire.cipher(saved)) : error("invalid_token", 401);
@@ -349,7 +331,8 @@ export const bitwardenFetch = async (
   }
 
   const [, cipherId, lifecycle] = cipherItemPath.exec(path) ?? [];
-  if (!cipherId && !apiPaths.includes(path))
+  const management = isManagementPath(path, request.method);
+  if (!management && !cipherId && !apiPaths.includes(path))
     return error("unsupported_endpoint", 404);
   const methods = cipherId
     ? lifecycle === "details"
@@ -360,7 +343,7 @@ export const bitwardenFetch = async (
     : path === ciphersPath
       ? ["GET", "POST"]
       : ["GET"];
-  if (!methods.includes(request.method))
+  if (!management && !methods.includes(request.method))
     return error("method_not_allowed", 405);
   if (path === "/api/config") return json(Wire.config(env.APP_ORIGIN));
   const access = request.headers
@@ -372,6 +355,14 @@ export const bitwardenFetch = async (
   if (!device) return error("invalid_token", 401);
   const vault = await readPersonalVault(env.DB, device.ownerId);
   if (!vault || vault.id !== device.vaultId) return error("invalid_token", 401);
+  if (management)
+    return manageVault(
+      request,
+      path,
+      env.DB,
+      vault,
+      deviceAuthorization(vault, accessDigest),
+    );
   if (cipherId && (lifecycle === "delete" || lifecycle === "restore"))
     return itemChangeResponse(
       await changePersonalItem(env.DB, accessDigest, vault, cipherId, {
@@ -384,19 +375,19 @@ export const bitwardenFetch = async (
     return item ? json(Wire.cipher(item)) : error("cipher_not_found", 404);
   }
   if (request.method === "GET" && path === ciphersPath)
-    return json({
-      object: "list",
-      data: (await readPersonalItems(env.DB, vault.id)).map(Wire.cipher),
-      continuationToken: null,
-    });
+    return json(
+      Wire.list((await readPersonalItems(env.DB, vault.id)).map(Wire.cipher)),
+    );
   if (cipherId || path === ciphersPath)
     return writeItem(request, env.DB, vault, accessDigest, cipherId);
 
   switch (path) {
     case "/api/sync":
-      return json(
-        Wire.sync(vault, device, await readPersonalItems(env.DB, vault.id)),
-      );
+      const [items, folders] = await Promise.all([
+        readPersonalItems(env.DB, vault.id),
+        readFolders(env.DB, vault.id),
+      ]);
+      return json(Wire.sync(vault, device, items, folders));
     case "/api/accounts/profile":
       return json(Wire.profile(vault, device));
     case "/api/accounts/keys":

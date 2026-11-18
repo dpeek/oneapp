@@ -17,16 +17,17 @@ export type PersonalItem = Omit<
   "createDigest" | "details" | "type"
 > &
   ItemContent;
-type StoredPersonalItem = Omit<PersonalItem, "details"> & {
+export type StoredPersonalItem = Omit<PersonalItem, "details"> & {
   details: string;
 };
 
-const personalItemColumns = (table: string) =>
+export const personalItemColumns = (table: string) =>
   `${table}.id, ${table}.vault_id AS vaultId, ${table}.name,
    ${table}.wrapped_key AS wrappedKey, ${table}.type, ${table}.details, ${table}.created_at AS createdAt,
-   ${table}.revision_at AS revisionAt, ${table}.deleted_at AS deletedAt`;
+   ${table}.revision_at AS revisionAt, ${table}.deleted_at AS deletedAt,
+   ${table}.folder_id AS folderId, ${table}.archived_at AS archivedAt`;
 
-const decodeStoredItem = ({
+export const decodeStoredItem = ({
   details,
   ...row
 }: StoredPersonalItem): PersonalItem => ({
@@ -152,14 +153,20 @@ export const createPersonalItem = async (
   db: WorkerEnv["DB"],
   vaultId: string,
   authorization: VaultAuthorization,
-  { name, wrappedKey, details, type }: EncryptedItem,
+  {
+    name,
+    wrappedKey,
+    details,
+    type,
+    folderId = null,
+  }: EncryptedItem & { folderId?: string | null },
 ) => {
   const serializedDetails = JSON.stringify(details);
   const createDigest = await digest(
     JSON.stringify(
-      type <= 2
+      type <= 2 && folderId === null
         ? [name, wrappedKey, serializedDetails]
-        : [type, name, wrappedKey, serializedDetails],
+        : [type, name, wrappedKey, serializedDetails, folderId],
     ),
   );
   const now = Date.now();
@@ -173,9 +180,10 @@ export const createPersonalItem = async (
       .prepare(
         `
       INSERT INTO personal_vault_logins
-        (id, vault_id, name, wrapped_key, details, create_digest, created_at, revision_at, type)
-      SELECT ?, v.id, ?, ?, ?, ?, ?, max(v.revision_at + 1, ?), ?
-      FROM (${authorization.query}) v WHERE true
+        (id, vault_id, name, wrapped_key, details, create_digest, created_at, revision_at, type, folder_id)
+      SELECT ?, v.id, ?, ?, ?, ?, ?, max(v.revision_at + 1, ?), ?, ?
+      FROM (${authorization.query}) v WHERE
+        (? IS NULL OR EXISTS (SELECT 1 FROM personal_vault_folders f WHERE f.vault_id = v.id AND f.id = ?))
       ON CONFLICT (vault_id, create_digest) DO NOTHING
     `,
       )
@@ -188,7 +196,10 @@ export const createPersonalItem = async (
         now,
         now,
         type,
+        folderId,
         ...scope,
+        folderId,
+        folderId,
       ),
     db
       .prepare(
@@ -219,6 +230,7 @@ type ItemChange =
       expectedRevision: number;
       item: EncryptedItem;
       alreadyApplied?: (item: PersonalItem) => boolean;
+      folderId?: string | null;
     }
   | {
       kind: "edit_note";
@@ -248,17 +260,27 @@ export const changePersonalItem = async (
   const type = change.kind === "edit" ? change.item.type : 2;
   const expectedRevision = change.expectedRevision;
   const lifecycleState = change.kind === "delete" ? "IS NULL" : "IS NOT NULL";
+  const moving = change.kind === "edit" && change.folderId !== undefined;
+  const folderId = change.kind === "edit" ? (change.folderId ?? null) : null;
   const filter = editing
-    ? "l.deleted_at IS NULL AND l.revision_at = ? AND l.type = ?"
+    ? `l.deleted_at IS NULL AND l.revision_at = ? AND l.type = ?${
+        moving && folderId !== null
+          ? " AND EXISTS (SELECT 1 FROM personal_vault_folders f WHERE f.vault_id = v.id AND f.id = ?)"
+          : ""
+      }`
     : `l.deleted_at ${lifecycleState}${expectedRevision === undefined ? "" : " AND l.revision_at = ?"}`;
   const filterParams = editing
-    ? [change.expectedRevision, type]
+    ? [
+        change.expectedRevision,
+        type,
+        ...(moving && folderId !== null ? [folderId] : []),
+      ]
     : expectedRevision === undefined
       ? []
       : [expectedRevision];
   const assignment =
     change.kind === "edit"
-      ? "name = ?, wrapped_key = ?, details = ?"
+      ? `name = ?, wrapped_key = ?, details = ?${moving ? ", folder_id = ?" : ""}`
       : change.kind === "edit_note"
         ? "name = ?, details = json_set(l.details, '$.notes', ?)"
         : change.kind === "delete"
@@ -270,6 +292,7 @@ export const changePersonalItem = async (
           change.item.name,
           change.item.wrappedKey,
           JSON.stringify(change.item.details),
+          ...(moving ? [folderId] : []),
         ]
       : change.kind === "edit_note"
         ? [change.name, change.notes]
@@ -340,6 +363,7 @@ export const editPersonalItem = async (
   id: string,
   edit: Pick<EncryptedItem, "type" | "name" | "details"> & {
     wrappedKey?: string;
+    folderId?: string | null;
     expectedRevision: number;
     keepPasswordHistory?: boolean;
   },
@@ -367,6 +391,7 @@ export const editPersonalItem = async (
   const matches = (current: PersonalItem) =>
     current.name === edit.name &&
     current.wrappedKey === wrappedKey &&
+    (edit.folderId === undefined || current.folderId === edit.folderId) &&
     JSON.stringify(current.details) === JSON.stringify(details);
   if (edit.keepPasswordHistory && matches(item))
     return { status: "updated", item } as const;
@@ -394,6 +419,7 @@ export const editPersonalItem = async (
     expectedRevision: edit.expectedRevision,
     item: { name: edit.name, wrappedKey, ...itemContent(item.type, details) },
     alreadyApplied: edit.keepPasswordHistory ? matches : undefined,
+    folderId: edit.folderId,
   });
 };
 

@@ -1,11 +1,10 @@
 import type { WorkerEnv } from "../../../../../alchemy.run.ts";
-import { ByteSize, Effect, Layer, Schema } from "effect";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
+import { Effect, Layer, Schema } from "effect";
+import { HttpRouter, HttpServerResponse } from "effect/http";
 import {
   CreateVaultItem,
   EditVaultItem,
   hostUriMatch,
-  vaultItemBodyLimit,
   VaultItem,
   VaultItemId,
   vaultItemsPath,
@@ -15,14 +14,22 @@ import {
 } from "../../vault-items-contract.ts";
 import { itemContent, validateDetails } from "../../vault-item-content.ts";
 import { jsonError, privateHeaders } from "../api-response.ts";
-import { AppAuth, type authHttp } from "../auth.ts";
+import type { authHttp } from "../auth.ts";
+import { projectFolder, readFolders } from "./folders.ts";
+import {
+  browserAuthorization,
+  readItemBody,
+  requireSession,
+  itemWriteErrors,
+  noVault,
+  staleVault,
+} from "./web-access.ts";
 import {
   changePersonalItem,
   createPersonalItem,
   editPersonalItem,
   editPersonalLogin,
   type PersonalItem,
-  type PersonalVault,
   readPersonalItem,
   readPersonalItems,
   readPersonalVault,
@@ -36,9 +43,11 @@ const itemFields = (item: PersonalItem) => ({
   requiresMasterPassword: item.details.reprompt === 1,
   revision: item.revisionAt,
   details: item.details,
+  folderId: item.folderId,
+  archivedAt: item.archivedAt,
 });
 
-const projectItem = (item: PersonalItem) => {
+export const projectItem = (item: PersonalItem) => {
   if (item.type !== 1) return { ...itemFields(item), type: item.type };
   const { username, password, uris } = item.details.credentials;
   return {
@@ -50,48 +59,6 @@ const projectItem = (item: PersonalItem) => {
   };
 };
 
-const authorizedBrowserVault = `
-  SELECT v.id, v.revision_at
-  FROM personal_vaults v
-  JOIN accounts a ON a.id = v.owner_id AND a.active = 1
-  JOIN oneapp_auth_sessions s ON s.subject_id = a.id AND s.security_revision = a.security_revision
-  WHERE v.id = ? AND v.key_id = ? AND a.id = ? AND a.security_revision = ?
-    AND s.session_id = ? AND s.expires_at > ? AND s.absolute_expires_at > ?
-`;
-
-const requireSession = Effect.flatMap(AppAuth, (auth) => auth.requireSession);
-const browserAuthorization = (
-  vault: PersonalVault,
-  session: Effect.Success<typeof requireSession>,
-) => ({
-  query: authorizedBrowserVault,
-  parameters: (now: number) => [
-    vault.id,
-    vault.keyId,
-    session.subjectId,
-    session.securityRevision,
-    session.sessionId,
-    now,
-    now,
-  ],
-});
-
-const readItemBody = <A>(schema: Schema.ConstraintDecoder<A>) =>
-  HttpServerRequest.schemaBodyJson(schema, { onExcessProperty: "error" }).pipe(
-    Effect.provideService(
-      HttpServerRequest.MaxBodySize,
-      ByteSize.bytes(vaultItemBodyLimit),
-    ),
-    Effect.option,
-  );
-const itemWriteErrors = {
-  AuthenticationRequired: () => jsonError(401, "Sign in to save a vault item."),
-  HookDenied: () => jsonError(403, "Request not allowed."),
-  UnknownError: () => jsonError(503, "Could not save your vault item."),
-};
-const noVault = () => jsonError(404, "Set up your password vault first.");
-const staleVault = () =>
-  jsonError(409, "Unlock your vault again to save this item.");
 const isItemId = Schema.is(VaultItemId);
 const isLifecycleAction = Schema.is(VaultLifecycleAction);
 
@@ -136,12 +103,16 @@ export const vaultItemRoutes = (
         const items = yield* Effect.tryPromise(() =>
           readPersonalItems(db, vault.id),
         );
+        const folders = yield* Effect.tryPromise(() =>
+          readFolders(db, vault.id),
+        );
         return yield* HttpServerResponse.schemaJson(VaultSnapshot)(
           {
             keyId: vault.keyId,
             wrappedKey: vault.wrappedKey,
             kdfSalt: vault.kdfSalt,
             kdfIterations: vault.kdfIterations,
+            folders: folders.map(projectFolder),
             items: items
               .filter(({ deletedAt }) => deletedAt === null)
               .map(projectItem),
@@ -211,6 +182,7 @@ export const vaultItemRoutes = (
                   ? {
                       name,
                       wrappedKey,
+                      folderId: input.value.folderId,
                       ...itemContent(input.value.type, input.value.details),
                     }
                   : input.value.type === 1

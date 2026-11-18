@@ -50,6 +50,14 @@ import {
   vaultImportBytes,
   vaultImportPath,
 } from "./vault-transfer-contract.ts";
+import {
+  encryptVaultAttachment,
+  openVaultAttachment,
+  removeVaultAttachment,
+  uploadVaultAttachment,
+} from "./vault-attachments.ts";
+import type { AttachmentMetadata } from "./vault-attachment-contract.ts";
+import { writeVaultZip } from "./vault-zip.ts";
 import { vaultPasswordMaximum } from "./vault-setup-contract.ts";
 
 export const vaultReader = CustomElement.define({
@@ -688,6 +696,7 @@ class VaultReader extends HTMLElement {
     const format = create("select");
     format.add(new Option("Bitwarden JSON", "json"));
     format.add(new Option("Bitwarden CSV", "csv"));
+    format.add(new Option("Bitwarden ZIP with attachments", "zip"));
     format.add(new Option("Password-protected Bitwarden JSON", "protected"));
     const formatLabel = create("label", "File format");
     formatLabel.className = "vault-item-field";
@@ -714,7 +723,9 @@ class VaultReader extends HTMLElement {
         ? "Keep the export password. You’ll need it to import the file."
         : format.value === "csv"
           ? "Download plaintext. CSV includes logins and Secure Notes with limited fields."
-          : "Download a plaintext copy of your vault items and folders.";
+          : format.value === "zip"
+            ? "Download a plaintext copy of your vault and attachments."
+            : "Download a plaintext copy of your vault items and folders.";
     };
     format.addEventListener("change", changeFormat);
     changeFormat();
@@ -758,19 +769,43 @@ class VaultReader extends HTMLElement {
           signal.throwIfAborted();
           problem = "Could not read all items for export.";
           const portable = await openPortableVault(snapshot, key, signal);
-          return chosen === "csv"
-            ? writePortableCsv(portable)
-            : chosen === "protected"
-              ? writeProtectedExport(portable, exportPassword)
-              : writePortableJson(portable);
+          if (chosen === "zip")
+            return {
+              format: "zip" as const,
+              ...(await writeVaultZip(portable, snapshot, key, signal)),
+            };
+          const data =
+            chosen === "csv"
+              ? writePortableCsv(portable)
+              : chosen === "protected"
+                ? await writeProtectedExport(portable, exportPassword)
+                : writePortableJson(portable);
+          return { format: "text" as const, data };
         },
-        (data) => {
-          downloadVaultFile(
-            new Blob([data], {
-              type: chosen === "csv" ? "text/csv" : "application/json",
-            }),
-            chosen === "csv" ? "oneapp-vault.csv" : "oneapp-vault.json",
-          );
+        (result) => {
+          if (result.format === "zip") {
+            downloadVaultFile(result.archive, "oneapp-vault.zip");
+            if (result.failed.length) {
+              const missing = create("ul");
+              for (const name of result.failed)
+                missing.append(create("li", name));
+              this.replaceChildren(
+                this.#toolbar(this.#showList),
+                alert(
+                  `The ZIP contains ${result.count} attachment(s). ${result.failed.length} could not be included.`,
+                ),
+                missing,
+              );
+              return;
+            }
+          } else {
+            downloadVaultFile(
+              new Blob([result.data], {
+                type: chosen === "csv" ? "text/csv" : "application/json",
+              }),
+              chosen === "csv" ? "oneapp-vault.csv" : "oneapp-vault.json",
+            );
+          }
           this.#showList("Vault export downloaded.");
         },
         () => {
@@ -787,6 +822,158 @@ class VaultReader extends HTMLElement {
       form,
     );
     format.focus();
+  }
+
+  #showAttachments(entry: ListedItem, key: VaultKey, message?: string) {
+    this.#stopWork();
+    const vault = this.#vault;
+    if (!vault) return;
+    const item = entry.item;
+    const back = () => this.#open(entry);
+    const heading = create("h3", `Attachments for ${entry.title ?? "item"}`);
+    const status = alert("");
+    status.hidden = true;
+    const showError = (problem: string) => {
+      status.textContent = problem;
+      status.hidden = false;
+    };
+    const list = create("ul");
+    const display = (attachment: AttachmentMetadata, name: string | null) => {
+      const row = create("li");
+      row.append(create("span", name ?? "Unreadable attachment"));
+      if (name !== null) {
+        const download = action("Download plaintext", () => {
+          status.hidden = true;
+          download.disabled = true;
+          void this.#run(
+            (signal) => openVaultAttachment(item.id, attachment, key, signal),
+            (bytes) => {
+              const file = new Blob([bytes], {
+                type: "application/octet-stream",
+              });
+              bytes.fill(0);
+              downloadVaultFile(file, name);
+              download.disabled = false;
+            },
+            () => {
+              download.disabled = false;
+              showError("Could not read this attachment.");
+            },
+          );
+        });
+        row.append(download);
+      }
+      if (!entry.trashed)
+        row.append(
+          action("Remove", () => {
+            this.#replaceAttachment(
+              entry,
+              key,
+              "Attachment removed.",
+              (signal) => removeVaultAttachment(item.id, attachment.id, signal),
+              showError,
+            );
+          }),
+        );
+      list.append(row);
+    };
+    if (item.attachments.length) {
+      void this.#run(
+        async () =>
+          Promise.all(
+            item.attachments.map(async (attachment) => ({
+              attachment,
+              name: await decryptVaultText(attachment.name, key).catch(
+                () => null,
+              ),
+            })),
+          ),
+        (records) => {
+          for (const { attachment, name } of records) display(attachment, name);
+        },
+        () => showError("Could not list attachments."),
+      );
+    }
+    const form = create("form");
+    form.method = "post";
+    const input = create("input");
+    input.type = "file";
+    input.required = true;
+    const upload = create("button", "Upload attachment");
+    upload.type = "submit";
+    let sealed: Awaited<ReturnType<typeof encryptVaultAttachment>> | undefined;
+    input.addEventListener("change", () => {
+      sealed = undefined;
+    });
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const file = input.files?.[0];
+      if (!file || upload.disabled) return;
+      upload.disabled = input.disabled = true;
+      status.hidden = true;
+      this.#replaceAttachment(
+        entry,
+        key,
+        "Attachment uploaded.",
+        async (signal) => {
+          sealed ??= await encryptVaultAttachment(file, key);
+          signal.throwIfAborted();
+          await uploadVaultAttachment(
+            item.id,
+            item.revision,
+            vault.parameters.keyId,
+            sealed,
+            signal,
+          );
+        },
+        (error) => {
+          upload.disabled = input.disabled = false;
+          showError(error);
+        },
+      );
+    });
+    form.append(itemField(["Choose attachment", input]), upload);
+    this.replaceChildren(
+      this.#toolbar(back),
+      heading,
+      ...(message ? [statusMessage(message)] : []),
+      status,
+      item.attachments.length ? list : create("p", "No attachments."),
+      ...(entry.trashed ? [] : [form]),
+    );
+  }
+
+  #replaceAttachment(
+    entry: ListedItem,
+    key: VaultKey,
+    message: string,
+    mutate: (signal: AbortSignal) => Promise<void>,
+    failed: (message: string) => void,
+  ) {
+    const vault = this.#vault;
+    if (!vault) return;
+    let problem = "Could not update this attachment.";
+    void this.#run(
+      async (signal) => {
+        try {
+          await mutate(signal);
+        } catch (error) {
+          if (error instanceof Error) problem = error.message;
+          throw error;
+        }
+        return this.#reload(vault, signal);
+      },
+      (current) => {
+        this.#vault = current;
+        const latest = current.entries.find(
+          ({ item }) => item.id === entry.item.id,
+        );
+        if (latest && latest.item.wrappedKey === entry.item.wrappedKey)
+          this.#showAttachments(latest, key, message);
+        else this.#showList(message);
+      },
+      () => failed(problem),
+    );
   }
 
   #showFolders(message?: string) {
@@ -1354,11 +1541,10 @@ class VaultReader extends HTMLElement {
       if (credentials?.totp)
         mask("TOTP seed", credentials.totp, add("TOTP seed", ""));
       for (const { uri, match } of credentials?.uris ?? []) {
-        if (uri !== null)
-          add(
-            "Website",
-            match == null ? uri : `${uri} (${uriMatchLabels[match]})`,
-          );
+        if (uri === null) continue;
+        const website = add("Website", "");
+        website.append(create("span", uri));
+        if (match != null) website.append(` (${uriMatchLabels[match]})`);
       }
     }
     if (details) {
@@ -1442,6 +1628,22 @@ class VaultReader extends HTMLElement {
       this.#toolbar(
         this.#backFor(entry),
         edit,
+        details && (!trashed || item.attachments.length > 0)
+          ? action("Attachments", () => {
+              const vault = this.#vault;
+              if (!vault) return;
+              void this.#run(
+                () => unwrapVaultKey(item.wrappedKey, vault.key, "both"),
+                (key) => this.#showAttachments(entry, key),
+                () =>
+                  this.#showDetails(
+                    entry,
+                    details,
+                    "Could not open attachments.",
+                  ),
+              );
+            })
+          : undefined,
         !trashed && title !== null && details && item.type <= 2
           ? action("Edit item fields", () =>
               this.#showDetailedForm(item.type, { item, title, details }),

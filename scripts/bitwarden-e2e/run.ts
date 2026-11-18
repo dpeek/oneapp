@@ -103,6 +103,7 @@ try {
       `playwright@${playwrightVersion}`,
       `miniflare@${miniflareVersion}`,
       `workerd@${workerdVersion}`,
+      "fflate@0.8.3",
     ]),
     run([
       "bun",
@@ -205,7 +206,11 @@ try {
 
   // Resolve Playwright from the temporary directory, without adding a workspace dependency.
   const flow = join(work, "browser.mjs");
-  await Bun.write(flow, Bun.file(new URL("./browser.mjs", import.meta.url)));
+  await Promise.all(
+    ["browser.mjs", "attachments.mjs"].map((file) =>
+      Bun.write(join(work, file), Bun.file(new URL(file, import.meta.url))),
+    ),
+  );
   const browser = Bun.spawn({
     cmd: ["node", flow],
     env: {

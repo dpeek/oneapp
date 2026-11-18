@@ -96,3 +96,35 @@ export const personalVaultImports = sqliteTable(
     uniqueIndex("personal_vault_import_digest").on(table.vaultId, table.digest),
   ],
 );
+
+export const personalVaultAttachments = sqliteTable(
+  "personal_vault_attachments",
+  {
+    id: text().primaryKey(),
+    itemId: text("item_id")
+      .notNull()
+      .references(() => personalVaultItems.id, { onDelete: "cascade" }),
+    name: text().notNull(),
+    wrappedKey: text("wrapped_key").notNull(),
+    size: integer().notNull(),
+    itemKey: text("item_key").notNull(),
+    revisionAt: integer("revision_at").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    readyAt: integer("ready_at"),
+    createDigest: text("create_digest").notNull(),
+  },
+  (table) => [
+    uniqueIndex("personal_vault_attachment_create").on(
+      table.itemId,
+      table.createDigest,
+    ),
+  ],
+);
+
+export const personalVaultAttachmentCleanup = sqliteTable(
+  "personal_vault_attachment_cleanup",
+  {
+    id: text().primaryKey(),
+    deleteAfter: integer("delete_after").notNull(),
+  },
+);

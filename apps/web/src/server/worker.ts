@@ -40,6 +40,8 @@ import {
   passwordRecoveryRoutes,
   resetLinkRenderer,
 } from "./password-recovery.ts";
+import { collectAttachments } from "./vault/attachments.ts";
+import { vaultAttachmentRoutes } from "./vault/web-attachments.ts";
 import { vaultManagementRoutes } from "./vault/management.ts";
 import { vaultItemRoutes } from "./vault/items.ts";
 import { vaultSetupRoutes } from "./vault/setup.ts";
@@ -51,6 +53,9 @@ const health = HttpRouter.add(
 );
 
 export default {
+  async scheduled(_event: unknown, env: WorkerEnv) {
+    await collectAttachments(env.DB, env.VAULT_FILES);
+  },
   async fetch(
     request: Request,
     env: WorkerEnv & {
@@ -60,6 +65,10 @@ export default {
   ) {
     const url = new URL(request.url);
     const path = url.pathname;
+    const defer = (work: Promise<unknown>) => {
+      if (context) context.waitUntil(work);
+      else void work;
+    };
     if (
       (path === forgotPasswordPage || path === resetPasswordPage) &&
       env.ASSETS
@@ -177,24 +186,30 @@ export default {
     );
     if (isBitwardenPath(path)) {
       try {
-        return await bitwardenFetch(request, url, env, () => {
-          const cookie =
-            HttpServerRequest.fromWeb(request).cookies[sessionCookieName];
-          if (cookie === undefined) return Promise.resolve(null);
-          return Effect.runPromise(
-            Effect.flatMap(AppAuth, (auth) =>
-              auth.verifySession(Redacted.make(cookie)),
-            ).pipe(
-              Effect.map((session) => ({
-                ownerId: session.subjectId,
-                sessionId: session.sessionId,
-                securityRevision: session.securityRevision,
-              })),
-              Effect.catchTag("SessionInvalid", () => Effect.succeed(null)),
-              Effect.provide(AppAuth.layer.pipe(Layer.provide(dependencies))),
-            ),
-          );
-        });
+        return await bitwardenFetch(
+          request,
+          url,
+          env,
+          () => {
+            const cookie =
+              HttpServerRequest.fromWeb(request).cookies[sessionCookieName];
+            if (cookie === undefined) return Promise.resolve(null);
+            return Effect.runPromise(
+              Effect.flatMap(AppAuth, (auth) =>
+                auth.verifySession(Redacted.make(cookie)),
+              ).pipe(
+                Effect.map((session) => ({
+                  ownerId: session.subjectId,
+                  sessionId: session.sessionId,
+                  securityRevision: session.securityRevision,
+                })),
+                Effect.catchTag("SessionInvalid", () => Effect.succeed(null)),
+                Effect.provide(AppAuth.layer.pipe(Layer.provide(dependencies))),
+              ),
+            );
+          },
+          defer,
+        );
       } catch {
         return Response.json(
           { error: "temporarily_unavailable" },
@@ -224,7 +239,8 @@ export default {
           linksRoutes(http),
           vaultSetupRoutes(http, env.DB),
           vaultItemRoutes(http, env.DB),
-          vaultManagementRoutes(http, env.DB),
+          vaultManagementRoutes(http, env, defer),
+          vaultAttachmentRoutes(http, env, defer),
           bitwardenDeviceRoutes(http),
           cliTokenRoutes(http),
           cliLoginRoutes(http),

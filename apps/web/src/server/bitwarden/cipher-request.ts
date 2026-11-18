@@ -1,3 +1,4 @@
+import { AttachmentId } from "../../vault-attachment-contract.ts";
 import { Schema } from "effect";
 import {
   EncryptedVaultValue,
@@ -18,9 +19,6 @@ const optionalId = Schema.optionalKey(
   Schema.NullOr(Schema.String.check(Schema.isUUID())),
 );
 const empty = Schema.optionalKey(Schema.Null);
-const emptyObject = Schema.optionalKey(
-  Schema.NullOr(Schema.Record(Schema.String, Schema.Never)),
-);
 const emptyArray = Schema.optionalKey(
   Schema.NullOr(Schema.Array(Schema.Never)),
 );
@@ -37,8 +35,23 @@ const envelope = Schema.Struct({
   archivedDate: optionalDate,
   lastKnownRevisionDate: Schema.optionalKey(Schema.NullOr(Schema.String)),
   data: empty,
-  attachments: emptyObject,
-  attachments2: emptyObject,
+  attachments: Schema.optionalKey(
+    Schema.NullOr(
+      Schema.Record(AttachmentId, Schema.NullOr(EncryptedVaultValue)),
+    ),
+  ),
+  attachments2: Schema.optionalKey(
+    Schema.NullOr(
+      Schema.Record(
+        AttachmentId,
+        Schema.Struct({
+          fileName: EncryptedVaultValue,
+          key: WrappedItemKey,
+          lastKnownRevisionDate: optionalDate,
+        }),
+      ),
+    ),
+  ),
 });
 
 const metadata = Schema.Struct(ItemMetadata);
@@ -81,6 +94,8 @@ export const decodeCipher = (input: unknown) => {
       lastKnownRevisionDate,
       folderId,
       archivedDate,
+      attachments,
+      attachments2,
     } = Schema.decodeUnknownSync(envelope)(cipher);
     const properties = Schema.decodeUnknownSync(metadata)(cipher);
     const payload = cipher[payloadKey];
@@ -106,6 +121,12 @@ export const decodeCipher = (input: unknown) => {
     return {
       name,
       wrappedKey: key,
+      attachmentIds: [
+        ...new Set([
+          ...Object.keys(attachments ?? {}),
+          ...Object.keys(attachments2 ?? {}),
+        ]),
+      ],
       folderId,
       archivedDate,
       encryptedFor,

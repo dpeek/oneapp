@@ -56,7 +56,10 @@ export const parseImport = (
       encryptedByKeyId,
       folderId,
       archivedDate,
+      attachmentIds,
     } = parsed;
+    if (attachmentIds.length)
+      return { error: `Item ${index + 1} contains attachment references.` };
     if (
       (encryptedFor != null && encryptedFor !== vault.id) ||
       (encryptedByKeyId != null && encryptedByKeyId !== vault.keyId)

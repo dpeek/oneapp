@@ -10,6 +10,15 @@ import {
 import { BitwardenDeviceId } from "../../bitwarden-device-contract.ts";
 import { contentType, error, json, readBody } from "./http.ts";
 import { isManagementPath, manageVault } from "./management.ts";
+import {
+  bitwardenAttachments,
+  isAttachmentPath,
+  transferDownload,
+} from "./attachments.ts";
+import {
+  hasAttachmentStore,
+  scheduleAttachmentCleanup,
+} from "../vault/attachments.ts";
 import { readFolder, readFolders } from "../vault/folders.ts";
 import { privateHeaders } from "../api-response.ts";
 import {
@@ -52,7 +61,8 @@ export const isBitwardenPath = (path: string) =>
   path.startsWith("/notifications/") ||
   apiPaths.includes(path) ||
   cipherItemPath.test(path) ||
-  isManagementPath(path);
+  isManagementPath(path) ||
+  isAttachmentPath(path);
 
 const html = (body: string, status = 200, form = false) =>
   new Response(
@@ -139,10 +149,21 @@ const writeItem = async (
   if (item.folderId != null && !(await readFolder(db, vault.id, item.folderId)))
     return error("folder_not_found", 404);
   if (!cipherId) {
+    if (item.attachmentIds.length) return error("invalid_cipher");
     const saved = await savePersonalItem(db, accessDigest, vault, item);
     return saved ? json(Wire.cipher(saved)) : error("invalid_token", 401);
   }
 
+  if (item.attachmentIds.length) {
+    const current = await readPersonalItem(db, vault.id, cipherId);
+    if (!current) return error("cipher_not_found", 404);
+    if (
+      item.attachmentIds.some(
+        (id) => !current.attachments.some((record) => record.id === id),
+      )
+    )
+      return error("invalid_attachment", 409);
+  }
   const revision = Date.parse(item.lastKnownRevisionDate ?? "");
   if (
     !Number.isFinite(revision) ||
@@ -298,6 +319,7 @@ export const bitwardenFetch = async (
   url: URL,
   env: WorkerEnv,
   browserIdentity: () => Promise<BrowserIdentity | null>,
+  defer: (work: Promise<unknown>) => void,
 ) => {
   const path = url.pathname;
   if (url.origin !== env.APP_ORIGIN) return error("invalid_origin", 403);
@@ -330,9 +352,15 @@ export const bitwardenFetch = async (
         });
   }
 
+  const isAttachment = isAttachmentPath(path);
+  if (isAttachment) {
+    const download = await transferDownload(request, url, env);
+    if (download) return download;
+  }
+
   const [, cipherId, lifecycle] = cipherItemPath.exec(path) ?? [];
   const management = isManagementPath(path, request.method);
-  if (!management && !cipherId && !apiPaths.includes(path))
+  if (!management && !isAttachment && !cipherId && !apiPaths.includes(path))
     return error("unsupported_endpoint", 404);
   const methods = cipherId
     ? lifecycle === "details"
@@ -343,7 +371,7 @@ export const bitwardenFetch = async (
     : path === ciphersPath
       ? ["GET", "POST"]
       : ["GET"];
-  if (!management && !methods.includes(request.method))
+  if (!management && !isAttachment && !methods.includes(request.method))
     return error("method_not_allowed", 405);
   if (path === "/api/config") return json(Wire.config(env.APP_ORIGIN));
   const access = request.headers
@@ -355,14 +383,28 @@ export const bitwardenFetch = async (
   if (!device) return error("invalid_token", 401);
   const vault = await readPersonalVault(env.DB, device.ownerId);
   if (!vault || vault.id !== device.vaultId) return error("invalid_token", 401);
-  if (management)
-    return manageVault(
+  if (isAttachment)
+    return bitwardenAttachments(
+      request,
+      path,
+      env,
+      vault,
+      deviceAuthorization(vault, accessDigest),
+      device.id,
+      defer,
+    );
+  if (management) {
+    const result = await manageVault(
       request,
       path,
       env.DB,
       vault,
       deviceAuthorization(vault, accessDigest),
     );
+    if (request.method === "DELETE" && result.ok)
+      scheduleAttachmentCleanup(env, defer);
+    return result;
+  }
   if (cipherId && (lifecycle === "delete" || lifecycle === "restore"))
     return itemChangeResponse(
       await changePersonalItem(env.DB, accessDigest, vault, cipherId, {
@@ -387,9 +429,11 @@ export const bitwardenFetch = async (
         readPersonalItems(env.DB, vault.id),
         readFolders(env.DB, vault.id),
       ]);
-      return json(Wire.sync(vault, device, items, folders));
+      return json(
+        Wire.sync(vault, device, items, folders, hasAttachmentStore(env)),
+      );
     case "/api/accounts/profile":
-      return json(Wire.profile(vault, device));
+      return json(Wire.profile(vault, device, hasAttachmentStore(env)));
     case "/api/accounts/keys":
       return json(Wire.keys(vault));
     case "/api/accounts/revision-date":

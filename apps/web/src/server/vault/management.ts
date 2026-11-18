@@ -17,6 +17,7 @@ import {
   vaultImportBytes,
   vaultImportPath,
 } from "../../vault-transfer-contract.ts";
+import { scheduleAttachmentCleanup } from "./attachments.ts";
 import { importPersonalVault } from "./import.ts";
 import { jsonError, privateHeaders } from "../api-response.ts";
 import type { authHttp } from "../auth.ts";
@@ -37,8 +38,10 @@ const isItemId = Schema.is(VaultItemId);
 
 export const vaultManagementRoutes = (
   http: ReturnType<typeof authHttp>,
-  db: WorkerEnv["DB"],
+  env: WorkerEnv,
+  defer: (work: Promise<unknown>) => void,
 ) => {
+  const db = env.DB;
   const secure = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     http.protect(effect);
   const folderResponse = (
@@ -200,6 +203,8 @@ export const vaultManagementRoutes = (
           );
           switch (result.status) {
             case "updated":
+              if (input.value.kind === "purge")
+                scheduleAttachmentCleanup(env, defer);
               return yield* HttpServerResponse.schemaJson(
                 Schema.Array(VaultItem),
               )(result.items.map(projectItem), { headers: privateHeaders });

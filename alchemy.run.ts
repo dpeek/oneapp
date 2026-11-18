@@ -12,6 +12,8 @@ const Database = Cloudflare.D1.Database("Database", {
   migrations: "./apps/web/drizzle",
 });
 
+const VaultFiles = Cloudflare.R2.Bucket("VaultFiles", { publicAccess: false });
+
 export const Web = Cloudflare.Worker(
   "Web",
   Effect.gen(function* () {
@@ -64,8 +66,10 @@ export const Web = Cloudflare.Worker(
         traces: { enabled: true, headSamplingRate: 1, persist: true },
         issues: { enabled: true },
       },
+      crons: ["*/15 * * * *"],
       env: {
         DB: Database,
+        VAULT_FILES: VaultFiles,
         APP_ORIGIN: Cloudflare.Worker.URL,
         AUTH_SECRET: Config.Redacted("AUTH_SECRET"),
         MCP_OAUTH_SECRET: Config.Redacted("MCP_OAUTH_SECRET"),

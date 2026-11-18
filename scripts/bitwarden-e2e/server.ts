@@ -29,6 +29,7 @@ const mcpSecret = Buffer.from(
 const require = createRequire(join(directory, "package.json"));
 const { Miniflare } = require("miniflare") as {
   Miniflare: new (options: object) => {
+    getR2Bucket: (name: string) => Promise<WorkerEnv["VAULT_FILES"]>;
     getD1Database: (name: string) => Promise<WorkerEnv["DB"]>;
     dispatchFetch: (input: string, init: RequestInit) => Promise<Response>;
     dispose: () => Promise<void>;
@@ -53,6 +54,8 @@ const makeRuntime = () =>
     compatibilityFlags: ["nodejs_compat"],
     d1Databases: { DB: "oneapp-bitwarden-e2e" },
     d1Persist: join(directory, "d1"),
+    r2Buckets: { VAULT_FILES: "oneapp-bitwarden-files" },
+    r2Persist: join(directory, "r2"),
     bindings: {
       APP_ORIGIN: origin,
       AUTH_SECRET: authSecret,

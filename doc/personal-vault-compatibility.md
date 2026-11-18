@@ -24,3 +24,11 @@ Personal writes reject organization and collection operations. Passkey import is
 - Bitwarden CSV carries logins and Secure Notes with named folders, favourites, notes, reprompt and archive state, text custom fields, login URIs, username, password and TOTP seed. CSV omits other item types, empty folders, field type and linked field metadata, URI match rules, and history.
 - OneApp accepts up to 500 items and 500 folders per import. The file and encrypted request each have a 1 MiB limit, and encrypted items have a 128 KiB limit. Replaying the same encrypted request returns the original outcome without duplicating data. The server checks every entry and relationship before writing.
 - Personal portable imports reject shared-vault content, passkeys, attachment references, and account-restricted exports. Files exported by either client omit Trash. Plaintext exports and file passwords stay in the browser.
+
+## Attachment storage and transfer
+
+OneApp stores authenticated encrypted files in a private R2 bucket and stores encrypted names, wrapped file keys and upload reservations in D1. The direct upload mode uses an 8 MiB encrypted file limit and a 64 MiB vault quota. Pending reservations expire after 30 minutes and count toward quota until they expire. Pending uploads are excluded from sync. Bitwarden receives its archive and attachment eligibility through the self-hosted profile only when the attachment binding is configured.
+
+File downloads from Bitwarden use a 60-second URL for one object and one device session. The Worker checks the device session again before serving bytes. Attachment deletion or permanent item deletion queues private object cleanup in the same D1 transaction. A scheduled Worker retries cleanup and releases expired reservations.
+
+OneApp ZIP exports contain `data.json` and an `attachments` directory. Failed files appear in the export result and in `missing-attachments.txt` in the ZIP. ZIP reimport is outside the portable import contract.

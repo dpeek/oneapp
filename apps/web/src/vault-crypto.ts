@@ -107,7 +107,7 @@ const authenticatedBytes = (iv: Bytes, ciphertext: Bytes) => {
   return bytes;
 };
 
-const wrap = async (plaintext: Bytes, key: VaultKey) => {
+const encryptParts = async (plaintext: Bytes, key: VaultKey) => {
   const iv = crypto.getRandomValues(new Uint8Array(16));
   const ciphertext = new Uint8Array(
     await crypto.subtle.encrypt(
@@ -123,6 +123,11 @@ const wrap = async (plaintext: Bytes, key: VaultKey) => {
       authenticatedBytes(iv, ciphertext),
     ),
   );
+  return { iv, ciphertext, mac };
+};
+
+const wrap = async (plaintext: Bytes, key: VaultKey) => {
+  const { iv, ciphertext, mac } = await encryptParts(plaintext, key);
   return "2." + [iv, ciphertext, mac].map(Base64.encode).join("|");
 };
 
@@ -132,13 +137,12 @@ const decodeBase64 = (encoded: string) => {
   return new Uint8Array(decoded.success);
 };
 
-const unwrap = async (value: string, key: VaultKey) => {
-  const parts = value.slice(2).split("|");
-  if (!value.startsWith("2.") || parts.length !== 3)
-    throw new Error("Invalid encrypted value");
-  const iv = decodeBase64(parts[0]!);
-  const ciphertext = decodeBase64(parts[1]!);
-  const mac = decodeBase64(parts[2]!);
+const decryptParts = async (
+  iv: Bytes,
+  ciphertext: Bytes,
+  mac: Bytes,
+  key: VaultKey,
+) => {
   if (
     iv.length !== 16 ||
     mac.length !== 32 ||
@@ -161,6 +165,37 @@ const unwrap = async (value: string, key: VaultKey) => {
       key.encryption,
       ciphertext,
     ),
+  );
+};
+
+const unwrap = async (value: string, key: VaultKey) => {
+  const parts = value.slice(2).split("|");
+  if (!value.startsWith("2.") || parts.length !== 3)
+    throw new Error("Invalid encrypted value");
+  const iv = decodeBase64(parts[0]!);
+  const ciphertext = decodeBase64(parts[1]!);
+  const mac = decodeBase64(parts[2]!);
+  return decryptParts(iv, ciphertext, mac, key);
+};
+
+export const encryptFileBytes = async (plaintext: Bytes, key: VaultKey) => {
+  const { iv, ciphertext, mac } = await encryptParts(plaintext, key);
+  const file = new Uint8Array(49 + ciphertext.byteLength);
+  file[0] = 2;
+  file.set(iv, 1);
+  file.set(mac, 17);
+  file.set(ciphertext, 49);
+  return file;
+};
+
+export const decryptFileBytes = (file: Bytes, key: VaultKey) => {
+  if (file[0] !== 2 || file.byteLength < 65)
+    throw new Error("Invalid encrypted file");
+  return decryptParts(
+    file.subarray(1, 17),
+    file.subarray(49),
+    file.subarray(17, 49),
+    key,
   );
 };
 

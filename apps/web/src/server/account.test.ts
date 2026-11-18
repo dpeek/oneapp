@@ -31,6 +31,12 @@ import {
   passwordResetPath,
   resetPasswordPage,
 } from "../password-recovery-contract.ts";
+import {
+  vaultAttachmentPath,
+  vaultAttachmentsPath,
+  vaultAttachmentLimit,
+  vaultAttachmentQuota,
+} from "../vault-attachment-contract.ts";
 import { vaultImportPath } from "../vault-transfer-contract.ts";
 import { vaultSetupPath } from "../vault-setup-contract.ts";
 import {
@@ -62,11 +68,13 @@ const setup = async (sqlite: Database) => {
     sqlite.exec(await Bun.file(migrationRoot + entry).text());
   }
 
+  sqlite.exec("PRAGMA foreign_keys = ON");
   const bind = (sql: string, params: SQLQueryBindings[]) => {
     const execute = () => ({ results: sqlite.query(sql).all(...params) });
     return {
       execute,
       all: async () => execute(),
+      run: async () => execute(),
       first: async () => execute().results[0] ?? null,
       raw: async () => sqlite.query(sql).values(...params),
     };
@@ -74,7 +82,36 @@ const setup = async (sqlite: Database) => {
   let emailAvailable = true;
   const messages: { from: string; to: string; text: string }[] = [];
   const deliveries: Promise<unknown>[] = [];
+  const objects = new Map<
+    string,
+    { bytes: Uint8Array<ArrayBuffer>; customMetadata: { sha256: string } }
+  >();
   const env = {
+    VAULT_FILES: {
+      put: async (
+        id: string,
+        bytes: Uint8Array<ArrayBuffer>,
+        options: { customMetadata: { sha256: string } },
+      ) => {
+        if (objects.has(id)) return null;
+        const object = {
+          bytes: bytes.slice(),
+          customMetadata: options.customMetadata,
+        };
+        objects.set(id, object);
+        return object;
+      },
+      head: async (id: string) => objects.get(id) ?? null,
+      get: async (id: string) => {
+        const object = objects.get(id);
+        return object
+          ? { size: object.bytes.length, body: new Response(object.bytes).body }
+          : null;
+      },
+      delete: async (ids: string | string[]) => {
+        for (const id of Array.isArray(ids) ? ids : [ids]) objects.delete(id);
+      },
+    },
     DB: {
       prepare: (sql: string) => ({
         bind: (...params: SQLQueryBindings[]) => bind(sql, params),
@@ -147,6 +184,8 @@ const setup = async (sqlite: Database) => {
   return {
     call,
     request,
+    objects,
+    finishWork: () => Promise.all(deliveries),
     signIn,
     cookies,
     messages,
@@ -758,7 +797,8 @@ it("recovers only a verified address with a single-use link and revokes browser 
 it("scopes Bitwarden and web writes to the current account and vault", async () => {
   using sqlite = new Database(":memory:");
   const origin = "https://oneapp.example";
-  const { call, request, signIn, cookies } = await setup(sqlite);
+  const { call, request, signIn, cookies, objects, finishWork } =
+    await setup(sqlite);
   const vaultId = crypto.randomUUID();
   const itemId = crypto.randomUUID();
   const otherVaultId = crypto.randomUUID();
@@ -2095,6 +2135,131 @@ it("scopes Bitwarden and web writes to the current account and vault", async () 
   expect((await importDevice(importBody)).status).toBe(204);
   expect(vaultRevision.get(vaultId)).toEqual(revisionAfterImport);
 
+  const fileItem = await browse(restored.id);
+  const initialFile = {
+    keyId,
+    expectedRevision: fileItem.revision,
+    name: encrypted(16, 100),
+    wrappedKey: encrypted(80, 100),
+    size: 65,
+  };
+  const reserve = (item: string, input = initialFile) =>
+    call(vaultAttachmentsPath(item), input, cookie);
+  expect((await reserve(otherItemId)).status).toBe(404);
+  expect(
+    (
+      await reserve(fileItem.id, {
+        ...initialFile,
+        size: vaultAttachmentLimit + 1,
+      })
+    ).status,
+  ).toBe(400);
+  expect(
+    (await reserve(fileItem.id, { ...initialFile, size: 66 })).status,
+  ).toBe(413);
+  expect(
+    (await reserve(fileItem.id, { ...initialFile, expectedRevision: 1 }))
+      .status,
+  ).toBe(409);
+  const oldPending = crypto.randomUUID().replaceAll("-", "");
+  sqlite.run(
+    `INSERT INTO personal_vault_attachments
+    (id, item_id, name, wrapped_key, size, item_key, revision_at, expires_at, create_digest)
+    SELECT ?, id, ?, ?, ?, wrapped_key, revision_at, ?, ? FROM personal_vault_logins WHERE id = ?`,
+    [
+      oldPending,
+      initialFile.name,
+      initialFile.wrappedKey,
+      vaultAttachmentQuota - 64,
+      Date.now() + 60_000,
+      "quota fixture",
+      fileItem.id,
+    ],
+  );
+  expect((await reserve(fileItem.id)).status).toBe(413);
+  sqlite.run(
+    "UPDATE personal_vault_attachments SET expires_at = 0 WHERE id = ?",
+    [oldPending],
+  );
+  const reserved = await reserve(fileItem.id);
+  expect(reserved.status).toBe(201);
+  const file = (await reserved.json()) as { id: string };
+  expect(await (await reserve(fileItem.id)).json()).toMatchObject({
+    id: file.id,
+  });
+  const wireFilePath = `/api/ciphers/${fileItem.id}/attachment/${file.id}`;
+  const webFilePath = vaultAttachmentPath(fileItem.id, file.id);
+  expect((await request(wireFilePath, { headers: authorized })).status).toBe(
+    404,
+  );
+  expect(await (await getCipher(fileItem.id)).json()).toMatchObject({
+    attachments: [],
+  });
+  const bytes = new Uint8Array(65).fill(7);
+  bytes[0] = 2;
+  const putFile = (content: Uint8Array<ArrayBuffer>) =>
+    request(webFilePath, {
+      method: "PUT",
+      headers: { ...browserJson, "content-type": "application/octet-stream" },
+      body: content,
+    });
+  expect((await putFile(bytes.subarray(0, 64))).status).toBe(413);
+  expect((await putFile(bytes)).status).toBe(204);
+  expect((await putFile(bytes)).status).toBe(204);
+  expect(objects.size).toBe(1);
+  const revised = await browse(fileItem.id);
+  expect(revised.revision).toBeGreaterThan(fileItem.revision);
+  expect(await (await getCipher(fileItem.id)).json()).toMatchObject({
+    attachments: [
+      {
+        id: file.id,
+        fileName: initialFile.name,
+        key: initialFile.wrappedKey,
+        size: "65",
+        url: "",
+      },
+    ],
+  });
+  const fileMetadata = await request(wireFilePath, { headers: authorized });
+  expect(fileMetadata.status).toBe(200);
+  const transfer = (await fileMetadata.json()) as { url: string };
+  expect(
+    new Uint8Array(await (await request(transfer.url, {})).arrayBuffer()),
+  ).toEqual(bytes);
+  expect(
+    (await request(transfer.url.replace(file.id, "f".repeat(32)), {})).status,
+  ).toBe(401);
+  const realNow = Date.now();
+  const later = vi.spyOn(Date, "now").mockReturnValue(realNow + 61_000);
+  try {
+    expect((await request(transfer.url, {})).status).toBe(401);
+  } finally {
+    later.mockRestore();
+  }
+  expect(
+    (
+      await request(vaultAttachmentPath(otherItemId, file.id), {
+        headers: { cookie },
+      })
+    ).status,
+  ).toBe(404);
+  expect((await request(webFilePath, {})).status).toBe(401);
+  expect((await select([revised], "trash")).status).toBe(200);
+  expect(
+    new Uint8Array(
+      await (await request(webFilePath, { headers: { cookie } })).arrayBuffer(),
+    ),
+  ).toEqual(bytes);
+  expect((await select([await browse(fileItem.id)], "purge")).status).toBe(200);
+  await finishWork();
+  expect(objects.has(file.id)).toBe(false);
+  expect((await request(transfer.url, {})).status).toBe(404);
+  expect(
+    sqlite
+      .query("SELECT id FROM personal_vault_attachment_cleanup WHERE id = ?")
+      .all(file.id),
+  ).toEqual([]);
+
   const refresh = {
     grant_type: "refresh_token",
     refresh_token: issued.refresh_token,
@@ -2137,7 +2302,7 @@ it("scopes Bitwarden and web writes to the current account and vault", async () 
       .status,
   ).toBe(400);
   expect((await token(refresh)).status).toBe(400);
-});
+}, 20_000);
 
 it("lists Bitwarden devices and revokes all grants for just the selected installation", async () => {
   using sqlite = new Database(":memory:");

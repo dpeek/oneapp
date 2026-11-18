@@ -45,6 +45,7 @@ const itemFields = (item: PersonalItem) => ({
   details: item.details,
   folderId: item.folderId,
   archivedAt: item.archivedAt,
+  attachments: item.attachments,
 });
 
 export const projectItem = (item: PersonalItem) => {

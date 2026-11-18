@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
+import { checkAttachments } from "./attachments.mjs";
 
 const {
   extension,
@@ -321,7 +322,9 @@ try {
     const exportUrl = new URL(client.url());
     exportUrl.hash = "/export";
     await client.goto(exportUrl.href);
-    await client.locator('select[formcontrolname="format"]').selectOption("json");
+    await client
+      .locator('select[formcontrolname="format"]')
+      .selectOption("json");
     await context.setOffline(true);
     await button(client, "Export").click();
     const dialog = client.getByRole("dialog");
@@ -337,7 +340,9 @@ try {
     assert.equal(data.items[0].login.password, itemPassword);
     await download.delete();
     await context.setOffline(false);
-    console.log("PASS Bitwarden confirmed and exported the seeded login offline.");
+    console.log(
+      "PASS Bitwarden confirmed and exported the seeded login offline.",
+    );
   }
 
   if (!seeded) {
@@ -1312,6 +1317,23 @@ try {
     console.log(
       "PASS Restoring the login in OneApp let Bitwarden sync and autofill it again.",
     );
+
+    step = "exchanging attachments and exporting ZIP files in both clients";
+    await checkAttachments({
+      app,
+      webVault,
+      first,
+      second,
+      secondClient,
+      item: savedLogin.id,
+      itemName: webLoginTitle,
+      password: masterPassword,
+      openItem,
+      syncNow,
+      restartWorker,
+      items: vault.ciphers.length,
+    });
+    vault.ciphers = (await syncNow(second, secondClient)).ciphers;
 
     step = "revoking the second Bitwarden profile in OneApp Settings";
     const devicesPath = "/api/bitwarden/devices";

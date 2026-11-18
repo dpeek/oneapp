@@ -1,3 +1,4 @@
+import { AttachmentMetadata } from "./vault-attachment-contract.ts";
 import { Schema } from "effect";
 import {
   EncryptedVaultValue,
@@ -105,6 +106,7 @@ const itemFields = {
   revision: ItemRevision,
   folderId: Schema.NullOr(VaultItemId),
   archivedAt: Schema.NullOr(ItemRevision),
+  attachments: Schema.Array(AttachmentMetadata),
 };
 
 export const VaultSecureNote = Schema.Struct({

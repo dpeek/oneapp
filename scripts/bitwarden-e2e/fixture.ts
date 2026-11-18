@@ -77,7 +77,7 @@ export const makeFixture = (origin: string) => {
   };
   const login: Omit<
     PersonalItem,
-    "details" | "deletedAt" | "type" | "archivedAt" | "folderId"
+    "details" | "deletedAt" | "type" | "archivedAt" | "folderId" | "attachments"
   > & {
     username: string;
     password: string;

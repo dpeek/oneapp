@@ -229,6 +229,10 @@ export const deviceAuthorization = (
   ],
 });
 
+export const attachmentDownloadAuthorization = (device: string) => ({
+  query: `SELECT v.id, v.revision_at ${deviceSource} WHERE d.expires_at > ? AND d.id = ?`,
+  parameters: (now: number) => [now, device],
+});
 export const readDeviceByAccess = async (db: DB, accessDigest: string) => {
   const now = Date.now();
   return db

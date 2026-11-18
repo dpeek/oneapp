@@ -24,6 +24,8 @@ export {
   bitwardenDeviceSessions,
 } from "./bitwarden/tables.ts";
 export {
+  personalVaultAttachmentCleanup,
+  personalVaultAttachments,
   personalVaultDeletedItems,
   personalVaultFolders,
   personalVaultImports,

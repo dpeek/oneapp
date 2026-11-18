@@ -1,3 +1,4 @@
+import type { AttachmentMetadata } from "../../vault-attachment-contract.ts";
 import type { WorkerEnv } from "../../../../../alchemy.run.ts";
 import {
   type EditVaultLogin,
@@ -16,23 +17,31 @@ export type PersonalItem = Omit<
   typeof personalVaultItems.$inferSelect,
   "createDigest" | "details" | "type"
 > &
-  ItemContent;
-export type StoredPersonalItem = Omit<PersonalItem, "details"> & {
+  ItemContent & { attachments: AttachmentMetadata[] };
+export type StoredPersonalItem = Omit<
+  PersonalItem,
+  "details" | "attachments"
+> & {
   details: string;
+  attachments: string;
 };
 
 export const personalItemColumns = (table: string) =>
   `${table}.id, ${table}.vault_id AS vaultId, ${table}.name,
    ${table}.wrapped_key AS wrappedKey, ${table}.type, ${table}.details, ${table}.created_at AS createdAt,
    ${table}.revision_at AS revisionAt, ${table}.deleted_at AS deletedAt,
-   ${table}.folder_id AS folderId, ${table}.archived_at AS archivedAt`;
+   ${table}.folder_id AS folderId, ${table}.archived_at AS archivedAt,
+   (SELECT json_group_array(json_object('id', a.id, 'name', a.name, 'wrappedKey', a.wrapped_key, 'size', a.size))
+    FROM personal_vault_attachments a WHERE a.item_id = ${table}.id AND a.ready_at IS NOT NULL) AS attachments`;
 
 export const decodeStoredItem = ({
   details,
+  attachments,
   ...row
 }: StoredPersonalItem): PersonalItem => ({
   ...row,
   ...itemContent(row.type, JSON.parse(details)),
+  attachments: JSON.parse(attachments),
 });
 
 export const readPersonalVault = async (db: WorkerEnv["DB"], ownerId: string) =>
@@ -264,6 +273,10 @@ export const changePersonalItem = async (
   const folderId = change.kind === "edit" ? (change.folderId ?? null) : null;
   const filter = editing
     ? `l.deleted_at IS NULL AND l.revision_at = ? AND l.type = ?${
+        change.kind === "edit"
+          ? " AND (l.wrapped_key = ? OR NOT EXISTS (SELECT 1 FROM personal_vault_attachments a WHERE a.item_id = l.id AND a.ready_at IS NOT NULL))"
+          : ""
+      }${
         moving && folderId !== null
           ? " AND EXISTS (SELECT 1 FROM personal_vault_folders f WHERE f.vault_id = v.id AND f.id = ?)"
           : ""
@@ -273,6 +286,7 @@ export const changePersonalItem = async (
     ? [
         change.expectedRevision,
         type,
+        ...(change.kind === "edit" ? [change.item.wrappedKey] : []),
         ...(moving && folderId !== null ? [folderId] : []),
       ]
     : expectedRevision === undefined
@@ -379,6 +393,8 @@ export const editPersonalItem = async (
   if (item.deletedAt !== null) return { status: "trashed" } as const;
 
   const wrappedKey = edit.wrappedKey ?? item.wrappedKey;
+  if (wrappedKey !== item.wrappedKey && item.attachments.length > 0)
+    return { status: "conflict" } as const;
   const old = wrappedKey === item.wrappedKey ? item.details : {};
   let details = {
     ...old,

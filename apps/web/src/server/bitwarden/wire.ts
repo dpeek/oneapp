@@ -1,3 +1,4 @@
+import type { AttachmentMetadata } from "../../vault-attachment-contract.ts";
 import { itemTypes } from "../../vault-item-content.ts";
 import type { PersonalFolder } from "../vault/folders.ts";
 import type { PersonalItem, PersonalVault } from "../vault/personal.ts";
@@ -15,12 +16,28 @@ const accountKeys = (vault: PersonalVault) => ({
   object: "privateKeys",
 });
 
-export const profile = (vault: PersonalVault, identity: GrantIdentity) => ({
+export const attachment = (record: AttachmentMetadata, url = "") => ({
+  object: "attachment",
+  id: record.id,
+  fileName: record.name,
+  key: record.wrappedKey,
+  size: String(record.size),
+  sizeName:
+    record.size < 1024
+      ? `${record.size} B`
+      : `${Math.round(record.size / 1024)} KB`,
+  url,
+});
+export const profile = (
+  vault: PersonalVault,
+  identity: GrantIdentity,
+  hasFiles: boolean,
+) => ({
   id: vault.id,
   name: identity.email,
   email: identity.email,
   emailVerified: identity.emailVerified === 1,
-  premium: false,
+  premium: hasFiles,
   culture: "en-US",
   twoFactorEnabled: false,
   key: vault.wrappedKey,
@@ -88,6 +105,7 @@ export const cipher = (item: PersonalItem) => ({
   collectionIds: [],
   reprompt: item.details.reprompt ?? 0,
   fields: item.details.fields ?? [],
+  attachments: item.attachments.map((record) => attachment(record)),
   ...(item.type === 1
     ? {
         passwordHistory: item.details.passwordHistory ?? [],
@@ -115,8 +133,9 @@ export const sync = (
   identity: GrantIdentity,
   items: PersonalItem[],
   folders: PersonalFolder[],
+  hasFiles: boolean,
 ) => ({
-  profile: profile(vault, identity),
+  profile: profile(vault, identity, hasFiles),
   ciphers: items.map(cipher),
   folders: folders.map(folder),
   collections: [],

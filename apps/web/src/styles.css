@@ -151,6 +151,10 @@ body:has(.app-shell) {
   gap: 0.375rem;
 }
 
+.vault-item-field[hidden] {
+  display: none;
+}
+
 .vault-item-field textarea {
   padding: 0.65rem;
   font: inherit;
@@ -192,6 +196,7 @@ oneapp-vault-reader {
   max-width: 100%;
   overflow-wrap: anywhere;
   text-align: start;
+  margin-inline-end: auto;
 }
 
 .vault-items span {

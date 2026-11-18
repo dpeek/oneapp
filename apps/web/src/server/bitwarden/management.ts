@@ -51,7 +51,7 @@ const decodeMove = Schema.is(
 const decodeFolder = Schema.is(Schema.Struct({ name: EncryptedVaultValue }));
 const decodePartial = Schema.is(
   Schema.Struct({
-    favorite: Schema.Boolean,
+    favorite: Schema.optionalKey(Schema.Boolean),
     folderId: Schema.optionalKey(Schema.NullOr(VaultItemId)),
   }),
 );
@@ -123,7 +123,11 @@ export const manageVault = async (
     return error("method_not_allowed", 405);
   if (action === "partial" && itemId && method === "PUT") {
     const body = await readJson(request, 4096);
-    if (!decodePartial(body)) return error("invalid_cipher");
+    if (
+      !decodePartial(body) ||
+      (body.favorite === undefined && body.folderId === undefined)
+    )
+      return error("invalid_cipher");
     if (
       body.folderId != null &&
       !(await readFolder(db, vault.id, body.folderId))
@@ -134,7 +138,7 @@ export const manageVault = async (
     const result = await editPersonalItem(db, authorization, itemId, {
       type: item.type,
       name: item.name,
-      details: { favorite: body.favorite },
+      details: body.favorite === undefined ? {} : { favorite: body.favorite },
       folderId: body.folderId,
       expectedRevision: item.revisionAt,
     });

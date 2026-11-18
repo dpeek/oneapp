@@ -39,6 +39,7 @@ const limit = (id: number, max: number) => ({
   namespace_id: String(id),
   simple: { limit: max, period: 60 },
 });
+let storage = directory;
 const makeRuntime = () =>
   new Miniflare({
     host: "127.0.0.1",
@@ -53,16 +54,17 @@ const makeRuntime = () =>
     compatibilityDate: "2026-11-01",
     compatibilityFlags: ["nodejs_compat"],
     d1Databases: { DB: "oneapp-bitwarden-e2e" },
-    d1Persist: join(directory, "d1"),
+    d1Persist: join(storage, "d1"),
     r2Buckets: { VAULT_FILES: "oneapp-bitwarden-files" },
-    r2Persist: join(directory, "r2"),
+    r2Persist: join(storage, "r2"),
     bindings: {
       APP_ORIGIN: origin,
       AUTH_SECRET: authSecret,
       MCP_OAUTH_SECRET: mcpSecret,
     },
     ratelimits: {
-      AUTH_LIMIT: limit(1001, 10),
+      // Two local profiles run a burst of explicit syncs from one test address.
+      AUTH_LIMIT: limit(1001, 60),
       CLI_LOGIN_LIMIT: limit(1002, 30),
       ACCOUNT_EMAIL_LIMIT: limit(1003, 3),
     },
@@ -90,14 +92,14 @@ const migrationDirectory = join(appDirectory, "drizzle");
 const migrations = Array.from(
   new Bun.Glob("*/migration.sql").scanSync(migrationDirectory),
 ).sort();
-const applyMigrations = async (files: string[]) => {
+const applyMigrations = async (files: string[], target = db) => {
   for (const file of files) {
     const source = await Bun.file(join(migrationDirectory, file)).text();
-    await db.batch(
+    await target.batch(
       source
         .split("--> statement-breakpoint")
         .filter((sql) => sql.trim())
-        .map((sql) => db.prepare(sql)),
+        .map((sql) => target.prepare(sql)),
     );
   }
 };
@@ -108,18 +110,20 @@ if (legacyLoginMigration < 0)
   throw new Error("The original vault migration is missing.");
 const beforeSeed = fixture ? legacyLoginMigration + 1 : migrations.length;
 await applyMigrations(migrations.slice(0, beforeSeed));
-await Effect.runPromise(
-  ensureOwner(db).pipe(
-    Effect.provideService(
-      ConfigProvider.ConfigProvider,
-      ConfigProvider.fromEnvRecord({
-        OWNER_EMAIL: fixtureEmail,
-        OWNER_PASSWORD: ownerPassword,
-        AUTH_SECRET: authSecret,
-      }),
+const provision = (target: WorkerEnv["DB"]) =>
+  Effect.runPromise(
+    ensureOwner(target).pipe(
+      Effect.provideService(
+        ConfigProvider.ConfigProvider,
+        ConfigProvider.fromEnvRecord({
+          OWNER_EMAIL: fixtureEmail,
+          OWNER_PASSWORD: ownerPassword,
+          AUTH_SECRET: authSecret,
+        }),
+      ),
     ),
-  ),
-);
+  );
+await provision(db);
 
 if (fixture) {
   const { vault, login } = fixture;
@@ -219,6 +223,31 @@ const server = Bun.serve({
           },
         },
       );
+    }
+    if (url.pathname === "/_test/attachment-objects") {
+      if (
+        request.method !== "GET" ||
+        request.headers.get("x-test-restart") !== restartKey
+      )
+        return new Response(null, { status: 404 });
+      const files = await runtime.getR2Bucket("VAULT_FILES");
+      const result = await files.list();
+      return Response.json({ count: result.objects.length });
+    }
+    if (url.pathname === "/_test/fresh-vault") {
+      if (
+        request.method !== "POST" ||
+        request.headers.get("x-test-restart") !== restartKey ||
+        storage !== directory
+      )
+        return new Response(null, { status: 404 });
+      await runtime.dispose();
+      storage = join(directory, "destination");
+      runtime = makeRuntime();
+      const target = await runtime.getD1Database("DB");
+      await applyMigrations(migrations, target);
+      await provision(target);
+      return new Response(null, { status: 204 });
     }
     if (url.pathname === "/_test/restart") {
       if (

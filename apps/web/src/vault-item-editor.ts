@@ -71,6 +71,43 @@ export const uriMatchLabels = [
 ] as const;
 const customFieldLabels = ["Text", "Hidden", "Boolean", "Linked"] as const;
 
+const linkedFields: Partial<
+  Record<ItemType, Readonly<Record<number, string>>>
+> = {
+  1: { 100: "Username", 101: "Password" },
+  3: {
+    300: "Cardholder name",
+    301: "Expiry month",
+    302: "Expiry year",
+    303: "Security code",
+    304: "Brand",
+    305: "Card number",
+  },
+  4: {
+    400: "Title or honorific",
+    401: "Middle name",
+    402: "Address line 1",
+    403: "Address line 2",
+    404: "Address line 3",
+    405: "City",
+    406: "State or province",
+    407: "Postal code",
+    408: "Country",
+    409: "Company",
+    410: "Email",
+    411: "Phone",
+    412: "Social security number",
+    413: "Username",
+    414: "Passport number",
+    415: "License number",
+    416: "First name",
+    417: "Last name",
+    418: "Full name",
+  },
+};
+export const linkedFieldLabel = (type: ItemType, id: number) =>
+  linkedFields[type]?.[id] ?? `Field ${id}`;
+
 const field = (caption: string, input: HTMLElement) => {
   const label = document.createElement("label");
   label.className = "vault-item-field";
@@ -175,7 +212,7 @@ export const vaultItemEditor = (type: ItemType, initial: Details) => {
     const uri = input(value?.uri);
     const match = choice(uriMatchLabels, value?.match, "Default");
     element.append(field("Website", uri), field("URI match", match));
-    return { element, uri, match };
+    return { element, uri, match, previous: value };
   });
   if (type === 1)
     element.append(
@@ -189,14 +226,28 @@ export const vaultItemEditor = (type: ItemType, initial: Details) => {
     const element = document.createElement("div");
     const name = input(previous?.name);
     const value = input(previous?.value, "password");
-    const linked = input(previous?.linkedId?.toString(), "number");
-    linked.min = "0";
+    const linked = document.createElement("select");
+    linked.add(new Option("Choose a field", ""));
+    const supported = linkedFields[type];
+    for (const [id, label] of Object.entries(supported ?? {}))
+      linked.add(new Option(label, id));
+    const previousId = previous?.linkedId;
+    if (previousId != null && !supported?.[previousId])
+      linked.add(
+        new Option(linkedFieldLabel(type, previousId), String(previousId)),
+      );
+    linked.value = previousId?.toString() ?? "";
+    const boolean = input(undefined, "checkbox");
+    boolean.checked = previous?.value === "true";
     const kind = choice(customFieldLabels, previous?.type);
+    if (!supported && previous?.type !== 3) kind.options[3]!.disabled = true;
     const valueField = field("Field value", value);
-    const linkedField = field("Linked field ID", linked);
+    const booleanField = field("True", boolean);
+    const linkedField = field("Linked field", linked);
     const showValue = () => {
-      valueField.hidden = kind.value === "3";
-      linkedField.hidden = !valueField.hidden;
+      valueField.hidden = kind.value === "2" || kind.value === "3";
+      booleanField.hidden = kind.value !== "2";
+      linkedField.hidden = kind.value !== "3";
       value.type = kind.value === "1" ? "password" : "text";
     };
     kind.addEventListener("change", showValue);
@@ -205,9 +256,10 @@ export const vaultItemEditor = (type: ItemType, initial: Details) => {
       field("Field name", name),
       field("Field type", kind),
       valueField,
+      booleanField,
       linkedField,
     );
-    return { element, name, kind, value, linked };
+    return { element, name, kind, value, linked, boolean, previous };
   });
   element.append(
     field("Notes", notes),
@@ -233,17 +285,33 @@ export const vaultItemEditor = (type: ItemType, initial: Details) => {
         fields: await Promise.all(
           fields.contents.map(async (row) => {
             const type = Number(row.kind.value) as 0 | 1 | 2 | 3;
+            const linkedId =
+              type === 3 && row.linked.value !== ""
+                ? Number(row.linked.value)
+                : null;
+            const index = row.previous
+              ? (initial.fields?.indexOf(row.previous) ?? -1)
+              : -1;
+            const existing = previous?.fields?.[index];
+            const value =
+              type === 2 ? String(row.boolean.checked) : row.value.value;
+            if (
+              existing &&
+              type === row.previous?.type &&
+              (row.previous.linkedId ?? null) === linkedId &&
+              (type === 3 ||
+                (row.previous.value ?? "") === value ||
+                (type === 2 &&
+                  row.previous.value == null &&
+                  value === "false")) &&
+              (row.previous.name ?? "") === row.name.value
+            )
+              return existing;
             return {
               type,
               name: await encryptOptionalText(row.name.value, key),
-              value:
-                type === 3
-                  ? null
-                  : await encryptOptionalText(row.value.value, key),
-              linkedId:
-                type === 3 && row.linked.value !== ""
-                  ? Number(row.linked.value)
-                  : null,
+              value: type === 3 ? null : await encryptOptionalText(value, key),
+              linkedId,
             };
           }),
         ),
@@ -265,15 +333,28 @@ export const vaultItemEditor = (type: ItemType, initial: Details) => {
               previous?.credentials?.totp,
             ),
             uris: await Promise.all(
-              websites.contents.map(async (row) => ({
-                ...(row.uri.value
-                  ? await encryptWebsite(row.uri.value, key)
-                  : { uri: null, uriChecksum: null }),
-                match:
+              websites.contents.map(async (row) => {
+                const match =
                   row.match.value === ""
                     ? null
-                    : (Number(row.match.value) as 0 | 1 | 2 | 3 | 4 | 5),
-              })),
+                    : (Number(row.match.value) as 0 | 1 | 2 | 3 | 4 | 5);
+                const index = row.previous
+                  ? (login?.uris?.indexOf(row.previous) ?? -1)
+                  : -1;
+                const existing = previous?.credentials?.uris?.[index];
+                if (
+                  existing &&
+                  (row.previous?.uri ?? "") === row.uri.value &&
+                  (row.previous?.match ?? null) === match
+                )
+                  return existing;
+                return {
+                  ...(row.uri.value
+                    ? await encryptWebsite(row.uri.value, key)
+                    : { uri: null, uriChecksum: null }),
+                  match,
+                };
+              }),
             ),
           },
         }),

@@ -233,6 +233,8 @@ export const createPersonalItem = async (
   return row ? decodeStoredItem(row) : null;
 };
 
+type AttachmentEdit = Pick<AttachmentMetadata, "id" | "name" | "wrappedKey">;
+
 type ItemChange =
   | {
       kind: "edit";
@@ -240,6 +242,7 @@ type ItemChange =
       item: EncryptedItem;
       alreadyApplied?: (item: PersonalItem) => boolean;
       folderId?: string | null;
+      attachmentUpdates?: readonly AttachmentEdit[];
     }
   | {
       kind: "edit_note";
@@ -269,11 +272,14 @@ export const changePersonalItem = async (
   const type = change.kind === "edit" ? change.item.type : 2;
   const expectedRevision = change.expectedRevision;
   const lifecycleState = change.kind === "delete" ? "IS NULL" : "IS NOT NULL";
+  const attachmentUpdates =
+    change.kind === "edit" ? (change.attachmentUpdates ?? []) : [];
+  const guardKey = change.kind === "edit" && attachmentUpdates.length === 0;
   const moving = change.kind === "edit" && change.folderId !== undefined;
   const folderId = change.kind === "edit" ? (change.folderId ?? null) : null;
   const filter = editing
     ? `l.deleted_at IS NULL AND l.revision_at = ? AND l.type = ?${
-        change.kind === "edit"
+        guardKey
           ? " AND (l.wrapped_key = ? OR NOT EXISTS (SELECT 1 FROM personal_vault_attachments a WHERE a.item_id = l.id AND a.ready_at IS NOT NULL))"
           : ""
       }${
@@ -286,7 +292,7 @@ export const changePersonalItem = async (
     ? [
         change.expectedRevision,
         type,
-        ...(change.kind === "edit" ? [change.item.wrappedKey] : []),
+        ...(guardKey ? [change.item.wrappedKey] : []),
         ...(moving && folderId !== null ? [folderId] : []),
       ]
     : expectedRevision === undefined
@@ -313,9 +319,7 @@ export const changePersonalItem = async (
         : [];
   // Both writes use the same access and item checks in one D1 transaction.
   // The item takes the new vault revision so sync observes a single change.
-  const [, updated, current] = await db.batch<
-    StoredPersonalItem | { id: null }
-  >([
+  const results = await db.batch<StoredPersonalItem | { id: null }>([
     db
       .prepare(
         `
@@ -337,12 +341,36 @@ export const changePersonalItem = async (
     `,
       )
       .bind(...values, ...scope, id, ...filterParams),
+    // Stock clients rewrap their item key and re-encrypt attachment metadata on
+    // save. Apply both parts together and only when the guarded edit succeeded.
+    ...(change.kind === "edit" && attachmentUpdates.length
+      ? [
+          db
+            .prepare(
+              `UPDATE personal_vault_attachments AS a
+          SET name = json_extract(input.value, '$.name'),
+              wrapped_key = json_extract(input.value, '$.wrappedKey'),
+              item_key = ?
+          FROM json_each(?) input
+          WHERE changes() = 1 AND a.item_id = ? AND a.ready_at IS NOT NULL
+            AND a.id = json_extract(input.value, '$.id')`,
+            )
+            .bind(
+              change.item.wrappedKey,
+              JSON.stringify(attachmentUpdates),
+              id,
+            ),
+        ]
+      : []),
     currentItem(db, authorization.query).bind(...scope, id),
   ]);
-  const row = updated?.results[0];
+  const row = results[1]?.results[0];
+  const visible = results[results.length - 1]?.results[0];
   if (row?.id != null)
-    return { status: "updated", item: decodeStoredItem(row) } as const;
-  const visible = current?.results[0];
+    return {
+      status: "updated",
+      item: decodeStoredItem(visible?.id != null ? visible : row),
+    } as const;
   if (!visible) return { status: "unauthorized" } as const;
   if (visible.id === null) return { status: "not_found" } as const;
   // A retry in the requested state succeeds without changing revisions.
@@ -379,6 +407,8 @@ export const editPersonalItem = async (
     wrappedKey?: string;
     folderId?: string | null;
     expectedRevision: number;
+    attachmentIds?: readonly string[];
+    attachmentUpdates?: readonly AttachmentEdit[];
     keepPasswordHistory?: boolean;
   },
 ) => {
@@ -393,7 +423,14 @@ export const editPersonalItem = async (
   if (item.deletedAt !== null) return { status: "trashed" } as const;
 
   const wrappedKey = edit.wrappedKey ?? item.wrappedKey;
-  if (wrappedKey !== item.wrappedKey && item.attachments.length > 0)
+  const attachments = new Set(item.attachments.map(({ id }) => id));
+  if (edit.attachmentIds?.some((attachment) => !attachments.has(attachment)))
+    return { status: "conflict" } as const;
+  if (
+    wrappedKey !== item.wrappedKey &&
+    attachments.size > 0 &&
+    edit.attachmentUpdates?.length !== attachments.size
+  )
     return { status: "conflict" } as const;
   const old = wrappedKey === item.wrappedKey ? item.details : {};
   let details = {
@@ -436,6 +473,7 @@ export const editPersonalItem = async (
     item: { name: edit.name, wrappedKey, ...itemContent(item.type, details) },
     alreadyApplied: edit.keepPasswordHistory ? matches : undefined,
     folderId: edit.folderId,
+    attachmentUpdates: edit.attachmentUpdates,
   });
 };
 

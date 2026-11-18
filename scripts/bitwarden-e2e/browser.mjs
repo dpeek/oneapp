@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
-import { checkAttachments } from "./attachments.mjs";
+import { checkAttachmentCleanup, checkAttachments } from "./attachments.mjs";
+import { checkTransfers, restoreIntoFreshVault } from "./transfers.mjs";
 
 const {
   extension,
@@ -160,6 +161,7 @@ const connectBitwarden = async ({ context, responses, localResponse }) => {
 };
 
 const openItem = async (client, name, section = "/tabs/vault") => {
+  await client.bringToFront();
   const view = new URL(client.url());
   view.hash = section;
   await client.goto(view.href);
@@ -178,6 +180,7 @@ const editPassword = async (client, password) => {
 };
 
 const syncNow = async (profile, client) => {
+  await client.bringToFront();
   const settings = new URL(client.url());
   settings.hash = "/vault-settings";
   await client.goto(settings.href);
@@ -207,6 +210,7 @@ const restartWorker = async (app, expectedItems = 1) => {
 };
 
 let context;
+let transfer;
 try {
   const first = await openProfile();
   const { responses, localResponse } = first;
@@ -1150,6 +1154,15 @@ try {
     assert.equal(editedLogin.wrappedKey, savedLogin.wrappedKey);
     assert.ok(editedLogin.revision > savedLogin.revision);
 
+    await button(webVault, "Show password history").press("Enter");
+    await button(webVault, "Show previous password").press("Enter");
+    await webVault.getByText(webLoginPassword, { exact: true }).waitFor();
+    await button(webVault, "Hide password history").press("Enter");
+    assert.equal(
+      await webVault.getByText(webLoginPassword, { exact: true }).count(),
+      0,
+    );
+
     step = "syncing and autofilling the rotated password in Bitwarden";
     const afterWebRotation = await syncNow(second, secondClient);
     const rotatedLogin = afterWebRotation.ciphers.find(
@@ -1319,7 +1332,7 @@ try {
     );
 
     step = "exchanging attachments and exporting ZIP files in both clients";
-    await checkAttachments({
+    const storedAttachments = await checkAttachments({
       app,
       webVault,
       first,
@@ -1333,7 +1346,35 @@ try {
       restartWorker,
       items: vault.ciphers.length,
     });
+    step = "deleting an attachment and purging its trashed item";
+    await checkAttachmentCleanup({
+      app,
+      webVault,
+      second,
+      secondClient,
+      item: savedLogin.id,
+      itemName: webLoginTitle,
+      openItem,
+      syncNow,
+      restartKey,
+      password: masterPassword,
+      ...storedAttachments,
+    });
     vault.ciphers = (await syncNow(second, secondClient)).ciphers;
+
+    step = "moving, archiving, importing, and exporting in both clients";
+    transfer = await checkTransfers({
+      app,
+      web: webVault,
+      first,
+      second,
+      client,
+      secondClient,
+      password: masterPassword,
+      openItem,
+      syncNow,
+    });
+    vault.ciphers = transfer.withLicense.ciphers;
 
     step = "revoking the second Bitwarden profile in OneApp Settings";
     const devicesPath = "/api/bitwarden/devices";
@@ -1465,6 +1506,29 @@ try {
   console.log(
     "PASS Bitwarden rotated both tokens and synced again with the refreshed access token.",
   );
+  if (transfer) {
+    step = "reimporting both clients' exports into a new D1 vault";
+    const status = await app.evaluate(
+      async (key) =>
+        (
+          await fetch("/_test/fresh-vault", {
+            method: "POST",
+            headers: { "x-test-restart": key },
+          })
+        ).status,
+      restartKey,
+    );
+    assert.equal(status, 204);
+    const destination = await openProfile();
+    context = destination.context;
+    const destinationApp = await signInToOneApp(destination);
+    step = "reimporting both clients' exports into a new D1 vault";
+    await restoreIntoFreshVault({
+      app: destinationApp,
+      password: masterPassword,
+      ...transfer,
+    });
+  }
 } catch (error) {
   console.error(`Bitwarden browser check failed while ${step}.`);
   for (const page of context?.pages() ?? []) {

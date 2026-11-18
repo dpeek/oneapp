@@ -82,6 +82,7 @@ const setup = async (sqlite: Database) => {
   let emailAvailable = true;
   const messages: { from: string; to: string; text: string }[] = [];
   const deliveries: Promise<unknown>[] = [];
+  let dropStoredFileResponse = false;
   const objects = new Map<
     string,
     { bytes: Uint8Array<ArrayBuffer>; customMetadata: { sha256: string } }
@@ -99,6 +100,10 @@ const setup = async (sqlite: Database) => {
           customMetadata: options.customMetadata,
         };
         objects.set(id, object);
+        if (dropStoredFileResponse) {
+          dropStoredFileResponse = false;
+          throw new Error("Fixture lost response after storing object");
+        }
         return object;
       },
       head: async (id: string) => objects.get(id) ?? null,
@@ -186,6 +191,9 @@ const setup = async (sqlite: Database) => {
     request,
     objects,
     finishWork: () => Promise.all(deliveries),
+    loseStoredFileResponse: () => {
+      dropStoredFileResponse = true;
+    },
     signIn,
     cookies,
     messages,
@@ -797,8 +805,15 @@ it("recovers only a verified address with a single-use link and revokes browser 
 it("scopes Bitwarden and web writes to the current account and vault", async () => {
   using sqlite = new Database(":memory:");
   const origin = "https://oneapp.example";
-  const { call, request, signIn, cookies, objects, finishWork } =
-    await setup(sqlite);
+  const {
+    call,
+    request,
+    signIn,
+    cookies,
+    objects,
+    finishWork,
+    loseStoredFileResponse,
+  } = await setup(sqlite);
   const vaultId = crypto.randomUUID();
   const itemId = crypto.randomUUID();
   const otherVaultId = crypto.randomUUID();
@@ -2010,6 +2025,17 @@ it("scopes Bitwarden and web writes to the current account and vault", async () 
   ]);
   expect(unarchived.every(({ archivedAt }) => archivedAt === null)).toBe(true);
 
+  const partial = await request(`/api/ciphers/${restored.id}/partial`, {
+    method: "PUT",
+    headers: deviceJson,
+    body: JSON.stringify({ folderId: folder.id }),
+  });
+  expect(partial.status).toBe(200);
+  expect(await partial.json()).toMatchObject({
+    favorite: true,
+    folderId: folder.id,
+  });
+
   const removeFolder = (expectedRevision: number) =>
     request(vaultFolderPath(folder.id), {
       method: "DELETE",
@@ -2059,7 +2085,7 @@ it("scopes Bitwarden and web writes to the current account and vault", async () 
         type: 3,
         name: encrypted(16, 98),
         key: encrypted(80, 8),
-        card: { number: encrypted(16, 99) },
+        card: { response: null, number: encrypted(16, 99) },
         archivedDate: "2026-01-01T00:00:00Z",
       },
     ],
@@ -2204,6 +2230,12 @@ it("scopes Bitwarden and web writes to the current account and vault", async () 
       body: content,
     });
   expect((await putFile(bytes.subarray(0, 64))).status).toBe(413);
+  loseStoredFileResponse();
+  expect((await putFile(bytes)).status).toBeGreaterThanOrEqual(500);
+  expect(objects.size).toBe(1);
+  expect(await (await getCipher(fileItem.id)).json()).toMatchObject({
+    attachments: [],
+  });
   expect((await putFile(bytes)).status).toBe(204);
   expect((await putFile(bytes)).status).toBe(204);
   expect(objects.size).toBe(1);
@@ -2219,6 +2251,43 @@ it("scopes Bitwarden and web writes to the current account and vault", async () 
         url: "",
       },
     ],
+  });
+  const rewrapped = {
+    ...login,
+    key: encrypted(80, 104),
+    lastKnownRevisionDate: new Date(revised.revision).toISOString(),
+    attachments: { [file.id]: encrypted(16, 105) },
+    attachments2: {
+      [file.id]: {
+        fileName: encrypted(16, 105),
+        key: encrypted(80, 105),
+        lastKnownRevisionDate: new Date(revised.revision).toISOString(),
+      },
+    },
+  };
+  const staleRewrap = await write(
+    issued.access_token,
+    {
+      ...rewrapped,
+      lastKnownRevisionDate: new Date(fileItem.revision).toISOString(),
+    },
+    fileItem.id,
+  );
+  expect(staleRewrap.status).toBe(409);
+  const savedRewrap = await write(issued.access_token, rewrapped, fileItem.id);
+  expect(savedRewrap.status).toBe(200);
+  expect(await savedRewrap.json()).toMatchObject({
+    key: rewrapped.key,
+    attachments: [
+      {
+        id: file.id,
+        fileName: rewrapped.attachments2[file.id]!.fileName,
+        key: rewrapped.attachments2[file.id]!.key,
+      },
+    ],
+  });
+  expect(await (await getCipher(fileItem.id)).json()).toMatchObject({
+    attachments: [{ id: file.id, key: rewrapped.attachments2[file.id]!.key }],
   });
   const fileMetadata = await request(wireFilePath, { headers: authorized });
   expect(fileMetadata.status).toBe(200);
@@ -2236,6 +2305,18 @@ it("scopes Bitwarden and web writes to the current account and vault", async () 
   } finally {
     later.mockRestore();
   }
+  sqlite.run(
+    "UPDATE bitwarden_device_sessions SET security_revision = 'revoked fixture' WHERE vault_id = ?",
+    [vaultId],
+  );
+  try {
+    expect((await request(transfer.url, {})).status).toBe(404);
+  } finally {
+    sqlite.run(
+      "UPDATE bitwarden_device_sessions SET security_revision = (SELECT security_revision FROM accounts WHERE id = 'owner') WHERE vault_id = ?",
+      [vaultId],
+    );
+  }
   expect(
     (
       await request(vaultAttachmentPath(otherItemId, file.id), {
@@ -2244,7 +2325,7 @@ it("scopes Bitwarden and web writes to the current account and vault", async () 
     ).status,
   ).toBe(404);
   expect((await request(webFilePath, {})).status).toBe(401);
-  expect((await select([revised], "trash")).status).toBe(200);
+  expect((await select([await browse(fileItem.id)], "trash")).status).toBe(200);
   expect(
     new Uint8Array(
       await (await request(webFilePath, { headers: { cookie } })).arrayBuffer(),

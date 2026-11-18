@@ -10,7 +10,6 @@ import {
   decryptVaultText,
   deriveMasterKey,
   encryptNewItem,
-  encryptOptionalText,
   encryptVaultText,
   encryptWebsite,
   stretchVaultKey,
@@ -293,10 +292,12 @@ const openProtectedExport = async (
       p: kdfParallelism,
       dkLen: 32,
     }).finally(() => bytes.fill(0));
+    const bytesForKey = new Uint8Array(material);
     try {
       signal?.throwIfAborted();
-      key = await stretchVaultKey(new Uint8Array(material), "decrypt");
+      key = await stretchVaultKey(bytesForKey, "decrypt");
     } finally {
+      bytesForKey.fill(0);
       material.fill(0);
     }
   } else
@@ -477,7 +478,9 @@ export const sealPortableVault = async (
       key,
       async (itemKey) => {
         const seal = (value: string | null | undefined) =>
-          encryptOptionalText(value ?? "", itemKey);
+          value == null
+            ? Promise.resolve(null)
+            : encryptVaultText(value, itemKey);
         const {
           credentials,
           data,

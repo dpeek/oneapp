@@ -207,7 +207,7 @@ try {
   // Resolve Playwright from the temporary directory, without adding a workspace dependency.
   const flow = join(work, "browser.mjs");
   await Promise.all(
-    ["browser.mjs", "attachments.mjs"].map((file) =>
+    ["browser.mjs", "attachments.mjs", "transfers.mjs"].map((file) =>
       Bun.write(join(work, file), Bun.file(new URL(file, import.meta.url))),
     ),
   );

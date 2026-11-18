@@ -46,6 +46,7 @@ const vault = {
       card: {
         cardholderName: "Synthetic name",
         number: "Synthetic card number",
+        expYear: "",
       },
     },
   ],
@@ -118,6 +119,12 @@ it("rejects unsupported records before sealing and sends only encrypted item val
   expect(await decryptVaultText(cipher.name, itemKey)).toEqual(
     vault.items[0]!.name,
   );
+  const cardCipher = data.ciphers[1]!;
+  const cardDetails = (
+    cardCipher as typeof cardCipher & { card: { expYear: string } }
+  ).card;
+  const cardKey = await unwrapVaultKey(cardCipher.key, key);
+  expect(await decryptVaultText(cardDetails.expYear, cardKey)).toBe("");
   expect(await decryptVaultText(data.folders[0]!.name, key)).toBe(
     "Sample folder",
   );

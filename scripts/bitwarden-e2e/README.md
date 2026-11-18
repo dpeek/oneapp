@@ -8,7 +8,7 @@ bun scripts/bitwarden-e2e/run.ts
 
 The runner needs Bun, Node, OpenSSL, and a graphical desktop. It checks the SHA-256 of the stock [Bitwarden Chrome 2026.10.2 release](https://github.com/bitwarden/clients/releases/tag/browser-v2026.10.2) and loads the archive unchanged into temporary Chrome for Testing profiles. Set `ONEAPP_BITWARDEN_E2E_CHROME` to an existing Chrome for Testing executable to reuse a browser download.
 
-The runner builds the Worker and web assets, starts local workerd through Miniflare, and applies the repository migrations to a temporary on-disk D1 database. It provisions a disposable OneApp account, opens **Password vault**, and completes setup through the real web form. It checks that the request contains the wrapped keys, public key, key ID, and KDF salt, and that the vault is ready after reloading.
+The runner builds the Worker and web assets, starts local workerd through Miniflare, and applies the repository migrations to a temporary on-disk D1 database, with a private local R2 bucket persisted to disk. It provisions a disposable OneApp account, opens **Password vault**, and completes setup through the real web form. It checks that the request contains the wrapped keys, public key, key ID, and KDF salt, and that the vault is ready after reloading.
 
 The pinned extension reuses the OneApp session to authorize with PKCE, syncs the empty vault, and unlocks it with the same master password while Chrome is offline. In the first Chrome profile, the runner saves a login through the Bitwarden form and checks that the request carries encrypted values.
 
@@ -30,8 +30,12 @@ The runner rotates the password in OneApp and verifies the encrypted update, ret
 
 The runner moves a login to Trash in OneApp and opens it from Trash after restarting the Worker. Bitwarden syncs the trashed login and leaves both fields blank on the matching site. After OneApp restores the login, Bitwarden syncs the same item ID and autofills the current credentials again.
 
+The runner exchanges encrypted attachments in both directions. It retries a lost OneApp upload response, compares recovered bytes after a Worker restart, checks both clients’ ZIP downloads, and verifies that file removal and permanent item deletion clear the private R2 bucket.
+
+The runner imports mixed synthetic records and folders through the stock import form, rotates a card’s title in Bitwarden, and checks folder movement, archive, bulk Trash and Restore, and a release-gated Driver’s License created in OneApp. It verifies both clients’ JSON, CSV and password-protected JSON exports and the stock account-restricted export. It imports protected exports into an independently initialized D1 vault and compares the resulting items and folders.
+
 Both Bitwarden devices appear in **Settings → Clients**. The runner revokes the second profile through that screen, checks that the server rejects its access and refresh tokens, and verifies that the first profile still syncs.
 
 The runner restarts workerd with the restored item and checks that D1 held the vault, item, and device session. It also checks token rotation, duplicate-refresh handling, and sync of the saved revision with the refreshed access token.
 
-Run `bun scripts/bitwarden-e2e/run.ts --seeded` to apply the login migration to an existing encrypted item and verify that the pinned extension can still sync and decrypt its username and password. Both modes use synthetic credentials and trace HTTP paths, methods, grant types, and status codes.
+Run `bun scripts/bitwarden-e2e/run.ts --seeded` to apply the login migration to an existing encrypted item and verify that the pinned extension can still sync and decrypt its username and password. Both modes use synthetic credentials and log HTTP paths, methods, grant types, and status codes. The local authorization limit accommodates bursts of explicit syncs from the two test profiles. The seeded run also confirms a stock JSON export using the vault master password while offline.

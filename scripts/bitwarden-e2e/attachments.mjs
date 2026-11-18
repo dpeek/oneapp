@@ -86,10 +86,26 @@ export const checkAttachments = async ({
   await button(webVault, "Attachments").press("Enter");
   await webVault.getByLabel("Choose attachment").setInputFiles(webFile);
   const uploadIndex = first.responses.length;
+  await app.evaluate((path) => {
+    const fetchOriginal = window.fetch;
+    window.fetch = async (input, init) => {
+      const result = await fetchOriginal.call(window, input, init);
+      if (
+        init?.method !== "PUT" ||
+        typeof input !== "string" ||
+        !input.startsWith(path + "/")
+      )
+        return result;
+      window.fetch = fetchOriginal;
+      await result.arrayBuffer();
+      throw new TypeError("Simulated loss of encrypted upload response");
+    };
+  }, base);
   await button(webVault, "Upload attachment").press("Enter");
   const reservation = await wireResponse(first, base, "POST", uploadIndex);
   assert.equal(reservation.status(), 201);
   const attachment = await reservation.json();
+  assert.equal(reservation.request().postData().includes(webFile.name), false);
   assert.match(attachment.name, /^2\./u);
   assert.match(attachment.wrappedKey, /^2\./u);
   const sent = await wireResponse(
@@ -102,13 +118,50 @@ export const checkAttachments = async ({
   const encrypted = sent.request().postDataBuffer();
   assert.equal(encrypted[0], 2);
   assert.equal(encrypted.includes(webFile.buffer), false);
+  await webVault
+    .getByRole("alert")
+    .filter({ hasText: "Simulated loss" })
+    .waitFor();
+  const retryIndex = first.responses.length;
+  await button(webVault, "Upload attachment").press("Enter");
+  const retried = await wireResponse(
+    first,
+    `${base}/${attachment.id}`,
+    "PUT",
+    retryIndex,
+  );
+  assert.equal(retried.status(), 204);
+  assert.deepEqual(retried.request().postDataBuffer(), encrypted);
+  await webVault
+    .getByRole("status")
+    .filter({ hasText: "Attachment uploaded." })
+    .waitFor();
 
   await syncNow(second, secondClient);
   await openStockAttachments(secondClient, itemName, openItem);
+  const downloadIndex = second.responses.length;
   const stockDownload = await downloadBytes(secondClient, () =>
     button(secondClient, /Download.*fixture-from-oneapp/u).click(),
   );
   assert.deepEqual(Buffer.from(stockDownload), webFile.buffer);
+  const attachmentInfo = await wireResponse(
+    second,
+    `${wire}/${attachment.id}`,
+    "GET",
+    downloadIndex,
+  );
+  assert.equal(attachmentInfo.status(), 200);
+  const privateDownload = await wireResponse(
+    second,
+    `/api/attachment-download/${item}/${attachment.id}`,
+    "GET",
+    downloadIndex,
+  );
+  assert.equal(privateDownload.status(), 200);
+  assert.equal(
+    await privateDownload.request().headerValue("authorization"),
+    null,
+  );
 
   const stockIndex = second.responses.length;
   await secondClient
@@ -138,6 +191,25 @@ export const checkAttachments = async ({
     stockUpload.request().postDataBuffer().includes(stockFile.buffer),
     false,
   );
+  await openItem(secondClient, itemName);
+  await button(secondClient, "Edit").click();
+  await secondClient
+    .locator('input[formcontrolname="username"]')
+    .fill("synthetic-user-after-attachment");
+  const editIndex = second.responses.length;
+  await button(secondClient, "Save").click();
+  const edited = await wireResponse(
+    second,
+    `/api/ciphers/${item}`,
+    "PUT",
+    editIndex,
+  );
+  assert.equal(edited.status(), 200);
+  assert.deepEqual(
+    (await edited.json()).attachments.map(({ id }) => id).sort(),
+    [attachment.id, attachmentId].sort(),
+  );
+
   await button(webVault, "Lock vault").press("Enter");
   await webVault.getByLabel("Vault master password").fill(password);
   await button(webVault, "Unlock vault").press("Enter");
@@ -169,4 +241,90 @@ export const checkAttachments = async ({
     "PASS Both clients exchanged encrypted attachments, recovered the original bytes after restart, and exported ZIP files.",
   );
   return { webAttachment: attachment.id, stockAttachment: attachmentId };
+};
+
+export const checkAttachmentCleanup = async ({
+  app,
+  webVault,
+  second,
+  secondClient,
+  item,
+  itemName,
+  openItem,
+  syncNow,
+  restartKey,
+  password,
+  webAttachment,
+  stockAttachment,
+}) => {
+  await syncNow(second, secondClient);
+  await openStockAttachments(secondClient, itemName, openItem);
+  const deletionIndex = second.responses.length;
+  await button(secondClient, /Delete.*fixture-from-bitwarden/u).click();
+  const dialog = secondClient.getByRole("dialog");
+  await button(dialog, /^(Yes|Delete)$/u).click();
+  const removed = await wireResponse(
+    second,
+    `/api/ciphers/${item}/attachment/${stockAttachment}`,
+    "DELETE",
+    deletionIndex,
+  );
+  assert.equal(removed.status(), 200);
+  assert.deepEqual(
+    (await removed.json()).cipher.attachments.map(({ id }) => id),
+    [webAttachment],
+  );
+
+  await button(webVault, "Lock vault").press("Enter");
+  const next = await syncNow(second, secondClient);
+  assert.equal(
+    next.ciphers.find(({ id }) => id === item)?.attachments.length,
+    1,
+  );
+  await webVault.getByLabel("Vault master password").fill(password);
+  await button(webVault, "Unlock vault").press("Enter");
+  await webVault.getByRole("checkbox", { name: `Select ${itemName}` }).check();
+  await button(webVault, "Move selected to Trash").press("Enter");
+  await webVault
+    .getByRole("status")
+    .filter({ hasText: "Items updated." })
+    .waitFor();
+  const trashed = (await syncNow(second, secondClient)).ciphers.find(
+    ({ id }) => id === item,
+  );
+  assert.ok(trashed.deletedDate);
+  assert.equal(trashed.attachments[0].id, webAttachment);
+  await button(webVault, "Trash").press("Enter");
+  await webVault.getByRole("checkbox", { name: `Select ${itemName}` }).check();
+  await button(webVault, "Permanently delete selected").press("Enter");
+  await button(webVault, "Permanently delete").press("Enter");
+  await webVault
+    .getByRole("status")
+    .filter({ hasText: "Items permanently deleted." })
+    .waitFor();
+  assert.ok(
+    !(await syncNow(second, secondClient)).ciphers.some(
+      ({ id }) => id === item,
+    ),
+  );
+  const count = await app.evaluate(async (key) => {
+    for (let retry = 0; retry < 10; retry++) {
+      const response = await fetch("/_test/attachment-objects", {
+        headers: { "x-test-restart": key },
+      });
+      const { count } = await response.json();
+      if (count === 0) return 0;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return -1;
+  }, restartKey);
+  assert.equal(
+    count,
+    0,
+    "Private R2 still contains attachment objects after cleanup",
+  );
+  await button(webVault, "Back to items").press("Enter");
+  console.log(
+    "PASS Stock file deletion and permanent deletion from web Trash removed the private R2 objects.",
+  );
 };

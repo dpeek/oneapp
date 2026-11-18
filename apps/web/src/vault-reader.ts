@@ -35,6 +35,7 @@ import {
 } from "./vault-item-content.ts";
 import {
   decryptItemDetails,
+  linkedFieldLabel,
   uriMatchLabels,
   vaultItemEditor,
 } from "./vault-item-editor.ts";
@@ -161,12 +162,19 @@ const readItemDetails = async (item: Item, userKey: VaultKey) => {
   const properties = await decryptItemDetails(item.details, key);
   const notes = properties.notes ?? null;
   if (item.type !== 1) return { notes, login: null, properties, key };
-  const [username, password, uris] = await Promise.all([
-    readText(item.username, key),
-    readText(item.password, key),
-    Promise.all(item.uris.map((uri) => decryptVaultText(uri, key))),
-  ]);
-  return { notes, login: { username, password, uris }, properties, key };
+  const credentials = properties.credentials;
+  return {
+    notes,
+    login: {
+      username: credentials?.username ?? null,
+      password: credentials?.password ?? null,
+      uris: (credentials?.uris ?? []).flatMap(({ uri }) =>
+        uri === null ? [] : [uri],
+      ),
+    },
+    properties,
+    key,
+  };
 };
 type ItemDetails = Awaited<ReturnType<typeof readItemDetails>>;
 
@@ -1560,7 +1568,7 @@ class VaultReader extends HTMLElement {
             label,
             property.linkedId == null
               ? "Linked field"
-              : `Linked field ${property.linkedId}`,
+              : linkedFieldLabel(item.type, property.linkedId),
           );
         else if (property.value != null) add(label, property.value);
       }

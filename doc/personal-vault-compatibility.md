@@ -13,7 +13,7 @@ Target release is stock Bitwarden Chrome [2026.10.2](https://github.com/bitwarde
 | Import | Bearer on `POST /api/ciphers/import`. The [personal importer](https://github.com/bitwarden/clients/blob/browser-v2026.10.2/libs/importer/src/services/import-api.service.ts) sends `ciphers` with normal encrypted payloads and `folders` with encrypted names. `folderRelationships` maps zero-based cipher indices (`key`) to folder indices (`value`). The client needs a success status only. | OneApp parses or decrypts files locally before sending encrypted records and folder indices. Test invalid input before writes, atomicity, replay of the same encrypted payload and separately encrypted repeat imports. |
 | Export | The [personal exporter](https://github.com/bitwarden/clients/blob/browser-v2026.10.2/libs/tools/export-vault-core/src/services/individual-vault-export.service.ts) consumes local synced data. The confirmation service uses proof of decryption when master password unlock is configured. ZIP fetches attachment metadata and ciphertext separately. | The seeded stock Chrome probe confirmed a JSON export while offline and checked the legacy login in the downloaded document. Add OneApp JSON, CSV and password-protected JSON plus ZIP once storage lands. Exercise account-restricted JSON in the stock UI. |
 | File metadata and upload | The [attachment button](https://github.com/bitwarden/clients/blob/browser-v2026.10.2/apps/browser/src/vault/popup/components/vault/attachments/open-attachments/open-attachments.component.ts) requires `hasPremiumFromAnySource`. Bearer on `POST /api/ciphers/{id}/attachment/v2` with encrypted `fileName`, wrapped `key`, encrypted byte count `fileSize`, `adminRequest: false` and `lastKnownRevisionDate`. Self-hosted response has `fileUploadType: 0`, `attachmentId`, `cipherResponse`, and `url`. The direct upload service uses Bearer `POST /api/ciphers/{id}/attachment/{attachmentId}`, calculated from the IDs, with encrypted multipart field `data`. | OneApp encrypts bytes locally. Exercise stock upload against the direct path and validate pending visibility, declared size, quota, replay, and revocation. |
-| File download and deletion | Bearer `GET /api/ciphers/{id}/attachment/{attachmentId}` returns `id`, `fileName`, `key`, `size`, `sizeName` and a temporary `url`. The client fetches that URL without a Bearer header. Bearer `DELETE` on the metadata route returns an object containing `cipher`. Ready metadata also rides in `cipher.attachments`. The alternate SDK attachment path is gated by `pm-28192-cipher-attachment-ops-to-sdk`, which defaults off. | Exercise both download directions, expired URL, cross-vault denial, deletion and permanent cleanup. The source path needs a stock UI probe with storage enabled. |
+| File download and deletion | Bearer `GET /api/ciphers/{id}/attachment/{attachmentId}` returns `id`, `fileName`, `key`, `size`, `sizeName` and a temporary `url`. The client fetches that URL without a Bearer header. Bearer `DELETE` on the metadata route returns an object containing `cipher`. Ready metadata also rides in `cipher.attachments`. The alternate SDK attachment path is gated by `pm-28192-cipher-attachment-ops-to-sdk`, which defaults off. | Exercise both download directions, expired URL, cross-vault denial, deletion and permanent cleanup. The stock browser probe used the metadata GET and then fetched the signed URL without a bearer token. It sent the multipart upload through the direct POST path. |
 
 Personal writes reject organization and collection operations. Passkey import is out of scope until its lifecycle exists. Use disposable accounts, encrypted fixtures and synthetic file contents for all probes.
 
@@ -32,3 +32,29 @@ OneApp stores authenticated encrypted files in a private R2 bucket and stores en
 File downloads from Bitwarden use a 60-second URL for one object and one device session. The Worker checks the device session again before serving bytes. Attachment deletion or permanent item deletion queues private object cleanup in the same D1 transaction. A scheduled Worker retries cleanup and releases expired reservations.
 
 OneApp ZIP exports contain `data.json` and an `attachments` directory. Failed files appear in the export result and in `missing-attachments.txt` in the ZIP. ZIP reimport is outside the portable import contract.
+
+## Implementation commits
+
+| Milestone | Commit |
+| --- | --- |
+| Pinned compatibility contract and offline export confirmation | `4ce56ec` |
+| Eight item types, fields and direct reads | `80234a7` |
+| Folders, archive and bulk lifecycle | `e1bd539` |
+| Atomic import and portable export | `b88fbe2` |
+| Private attachments and ZIP export | `d8733b7` |
+
+Bulk lifecycle requests accept up to 100 items. The stock extension’s release flag still governs its UI for Bank Account, Driver’s License and Passport. The Worker tests exercise all eight encrypted payloads through both APIs, and the browser gate syncs a Driver’s License created in OneApp. The portable formats and attachment limits above apply to OneApp imports and storage. Account-restricted export is exercised in Bitwarden, and ZIP reimport and the other separate scopes listed in the plan remain outside this implementation.
+
+## Completion gate
+
+Verified on 18 November 2026 with Bun 1.4.4 and unmodified Bitwarden Chrome 2026.10.2. The harness used two isolated extension profiles, workerd, on-disk D1 and private R2, plus an independently initialized destination vault for reimport.
+
+| Command | Result |
+| --- | --- |
+| `bun check` | Passed across 97 files. |
+| `bun run test` | Passed 28 tests across six files. |
+| `bun run build` | Passed for CLI, web and extension. |
+| `bun scripts/bitwarden-e2e/run.ts` | Passed. Covered stock SSO, offline unlock, autofill, encrypted mixed import, folder and lifecycle changes, attachment retry and restart, ZIP export, R2 cleanup, device revocation, refresh, and reimport into the destination vault. |
+| `bun scripts/bitwarden-e2e/run.ts --seeded` | Passed. Migrated an existing encrypted D1 record, decrypted it offline in stock Bitwarden, exported it offline after local confirmation, and verified restart and token refresh. |
+
+The seeded run observed a background profile request disconnect during the deliberate Worker restart. Its post-restart sync and token checks passed.

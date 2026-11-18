@@ -141,7 +141,7 @@ const writeItem = async (
   if (contentType(request) !== "application/json")
     return error("invalid_request");
   const body = await readBody(request, 128 * 1024);
-  const item = body === null ? null : decodeItem(body);
+  const item = body === null ? null : decodeItem(body, cipherId !== undefined);
   if (!item || (item.encryptedFor != null && item.encryptedFor !== vault.id))
     return error("invalid_cipher");
   if (item.encryptedByKeyId != null && item.encryptedByKeyId !== vault.keyId)
@@ -154,16 +154,6 @@ const writeItem = async (
     return saved ? json(Wire.cipher(saved)) : error("invalid_token", 401);
   }
 
-  if (item.attachmentIds.length) {
-    const current = await readPersonalItem(db, vault.id, cipherId);
-    if (!current) return error("cipher_not_found", 404);
-    if (
-      item.attachmentIds.some(
-        (id) => !current.attachments.some((record) => record.id === id),
-      )
-    )
-      return error("invalid_attachment", 409);
-  }
   const revision = Date.parse(item.lastKnownRevisionDate ?? "");
   if (
     !Number.isFinite(revision) ||

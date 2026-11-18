@@ -65,13 +65,16 @@ const loginHistory = Schema.Struct({ passwordHistory: LoginPasswordHistory });
 const typeDecoders = new Map(
   extraItemTypes.map((type) => [
     type,
-    Schema.decodeUnknownSync(encryptedTypeData(type)),
+    Schema.decodeUnknownSync(
+      Schema.Struct({ ...encryptedTypeData(type).fields, response: empty }),
+    ),
   ]),
 );
 const isType = Schema.is(ItemType);
+const isAttachmentId = Schema.is(AttachmentId);
 const isExtraType = Schema.is(ExtraItemType);
 
-export const decodeCipher = (input: unknown) => {
+export const decodeCipher = (input: unknown, allowPartial = false) => {
   try {
     if (input === null || typeof input !== "object" || Array.isArray(input))
       return null;
@@ -94,7 +97,6 @@ export const decodeCipher = (input: unknown) => {
       lastKnownRevisionDate,
       folderId,
       archivedDate,
-      attachments,
       attachments2,
     } = Schema.decodeUnknownSync(envelope)(cipher);
     const properties = Schema.decodeUnknownSync(metadata)(cipher);
@@ -112,21 +114,35 @@ export const decodeCipher = (input: unknown) => {
         Schema.decodeUnknownSync(note)(payload);
       if (payload != null && isExtraType(type)) {
         const decode = typeDecoders.get(type)!;
-        Object.assign(properties, {
-          data: decode(payload, { onExcessProperty: "error" }),
+        // Stock type requests serialize the inherited BaseResponse slot as null.
+        const { response: _, ...data } = decode(payload, {
+          onExcessProperty: "error",
         });
+        Object.assign(properties, { data });
       }
     }
-    if (payload == null && lastKnownRevisionDate == null) return null;
+    if (payload == null && (!allowPartial || lastKnownRevisionDate == null))
+      return null;
+    const attachmentIds = [
+      ...new Set([
+        ...Object.keys((cipher.attachments as object | null | undefined) ?? {}),
+        ...Object.keys(
+          (cipher.attachments2 as object | null | undefined) ?? {},
+        ),
+      ]),
+    ];
+    if (!attachmentIds.every(isAttachmentId)) return null;
     return {
       name,
       wrappedKey: key,
-      attachmentIds: [
-        ...new Set([
-          ...Object.keys(attachments ?? {}),
-          ...Object.keys(attachments2 ?? {}),
-        ]),
-      ],
+      attachmentIds,
+      attachmentUpdates: Object.entries(attachments2 ?? {}).map(
+        ([id, record]) => ({
+          id,
+          name: record.fileName,
+          wrappedKey: record.key,
+        }),
+      ),
       folderId,
       archivedDate,
       encryptedFor,
@@ -139,9 +155,9 @@ export const decodeCipher = (input: unknown) => {
   }
 };
 
-export const decodeItem = (body: string) => {
+export const decodeItem = (body: string, allowPartial: boolean) => {
   try {
-    return decodeCipher(JSON.parse(body));
+    return decodeCipher(JSON.parse(body), allowPartial);
   } catch {
     return null;
   }

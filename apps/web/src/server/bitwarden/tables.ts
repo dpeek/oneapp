@@ -27,6 +27,7 @@ export const bitwardenDeviceSessions = sqliteTable(
       .notNull()
       .references(() => personalVaults.id, { onDelete: "cascade" }),
     deviceId: text("device_id").notNull(),
+    deviceName: text("device_name"),
     securityRevision: text("security_revision").notNull(),
     email: text().notNull(),
     emailVerified: integer("email_verified", { mode: "boolean" }).notNull(),

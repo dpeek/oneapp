@@ -1,33 +1,31 @@
+import { digest } from "../digest.ts";
 import type { WorkerEnv } from "../../../../../alchemy.run.ts";
+import { Schema } from "effect";
 import {
   bitwardenAuthorizePath,
   bitwardenConnectorPath,
   bitwardenSignInUrl,
   bitwardenTokenPath,
 } from "../../bitwarden-connection.ts";
+import { BitwardenDeviceId } from "../../bitwarden-device-contract.ts";
 import { privateHeaders } from "../api-response.ts";
 import {
   type PersonalVault,
-  readPersonalLogins,
+  readPersonalItems,
   readPersonalVault,
 } from "../vault/personal.ts";
-import { decodeLogin } from "./cipher-request.ts";
+import { decodeItem } from "./cipher-request.ts";
 import {
   approveAuthorization,
   type BrowserIdentity,
-  changePersonalLogin,
+  changePersonalItem,
   readDeviceByAccess,
   redeemAuthorization,
   refreshDevice,
-  savePersonalLogin,
+  savePersonalItem,
   startAuthorization,
 } from "./store.ts";
-import {
-  bitwardenScope,
-  browserClient,
-  digest,
-  randomSecret,
-} from "./tokens.ts";
+import { bitwardenScope, browserClient, randomSecret } from "./tokens.ts";
 import * as Wire from "./wire.ts";
 
 const connectorScript = "/identity/oneapp-connector.js";
@@ -75,7 +73,8 @@ const redirect = (location: URL) =>
 const clientState = /^[a-zA-Z0-9]{64}:clientId=browser$/u;
 const secretShape = /^[a-zA-Z0-9_-]{43}$/u;
 const verifierShape = /^[a-zA-Z0-9._~-]{43,128}$/u;
-const deviceShape = /^[a-zA-Z0-9-]{1,128}$/u;
+const isDeviceId = Schema.is(BitwardenDeviceId);
+const deviceNameShape = /^[\p{L}\p{N}][\p{L}\p{N} ._()-]{0,63}$/u;
 
 const readBody = async (request: Request, limit: number) => {
   const reader = request.body?.getReader();
@@ -104,8 +103,8 @@ const readForm = async (request: Request) => {
   return body === null ? null : new URLSearchParams(body);
 };
 
-const loginChangeResponse = (
-  result: Awaited<ReturnType<typeof changePersonalLogin>>,
+const itemChangeResponse = (
+  result: Awaited<ReturnType<typeof changePersonalItem>>,
   empty = false,
 ) => {
   switch (result.status) {
@@ -113,10 +112,12 @@ const loginChangeResponse = (
       return empty
         ? new Response(null, { status: 204, headers: privateHeaders })
         : json(Wire.cipher(result.item));
-    case "invalid_token":
+    case "unauthorized":
       return error("invalid_token", 401);
     case "not_found":
       return error("cipher_not_found", 404);
+    case "type_mismatch":
+      return error("invalid_cipher", 400);
     case "conflict":
       return json(
         {
@@ -138,7 +139,7 @@ const loginChangeResponse = (
   }
 };
 
-const writeLogin = async (
+const writeItem = async (
   request: Request,
   db: WorkerEnv["DB"],
   vault: PersonalVault,
@@ -148,13 +149,13 @@ const writeLogin = async (
   if (contentType(request) !== "application/json")
     return error("invalid_request");
   const body = await readBody(request, 128 * 1024);
-  const item = body === null ? null : decodeLogin(body);
+  const item = body === null ? null : decodeItem(body);
   if (!item || (item.encryptedFor != null && item.encryptedFor !== vault.id))
     return error("invalid_cipher");
   if (item.encryptedByKeyId != null && item.encryptedByKeyId !== vault.keyId)
     return error("stale_vault_key", 409);
   if (!cipherId) {
-    const saved = await savePersonalLogin(db, accessDigest, vault, item);
+    const saved = await savePersonalItem(db, accessDigest, vault, item);
     return saved ? json(Wire.cipher(saved)) : error("invalid_token", 401);
   }
 
@@ -171,8 +172,8 @@ const writeLogin = async (
       },
       400,
     );
-  return loginChangeResponse(
-    await changePersonalLogin(db, accessDigest, vault, cipherId, {
+  return itemChangeResponse(
+    await changePersonalItem(db, accessDigest, vault, cipherId, {
       kind: "edit",
       expectedRevision: revision,
       item,
@@ -256,13 +257,15 @@ const token = async (request: Request, env: WorkerEnv) => {
     const code = form.get("code") ?? "";
     const verifier = form.get("code_verifier") ?? "";
     const deviceId =
-      form.get("deviceIdentifier") ?? form.get("device_identifier") ?? "";
+      form.get("deviceIdentifier") ?? form.get("device_identifier");
+    const deviceName =
+      (form.get("deviceName") ?? form.get("device_name"))?.trim() ?? "";
     if (
       form.get("redirect_uri") !==
         new URL(bitwardenConnectorPath, env.APP_ORIGIN).href ||
       !secretShape.test(code) ||
       !verifierShape.test(verifier) ||
-      !deviceShape.test(deviceId)
+      !isDeviceId(deviceId)
     )
       return error("invalid_grant");
     const issued = await redeemAuthorization(
@@ -271,7 +274,10 @@ const token = async (request: Request, env: WorkerEnv) => {
       env.AUTH_SECRET,
       await digest(code),
       await digest(verifier),
-      deviceId,
+      {
+        id: deviceId,
+        name: deviceNameShape.test(deviceName) ? deviceName : null,
+      },
     );
     if (!issued) return error("invalid_grant");
     const vault = await readPersonalVault(env.DB, issued.ownerId);
@@ -357,19 +363,19 @@ export const bitwardenFetch = async (
   const vault = await readPersonalVault(env.DB, device.ownerId);
   if (!vault || vault.id !== device.vaultId) return error("invalid_token", 401);
   if (cipherId && (lifecycle === "delete" || lifecycle === "restore"))
-    return loginChangeResponse(
-      await changePersonalLogin(env.DB, accessDigest, vault, cipherId, {
+    return itemChangeResponse(
+      await changePersonalItem(env.DB, accessDigest, vault, cipherId, {
         kind: lifecycle,
       }),
       lifecycle === "delete",
     );
   if (cipherId || path === ciphersPath)
-    return writeLogin(request, env.DB, vault, accessDigest, cipherId);
+    return writeItem(request, env.DB, vault, accessDigest, cipherId);
 
   switch (path) {
     case "/api/sync":
       return json(
-        Wire.sync(vault, device, await readPersonalLogins(env.DB, vault.id)),
+        Wire.sync(vault, device, await readPersonalItems(env.DB, vault.id)),
       );
     case "/api/accounts/profile":
       return json(Wire.profile(vault, device));

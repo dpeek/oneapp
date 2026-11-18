@@ -1,16 +1,15 @@
 import type { WorkerEnv } from "../../../../../alchemy.run.ts";
 import {
-  decodeStoredLogin,
-  personalLoginColumns,
-  type PersonalLogin,
+  changePersonalItem as changeVaultItem,
+  createPersonalItem,
+  type EncryptedItem,
   type PersonalVault,
-  type StoredPersonalLogin,
 } from "../vault/personal.ts";
+import { digest } from "../digest.ts";
 import type { GrantIdentity } from "./tokens.ts";
 import {
   accessLifetimeSeconds,
   deviceLifetimeMillis,
-  digest,
   issueGrant,
 } from "./tokens.ts";
 
@@ -109,7 +108,7 @@ export const redeemAuthorization = async (
   secret: string,
   codeDigest: string,
   challenge: string,
-  deviceId: string,
+  device: { id: string; name: string | null },
 ) => {
   const now = Date.now();
   const conditions = [now, now, codeDigest, challenge, now] as const;
@@ -133,7 +132,7 @@ export const redeemAuthorization = async (
   const { ownerId, ...grantOwner } = record;
   const identity = {
     ...grantOwner,
-    deviceId,
+    deviceId: device.id,
     generation: 0,
     issuedAt: Math.floor(now / 1000),
   };
@@ -152,9 +151,9 @@ export const redeemAuthorization = async (
       .prepare(
         `
       INSERT INTO bitwarden_device_sessions
-        (id, vault_id, device_id, security_revision, email, email_verified, expires_at,
+        (id, vault_id, device_id, device_name, security_revision, email, email_verified, expires_at,
          generation, issued_at, access_digest, refresh_digest)
-      SELECT g.id, g.vault_id, ?, g.security_revision, i.value, (i.verified_at IS NOT NULL),
+      SELECT g.id, g.vault_id, ?, ?, g.security_revision, i.value, (i.verified_at IS NOT NULL),
              ?, 0, ?, ?, ?
       ${liveAuthorization} AND i.value = ? AND (i.verified_at IS NOT NULL) = ?
       ON CONFLICT(id) DO NOTHING
@@ -162,7 +161,8 @@ export const redeemAuthorization = async (
     `,
       )
       .bind(
-        deviceId,
+        device.id,
+        device.name,
         now + deviceLifetimeMillis,
         identity.issuedAt,
         accessDigest,
@@ -214,18 +214,16 @@ const authorizedVault = `
   WHERE v.id = ? AND v.owner_id = ? AND v.key_id = ?
     AND d.expires_at > ? AND ${activeAccess}
 `;
-const vaultAccessParameters = (
-  vault: PersonalVault,
-  accessDigest: string,
-  now: number,
-) =>
-  [
+const deviceAuthorization = (vault: PersonalVault, accessDigest: string) => ({
+  query: authorizedVault,
+  parameters: (now: number) => [
     vault.id,
     vault.ownerId,
     vault.keyId,
     now,
     ...accessParameters(accessDigest, now),
-  ] as const;
+  ],
+});
 
 export const readDeviceByAccess = async (db: DB, accessDigest: string) => {
   const now = Date.now();
@@ -235,151 +233,26 @@ export const readDeviceByAccess = async (db: DB, accessDigest: string) => {
     .first<LiveDevice>();
 };
 
-type EncryptedLogin = Pick<PersonalLogin, "name" | "wrappedKey" | "details">;
-
-export const savePersonalLogin = async (
+export const savePersonalItem = (
   db: DB,
   accessDigest: string,
   vault: PersonalVault,
-  { name, wrappedKey, details }: EncryptedLogin,
-) => {
-  const serializedDetails = JSON.stringify(details);
-  const createDigest = await digest(
-    JSON.stringify([name, wrappedKey, serializedDetails]),
+  item: EncryptedItem,
+) =>
+  createPersonalItem(
+    db,
+    vault.id,
+    deviceAuthorization(vault, accessDigest),
+    item,
   );
-  const now = Date.now();
-  const id = crypto.randomUUID();
-  const scope = vaultAccessParameters(vault, accessDigest, now);
 
-  // The grant is checked again in the same transaction as the insert. A retry
-  // returns the existing row and advances neither the item nor the vault revision.
-  const [, , saved] = await db.batch<StoredPersonalLogin>([
-    db
-      .prepare(
-        `
-      INSERT INTO personal_vault_logins
-        (id, vault_id, name, wrapped_key, details, create_digest, created_at, revision_at)
-      SELECT ?, v.id, ?, ?, ?, ?, ?, max(v.revision_at + 1, ?)
-      FROM (${authorizedVault}) v WHERE true
-      ON CONFLICT (vault_id, create_digest) DO NOTHING
-    `,
-      )
-      .bind(
-        id,
-        name,
-        wrappedKey,
-        serializedDetails,
-        createDigest,
-        now,
-        now,
-        ...scope,
-      ),
-    db
-      .prepare(
-        `
-      UPDATE personal_vaults
-      SET revision_at = (SELECT revision_at FROM personal_vault_logins WHERE id = ?)
-      WHERE id = ? AND EXISTS (SELECT 1 FROM personal_vault_logins WHERE id = ? AND vault_id = ?)
-    `,
-      )
-      .bind(id, vault.id, id, vault.id),
-    db
-      .prepare(
-        `
-      SELECT ${personalLoginColumns("l")} FROM personal_vault_logins l
-      JOIN (${authorizedVault}) v ON l.vault_id = v.id
-      WHERE l.create_digest = ?
-    `,
-      )
-      .bind(...scope, createDigest),
-  ]);
-  const row = saved?.results[0];
-  return row ? decodeStoredLogin(row) : null;
-};
-
-type LoginChange =
-  | { kind: "edit"; expectedRevision: number; item: EncryptedLogin }
-  | { kind: "delete" | "restore" };
-
-export const changePersonalLogin = async (
+export const changePersonalItem = (
   db: DB,
   accessDigest: string,
   vault: PersonalVault,
   id: string,
-  change: LoginChange,
-) => {
-  const now = Date.now();
-  const scope = vaultAccessParameters(vault, accessDigest, now);
-  const filter =
-    change.kind === "edit"
-      ? "l.deleted_at IS NULL AND l.revision_at = ?"
-      : change.kind === "delete"
-        ? "l.deleted_at IS NULL"
-        : "l.deleted_at IS NOT NULL";
-  const filterParams = change.kind === "edit" ? [change.expectedRevision] : [];
-  const assignment =
-    change.kind === "edit"
-      ? "name = ?, wrapped_key = ?, details = ?"
-      : change.kind === "delete"
-        ? "deleted_at = v.revision_at"
-        : "deleted_at = NULL";
-  const values =
-    change.kind === "edit"
-      ? [
-          change.item.name,
-          change.item.wrappedKey,
-          JSON.stringify(change.item.details),
-        ]
-      : [];
-  // Both writes use the same access and item checks in one D1 transaction.
-  // The item takes the new vault revision so sync observes a single change.
-  const [, updated, current] = await db.batch<
-    StoredPersonalLogin | { id: null }
-  >([
-    db
-      .prepare(
-        `
-      UPDATE personal_vaults
-      SET revision_at = max(personal_vaults.revision_at + 1, l.revision_at + 1, ?)
-      FROM personal_vault_logins l JOIN (${authorizedVault}) v ON l.vault_id = v.id
-      WHERE personal_vaults.id = v.id AND l.id = ? AND ${filter}
-    `,
-      )
-      .bind(now, ...scope, id, ...filterParams),
-    db
-      .prepare(
-        `
-      UPDATE personal_vault_logins AS l
-      SET ${assignment}, revision_at = v.revision_at
-      FROM (${authorizedVault}) v
-      WHERE l.vault_id = v.id AND l.id = ? AND ${filter}
-      RETURNING ${personalLoginColumns("personal_vault_logins")}
-    `,
-      )
-      .bind(...values, ...scope, id, ...filterParams),
-    db
-      .prepare(
-        `
-      SELECT ${personalLoginColumns("l")} FROM (${authorizedVault}) v
-      LEFT JOIN personal_vault_logins l ON l.vault_id = v.id AND l.id = ?
-    `,
-      )
-      .bind(...scope, id),
-  ]);
-  const row = updated?.results[0];
-  if (row?.id != null)
-    return { status: "updated", item: decodeStoredLogin(row) } as const;
-  const visible = current?.results[0];
-  if (!visible) return { status: "invalid_token" } as const;
-  if (visible.id === null) return { status: "not_found" } as const;
-  // The stock client sends no revision for lifecycle actions. Repeating the
-  // current state succeeds without changing deletion time or revisions.
-  if (change.kind !== "edit")
-    return { status: "updated", item: decodeStoredLogin(visible) } as const;
-  return {
-    status: visible.deletedAt === null ? "conflict" : "trashed",
-  } as const;
-};
+  change: Parameters<typeof changeVaultItem>[3],
+) => changeVaultItem(db, deviceAuthorization(vault, accessDigest), id, change);
 
 const readDeviceByRefresh = (db: DB, refreshDigest: string, now: number) =>
   db

@@ -1,0 +1,721 @@
+import { Schema } from "effect";
+import { CustomElement } from "foldkit";
+import {
+  decryptVaultText,
+  encryptLogin,
+  encryptNoteFields,
+  encryptOptionalText,
+  encryptSecureNote,
+  encryptVaultText,
+  encryptWebsite,
+  unlockVault,
+  unwrapVaultKey,
+  type VaultKey,
+} from "./vault-crypto.ts";
+import {
+  vaultItemBodyLimit,
+  VaultItem,
+  vaultItemPath,
+  vaultItemsPath,
+  vaultLifecyclePath,
+  type VaultLogin,
+  VaultSecureNote,
+  VaultSnapshot,
+} from "./vault-items-contract.ts";
+import { vaultPasswordMaximum } from "./vault-setup-contract.ts";
+
+export const vaultReader = CustomElement.define({
+  tag: "oneapp-vault-reader",
+  properties: {},
+  events: {},
+});
+
+type Snapshot = typeof VaultSnapshot.Type;
+type Item = Snapshot["items"][number];
+type ListedItem = { item: Item; title: string | null; trashed: boolean };
+type EditTarget = { item: Item; title: string };
+type NoteEdit = EditTarget & {
+  item: typeof VaultSecureNote.Type;
+  notes: string | null;
+};
+type LoginEdit = EditTarget & {
+  item: typeof VaultLogin.Type;
+  login: NonNullable<ItemDetails["login"]>;
+};
+type ItemField = readonly [
+  label: string,
+  input: HTMLInputElement | HTMLTextAreaElement,
+];
+type UnlockedVault = {
+  parameters: Omit<Snapshot, "items" | "trash">;
+  key: VaultKey;
+  entries: ListedItem[];
+};
+
+const decodeSnapshot = Schema.decodeUnknownSync(VaultSnapshot);
+const decodeItem = Schema.decodeUnknownSync(VaultItem);
+const create = <K extends keyof HTMLElementTagNameMap>(tag: K, text = "") => {
+  const element = document.createElement(tag);
+  element.textContent = text;
+  return element;
+};
+const action = (label: string, run: () => void) => {
+  const button = create("button", label);
+  button.type = "button";
+  button.addEventListener("click", () => run());
+  return button;
+};
+const alert = (message: string) => {
+  const status = create("p", message);
+  status.setAttribute("role", "alert");
+  return status;
+};
+const statusMessage = (message: string) => {
+  const status = create("p", message);
+  status.setAttribute("role", "status");
+  return status;
+};
+const itemField = ([label, input]: ItemField) => {
+  const field = create("label", label);
+  field.className = "vault-item-field";
+  input.spellcheck = false;
+  field.append(input);
+  return field;
+};
+
+const passwordForm = (label: string, submit: (password: string) => void) => {
+  const form = create("form");
+  form.method = "post";
+  const input = create("input");
+  input.type = "password";
+  input.required = true;
+  input.maxLength = vaultPasswordMaximum;
+  input.autocomplete = "off";
+  const field = create("label", "Vault master password");
+  field.className = "vault-password-field";
+  field.append(input);
+  const button = create("button", label);
+  button.type = "submit";
+  form.append(field, button);
+  // The password stays out of native form submissions and the app's message history.
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const password = input.value;
+    form.reset();
+    submit(password);
+  });
+  return form;
+};
+
+const readText = (ciphertext: string | null, key: VaultKey) =>
+  ciphertext === null
+    ? Promise.resolve(null)
+    : decryptVaultText(ciphertext, key);
+
+const readTitle = async (item: Item, userKey: VaultKey) =>
+  decryptVaultText(item.name, await unwrapVaultKey(item.wrappedKey, userKey));
+
+const readItemDetails = async (item: Item, userKey: VaultKey) => {
+  const key = await unwrapVaultKey(item.wrappedKey, userKey);
+  const notes = await readText(item.notes, key);
+  if (item.type === 2) return { notes, login: null };
+  const [username, password, uris] = await Promise.all([
+    readText(item.username, key),
+    readText(item.password, key),
+    Promise.all(item.uris.map((uri) => decryptVaultText(uri, key))),
+  ]);
+  return { notes, login: { username, password, uris } };
+};
+type ItemDetails = Awaited<ReturnType<typeof readItemDetails>>;
+
+class VaultReader extends HTMLElement {
+  #vault: UnlockedVault | null = null;
+  #pending: AbortController | null = null;
+
+  connectedCallback() {
+    window.addEventListener("pagehide", this.#onPageHide);
+    this.#showUnlock();
+  }
+
+  disconnectedCallback() {
+    window.removeEventListener("pagehide", this.#onPageHide);
+    this.#clear();
+  }
+
+  #onPageHide = () => {
+    this.#clear();
+    this.#showUnlock();
+  };
+
+  #stopWork() {
+    this.#pending?.abort();
+    this.#pending = null;
+  }
+
+  #clear() {
+    this.#stopWork();
+    this.#vault = null;
+    this.querySelector("form")?.reset();
+    this.replaceChildren();
+  }
+
+  #lock = () => {
+    this.#clear();
+    this.#showUnlock();
+    this.querySelector("input")?.focus();
+  };
+
+  async #run<T>(
+    work: (signal: AbortSignal) => Promise<T>,
+    complete: (result: T) => void,
+    failed: () => void,
+  ) {
+    this.#stopWork();
+    const controller = new AbortController();
+    this.#pending = controller;
+    try {
+      const result = await work(controller.signal);
+      if (!controller.signal.aborted && this.isConnected) complete(result);
+    } catch {
+      if (!controller.signal.aborted && this.isConnected) failed();
+    } finally {
+      if (this.#pending === controller) this.#pending = null;
+    }
+  }
+
+  #showUnlock(error?: string) {
+    const form = passwordForm("Unlock vault", (password) => {
+      const status = create("p", "Unlocking vault…");
+      status.setAttribute("role", "status");
+      this.replaceChildren(status, action("Cancel", this.#lock));
+      let failure = "Could not load your vault. Try again.";
+      void this.#run(
+        async (signal) => {
+          const response = await fetch(vaultItemsPath, {
+            cache: "no-store",
+            signal,
+          });
+          if (response.status === 401)
+            failure = "Sign in to OneApp to open your vault.";
+          if (!response.ok) throw new Error("Vault fetch failed");
+          const { items, trash, ...parameters } = decodeSnapshot(
+            await response.json(),
+          );
+          failure = "Could not unlock the vault. Check your master password.";
+          const key = await unlockVault(password, parameters);
+          signal.throwIfAborted();
+          const entries = await Promise.all(
+            [
+              ...items.map((item) => ({ item, trashed: false })),
+              ...trash.map((item) => ({ item, trashed: true })),
+            ].map(async (entry): Promise<ListedItem> => {
+              try {
+                return {
+                  ...entry,
+                  title: await readTitle(entry.item, key),
+                };
+              } catch {
+                return { ...entry, title: null };
+              }
+            }),
+          );
+          return { parameters, key, entries };
+        },
+        (vault) => {
+          this.#vault = vault;
+          this.#showList();
+        },
+        () => this.#showUnlock(failure),
+      );
+    });
+    this.replaceChildren(form, ...(error ? [alert(error)] : []));
+  }
+
+  #toolbar(back?: () => void, ...actions: (HTMLButtonElement | undefined)[]) {
+    const toolbar = create("div");
+    toolbar.className = "vault-toolbar";
+    if (back)
+      toolbar.append(
+        action(
+          back === this.#showTrash ? "Back to Trash" : "Back to items",
+          back,
+        ),
+      );
+    for (const button of actions) if (button) toolbar.append(button);
+    toolbar.append(action("Lock vault", this.#lock));
+    return toolbar;
+  }
+
+  #showList = (message?: string) => this.#showItems(false, message);
+  #showTrash = (message?: string) => this.#showItems(true, message);
+
+  #showItems(trashed: boolean, message?: string) {
+    this.#stopWork();
+    const vault = this.#vault;
+    if (!vault) return;
+    const toolbar = trashed
+      ? this.#toolbar(this.#showList)
+      : this.#toolbar(
+          undefined,
+          action("New Login", () => this.#showLoginForm()),
+          action("New Secure Note", () => this.#showNoteForm()),
+          action("Trash", this.#showTrash),
+        );
+    const list = create("ul");
+    list.className = "vault-items";
+    const entries = vault.entries
+      .filter((entry) => entry.trashed === trashed)
+      .sort((a, b) => (a.title ?? "").localeCompare(b.title ?? ""));
+    for (const entry of entries) {
+      const row = create("li");
+      const button = action(entry.title ?? "Unreadable item", () =>
+        this.#open(entry),
+      );
+      row.append(
+        button,
+        create("span", entry.item.type === 1 ? "Login" : "Secure Note"),
+      );
+      list.append(row);
+    }
+    this.replaceChildren(
+      toolbar,
+      ...(trashed ? [create("h3", "Trash")] : []),
+      ...(message ? [statusMessage(message)] : []),
+      list.childElementCount
+        ? list
+        : create("p", trashed ? "Trash is empty." : "Your vault is empty."),
+    );
+    toolbar.querySelector("button")?.focus();
+  }
+
+  #rememberItem(vault: UnlockedVault, entry: ListedItem) {
+    vault.entries = vault.entries.filter(
+      ({ item }) => item.id !== entry.item.id,
+    );
+    vault.entries.push(entry);
+  }
+
+  #changeLifecycle(entry: ListedItem, details: ItemDetails | null) {
+    const vault = this.#vault;
+    if (!vault) return;
+    const restoring = entry.trashed;
+    this.replaceChildren(
+      this.#toolbar(),
+      statusMessage(restoring ? "Restoring item…" : "Moving item to Trash…"),
+    );
+    let failure = restoring
+      ? "Could not restore this item. Try again."
+      : "Could not move this item to Trash. Try again.";
+    void this.#run(
+      async (signal) => {
+        const response = await fetch(
+          vaultLifecyclePath(entry.item.id, restoring ? "restore" : "trash"),
+          {
+            method: "PUT",
+            headers: {
+              "content-type": "application/json",
+              "x-effect-auth-csrf": "1",
+            },
+            body: JSON.stringify({
+              keyId: vault.parameters.keyId,
+              expectedRevision: entry.item.revision,
+            }),
+            signal,
+          },
+        );
+        if (response.status === 401)
+          failure = "Sign in to OneApp to update this item.";
+        if (response.status === 409 || response.status === 404)
+          failure =
+            "This item changed. Lock and unlock your vault to reload it.";
+        if (!response.ok) throw new Error("Vault item lifecycle change failed");
+        const item = decodeItem(await response.json());
+        // The request may already have succeeded in another client.
+        const title =
+          item.name === entry.item.name &&
+          item.wrappedKey === entry.item.wrappedKey
+            ? entry.title
+            : await readTitle(item, vault.key).catch(() => null);
+        return { item, title, trashed: !restoring };
+      },
+      (saved) => {
+        this.#rememberItem(vault, saved);
+        this.#showItems(
+          restoring,
+          restoring ? "Restored to your vault." : "Moved to Trash.",
+        );
+      },
+      () => this.#showDetails(entry, details, failure),
+    );
+  }
+
+  #showNoteForm(edit?: NoteEdit) {
+    const note = create("textarea");
+    note.rows = 6;
+    note.value = edit?.notes ?? "";
+    this.#showItemForm(
+      "Secure Note",
+      [["Note", note]],
+      async (title, key) =>
+        edit
+          ? {
+              expectedRevision: edit.item.revision,
+              ...(await encryptNoteFields(
+                title,
+                note.value,
+                await unwrapVaultKey(edit.item.wrappedKey, key, "encrypt"),
+              )),
+            }
+          : encryptSecureNote(title, note.value, key),
+      edit,
+    );
+  }
+
+  #showLoginForm(edit?: LoginEdit) {
+    const username = create("input");
+    username.value = edit?.login.username ?? "";
+    const password = create("input");
+    password.type = "password";
+    password.autocomplete = "new-password";
+    password.value = edit?.login.password ?? "";
+    const website = create("input");
+    website.inputMode = "url";
+    website.placeholder = "https://example.com";
+    website.value = edit?.login.uris[0] ?? "";
+    const previousWebsite = website.value;
+    const normalizedWebsite = () => {
+      const address = website.value.trim();
+      if (!address) return "";
+      if (!/^https?:\/\//iu.test(address)) return null;
+      return URL.parse(address)?.href ?? null;
+    };
+    website.addEventListener("input", () =>
+      website.setCustomValidity(
+        website.value === previousWebsite || normalizedWebsite() !== null
+          ? ""
+          : "Enter an HTTP or HTTPS website address.",
+      ),
+    );
+    this.#showItemForm(
+      "Login",
+      [
+        ["Username", username],
+        ["Password", password],
+        [
+          (edit?.login.uris.length ?? 0) > 1 ? "Primary website" : "Website",
+          website,
+        ],
+      ],
+      async (title, key) => {
+        const websiteChanged = website.value !== previousWebsite;
+        const address = websiteChanged ? normalizedWebsite() : "";
+        if (address === null) throw new Error("Invalid website address");
+        if (!edit)
+          return encryptLogin(
+            {
+              title,
+              username: username.value,
+              password: password.value,
+              website: address,
+            },
+            key,
+          );
+        const itemKey = await unwrapVaultKey(
+          edit.item.wrappedKey,
+          key,
+          "encrypt",
+        );
+        return {
+          type: 1,
+          expectedRevision: edit.item.revision,
+          name:
+            title === edit.title
+              ? edit.item.name
+              : await encryptVaultText(title, itemKey),
+          username:
+            username.value === (edit.login.username ?? "")
+              ? edit.item.username
+              : await encryptOptionalText(username.value, itemKey),
+          password:
+            password.value === (edit.login.password ?? "")
+              ? edit.item.password
+              : await encryptOptionalText(password.value, itemKey),
+          website: websiteChanged
+            ? {
+                previousUri: edit.item.uris[0] ?? null,
+                replacement:
+                  address === ""
+                    ? null
+                    : await encryptWebsite(address, itemKey),
+              }
+            : undefined,
+        };
+      },
+      edit,
+    );
+  }
+
+  #showItemForm(
+    label: "Login" | "Secure Note",
+    fields: readonly ItemField[],
+    encrypt: (title: string, key: VaultKey) => Promise<object>,
+    edit?: EditTarget,
+  ) {
+    const vault = this.#vault;
+    if (!vault) return;
+    const form = create("form");
+    form.method = "post";
+    form.autocomplete = "off";
+    const title = create("input");
+    title.required = true;
+    title.value = edit?.title ?? "";
+    const inputs: readonly ItemField[] = [["Title", title], ...fields];
+    const item = label === "Login" ? "login" : "note";
+    const saveLabel = `Save ${label}`;
+    const save = create("button", saveLabel);
+    save.type = "submit";
+    const error = alert("");
+    error.hidden = true;
+    const setBusy = (status?: string) => {
+      save.disabled = status !== undefined;
+      for (const [, input] of inputs) input.readOnly = save.disabled;
+      save.textContent = status ?? saveLabel;
+      if (reload) reload.disabled = save.disabled;
+    };
+    const showError = (message: string) => {
+      setBusy();
+      error.textContent = message;
+      error.hidden = false;
+    };
+    const reload =
+      edit &&
+      action("Discard draft and reload", () => {
+        setBusy("Reloading…");
+        error.hidden = true;
+        let failure = `Could not reload this ${item}. Your draft is still here.`;
+        void this.#run(
+          async (signal) => {
+            const response = await fetch(vaultItemsPath, {
+              cache: "no-store",
+              signal,
+            });
+            if (response.status === 401)
+              failure = `Sign in to OneApp to reload this ${item}.`;
+            if (!response.ok) throw new Error("Could not refresh the vault");
+            const snapshot = decodeSnapshot(await response.json());
+            if (snapshot.keyId !== vault.parameters.keyId) {
+              failure =
+                "Your vault changed. Copy your draft, then lock and unlock the vault.";
+              throw new Error("Vault key changed");
+            }
+            const active = snapshot.items.find(({ id }) => id === edit.item.id);
+            const latest =
+              active ?? snapshot.trash.find(({ id }) => id === edit.item.id);
+            return latest?.type === edit.item.type
+              ? {
+                  item: latest,
+                  title: await readTitle(latest, vault.key),
+                  trashed: active === undefined,
+                }
+              : null;
+          },
+          (latest) => {
+            form.reset();
+            if (latest) {
+              this.#rememberItem(vault, latest);
+              if (latest.trashed) this.#showTrash(`This ${item} is in Trash.`);
+              else this.#open(latest);
+            } else {
+              vault.entries = vault.entries.filter(
+                ({ item }) => item.id !== edit.item.id,
+              );
+              this.#showList(`This ${item} is no longer in your vault.`);
+            }
+          },
+          () => showError(failure),
+        );
+      });
+    form.append(...inputs.map(itemField), save, error);
+    if (reload) {
+      reload.hidden = true;
+      form.append(reload);
+    }
+
+    // Reuse the encrypted request if a save may have reached D1 before it failed.
+    let sealed: string | undefined;
+    form.addEventListener("input", () => {
+      sealed = undefined;
+      title.setCustomValidity("");
+    });
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (save.disabled) return;
+      if (!title.value.trim()) {
+        title.setCustomValidity("Enter a title.");
+        title.reportValidity();
+        return;
+      }
+      error.hidden = true;
+      setBusy("Saving…");
+      let failure = `Could not save your ${item}. Try again.`;
+      void this.#run(
+        async (signal) => {
+          sealed ??= JSON.stringify({
+            keyId: vault.parameters.keyId,
+            ...(await encrypt(title.value.trim(), vault.key)),
+          });
+          signal.throwIfAborted();
+          if (sealed.length > vaultItemBodyLimit) {
+            failure = `This ${item} is too large to save.`;
+            throw new Error("Encrypted item exceeds request limit");
+          }
+          const response = await fetch(
+            edit ? vaultItemPath(edit.item.id) : vaultItemsPath,
+            {
+              method: edit ? "PUT" : "POST",
+              headers: {
+                "content-type": "application/json",
+                "x-effect-auth-csrf": "1",
+              },
+              body: sealed,
+              signal,
+            },
+          );
+          if (response.status === 401)
+            failure = `Sign in to OneApp to save your ${item}.`;
+          if (reload && (response.status === 409 || response.status === 404)) {
+            failure = `This ${item} changed since you opened it. Your draft is still here.`;
+            if (!signal.aborted) reload.hidden = false;
+          } else if (response.status === 409)
+            failure =
+              "Your vault changed. Lock and unlock it before saving again.";
+          if (!response.ok) throw new Error("Vault item save failed");
+          const saved = decodeItem(await response.json());
+          return {
+            item: saved,
+            title: await readTitle(saved, vault.key),
+            trashed: false,
+          };
+        },
+        (entry) => {
+          form.reset();
+          this.#rememberItem(vault, entry);
+          this.#open(entry);
+        },
+        () => showError(failure),
+      );
+    });
+    this.replaceChildren(
+      this.#toolbar(() => {
+        form.reset();
+        this.#showList();
+      }),
+      create("h3", `${edit ? "Edit" : "New"} ${label}`),
+      form,
+    );
+    title.focus();
+  }
+
+  #open(entry: ListedItem, error?: string) {
+    const vault = this.#vault;
+    if (!vault) return;
+    if (entry.title === null) {
+      this.#showDetails(entry, null, "Could not read this item.");
+      return;
+    }
+    const back = entry.trashed ? this.#showTrash : this.#showList;
+    const show = (password?: string) => {
+      const status = create("p", "Opening item…");
+      status.setAttribute("role", "status");
+      this.replaceChildren(this.#toolbar(back), status);
+      let failure = "Could not read this item.";
+      void this.#run(
+        async (signal) => {
+          if (password !== undefined) {
+            failure = "Check your master password and try again.";
+            await unlockVault(password, vault.parameters);
+            signal.throwIfAborted();
+            failure = "Could not read this item.";
+          }
+          return readItemDetails(entry.item, vault.key);
+        },
+        (details) => this.#showDetails(entry, details),
+        () => this.#open(entry, failure),
+      );
+    };
+    if (entry.item.requiresMasterPassword) {
+      this.replaceChildren(
+        this.#toolbar(back),
+        create("h3", entry.title),
+        passwordForm("Open protected item", show),
+        ...(error ? [alert(error)] : []),
+      );
+      this.querySelector("input")?.focus();
+    } else if (error) {
+      this.#showDetails(entry, null, error);
+    } else {
+      show();
+    }
+  }
+
+  #showDetails(entry: ListedItem, details: ItemDetails | null, error?: string) {
+    const { item, title, trashed } = entry;
+    const fields = create("dl");
+    fields.className = "vault-item-fields";
+    const add = (label: string, value: string) => {
+      const content = create("dd", value);
+      fields.append(create("dt", label), content);
+      return content;
+    };
+    const login = details?.login;
+    if (login) {
+      if (login.username !== null) add("Username", login.username);
+      if (login.password !== null) {
+        let shown = false;
+        const password = create("span", "••••••••");
+        const toggle = action("Show password", () => {
+          shown = !shown;
+          password.textContent = shown ? login.password : "••••••••";
+          toggle.textContent = shown ? "Hide password" : "Show password";
+        });
+        add("Password", "").append(password, toggle);
+      }
+      for (const uri of login.uris) add("Website", uri);
+    }
+    if (details?.notes != null) add("Notes", details.notes);
+    const titleNode = create("h3", title ?? "Unreadable item");
+    titleNode.tabIndex = -1;
+    let edit: HTMLButtonElement | undefined;
+    if (!trashed && title !== null && details) {
+      if (item.type === 2)
+        edit = action("Edit Secure Note", () =>
+          this.#showNoteForm({ item, title, notes: details.notes }),
+        );
+      else if (login)
+        edit = action("Edit Login", () =>
+          this.#showLoginForm({ item, title, login }),
+        );
+    }
+    this.replaceChildren(
+      this.#toolbar(
+        trashed ? this.#showTrash : this.#showList,
+        edit,
+        action(trashed ? "Restore" : "Move to Trash", () =>
+          this.#changeLifecycle(entry, details),
+        ),
+      ),
+      titleNode,
+      ...(error ? [alert(error)] : []),
+      ...(details
+        ? [
+            fields.childElementCount
+              ? fields
+              : create("p", "This item has no details."),
+          ]
+        : []),
+    );
+    titleNode.focus();
+  }
+}
+
+customElements.define(vaultReader.tag, VaultReader);

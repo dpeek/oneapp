@@ -5,7 +5,7 @@ import {
   text,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
-import type { LoginDetails } from "./login.ts";
+import type { ItemContent } from "./item.ts";
 import { accounts } from "../database.ts";
 
 export const personalVaults = sqliteTable("personal_vaults", {
@@ -24,7 +24,8 @@ export const personalVaults = sqliteTable("personal_vaults", {
   revisionAt: integer("revision_at").notNull(),
 });
 
-export const personalVaultLogins = sqliteTable(
+// Keep the physical table name so the active Worker can continue using it during migration.
+export const personalVaultItems = sqliteTable(
   "personal_vault_logins",
   {
     id: text().primaryKey(),
@@ -33,11 +34,12 @@ export const personalVaultLogins = sqliteTable(
       .references(() => personalVaults.id, { onDelete: "cascade" }),
     name: text().notNull(),
     wrappedKey: text("wrapped_key").notNull(),
-    details: text({ mode: "json" }).$type<LoginDetails>().notNull(),
+    details: text({ mode: "json" }).$type<ItemContent["details"]>().notNull(),
     createDigest: text("create_digest"),
     createdAt: integer("created_at").notNull(),
     revisionAt: integer("revision_at").notNull(),
     deletedAt: integer("deleted_at"),
+    type: integer().$type<ItemContent["type"]>().notNull().default(1),
   },
   (table) => [
     index("personal_vault_logins_vault").on(table.vaultId),

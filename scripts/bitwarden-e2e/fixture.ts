@@ -9,7 +9,7 @@ import {
 } from "node:crypto";
 
 import type {
-  PersonalLogin,
+  PersonalItem,
   PersonalVault,
 } from "../../apps/web/src/server/vault/personal.ts";
 
@@ -75,7 +75,7 @@ export const makeFixture = (origin: string) => {
     createdAt: now,
     revisionAt: now,
   };
-  const login: Omit<PersonalLogin, "details" | "deletedAt"> & {
+  const login: Omit<PersonalItem, "details" | "deletedAt" | "type"> & {
     username: string;
     password: string;
     uri: string;

@@ -7,13 +7,17 @@ import { Effect, Schema } from "effect";
 import { Command, Submodel, type Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";
 import {
+  BitwardenDeviceList,
+  bitwardenDevicesPath,
+} from "./bitwarden-device-contract.ts";
+import {
   codexClientId,
   isCodexMetadataId,
   McpGrantList,
   mcpGrantsPath,
 } from "./mcp-access-contract.ts";
 
-const ClientType = Schema.Literals(["CLI", "Extension", "MCP"]);
+const ClientType = Schema.Literals(["CLI", "Extension", "MCP", "Bitwarden"]);
 type ClientType = typeof ClientType.Type;
 const Connection = Schema.Struct({
   type: ClientType,
@@ -54,6 +58,7 @@ const paths = {
   CLI: cliTokensPath,
   Extension: extensionAccessPath,
   MCP: mcpGrantsPath,
+  Bitwarden: bitwardenDevicesPath,
 };
 
 const readConnections = async (
@@ -87,6 +92,15 @@ const readConnections = async (
             clientId === codexClientId || isCodexMetadataId(clientId)
               ? "Codex"
               : clientId,
+        }),
+      );
+    case "Bitwarden":
+      return Schema.decodeUnknownSync(BitwardenDeviceList)(body).map(
+        ({ id, name, createdAt }) => ({
+          id,
+          createdAt,
+          type,
+          name: `${name} · ${id.slice(-8).toUpperCase()}`,
         }),
       );
   }

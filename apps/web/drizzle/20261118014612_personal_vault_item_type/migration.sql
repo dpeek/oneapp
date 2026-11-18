@@ -1,0 +1,1 @@
+ALTER TABLE `personal_vault_logins` ADD `type` integer DEFAULT 1 NOT NULL;

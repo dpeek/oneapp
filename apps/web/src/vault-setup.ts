@@ -1,13 +1,14 @@
 import { Effect, Schema } from "effect";
 import { Command, Submodel, type Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";
+import { vaultReader } from "./vault-reader.ts";
 import {
   vaultPasswordMaximum,
   vaultPasswordMinimum,
   vaultSetupPath,
   VaultSetupStatus,
 } from "./vault-setup-contract.ts";
-import { createVaultSetup } from "./vault-setup-crypto.ts";
+import { createVaultSetup } from "./vault-crypto.ts";
 
 const formId = "vault-setup";
 const passwordId = "vault-master-password";
@@ -166,17 +167,24 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
         : model.status.initialized
           ? [
               h.h2([], ["Your password vault is ready"]),
-              h.p(
-                [],
+              vaultReader.withMessage(h)(),
+              h.details(
+                [h.Class("vault-connect")],
                 [
-                  "In the Bitwarden extension, choose Self-hosted and enter this server URL.",
-                ],
-              ),
-              h.code([], [window.location.origin]),
-              h.p(
-                [],
-                [
-                  "Choose Use single sign-on, then unlock with your vault master password.",
+                  h.summary([], ["Connect Bitwarden"]),
+                  h.p(
+                    [],
+                    [
+                      "In Bitwarden, choose Self-hosted and enter this server URL.",
+                    ],
+                  ),
+                  h.code([], [window.location.origin]),
+                  h.p(
+                    [],
+                    [
+                      "Choose Use single sign-on, then unlock with your vault master password.",
+                    ],
+                  ),
                 ],
               ),
             ]

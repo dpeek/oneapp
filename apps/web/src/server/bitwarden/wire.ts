@@ -1,4 +1,4 @@
-import type { PersonalLogin, PersonalVault } from "../vault/personal.ts";
+import type { PersonalItem, PersonalVault } from "../vault/personal.ts";
 import type { GrantIdentity } from "./tokens.ts";
 
 const accountKeys = (vault: PersonalVault) => ({
@@ -62,39 +62,43 @@ export const unlockOptions = (vault: PersonalVault) => ({
   },
 });
 
-export const cipher = (login: PersonalLogin) => ({
-  id: login.id,
-  type: 1,
+export const cipher = (item: PersonalItem) => ({
+  id: item.id,
+  type: item.type,
   object: "cipherDetails",
-  name: login.name,
-  key: login.wrappedKey,
-  creationDate: new Date(login.createdAt).toISOString(),
-  revisionDate: new Date(login.revisionAt).toISOString(),
+  name: item.name,
+  key: item.wrappedKey,
+  creationDate: new Date(item.createdAt).toISOString(),
+  revisionDate: new Date(item.revisionAt).toISOString(),
   deletedDate:
-    login.deletedAt === null ? null : new Date(login.deletedAt).toISOString(),
+    item.deletedAt === null ? null : new Date(item.deletedAt).toISOString(),
   organizationId: null,
   folderId: null,
-  notes: login.details.notes ?? null,
-  favorite: login.details.favorite ?? false,
+  notes: item.details.notes ?? null,
+  favorite: item.details.favorite ?? false,
   // The client SDK requires a boolean when decrypting the update response.
   organizationUseTotp: false,
   edit: true,
-  permissions: { delete: login.deletedAt === null, restore: true },
+  permissions: { delete: item.deletedAt === null, restore: true },
   viewPassword: true,
   collectionIds: [],
-  reprompt: login.details.reprompt ?? 0,
-  fields: login.details.fields ?? [],
-  passwordHistory: login.details.passwordHistory ?? [],
-  login: { ...login.details.credentials, fido2Credentials: [] },
+  reprompt: item.details.reprompt ?? 0,
+  fields: item.details.fields ?? [],
+  ...(item.type === 1
+    ? {
+        passwordHistory: item.details.passwordHistory ?? [],
+        login: { ...item.details.credentials, fido2Credentials: [] },
+      }
+    : { secureNote: { type: 0 } }),
 });
 
 export const sync = (
   vault: PersonalVault,
   identity: GrantIdentity,
-  logins: PersonalLogin[],
+  items: PersonalItem[],
 ) => ({
   profile: profile(vault, identity),
-  ciphers: logins.map(cipher),
+  ciphers: items.map(cipher),
   folders: [],
   collections: [],
   policies: [],

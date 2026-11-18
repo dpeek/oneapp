@@ -8,13 +8,6 @@ export const deviceLifetimeMillis = 30 * 24 * 60 * 60 * 1000;
 const encoder = new TextEncoder();
 export const randomSecret = () =>
   Base64Url.encode(crypto.getRandomValues(new Uint8Array(32)));
-export const digest = async (value: string) =>
-  Base64Url.encode(
-    new Uint8Array(
-      await crypto.subtle.digest("SHA-256", encoder.encode(value)),
-    ),
-  );
-
 export type GrantIdentity = {
   id: string;
   vaultId: string;

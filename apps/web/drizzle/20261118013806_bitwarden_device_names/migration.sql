@@ -1,0 +1,1 @@
+ALTER TABLE `bitwarden_device_sessions` ADD `device_name` text;

@@ -18,6 +18,7 @@ import {
 import { cloudflareEmail, disabledEmail } from "./account-email.ts";
 import { accountRoutes } from "./account.ts";
 import { AppAuth, authHttp, sessionCookieName } from "./auth.ts";
+import { bitwardenDeviceRoutes } from "./bitwarden/devices.ts";
 import { bitwardenFetch, isBitwardenPath } from "./bitwarden/routes.ts";
 import { privateHeaders } from "./api-response.ts";
 import { cliLoginRoutes } from "./cli-login.ts";
@@ -39,6 +40,7 @@ import {
   passwordRecoveryRoutes,
   resetLinkRenderer,
 } from "./password-recovery.ts";
+import { vaultItemRoutes } from "./vault/items.ts";
 import { vaultSetupRoutes } from "./vault/setup.ts";
 
 const health = HttpRouter.add(
@@ -220,6 +222,8 @@ export default {
           passwordRecoveryRoutes(http, emailTransport !== disabledEmail),
           linksRoutes(http),
           vaultSetupRoutes(http, env.DB),
+          vaultItemRoutes(http, env.DB),
+          bitwardenDeviceRoutes(http),
           cliTokenRoutes(http),
           cliLoginRoutes(http),
           extensionAccessRoutes(http),

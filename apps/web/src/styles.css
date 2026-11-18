@@ -145,9 +145,86 @@ body:has(.app-shell) {
   max-width: 26rem;
 }
 
-.vault-password-field {
+.vault-password-field,
+.vault-item-field {
   display: grid;
   gap: 0.375rem;
+}
+
+.vault-item-field textarea {
+  padding: 0.65rem;
+  font: inherit;
+  resize: vertical;
+}
+
+oneapp-vault-reader {
+  display: block;
+}
+
+.vault-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-block-end: 1rem;
+}
+
+.vault-toolbar button:last-child {
+  margin-inline-start: auto;
+}
+
+.vault-items {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.vault-items li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-block: 0.65rem;
+  border-block-start: 1px solid var(--border);
+}
+
+.vault-items button {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: start;
+}
+
+.vault-items span {
+  color: var(--muted);
+}
+
+.vault-item-fields dt {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.vault-item-fields dd {
+  margin: 0.25rem 0 1rem;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.vault-item-fields button {
+  margin-inline-start: 0.65rem;
+}
+
+.vault-connect {
+  margin-block-start: 1.25rem;
+  padding-block-start: 1rem;
+  border-block-start: 1px solid var(--border);
+}
+
+.vault-connect summary {
+  cursor: pointer;
+}
+
+.vault-connect p:first-of-type {
+  margin-block-start: 0.75rem;
 }
 
 .vault-setup code {

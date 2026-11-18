@@ -1,12 +1,6 @@
 import { Schema } from "effect";
 
-// Personal vaults currently use Bitwarden's authenticated type-2 encrypted strings.
-const Encrypted = Schema.String.check(
-  Schema.isMaxLength(128 * 1024),
-  Schema.isPattern(
-    /^2\.[A-Za-z0-9+/]{22}==\|[A-Za-z0-9+/]{22,}={0,2}\|[A-Za-z0-9+/]{43}=$/u,
-  ),
-);
+import { EncryptedVaultValue as Encrypted } from "../../vault-items-contract.ts";
 
 const optionalEncrypted = Schema.optionalKey(Schema.NullOr(Encrypted));
 const optionalDate = Schema.optionalKey(
@@ -39,7 +33,7 @@ export const LoginCredentials = Schema.Struct({
   ),
 });
 
-export const LoginMetadata = {
+export const ItemMetadata = {
   notes: optionalEncrypted,
   favorite: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
   reprompt: Schema.optionalKey(Schema.NullOr(Schema.Literals([0, 1]))),
@@ -57,26 +51,25 @@ export const LoginMetadata = {
       ).check(Schema.isMaxLength(100)),
     ),
   ),
-  passwordHistory: Schema.optionalKey(
-    Schema.NullOr(
-      Schema.Array(
-        Schema.Struct({
-          lastUsedDate: optionalDate,
-          password: optionalEncrypted,
-        }),
-      ).check(Schema.isMaxLength(100)),
-    ),
-  ),
 };
 
-const LoginDetails = Schema.Struct({
-  ...LoginMetadata,
-  credentials: LoginCredentials,
-});
-export type LoginDetails = typeof LoginDetails.Type;
-export const LoginName = Encrypted;
-export const WrappedItemKey = Schema.String.check(
-  Schema.isPattern(
-    /^2\.[A-Za-z0-9+/]{22}==\|[A-Za-z0-9+/]{107}=\|[A-Za-z0-9+/]{43}=$/u,
+export const LoginPasswordHistory = Schema.optionalKey(
+  Schema.NullOr(
+    Schema.Array(
+      Schema.Struct({
+        lastUsedDate: optionalDate,
+        password: optionalEncrypted,
+      }),
+    ).check(Schema.isMaxLength(100)),
   ),
 );
+
+const LoginDetails = Schema.Struct({
+  ...ItemMetadata,
+  credentials: LoginCredentials,
+  passwordHistory: LoginPasswordHistory,
+});
+const SecureNoteDetails = Schema.Struct(ItemMetadata);
+export type ItemContent =
+  | { type: 1; details: typeof LoginDetails.Type }
+  | { type: 2; details: typeof SecureNoteDetails.Type };

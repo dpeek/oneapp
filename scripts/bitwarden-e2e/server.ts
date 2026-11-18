@@ -164,7 +164,7 @@ if (fixture) {
 }
 
 let restart: Promise<void> | undefined;
-const restartWorker = async () => {
+const restartWorker = async (expectedItems: number) => {
   await runtime.dispose();
   runtime = makeRuntime();
   const persistentDb = await runtime.getD1Database("DB");
@@ -184,7 +184,7 @@ const restartWorker = async () => {
       .bind(savedVault.id)
       .first<{ total: number }>(),
   ]);
-  if (!device || items?.total !== 1)
+  if (!device || items?.total !== expectedItems)
     throw new Error(
       "The vault items or device session did not persist across restart.",
     );
@@ -199,7 +199,9 @@ const server = Bun.serve({
   },
   async fetch(request) {
     const url = new URL(request.url);
-    if (url.hostname === "login.oneapp.test") {
+    if (
+      ["login.oneapp.test", "login.oneapp-vault.test"].includes(url.hostname)
+    ) {
       if (request.method !== "GET" || url.pathname !== "/fixture-login")
         return new Response(null, { status: 404 });
       return new Response(
@@ -221,7 +223,10 @@ const server = Bun.serve({
         request.headers.get("x-test-restart") !== restartKey
       )
         return new Response(null, { status: 404 });
-      await (restart ??= restartWorker().finally(() => {
+      const expectedItems = Number(url.searchParams.get("items"));
+      if (!Number.isInteger(expectedItems) || expectedItems < 1)
+        return new Response(null, { status: 400 });
+      await (restart ??= restartWorker(expectedItems).finally(() => {
         restart = undefined;
       }));
       return new Response(null, { status: 204 });

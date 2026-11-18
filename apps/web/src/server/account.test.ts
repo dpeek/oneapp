@@ -21,6 +21,7 @@ import {
   emailVerificationPath,
   passwordChangePath,
 } from "../account-contract.ts";
+import { bitwardenDevicesPath } from "../bitwarden-device-contract.ts";
 import {
   codexClientId,
   McpGrantList,
@@ -31,7 +32,16 @@ import {
   resetPasswordPage,
 } from "../password-recovery-contract.ts";
 import { vaultSetupPath } from "../vault-setup-contract.ts";
-import { createVaultSetup } from "../vault-setup-crypto.ts";
+import {
+  vaultItemPath,
+  vaultItemsPath,
+  type VaultLifecycleAction,
+  vaultLifecyclePath,
+  VaultSnapshot,
+} from "../vault-items-contract.ts";
+import { createVaultSetup } from "../vault-crypto.ts";
+import { deviceLifetimeMillis, randomSecret } from "./bitwarden/tokens.ts";
+import { digest } from "./digest.ts";
 import { ensureOwner } from "./provision-owner.ts";
 import { mcpOAuth } from "./mcp-oauth.ts";
 import worker from "./worker.ts";
@@ -740,10 +750,10 @@ it("recovers only a verified address with a single-use link and revokes browser 
   }
 }, 20_000);
 
-it("scopes Bitwarden grants and login writes to the current account and vault", async () => {
+it("scopes Bitwarden and web writes to the current account and vault", async () => {
   using sqlite = new Database(":memory:");
   const origin = "https://oneapp.example";
-  const { request, signIn, cookies } = await setup(sqlite);
+  const { call, request, signIn, cookies } = await setup(sqlite);
   const vaultId = crypto.randomUUID();
   const itemId = crypto.randomUUID();
   const otherVaultId = crypto.randomUUID();
@@ -1020,7 +1030,7 @@ it("scopes Bitwarden grants and login writes to the current account and vault", 
     });
   const readLogin = async () => {
     const snapshot = (await (await sync(issued.access_token)).json()) as {
-      ciphers: (typeof created)[];
+      ciphers: (typeof created & { login: typeof login.login })[];
     };
     return snapshot.ciphers.find(({ id }) => id === created.id)!;
   };
@@ -1076,6 +1086,632 @@ it("scopes Bitwarden grants and login writes to the current account and vault", 
       .get(vaultId),
   ).toEqual({ revision_at: Date.parse(restored.revisionDate) });
 
+  const noteMetadata = {
+    favorite: true,
+    reprompt: 1,
+    fields: [{ type: 0, name: encrypted(16, 11), value: encrypted(32, 11) }],
+  };
+  const note = {
+    type: 2,
+    name: encrypted(16, 9),
+    key: encrypted(80, 9),
+    notes: encrypted(32, 9),
+    secureNote: { type: 0 },
+    ...noteMetadata,
+  };
+  for (const invalid of [
+    { ...note, notes: "plaintext" },
+    { ...note, secureNote: { type: 1 } },
+    { ...note, login: login.login },
+    { ...note, type: 3 },
+  ]) {
+    expect((await save(issued.access_token, invalid)).status).toBe(400);
+  }
+  const noteCreation = await save(issued.access_token, note);
+  expect(noteCreation.status).toBe(200);
+  const savedNote = (await noteCreation.json()) as typeof created;
+  expect(savedNote).toMatchObject({
+    type: 2,
+    name: note.name,
+    notes: note.notes,
+    secureNote: { type: 0 },
+  });
+  expect(savedNote).not.toHaveProperty("login");
+  expect(await (await save(issued.access_token, note)).json()).toEqual(
+    savedNote,
+  );
+  const nextNote = {
+    ...note,
+    notes: encrypted(32, 10),
+    lastKnownRevisionDate: savedNote.revisionDate,
+  };
+  expect(
+    (
+      await edit(
+        { ...note, lastKnownRevisionDate: restored.revisionDate },
+        restored.id,
+      )
+    ).status,
+  ).toBe(400);
+  expect(
+    (
+      await edit(
+        { ...login, lastKnownRevisionDate: savedNote.revisionDate },
+        savedNote.id,
+      )
+    ).status,
+  ).toBe(400);
+  const noteEdit = await edit(nextNote, savedNote.id);
+  expect(noteEdit.status).toBe(200);
+  const updatedNote = (await noteEdit.json()) as typeof created;
+  expect(updatedNote).toEqual({
+    ...savedNote,
+    notes: nextNote.notes,
+    revisionDate: updatedNote.revisionDate,
+  });
+  expect(Date.parse(updatedNote.revisionDate)).toBeGreaterThan(
+    Date.parse(savedNote.revisionDate),
+  );
+  expect((await edit(nextNote, savedNote.id)).status).toBe(409);
+  const persisted = sqlite
+    .query<{ type: number; details: string }, [string]>(
+      "SELECT type, details FROM personal_vault_logins WHERE id = ?",
+    )
+    .get(savedNote.id);
+  expect(persisted?.type).toBe(2);
+  expect(JSON.parse(persisted!.details)).toEqual({
+    ...noteMetadata,
+    notes: nextNote.notes,
+  });
+  const mixedVault = (await (
+    await sync(issued.access_token)
+  ).json()) as typeof snapshot;
+  expect(mixedVault.ciphers).toHaveLength(3);
+  expect(mixedVault.ciphers).toContainEqual(restored);
+  expect(mixedVault.ciphers).toContainEqual(updatedNote);
+
+  expect((await request(vaultItemsPath, {})).status).toBe(401);
+  expect(
+    (
+      await request(vaultItemsPath, {
+        headers: { authorization: `Bearer ${issued.access_token}` },
+      })
+    ).status,
+  ).toBe(401);
+  sqlite
+    .query("UPDATE personal_vault_logins SET deleted_at = 1 WHERE id = ?")
+    .run(itemId);
+  const webVault = await request(vaultItemsPath, { headers: { cookie } });
+  expect(webVault.status).toBe(200);
+  expect(webVault.headers.get("cache-control")).toBe("no-store");
+  expect(await webVault.json()).toEqual({
+    keyId,
+    wrappedKey: "wrapped",
+    kdfSalt: email,
+    kdfIterations: 600_000,
+    items: [
+      {
+        id: restored.id,
+        type: 1,
+        name: login.name,
+        wrappedKey: login.key,
+        notes: login.notes,
+        requiresMasterPassword: false,
+        revision: Date.parse(restored.revisionDate),
+        username: null,
+        password: encrypted(16, 6 + winner),
+        uris: login.login.uris.map(({ uri }) => uri),
+      },
+      {
+        id: updatedNote.id,
+        type: 2,
+        name: note.name,
+        wrappedKey: note.key,
+        notes: nextNote.notes,
+        requiresMasterPassword: true,
+        revision: Date.parse(updatedNote.revisionDate),
+      },
+    ].sort((a, b) => a.id.localeCompare(b.id)),
+    trash: [
+      {
+        id: itemId,
+        type: 1,
+        name: "encrypted",
+        wrappedKey: "wrapped",
+        notes: null,
+        requiresMasterPassword: false,
+        revision: 1,
+        username: "encrypted",
+        password: "encrypted",
+        uris: ["encrypted"],
+      },
+    ],
+  });
+
+  const webNote = {
+    keyId,
+    name: encrypted(16, 12),
+    wrappedKey: encrypted(80, 12),
+    notes: encrypted(32, 12),
+  };
+  const postNote = (body = webNote) => call(vaultItemsPath, body, cookie);
+  expect((await call(vaultItemsPath, webNote)).status).toBe(401);
+  expect(
+    (await call(vaultItemsPath, webNote, cookie, "https://other.example"))
+      .status,
+  ).toBe(403);
+  expect(
+    (
+      await request(vaultItemsPath, {
+        method: "POST",
+        headers: { cookie, origin, "content-type": "application/json" },
+        body: JSON.stringify(webNote),
+      })
+    ).status,
+  ).toBe(403);
+  for (const invalid of [
+    { ...webNote, name: "plaintext" },
+    { ...webNote, notes: "plaintext" },
+    { ...webNote, wrappedKey: encrypted(16, 12) },
+    { ...webNote, vaultId: otherVaultId },
+  ]) {
+    expect((await postNote(invalid)).status).toBe(400);
+  }
+  expect((await postNote({ ...webNote, keyId: "f".repeat(32) })).status).toBe(
+    409,
+  );
+  const savedInWeb = await postNote();
+  expect(savedInWeb.status).toBe(201);
+  expect(savedInWeb.headers.get("cache-control")).toBe("no-store");
+  const webItem = (await savedInWeb.json()) as {
+    id: string;
+    type: 2;
+    revision: number;
+  };
+  expect(webItem).toEqual({
+    id: expect.any(String),
+    type: 2,
+    name: webNote.name,
+    wrappedKey: webNote.wrappedKey,
+    notes: webNote.notes,
+    requiresMasterPassword: false,
+    revision: expect.any(Number),
+  });
+  const vaultRevision = sqlite.query(
+    "SELECT revision_at FROM personal_vaults WHERE id = ?",
+  );
+  const revisionAfterCreate = vaultRevision.get(vaultId);
+  expect(await (await postNote()).json()).toEqual(webItem);
+  expect(vaultRevision.get(vaultId)).toEqual(revisionAfterCreate);
+  expect(vaultRevision.get(otherVaultId)).toEqual({ revision_at: 1 });
+  const withWebNote = (await (
+    await sync(issued.access_token)
+  ).json()) as typeof snapshot;
+  expect(withWebNote.ciphers).toHaveLength(4);
+  expect(withWebNote.ciphers.find(({ id }) => id === webItem.id)).toMatchObject(
+    {
+      type: 2,
+      name: webNote.name,
+      key: webNote.wrappedKey,
+      notes: webNote.notes,
+      secureNote: { type: 0 },
+    },
+  );
+
+  const webEdit = {
+    keyId,
+    expectedRevision: Date.parse(updatedNote.revisionDate),
+    name: encrypted(16, 13),
+    notes: null,
+  };
+  const putNote = (
+    body: object = webEdit,
+    id = savedNote.id,
+    headers: HeadersInit = { origin, cookie, "x-effect-auth-csrf": "1" },
+  ) => {
+    const requestHeaders = new Headers(headers);
+    requestHeaders.set("content-type", "application/json");
+    return request(vaultItemPath(id), {
+      method: "PUT",
+      headers: requestHeaders,
+      body: JSON.stringify(body),
+    });
+  };
+  expect(
+    (
+      await putNote(webEdit, savedNote.id, {
+        origin,
+        "x-effect-auth-csrf": "1",
+      })
+    ).status,
+  ).toBe(401);
+  expect(
+    (await putNote(webEdit, savedNote.id, { origin, cookie })).status,
+  ).toBe(403);
+  expect((await putNote(webEdit, "invalid")).status).toBe(400);
+  expect((await putNote(webEdit, otherItemId)).status).toBe(404);
+  expect((await putNote(webEdit, restored.id)).status).toBe(404);
+  for (const invalid of [
+    { ...webEdit, name: "plaintext" },
+    { ...webEdit, notes: "plaintext" },
+    { ...webEdit, expectedRevision: 1.5 },
+    { ...webEdit, wrappedKey: webNote.wrappedKey },
+  ]) {
+    expect((await putNote(invalid)).status).toBe(400);
+  }
+  expect((await putNote({ ...webEdit, keyId: "f".repeat(32) })).status).toBe(
+    409,
+  );
+  expect(
+    (
+      await putNote({
+        ...webEdit,
+        expectedRevision: Date.parse(savedNote.revisionDate),
+      })
+    ).status,
+  ).toBe(409);
+  expect(vaultRevision.get(vaultId)).toEqual(revisionAfterCreate);
+
+  const savedEdit = await putNote();
+  expect(savedEdit.status).toBe(200);
+  expect(savedEdit.headers.get("cache-control")).toBe("no-store");
+  const editedInWeb = (await savedEdit.json()) as { revision: number };
+  expect(editedInWeb).toEqual({
+    id: savedNote.id,
+    type: 2,
+    name: webEdit.name,
+    wrappedKey: note.key,
+    notes: null,
+    requiresMasterPassword: true,
+    revision: expect.any(Number),
+  });
+  expect(editedInWeb.revision).toBeGreaterThan(webEdit.expectedRevision);
+  expect(vaultRevision.get(vaultId)).toEqual({
+    revision_at: editedInWeb.revision,
+  });
+  expect(await (await putNote()).json()).toEqual(editedInWeb);
+  expect(vaultRevision.get(vaultId)).toEqual({
+    revision_at: editedInWeb.revision,
+  });
+  const syncedEdit = (await (
+    await sync(issued.access_token)
+  ).json()) as typeof snapshot;
+  expect(
+    syncedEdit.ciphers.find(({ id }) => id === savedNote.id),
+  ).toMatchObject({
+    ...noteMetadata,
+    name: webEdit.name,
+    notes: null,
+    key: note.key,
+    revisionDate: new Date(editedInWeb.revision).toISOString(),
+  });
+
+  expect((await lifecycle("delete", savedNote.id)).status).toBe(204);
+  const revisionAfterTrash = vaultRevision.get(vaultId);
+  const trashedNoteEdit = await putNote({
+    ...webEdit,
+    expectedRevision: editedInWeb.revision,
+  });
+  expect(trashedNoteEdit.status).toBe(409);
+  expect(await trashedNoteEdit.json()).toEqual({
+    error: "This note is in Trash.",
+  });
+  expect(vaultRevision.get(vaultId)).toEqual(revisionAfterTrash);
+
+  const webLogin = {
+    type: 1,
+    keyId,
+    name: encrypted(16, 14),
+    wrappedKey: encrypted(80, 14),
+    username: encrypted(16, 15),
+    password: encrypted(32, 16),
+    website: {
+      uri: encrypted(32, 17),
+      uriChecksum: encrypted(48, 18),
+    },
+  };
+  const postLogin = (body: object = webLogin) =>
+    call(vaultItemsPath, body, cookie);
+  expect((await call(vaultItemsPath, webLogin)).status).toBe(401);
+  expect(
+    (await call(vaultItemsPath, webLogin, cookie, "https://other.example"))
+      .status,
+  ).toBe(403);
+  for (const invalid of [
+    { ...webLogin, name: "plaintext" },
+    { ...webLogin, username: "plaintext" },
+    { ...webLogin, password: "plaintext" },
+    {
+      ...webLogin,
+      website: { ...webLogin.website, uri: "https://example.net" },
+    },
+    { ...webLogin, website: { ...webLogin.website, uriChecksum: "plaintext" } },
+    { ...webLogin, website: { uri: webLogin.website.uri } },
+    { ...webLogin, website: { ...webLogin.website, match: 0 } },
+    { ...webLogin, vaultId: otherVaultId },
+    { ...webLogin, notes: null },
+  ]) {
+    expect((await postLogin(invalid)).status).toBe(400);
+  }
+  expect((await postLogin({ ...webLogin, keyId: "f".repeat(32) })).status).toBe(
+    409,
+  );
+  expect(vaultRevision.get(vaultId)).toEqual(revisionAfterTrash);
+
+  const createdLogin = await postLogin();
+  expect(createdLogin.status).toBe(201);
+  expect(createdLogin.headers.get("cache-control")).toBe("no-store");
+  const savedWebLogin = (await createdLogin.json()) as { id: string };
+  expect(savedWebLogin).toEqual({
+    id: expect.any(String),
+    type: 1,
+    name: webLogin.name,
+    wrappedKey: webLogin.wrappedKey,
+    notes: null,
+    requiresMasterPassword: false,
+    revision: expect.any(Number),
+    username: webLogin.username,
+    password: webLogin.password,
+    uris: [webLogin.website.uri],
+  });
+  const revisionAfterLogin = vaultRevision.get(vaultId);
+  expect(await (await postLogin()).json()).toEqual(savedWebLogin);
+  expect(vaultRevision.get(vaultId)).toEqual(revisionAfterLogin);
+  expect(vaultRevision.get(otherVaultId)).toEqual({ revision_at: 1 });
+  const withWebLogin = (await (
+    await sync(issued.access_token)
+  ).json()) as typeof snapshot;
+  expect(withWebLogin.ciphers).toHaveLength(5);
+  expect(
+    withWebLogin.ciphers.find(({ id }) => id === savedWebLogin.id),
+  ).toMatchObject({
+    type: 1,
+    name: webLogin.name,
+    key: webLogin.wrappedKey,
+    login: {
+      username: webLogin.username,
+      password: webLogin.password,
+      uris: [{ ...webLogin.website, match: 1 }],
+    },
+  });
+  const passwordOnly = await postLogin({
+    ...webLogin,
+    username: null,
+    website: null,
+  });
+  expect(passwordOnly.status).toBe(201);
+  expect(await passwordOnly.json()).toMatchObject({
+    type: 1,
+    username: null,
+    password: webLogin.password,
+    uris: [],
+  });
+
+  const editWebLogin = {
+    type: 1,
+    keyId,
+    expectedRevision: Date.parse(restored.revisionDate),
+    name: encrypted(16, 19),
+    username: encrypted(16, 20),
+    password: encrypted(32, 21),
+    website: {
+      previousUri: login.login.uris[0]!.uri,
+      replacement: webLogin.website,
+    },
+  };
+  const putLogin = (body: object = editWebLogin, id = restored.id) =>
+    putNote(body, id);
+  expect((await putLogin(editWebLogin, otherItemId)).status).toBe(404);
+  expect((await putLogin(editWebLogin, webItem.id)).status).toBe(404);
+  expect(
+    (await putLogin({ ...editWebLogin, password: "plaintext" })).status,
+  ).toBe(400);
+  expect(
+    (
+      await putLogin({
+        ...editWebLogin,
+        expectedRevision: Date.parse(edited.revisionDate),
+      })
+    ).status,
+  ).toBe(409);
+  expect(
+    (
+      await putLogin({
+        ...editWebLogin,
+        website: { ...editWebLogin.website, previousUri: null },
+      })
+    ).status,
+  ).toBe(409);
+  const rotatedInWeb = await putLogin();
+  expect(rotatedInWeb.status).toBe(200);
+  const editedWebLogin = (await rotatedInWeb.json()) as { revision: number };
+  expect(editedWebLogin).toMatchObject({
+    id: restored.id,
+    name: editWebLogin.name,
+    wrappedKey: login.key,
+    username: editWebLogin.username,
+    password: editWebLogin.password,
+    uris: [webLogin.website.uri, login.login.uris[1]!.uri],
+  });
+  expect(editedWebLogin.revision).toBeGreaterThan(
+    editWebLogin.expectedRevision,
+  );
+  expect(await (await putLogin()).json()).toEqual(editedWebLogin);
+  expect(vaultRevision.get(vaultId)).toEqual({
+    revision_at: editedWebLogin.revision,
+  });
+  const afterWebRotation = await readLogin();
+  expect(afterWebRotation).toMatchObject({
+    id: restored.id,
+    key: login.key,
+    name: editWebLogin.name,
+    notes: login.notes,
+    favorite: true,
+    login: {
+      username: editWebLogin.username,
+      password: editWebLogin.password,
+      passwordRevisionDate: expect.any(String),
+      uris: [{ ...webLogin.website, match: 1 }, login.login.uris[1]],
+    },
+    passwordHistory: [
+      { password: encrypted(16, 6 + winner), lastUsedDate: expect.any(String) },
+    ],
+  });
+
+  const removeWebsite = {
+    ...editWebLogin,
+    expectedRevision: editedWebLogin.revision,
+    website: { previousUri: webLogin.website.uri, replacement: null },
+  };
+  const clearedWebsite = await putLogin(removeWebsite);
+  expect(clearedWebsite.status).toBe(200);
+  const clearedWebLogin = (await clearedWebsite.json()) as { revision: number };
+  expect(clearedWebLogin).toMatchObject({ uris: [login.login.uris[1]!.uri] });
+  expect(await (await putLogin(removeWebsite)).json()).toEqual(clearedWebLogin);
+  const afterClear = await readLogin();
+  expect(afterClear).toEqual({
+    ...afterWebRotation,
+    revisionDate: new Date(clearedWebLogin.revision).toISOString(),
+    login: { ...afterWebRotation.login, uris: [login.login.uris[1]] },
+  });
+
+  const newestPassword = encrypted(32, 22);
+  const latestDeviceEdit = await edit({
+    ...login,
+    name: editWebLogin.name,
+    lastKnownRevisionDate: afterClear.revisionDate,
+    login: { ...afterClear.login, password: newestPassword },
+  });
+  expect(latestDeviceEdit.status).toBe(200);
+  const beforeStaleSave = await readLogin();
+  expect(
+    (
+      await putLogin({
+        ...removeWebsite,
+        expectedRevision: clearedWebLogin.revision,
+        password: encrypted(16, 23),
+      })
+    ).status,
+  ).toBe(409);
+  expect(await readLogin()).toEqual(beforeStaleSave);
+
+  const loginRevision = Date.parse(beforeStaleSave.revisionDate);
+  const webLifecycle = (
+    action: VaultLifecycleAction,
+    expectedRevision: number,
+    id = restored.id,
+    headers: HeadersInit = { cookie, origin, "x-effect-auth-csrf": "1" },
+  ) => {
+    const requestHeaders = new Headers(headers);
+    requestHeaders.set("content-type", "application/json");
+    return request(vaultLifecyclePath(id, action), {
+      method: "PUT",
+      headers: requestHeaders,
+      body: JSON.stringify({ keyId, expectedRevision }),
+    });
+  };
+  const readWebVault = async () =>
+    Schema.decodeUnknownSync(VaultSnapshot)(
+      await (await request(vaultItemsPath, { headers: { cookie } })).json(),
+    );
+
+  expect(
+    (
+      await webLifecycle("trash", loginRevision, restored.id, {
+        origin,
+        "x-effect-auth-csrf": "1",
+      })
+    ).status,
+  ).toBe(401);
+  expect(
+    (
+      await webLifecycle("trash", loginRevision, restored.id, {
+        origin,
+        cookie,
+      })
+    ).status,
+  ).toBe(403);
+  expect((await webLifecycle("trash", loginRevision, otherItemId)).status).toBe(
+    404,
+  );
+  expect((await webLifecycle("trash", clearedWebLogin.revision)).status).toBe(
+    409,
+  );
+  expect(await readLogin()).toEqual(beforeStaleSave);
+
+  const webTrash = await webLifecycle("trash", loginRevision);
+  expect(webTrash.status).toBe(200);
+  expect(webTrash.headers.get("cache-control")).toBe("no-store");
+  const trashedInWeb = (await webTrash.json()) as {
+    id: string;
+    revision: number;
+  };
+  expect(trashedInWeb.id).toBe(restored.id);
+  expect(trashedInWeb.revision).toBeGreaterThan(loginRevision);
+  expect(await (await webLifecycle("trash", loginRevision)).json()).toEqual(
+    trashedInWeb,
+  );
+  expect(vaultRevision.get(vaultId)).toEqual({
+    revision_at: trashedInWeb.revision,
+  });
+  const trashSnapshot = await readWebVault();
+  expect(trashSnapshot.items.some(({ id }) => id === restored.id)).toBe(false);
+  expect(trashSnapshot.trash).toContainEqual(trashedInWeb);
+  const visibleInBitwardenTrash = await readLogin();
+  expect(visibleInBitwardenTrash).toEqual({
+    ...beforeStaleSave,
+    deletedDate: new Date(trashedInWeb.revision).toISOString(),
+    revisionDate: new Date(trashedInWeb.revision).toISOString(),
+    permissions: { delete: false, restore: true },
+  });
+  expect((await webLifecycle("restore", loginRevision)).status).toBe(409);
+  expect(vaultRevision.get(vaultId)).toEqual({
+    revision_at: trashedInWeb.revision,
+  });
+
+  const webRestore = await webLifecycle("restore", trashedInWeb.revision);
+  expect(webRestore.status).toBe(200);
+  const restoredInWeb = (await webRestore.json()) as typeof trashedInWeb;
+  expect(restoredInWeb).toEqual({
+    ...trashedInWeb,
+    revision: expect.any(Number),
+  });
+  expect(restoredInWeb.revision).toBeGreaterThan(trashedInWeb.revision);
+  expect(
+    await (await webLifecycle("restore", trashedInWeb.revision)).json(),
+  ).toEqual(restoredInWeb);
+  expect((await webLifecycle("trash", loginRevision)).status).toBe(409);
+  expect(vaultRevision.get(vaultId)).toEqual({
+    revision_at: restoredInWeb.revision,
+  });
+  expect(await readLogin()).toEqual({
+    ...beforeStaleSave,
+    revisionDate: new Date(restoredInWeb.revision).toISOString(),
+  });
+  const restoredSnapshot = await readWebVault();
+  expect(restoredSnapshot.items).toContainEqual(restoredInWeb);
+  expect(restoredSnapshot.trash.some(({ id }) => id === restored.id)).toBe(
+    false,
+  );
+
+  const webNoteTrash = await webLifecycle(
+    "trash",
+    webItem.revision,
+    webItem.id,
+  );
+  expect(webNoteTrash.status).toBe(200);
+  const trashedWebNote = (await webNoteTrash.json()) as typeof webItem;
+  expect((await readWebVault()).trash).toContainEqual(trashedWebNote);
+  const webNoteRestore = await webLifecycle(
+    "restore",
+    trashedWebNote.revision,
+    webItem.id,
+  );
+  expect(webNoteRestore.status).toBe(200);
+  expect((await readWebVault()).items).toContainEqual(
+    await webNoteRestore.json(),
+  );
+
   const refresh = {
     grant_type: "refresh_token",
     refresh_token: issued.refresh_token,
@@ -1100,6 +1736,12 @@ it("scopes Bitwarden grants and login writes to the current account and vault", 
     )
     .run();
   expect((await sync(successor.access_token)).status).toBe(401);
+  expect((await postNote()).status).toBe(401);
+  expect((await putNote()).status).toBe(401);
+  expect((await postLogin()).status).toBe(401);
+  expect((await webLifecycle("trash", restoredInWeb.revision)).status).toBe(
+    401,
+  );
   expect((await save(successor.access_token)).status).toBe(401);
   expect(
     (await lifecycle("restore", created.id, successor.access_token)).status,
@@ -1112,6 +1754,138 @@ it("scopes Bitwarden grants and login writes to the current account and vault", 
       .status,
   ).toBe(400);
   expect((await token(refresh)).status).toBe(400);
+});
+
+it("lists Bitwarden devices and revokes all grants for just the selected installation", async () => {
+  using sqlite = new Database(":memory:");
+  const { request, signIn, cookies } = await setup(sqlite);
+  const origin = "https://oneapp.example";
+  const cookie = cookies(await signIn(password));
+  const list = (session?: string) =>
+    request(bitwardenDevicesPath, {
+      headers: session ? { cookie: session } : {},
+    });
+  const revoke = (id: string, from = origin) =>
+    request(`${bitwardenDevicesPath}/${id}`, {
+      method: "DELETE",
+      headers: { cookie, origin: from, "x-effect-auth-csrf": "1" },
+    });
+  expect((await list()).status).toBe(401);
+  expect(await (await list(cookie)).json()).toEqual([]);
+
+  const vaultId = crypto.randomUUID();
+  const otherVaultId = crypto.randomUUID();
+  sqlite
+    .query(
+      "INSERT INTO accounts (id, active, security_revision) VALUES ('other', 1, '1')",
+    )
+    .run();
+  const vault = sqlite.query(`
+    INSERT INTO personal_vaults (id, owner_id, kdf_salt, kdf_iterations, wrapped_key,
+      key_id, wrapped_private_key, public_key, created_at, revision_at)
+    VALUES (?, ?, ?, 600000, 'wrapped', 'key', 'private', 'public', 1, 1)
+  `);
+  vault.run(vaultId, "owner", email);
+  vault.run(otherVaultId, "other", "other@example.net");
+
+  const now = Date.now();
+  const seedDevice = async (
+    vault: string,
+    id: string,
+    name: string | null,
+    expiresAt: number,
+  ) => {
+    const access = randomSecret();
+    const refresh = randomSecret();
+    const previousAccess = randomSecret();
+    const previousRefresh = randomSecret();
+    const [
+      accessDigest,
+      refreshDigest,
+      previousAccessDigest,
+      previousRefreshDigest,
+    ] = await Promise.all([
+      digest(access),
+      digest(refresh),
+      digest(previousAccess),
+      digest(previousRefresh),
+    ]);
+    sqlite
+      .query(
+        `
+      INSERT INTO bitwarden_device_sessions (id, vault_id, device_id, device_name, security_revision,
+        email, email_verified, expires_at, generation, issued_at, access_digest, refresh_digest,
+        previous_access_digest, previous_refresh_digest, retry_until)
+      SELECT ?, v.id, ?, ?, a.security_revision, v.kdf_salt, 1, ?, 1, ?, ?, ?, ?, ?, ?
+      FROM personal_vaults v JOIN accounts a ON a.id = v.owner_id WHERE v.id = ?
+    `,
+      )
+      .run(
+        crypto.randomUUID(),
+        id,
+        name,
+        expiresAt,
+        Math.floor(now / 1000),
+        accessDigest,
+        refreshDigest,
+        previousAccessDigest,
+        previousRefreshDigest,
+        now + 60_000,
+        vault,
+      );
+    return { access, refresh, previousAccess, previousRefresh };
+  };
+  const expires = now + deviceLifetimeMillis;
+  const target = "selected-chrome";
+  const other = "other-browser";
+  const [current, older, survivor, foreign] = await Promise.all([
+    seedDevice(vaultId, target, "Chrome", expires),
+    seedDevice(vaultId, target, "Older connection", expires - 2_000),
+    seedDevice(vaultId, other, null, expires - 1_000),
+    seedDevice(otherVaultId, target, "Another account", expires + 1_000),
+    seedDevice(vaultId, "expired", "Expired", now - 1),
+  ]);
+  const listed = await list(cookie);
+  expect(listed.status).toBe(200);
+  expect(listed.headers.get("cache-control")).toBe("no-store");
+  expect(await listed.json()).toEqual([
+    { id: target, name: "Chrome", createdAt: now },
+    { id: other, name: "Browser extension", createdAt: now - 1_000 },
+  ]);
+
+  const sync = (access: string) =>
+    request("/api/sync", { headers: { authorization: `Bearer ${access}` } });
+  const refresh = (credential: string) =>
+    request("/identity/connect/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: "browser",
+        grant_type: "refresh_token",
+        refresh_token: credential,
+      }),
+    });
+  expect((await revoke(target, "https://other.example")).status).toBe(403);
+  expect((await sync(current.access)).status).toBe(200);
+  expect((await sync(current.previousAccess)).status).toBe(200);
+  expect((await revoke(target)).status).toBe(204);
+  expect((await revoke(target)).status).toBe(204);
+  expect(await (await list(cookie)).json()).toEqual([
+    { id: other, name: "Browser extension", createdAt: now - 1_000 },
+  ]);
+  for (const grant of [current, older]) {
+    for (const access of [grant.access, grant.previousAccess]) {
+      expect((await sync(access)).status).toBe(401);
+    }
+    for (const credential of [grant.refresh, grant.previousRefresh]) {
+      const rejected = await refresh(credential);
+      expect(rejected.status).toBe(400);
+      expect(await rejected.json()).toEqual({ error: "invalid_grant" });
+    }
+  }
+  expect((await sync(survivor.access)).status).toBe(200);
+  expect((await sync(foreign.access)).status).toBe(200);
+  expect((await refresh(survivor.refresh)).status).toBe(200);
 });
 
 it("initializes a personal vault once and preserves its keys on retries and concurrent setup", async () => {

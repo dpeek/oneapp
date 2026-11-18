@@ -1,10 +1,13 @@
 import { Schema } from "effect";
 import {
-  LoginCredentials,
-  LoginMetadata,
-  LoginName,
+  EncryptedVaultValue,
   WrappedItemKey,
-} from "../vault/login.ts";
+} from "../../vault-items-contract.ts";
+import {
+  ItemMetadata,
+  LoginCredentials,
+  LoginPasswordHistory,
+} from "../vault/item.ts";
 
 const optionalId = Schema.optionalKey(
   Schema.NullOr(Schema.String.check(Schema.isUUID())),
@@ -17,15 +20,10 @@ const emptyArray = Schema.optionalKey(
   Schema.NullOr(Schema.Array(Schema.Never)),
 );
 
-const LoginRequest = Schema.Struct({
-  type: Schema.Literal(1),
-  name: LoginName,
+const common = {
+  name: EncryptedVaultValue,
   key: WrappedItemKey,
-  ...LoginMetadata,
-  login: Schema.Struct({
-    ...LoginCredentials.fields,
-    fido2Credentials: emptyArray,
-  }),
+  ...ItemMetadata,
   encryptedFor: optionalId,
   encryptedByKeyId: Schema.optionalKey(
     Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/u))),
@@ -35,7 +33,6 @@ const LoginRequest = Schema.Struct({
   archivedDate: empty,
   lastKnownRevisionDate: Schema.optionalKey(Schema.NullOr(Schema.String)),
   data: empty,
-  secureNote: empty,
   card: empty,
   identity: empty,
   sshKey: empty,
@@ -44,16 +41,37 @@ const LoginRequest = Schema.Struct({
   passport: empty,
   attachments: emptyObject,
   attachments2: emptyObject,
+};
+
+const LoginRequest = Schema.Struct({
+  ...common,
+  type: Schema.Literal(1),
+  login: Schema.Struct({
+    ...LoginCredentials.fields,
+    fido2Credentials: emptyArray,
+  }),
+  secureNote: empty,
+  passwordHistory: LoginPasswordHistory,
 });
 
-const decode = Schema.decodeUnknownSync(LoginRequest);
+const SecureNoteRequest = Schema.Struct({
+  ...common,
+  type: Schema.Literal(2),
+  login: empty,
+  secureNote: Schema.Struct({ type: Schema.Literal(0) }),
+  passwordHistory: emptyArray,
+});
 
-export const decodeLogin = (body: string) => {
+const decode = Schema.decodeUnknownSync(
+  Schema.Union([LoginRequest, SecureNoteRequest]),
+);
+
+export const decodeItem = (body: string) => {
   try {
+    const item = decode(JSON.parse(body));
     const {
       name,
       key,
-      login: { fido2Credentials: _, ...credentials },
       encryptedFor,
       encryptedByKeyId,
       lastKnownRevisionDate,
@@ -61,21 +79,25 @@ export const decodeLogin = (body: string) => {
       favorite,
       reprompt,
       fields,
-      passwordHistory,
-    } = decode(JSON.parse(body));
-    return {
+    } = item;
+    const envelope = {
       name,
       wrappedKey: key,
       encryptedFor,
       encryptedByKeyId,
       lastKnownRevisionDate,
+    };
+    const metadata = { notes, favorite, reprompt, fields };
+    if (item.type === 2)
+      return { ...envelope, type: item.type, details: metadata };
+    const { fido2Credentials: _, ...credentials } = item.login;
+    return {
+      ...envelope,
+      type: item.type,
       details: {
         credentials,
-        notes,
-        favorite,
-        reprompt,
-        fields,
-        passwordHistory,
+        ...metadata,
+        passwordHistory: item.passwordHistory,
       },
     };
   } catch {

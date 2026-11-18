@@ -132,7 +132,7 @@ try {
       "-subj",
       "/CN=127.0.0.1",
       "-addext",
-      "subjectAltName=IP:127.0.0.1,DNS:login.oneapp.test",
+      "subjectAltName=IP:127.0.0.1,DNS:login.oneapp.test,DNS:login.oneapp-vault.test",
       "-out",
       cert,
       "-keyout",

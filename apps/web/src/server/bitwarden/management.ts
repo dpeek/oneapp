@@ -17,6 +17,9 @@ import {
   type PersonalVault,
   type VaultAuthorization,
 } from "../vault/personal.ts";
+import { vaultImportBytes } from "../../vault-transfer-contract.ts";
+import { importPersonalVault } from "../vault/import.ts";
+import { ImportPayload, parseImport } from "./import-request.ts";
 import { empty, error, json, readJson } from "./http.ts";
 import * as Wire from "./wire.ts";
 
@@ -29,6 +32,7 @@ const cipherPath = /^\/api\/ciphers\/([0-9a-f-]{36})$/u;
 const folderPath = /^\/api\/folders(?:\/([0-9a-f-]{36}))?$/u;
 
 export const isManagementPath = (path: string, method?: string) =>
+  path === "/api/ciphers/import" ||
   folderPath.test(path) ||
   (path === ciphers && method === "DELETE") ||
   (cipherPath.test(path) && method === "DELETE") ||
@@ -59,6 +63,17 @@ export const manageVault = async (
   vault: PersonalVault,
   authorization: VaultAuthorization,
 ) => {
+  if (path === "/api/ciphers/import") {
+    if (request.method !== "POST") return error("method_not_allowed", 405);
+    const body = await readJson(request, vaultImportBytes);
+    if (!Schema.is(ImportPayload)(body)) return error("invalid_import");
+    const parsed = parseImport(body, vault);
+    if ("error" in parsed)
+      return json({ error: "invalid_import", message: parsed.error }, 400);
+    return (await importPersonalVault(db, authorization, parsed.data))
+      ? empty()
+      : error("invalid_token", 401);
+  }
   const folderMatch = folderPath.exec(path);
   const method = request.method;
   if (folderMatch) {

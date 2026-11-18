@@ -31,6 +31,7 @@ import {
   passwordResetPath,
   resetPasswordPage,
 } from "../password-recovery-contract.ts";
+import { vaultImportPath } from "../vault-transfer-contract.ts";
 import { vaultSetupPath } from "../vault-setup-contract.ts";
 import {
   vaultBulkPath,
@@ -2009,6 +2010,90 @@ it("scopes Bitwarden and web writes to the current account and vault", async () 
   expect((await select(toPurge, "purge")).status).toBe(200);
   expect(vaultRevision.get(vaultId)).toEqual(purgeRevision);
   expect((await getCipher(webItem.id)).status).toBe(404);
+
+  const importBody = {
+    folders: [{ name: encrypted(16, 96) }],
+    ciphers: [
+      { ...login, name: encrypted(16, 97) },
+      {
+        type: 3,
+        name: encrypted(16, 98),
+        key: encrypted(80, 8),
+        card: { number: encrypted(16, 99) },
+        archivedDate: "2026-01-01T00:00:00Z",
+      },
+    ],
+    folderRelationships: [{ key: 1, value: 0 }],
+  };
+  const importDevice = (body: object) =>
+    request("/api/ciphers/import", {
+      method: "POST",
+      headers: deviceJson,
+      body: JSON.stringify(body),
+    });
+  const revisionBeforeImport = vaultRevision.get(vaultId);
+  expect(
+    (
+      await importDevice({
+        ...importBody,
+        folderRelationships: [{ key: 2, value: 0 }],
+      })
+    ).status,
+  ).toBe(400);
+  expect(
+    (
+      await importDevice({
+        ...importBody,
+        folderRelationships: [
+          { key: 1, value: 0 },
+          { key: 1, value: 0 },
+        ],
+      })
+    ).status,
+  ).toBe(400);
+  expect(
+    (
+      await importDevice({
+        ...importBody,
+        ciphers: [login, { ...login, login: { fido2Credentials: [{}] } }],
+      })
+    ).status,
+  ).toBe(400);
+  expect(vaultRevision.get(vaultId)).toEqual(revisionBeforeImport);
+
+  sqlite.exec(`CREATE TRIGGER fail_test_import BEFORE INSERT ON personal_vault_logins
+    WHEN NEW.type = 3 BEGIN SELECT RAISE(ABORT, 'fixture import failure'); END;`);
+  expect((await importDevice(importBody)).status).toBe(503);
+  expect(vaultRevision.get(vaultId)).toEqual(revisionBeforeImport);
+  expect((await readWebVault()).folders).toEqual([]);
+  expect(sqlite.query("SELECT id FROM personal_vault_imports").all()).toEqual(
+    [],
+  );
+  sqlite.exec("DROP TRIGGER fail_test_import");
+
+  const importedResponses = await Promise.all([
+    importDevice(importBody),
+    call(vaultImportPath, { keyId, ...importBody }, cookie),
+  ]);
+  expect(importedResponses.map((response) => response.status)).toEqual([
+    204, 200,
+  ]);
+  expect(await importedResponses[1]!.json()).toEqual({ items: 2, folders: 1 });
+  const imported = await readWebVault();
+  expect(imported.folders).toHaveLength(1);
+  expect(
+    imported.items.filter(({ name }) => name === importBody.ciphers[0]!.name),
+  ).toHaveLength(1);
+  expect(
+    imported.items.find(({ name }) => name === importBody.ciphers[1]!.name),
+  ).toMatchObject({
+    type: 3,
+    folderId: imported.folders[0]!.id,
+    archivedAt: Date.parse("2026-01-01T00:00:00Z"),
+  });
+  const revisionAfterImport = vaultRevision.get(vaultId);
+  expect((await importDevice(importBody)).status).toBe(204);
+  expect(vaultRevision.get(vaultId)).toEqual(revisionAfterImport);
 
   const refresh = {
     grant_type: "refresh_token",

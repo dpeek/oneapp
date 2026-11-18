@@ -12,6 +12,12 @@ import {
   VaultItemId,
   VaultLifecycleChange,
 } from "../../vault-items-contract.ts";
+import { ImportPayload, parseImport } from "../bitwarden/import-request.ts";
+import {
+  vaultImportBytes,
+  vaultImportPath,
+} from "../../vault-transfer-contract.ts";
+import { importPersonalVault } from "./import.ts";
 import { jsonError, privateHeaders } from "../api-response.ts";
 import type { authHttp } from "../auth.ts";
 import { changeFolder, createFolder, projectFolder } from "./folders.ts";
@@ -122,6 +128,46 @@ export const vaultManagementRoutes = (
           );
           if (!folder) return yield* itemWriteErrors.AuthenticationRequired();
           return yield* folderResponse(folder, 201);
+        }),
+      ).pipe(Effect.catchTags(itemWriteErrors)),
+    ),
+    HttpRouter.add(
+      "POST",
+      vaultImportPath,
+      secure(
+        Effect.gen(function* () {
+          const session = yield* requireSession;
+          const input = yield* readItemBody(
+            Schema.Struct({
+              keyId: CreateVaultFolder.fields.keyId,
+              ...ImportPayload.fields,
+            }),
+            vaultImportBytes,
+          );
+          if (input._tag === "None")
+            return yield* jsonError(
+              400,
+              "Invalid encrypted import or import exceeds its limits.",
+            );
+          const vault = yield* Effect.tryPromise(() =>
+            readPersonalVault(db, session.subjectId),
+          );
+          if (!vault) return yield* noVault();
+          if (vault.keyId !== input.value.keyId) return yield* staleVault();
+          const parsed = parseImport(input.value, vault);
+          if ("error" in parsed) return yield* jsonError(400, parsed.error);
+          const imported = yield* Effect.tryPromise(() =>
+            importPersonalVault(
+              db,
+              browserAuthorization(vault, session),
+              parsed.data,
+            ),
+          );
+          return imported
+            ? yield* HttpServerResponse.json(imported, {
+                headers: privateHeaders,
+              })
+            : yield* itemWriteErrors.AuthenticationRequired();
         }),
       ).pipe(Effect.catchTags(itemWriteErrors)),
     ),

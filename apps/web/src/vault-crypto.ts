@@ -48,7 +48,24 @@ const importVaultKey = (bytes: Bytes, usage: VaultKeyUsage) => {
   return importSymmetricKey(bytes.subarray(0, 32), bytes.subarray(32), usage);
 };
 
-const deriveMasterKey = async (
+export const stretchVaultKey = async (bytes: Bytes, operation: Operation) => {
+  const masterKey = await importMacKey(bytes, "sign");
+  // Bitwarden uses the KDF output as the PRK for two single-block HKDF expansions.
+  const encryption = new Uint8Array(
+    await crypto.subtle.sign("HMAC", masterKey, encoder.encode("enc\x01")),
+  );
+  const authentication = new Uint8Array(
+    await crypto.subtle.sign("HMAC", masterKey, encoder.encode("mac\x01")),
+  );
+  try {
+    return await importSymmetricKey(encryption, authentication, operation);
+  } finally {
+    encryption.fill(0);
+    authentication.fill(0);
+  }
+};
+
+export const deriveMasterKey = async (
   password: string,
   kdfSalt: string,
   iterations: number,
@@ -56,8 +73,6 @@ const deriveMasterKey = async (
 ) => {
   const passwordBytes = encoder.encode(password);
   let masterBytes: Bytes | undefined;
-  let encryptionBytes: Bytes | undefined;
-  let macBytes: Bytes | undefined;
   try {
     const passwordKey = await crypto.subtle.importKey(
       "raw",
@@ -78,24 +93,10 @@ const deriveMasterKey = async (
         256,
       ),
     );
-    const masterKey = await importMacKey(masterBytes, "sign");
-    // Bitwarden's legacy master key is the PRK for two single-block HKDF expansions.
-    encryptionBytes = new Uint8Array(
-      await crypto.subtle.sign("HMAC", masterKey, encoder.encode("enc\x01")),
-    );
-    macBytes = new Uint8Array(
-      await crypto.subtle.sign("HMAC", masterKey, encoder.encode("mac\x01")),
-    );
-    return await importSymmetricKey(encryptionBytes, macBytes, operation);
+    return await stretchVaultKey(masterBytes, operation);
   } finally {
-    for (const bytes of [
-      passwordBytes,
-      masterBytes,
-      encryptionBytes,
-      macBytes,
-    ]) {
-      bytes?.fill(0);
-    }
+    passwordBytes.fill(0);
+    masterBytes?.fill(0);
   }
 };
 

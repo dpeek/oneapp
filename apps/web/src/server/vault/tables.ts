@@ -82,3 +82,17 @@ export const personalVaultDeletedItems = sqliteTable(
       .references(() => personalVaults.id, { onDelete: "cascade" }),
   },
 );
+
+export const personalVaultImports = sqliteTable(
+  "personal_vault_imports",
+  {
+    id: text().primaryKey(),
+    vaultId: text("vault_id")
+      .notNull()
+      .references(() => personalVaults.id, { onDelete: "cascade" }),
+    digest: text().notNull(),
+  },
+  (table) => [
+    uniqueIndex("personal_vault_import_digest").on(table.vaultId, table.digest),
+  ],
+);

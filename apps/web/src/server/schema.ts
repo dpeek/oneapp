@@ -26,6 +26,7 @@ export {
 export {
   personalVaultDeletedItems,
   personalVaultFolders,
+  personalVaultImports,
   personalVaultItems,
   personalVaults,
 } from "./vault/tables.ts";

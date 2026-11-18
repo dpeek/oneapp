@@ -38,6 +38,18 @@ import {
   uriMatchLabels,
   vaultItemEditor,
 } from "./vault-item-editor.ts";
+import {
+  openPortableVault,
+  readPortableVault,
+  sealPortableVault,
+  writePortableCsv,
+  writePortableJson,
+  writeProtectedExport,
+} from "./vault-portable.ts";
+import {
+  vaultImportBytes,
+  vaultImportPath,
+} from "./vault-transfer-contract.ts";
 import { vaultPasswordMaximum } from "./vault-setup-contract.ts";
 
 export const vaultReader = CustomElement.define({
@@ -185,6 +197,15 @@ const openSnapshot = async (
 const writeHeaders = {
   "content-type": "application/json",
   "x-effect-auth-csrf": "1",
+};
+
+const downloadVaultFile = (blob: Blob, name: string) => {
+  const link = create("a");
+  const url = URL.createObjectURL(blob);
+  link.href = url;
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 };
 
 class VaultReader extends HTMLElement {
@@ -335,6 +356,8 @@ class VaultReader extends HTMLElement {
             action("New Secure Note", () => this.#showNoteForm()),
             action("Other item types", () => this.#showItemTypes()),
             action("Folders", () => this.#showFolders()),
+            action("Import", () => this.#showImport()),
+            action("Export", () => this.#showExport()),
             action("Archive", this.#showArchive),
             action("Trash", this.#showTrash),
           )
@@ -520,6 +543,250 @@ class VaultReader extends HTMLElement {
       },
       () => this.#showItems(view, undefined, problem),
     );
+  }
+
+  #showImport() {
+    const vault = this.#vault;
+    if (!vault) return;
+    const form = create("form");
+    form.method = "post";
+    const file = create("input");
+    file.type = "file";
+    file.accept = ".csv,.json,text/csv,application/json";
+    file.required = true;
+    const password = create("input");
+    password.type = "password";
+    password.maxLength = vaultPasswordMaximum;
+    password.autocomplete = "off";
+    const review = create("button", "Review import");
+    review.type = "submit";
+    const error = alert("");
+    error.hidden = true;
+    form.append(
+      itemField(["Bitwarden export file", file]),
+      itemField(["File password, if protected", password]),
+      review,
+      error,
+    );
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const selected = file.files?.[0];
+      if (!selected || review.disabled) return;
+      const secret = password.value;
+      password.value = "";
+      error.hidden = true;
+      review.disabled = true;
+      let problem = "Could not prepare your import.";
+      void this.#run(
+        async (signal) => {
+          if (selected.size > vaultImportBytes) {
+            problem = "Choose a file up to 1 MiB.";
+            throw new Error("Import file too large");
+          }
+          let parsed: Awaited<ReturnType<typeof readPortableVault>>;
+          try {
+            parsed = await readPortableVault(
+              await selected.text(),
+              secret,
+              signal,
+            );
+          } catch (error) {
+            if (error instanceof Error) problem = error.message;
+            throw error;
+          }
+          const encrypted = await sealPortableVault(parsed, vault.key, signal);
+          const body = JSON.stringify({
+            keyId: vault.parameters.keyId,
+            ...encrypted,
+          });
+          if (body.length > vaultImportBytes) {
+            problem =
+              "The encrypted import exceeds 1 MiB. Split it into smaller files.";
+            throw new Error("Import body too large");
+          }
+          return {
+            body,
+            items: parsed.items.length,
+            folders: parsed.folders.length,
+          };
+        },
+        (prepared) => {
+          form.reset();
+          this.#confirmImport(prepared);
+        },
+        () => {
+          review.disabled = false;
+          error.textContent = problem;
+          error.hidden = false;
+        },
+      );
+    });
+    this.replaceChildren(
+      this.#toolbar(this.#showList),
+      create("h3", "Import into your vault"),
+      form,
+    );
+    file.focus();
+  }
+
+  #confirmImport(prepared: { body: string; items: number; folders: number }) {
+    const vault = this.#vault;
+    if (!vault) return;
+    const error = alert("");
+    error.hidden = true;
+    const submit = action("Import items", () => {
+      submit.disabled = true;
+      error.hidden = true;
+      let failure = "Could not confirm the import. Try again.";
+      void this.#run(
+        async (signal) => {
+          const response = await fetch(vaultImportPath, {
+            method: "POST",
+            headers: writeHeaders,
+            body: prepared.body,
+            signal,
+          });
+          if (response.status === 400 || response.status === 409) {
+            const data = (await response.json()) as { error?: string };
+            failure = data.error ?? failure;
+          }
+          if (!response.ok) throw new Error("Import failed");
+          return this.#reload(vault, signal);
+        },
+        (current) => {
+          this.#vault = current;
+          this.#folderId = undefined;
+          this.#showList(
+            `Imported ${prepared.items} item(s) and ${prepared.folders} folder(s).`,
+          );
+        },
+        () => {
+          submit.disabled = false;
+          error.textContent = failure;
+          error.hidden = false;
+        },
+      );
+    });
+    this.replaceChildren(
+      this.#toolbar(() => this.#showImport()),
+      create("h3", "Review import"),
+      create(
+        "p",
+        `Import ${prepared.items} item(s) and ${prepared.folders} folder(s). Importing the same file again creates copies.`,
+      ),
+      submit,
+      error,
+    );
+    submit.focus();
+  }
+
+  #showExport() {
+    const vault = this.#vault;
+    if (!vault) return;
+    const form = create("form");
+    form.method = "post";
+    const format = create("select");
+    format.add(new Option("Bitwarden JSON", "json"));
+    format.add(new Option("Bitwarden CSV", "csv"));
+    format.add(new Option("Password-protected Bitwarden JSON", "protected"));
+    const formatLabel = create("label", "File format");
+    formatLabel.className = "vault-item-field";
+    formatLabel.append(format);
+    const master = create("input");
+    master.type = "password";
+    master.autocomplete = "off";
+    master.required = true;
+    master.maxLength = vaultPasswordMaximum;
+    const secret = master.cloneNode() as HTMLInputElement;
+    const repeat = master.cloneNode() as HTMLInputElement;
+    const encryption = create("fieldset");
+    const warning = create("p");
+    encryption.append(
+      itemField(["Export password", secret]),
+      itemField(["Confirm export password", repeat]),
+    );
+    const changeFormat = () => {
+      const protectedFile = format.value === "protected";
+      encryption.hidden = !protectedFile;
+      encryption.disabled = !protectedFile;
+      secret.value = repeat.value = "";
+      warning.textContent = protectedFile
+        ? "Keep the export password. You’ll need it to import the file."
+        : format.value === "csv"
+          ? "Download plaintext. CSV includes logins and Secure Notes with limited fields."
+          : "Download a plaintext copy of your vault items and folders.";
+    };
+    format.addEventListener("change", changeFormat);
+    changeFormat();
+    const submit = create("button", "Download export");
+    submit.type = "submit";
+    const error = alert("");
+    error.hidden = true;
+    form.append(
+      formatLabel,
+      warning,
+      encryption,
+      itemField(["Vault master password", master]),
+      submit,
+      error,
+    );
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (submit.disabled) return;
+      if (format.value === "protected" && secret.value !== repeat.value) {
+        error.textContent = "The export passwords must match.";
+        error.hidden = false;
+        return;
+      }
+      submit.disabled = true;
+      error.hidden = true;
+      const password = master.value;
+      const exportPassword = secret.value;
+      master.value = secret.value = repeat.value = "";
+      const chosen = format.value;
+      let problem = "Could not load your vault.";
+      void this.#run(
+        async (signal) => {
+          const result = await fetch(vaultItemsPath, {
+            cache: "no-store",
+            signal,
+          });
+          if (!result.ok) throw new Error("Vault snapshot unavailable");
+          const snapshot = decodeSnapshot(await result.json());
+          problem = "Check your master password and try again.";
+          const key = await unlockVault(password, snapshot);
+          signal.throwIfAborted();
+          problem = "Could not read all items for export.";
+          const portable = await openPortableVault(snapshot, key, signal);
+          return chosen === "csv"
+            ? writePortableCsv(portable)
+            : chosen === "protected"
+              ? writeProtectedExport(portable, exportPassword)
+              : writePortableJson(portable);
+        },
+        (data) => {
+          downloadVaultFile(
+            new Blob([data], {
+              type: chosen === "csv" ? "text/csv" : "application/json",
+            }),
+            chosen === "csv" ? "oneapp-vault.csv" : "oneapp-vault.json",
+          );
+          this.#showList("Vault export downloaded.");
+        },
+        () => {
+          submit.disabled = false;
+          error.textContent = problem;
+          error.hidden = false;
+          master.focus();
+        },
+      );
+    });
+    this.replaceChildren(
+      this.#toolbar(this.#showList),
+      create("h3", "Export your vault"),
+      form,
+    );
+    format.focus();
   }
 
   #showFolders(message?: string) {

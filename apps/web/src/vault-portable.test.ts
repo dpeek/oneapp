@@ -1,0 +1,124 @@
+import { expect, it } from "@effect/vitest";
+import {
+  createVaultSetup,
+  unlockVault,
+  unwrapVaultKey,
+  decryptVaultText,
+} from "./vault-crypto.ts";
+import {
+  readPortableVault,
+  sealPortableVault,
+  writePortableCsv,
+  writePortableJson,
+  writeProtectedExport,
+} from "./vault-portable.ts";
+
+const vault = {
+  encrypted: false,
+  folders: [{ id: crypto.randomUUID(), name: "Sample folder" }],
+  items: [
+    {
+      name: 'Example login, with quotes "',
+      type: 1,
+      favorite: true,
+      reprompt: 1,
+      notes: "Line one\nLine two",
+      fields: [{ type: 1, name: "Custom", value: "Synthetic hidden value" }],
+      passwordHistory: [
+        {
+          password: "Prior synthetic password",
+          lastUsedDate: "2026-01-01T00:00:00Z",
+        },
+      ],
+      login: {
+        username: "disposable-user",
+        password: "Synthetic password",
+        totp: "SYNTHETICSEED",
+        uris: [
+          { uri: "https://one.example/a,b", match: 3 },
+          { uri: "https://two.example", match: null },
+        ],
+      },
+    },
+    {
+      name: "Example card",
+      type: 3,
+      card: {
+        cardholderName: "Synthetic name",
+        number: "Synthetic card number",
+      },
+    },
+  ],
+};
+Object.assign(vault.items[0]!, { folderId: vault.folders[0]!.id });
+
+it("round-trips portable JSON, CSV and password-protected JSON on the client", async () => {
+  const original = await readPortableVault(JSON.stringify(vault));
+  expect(await readPortableVault(writePortableJson(original))).toEqual(
+    original,
+  );
+  const csv = await readPortableVault(writePortableCsv(original));
+  expect(csv.items).toHaveLength(1);
+  expect(csv.items[0]?.details).toMatchObject({
+    notes: "Line one\nLine two",
+    credentials: {
+      password: "Synthetic password",
+      uris: [
+        { uri: "https://one.example/a,b", match: null },
+        { uri: "https://two.example", match: null },
+      ],
+    },
+  });
+  const sealed = await writeProtectedExport(
+    original,
+    "disposable-export-password",
+  );
+  expect(sealed).not.toContain("Synthetic password");
+  await expect(readPortableVault(sealed, "wrong")).rejects.toThrow(
+    "file password",
+  );
+  expect(await readPortableVault(sealed, "disposable-export-password")).toEqual(
+    original,
+  );
+});
+
+it("rejects unsupported records before sealing and sends only encrypted item values", async () => {
+  const source = structuredClone(vault);
+  source.items[0]!.login = {
+    ...source.items[0]!.login!,
+    fido2Credentials: [{}],
+  } as (typeof source.items)[0]["login"];
+  await expect(readPortableVault(JSON.stringify(source))).rejects.toThrow(
+    "passkey",
+  );
+  const setup = await createVaultSetup(
+    "disposable-vault-password",
+    "synthetic@example.net",
+  );
+  const key = await unlockVault("disposable-vault-password", {
+    ...setup,
+    kdfIterations: 600_000,
+  });
+  const data = await sealPortableVault(
+    await readPortableVault(JSON.stringify(vault)),
+    key,
+  );
+  const body = JSON.stringify(data);
+  for (const value of [
+    "Sample folder",
+    "Synthetic password",
+    "Synthetic hidden value",
+    "two.example",
+    "Synthetic card number",
+  ])
+    expect(body).not.toContain(value);
+  expect(data.folderRelationships).toEqual([{ key: 0, value: 0 }]);
+  const cipher = data.ciphers[0]!;
+  const itemKey = await unwrapVaultKey(cipher.key, key);
+  expect(await decryptVaultText(cipher.name, itemKey)).toEqual(
+    vault.items[0]!.name,
+  );
+  expect(await decryptVaultText(data.folders[0]!.name, key)).toBe(
+    "Sample folder",
+  );
+});

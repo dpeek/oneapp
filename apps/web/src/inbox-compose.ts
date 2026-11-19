@@ -5,12 +5,21 @@ import * as Mount from "foldkit/mount";
 import {
   inboxComposeLimits,
   InboxDraft,
+  InboxMessageId,
   inboxSendPath,
   sentCopyHeader,
 } from "./inbox-contract.ts";
 
+const ReplyDraft = Schema.Struct({
+  ...InboxDraft.fields,
+  text: Schema.String,
+  originalId: InboxMessageId,
+  threaded: Schema.Boolean,
+});
+
 export const Model = Schema.Struct({
   from: Schema.NullOr(Schema.String),
+  reply: Schema.NullOr(ReplyDraft),
   request: Schema.NullOr(Schema.String),
   error: Schema.NullOr(Schema.String),
   notice: Schema.NullOr(Schema.String),
@@ -19,6 +28,7 @@ type Model = typeof Model.Type;
 
 export const initial: Model = {
   from: null,
+  reply: null,
   request: null,
   error: null,
   notice: null,
@@ -26,6 +36,7 @@ export const initial: Model = {
 
 export const Message = defineMessageUnion({
   Opened: { from: Schema.String },
+  OpenedReply: { from: Schema.String, reply: ReplyDraft },
   Closed: {},
   Shown: {},
   Submitted: {},
@@ -42,19 +53,35 @@ const decodeError = Schema.decodeUnknownOption(
 );
 
 const Show = Mount.define("ShowInboxCompose", {
+  args: { reply: Schema.NullOr(ReplyDraft) },
   messages: [Message.Shown],
-  execute: ({ element }) =>
+  execute: ({ element, reply }) =>
     Effect.sync(() => {
-      if (element instanceof HTMLDialogElement && !element.open)
+      if (element instanceof HTMLDialogElement && !element.open) {
+        if (reply) {
+          const fields = element.querySelector("form")?.elements;
+          const to = fields?.namedItem("to");
+          const subject = fields?.namedItem("subject");
+          const text = fields?.namedItem("text");
+          // Seed the fields once so later renders preserve the owner's edits.
+          if (to instanceof HTMLInputElement) to.value = reply.to;
+          if (subject instanceof HTMLInputElement)
+            subject.value = reply.subject;
+          if (text instanceof HTMLTextAreaElement) {
+            text.value = reply.text;
+            text.setSelectionRange(0, 0);
+          }
+        }
         element.showModal();
+      }
       return Message.Shown();
     }),
 });
 
 const Send = Command.define("SendInboxEmail", {
-  args: { request: Schema.String },
+  args: { request: Schema.String, replyToId: Schema.NullOr(InboxMessageId) },
   messages: [Message.Sent, Message.Failed, Message.SessionExpired],
-  execute: ({ request }) =>
+  execute: ({ request, replyToId }) =>
     Effect.tryPromise(async (signal) => {
       const form = document.getElementById(formId);
       const input =
@@ -74,7 +101,10 @@ const Send = Command.define("SendInboxEmail", {
           "content-type": "application/json",
           "x-effect-auth-csrf": "1",
         },
-        body: JSON.stringify(draft.value),
+        body: JSON.stringify({
+          ...draft.value,
+          ...(replyToId ? { replyToId } : {}),
+        }),
         signal,
       });
       if (response.status === 401) return Message.SessionExpired({ request });
@@ -103,6 +133,9 @@ export const update = (
     Opened: ({ from }) => ({
       model: model.from ? model : { ...initial, from },
     }),
+    OpenedReply: ({ from, reply }) => ({
+      model: model.from ? model : { ...initial, from, reply },
+    }),
     Closed: () => ({ model: model.request ? model : initial }),
     Shown: () => ({ model }),
     Submitted: () => {
@@ -110,7 +143,9 @@ export const update = (
       const request = crypto.randomUUID();
       return {
         model: { ...model, request, error: null },
-        commands: [Send({ request })],
+        commands: [
+          Send({ request, replyToId: model.reply?.originalId ?? null }),
+        ],
       };
     },
     Sent: ({ request, saved }) => ({
@@ -158,15 +193,31 @@ export const view = Submodel.defineView<
               [
                 h.Class("inbox-compose-dialog"),
                 h.AriaLabelledBy("inbox-compose-title"),
-                h.OnMount(Show()),
+                h.OnMount(Show({ reply: model.reply })),
                 h.OnCancel(Message.Closed()),
               ],
               [
-                h.h2([h.Id("inbox-compose-title")], ["New email"]),
+                h.h2(
+                  [h.Id("inbox-compose-title")],
+                  [model.reply ? "Reply" : "New email"],
+                ),
                 h.p(
                   [h.Class("inbox-compose-from")],
                   [h.strong([], ["From"]), model.from],
                 ),
+                ...(model.reply && !model.reply.threaded
+                  ? [
+                      h.p(
+                        [],
+                        [
+                          "This email has no usable Message-ID. Mail apps may show the reply separately.",
+                        ],
+                      ),
+                    ]
+                  : []),
+                ...(model.reply && !model.reply.text
+                  ? [h.p([], ["There is no text preview to quote."])]
+                  : []),
                 h.form(
                   [
                     h.Id(formId),
@@ -182,7 +233,7 @@ export const view = Submodel.defineView<
                           h.Name("to"),
                           h.Type("email"),
                           h.Maxlength(inboxComposeLimits.to),
-                          h.Autofocus(true),
+                          ...(!model.reply ? [h.Autofocus(true)] : []),
                           h.Required(true),
                           h.Readonly(pending),
                         ]),
@@ -209,6 +260,7 @@ export const view = Submodel.defineView<
                           h.Name("text"),
                           h.Rows(8),
                           h.Maxlength(inboxComposeLimits.text),
+                          ...(model.reply ? [h.Autofocus(true)] : []),
                           h.Required(true),
                           h.Readonly(pending),
                         ]),

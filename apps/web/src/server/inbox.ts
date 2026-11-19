@@ -7,7 +7,7 @@ import type {
 import { ByteSize, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { compile } from "html-to-text";
-import PostalMime, { decodeWords } from "postal-mime";
+import PostalMime, { decodeWords, type Email } from "postal-mime";
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import {
   folderApiPath,
@@ -16,6 +16,7 @@ import {
   InboxEntry,
   InboxMessageId,
   InboxPage,
+  InboxSend,
   inboxSendPath,
   type MailFolder,
   SentEntry,
@@ -24,7 +25,14 @@ import {
 } from "../inbox-contract.ts";
 import { jsonError, privateHeaders } from "./api-response.ts";
 import { AppAuth, ownerId, type authHttp } from "./auth.ts";
-import { isSentMessageId, listSent, readSent, saveSent } from "./sent-mail.ts";
+import { parentMessageId, replyHeaders, replyRecipient } from "./mail-reply.ts";
+import {
+  isSentMessageId,
+  listSent,
+  readSent,
+  saveSent,
+  type SentReply,
+} from "./sent-mail.ts";
 
 type InboxEnv = Pick<
   WorkerEnv,
@@ -88,26 +96,40 @@ const summary = (object: R2Object, subject: string) => ({
   subject,
 });
 
+const readHeaders = async (bucket: InboxBucket, id: string, length: number) => {
+  const object = await bucket.get(id, { range: { offset: 0, length } });
+  if (!object) return null;
+  const raw = await object.text();
+  const boundary = raw.search(/\r\n\r\n|\n\n|\r\r/u);
+  try {
+    const email = await PostalMime.parse(
+      (boundary < 0 ? raw : raw.slice(0, boundary)) + "\r\n\r\n",
+      mimeOptions,
+    );
+    return { email };
+  } catch {
+    return { email: null };
+  }
+};
+
 const readSubject = async (bucket: InboxBucket, object: R2Object) => {
   if (object.customMetadata?.subject !== undefined)
     return object.customMetadata.subject;
   // Messages saved before subjects were indexed only need a header-sized read.
   if (!object.size) return "";
-  const headers = await bucket.get(object.key, {
-    range: { offset: 0, length: Math.min(object.size, headerLimit) },
-  });
-  if (!headers) return "";
-  const raw = await headers.text();
-  const boundary = raw.search(/\r\n\r\n|\n\n|\r\r/u);
-  try {
-    const parsed = await PostalMime.parse(
-      (boundary < 0 ? raw : raw.slice(0, boundary)) + "\r\n\r\n",
-      mimeOptions,
-    );
-    return parsed.subject?.trim().slice(0, 200) ?? "";
-  } catch {
-    return "";
-  }
+  const headers = await readHeaders(
+    bucket,
+    object.key,
+    Math.min(object.size, headerLimit),
+  );
+  return headers?.email?.subject?.trim().slice(0, 200) ?? "";
+};
+
+const replyInfo = (email: Email | null, envelopeFrom: string) => {
+  const to = email && replyRecipient(email, envelopeFrom);
+  return to && email
+    ? { reply: { to, threaded: parentMessageId(email) !== undefined } }
+    : {};
 };
 
 const inboxSender = (env: InboxEnv) => {
@@ -146,12 +168,22 @@ const readMessage = async (
   const object = await bucket.get(id);
   if (!object) return null;
   const to = object.customMetadata?.envelopeTo ?? env.INBOX_EMAIL_ADDRESS ?? "";
-  const fallback = async (preview: "tooLarge" | "unreadable") => ({
-    ...summary(object, await readSubject(bucket, object)),
-    to,
-    text: "",
-    preview,
-  });
+  const envelopeFrom = object.customMetadata?.envelopeFrom ?? "";
+  const fallback = async (preview: "tooLarge" | "unreadable") => {
+    const length = Math.min(object.size, mimeOptions.maxHeadersSize);
+    const headers = length ? await readHeaders(bucket, id, length) : null;
+    const subject =
+      object.customMetadata?.subject ??
+      headers?.email?.subject?.trim().slice(0, 200) ??
+      "";
+    return {
+      ...summary(object, subject),
+      ...replyInfo(headers?.email ?? null, envelopeFrom),
+      to,
+      text: "",
+      preview,
+    };
+  };
   if (object.size > messageLimit) {
     await object.body.cancel();
     return fallback("tooLarge");
@@ -167,11 +199,12 @@ const readMessage = async (
     const from = email.from?.address;
     return {
       ...summary(object, email.subject?.trim().slice(0, 200) ?? ""),
+      ...replyInfo(email, envelopeFrom),
       from: from
         ? email.from?.name
           ? `${email.from.name} <${from}>`
           : from
-        : (object.customMetadata?.envelopeFrom ?? ""),
+        : envelopeFrom,
       to,
       text: text.slice(0, textLimit),
       preview:
@@ -227,9 +260,13 @@ const sendDraft = Effect.fnUntraced(function* (
   binding: SendEmail,
   bucket: InboxEnv["SENT_MESSAGES"],
   message: typeof InboxDraft.Type & { from: string },
+  reply: SentReply | undefined,
 ) {
   const sent = yield* Effect.tryPromise({
-    try: () => binding.send(message),
+    try: () =>
+      binding.send(
+        reply?.headers ? { ...message, headers: reply.headers } : message,
+      ),
     catch: (error) =>
       typeof error === "object" && error !== null && "code" in error
         ? error.code
@@ -243,6 +280,7 @@ const sendDraft = Effect.fnUntraced(function* (
       id: newestFirstKey(sentAt),
       sentAt,
       providerMessageId: sent.success.messageId,
+      ...(reply ? { reply } : {}),
     });
     return HttpServerResponse.empty({
       status: 204,
@@ -291,7 +329,7 @@ const sendEmail = (env: InboxEnv, defer: (work: Promise<unknown>) => void) =>
     if (contentType !== "application/json")
       return yield* jsonError(415, "Expected a JSON request");
 
-    const draft = yield* HttpServerRequest.schemaBodyJson(InboxDraft, {
+    const draft = yield* HttpServerRequest.schemaBodyJson(InboxSend, {
       onExcessProperty: "error",
     }).pipe(
       Effect.provideService(
@@ -311,11 +349,27 @@ const sendEmail = (env: InboxEnv, defer: (work: Promise<unknown>) => void) =>
     )
       return yield* sendRateLimit();
 
+    const { replyToId, ...message } = draft.value;
+    let reply: SentReply | undefined;
+    if (replyToId) {
+      const original = yield* Effect.tryPromise(() =>
+        readHeaders(env.INBOX_MESSAGES, replyToId, mimeOptions.maxHeadersSize),
+      );
+      if (!original)
+        return yield* jsonError(
+          404,
+          "The original email is no longer in Inbox.",
+        );
+      const headers = original.email ? replyHeaders(original.email) : undefined;
+      reply = { originalId: replyToId, ...(headers ? { headers } : {}) };
+    }
     const work = Effect.runPromiseExit(
-      sendDraft(sender.binding, env.SENT_MESSAGES, {
-        ...draft.value,
-        from: sender.from,
-      }),
+      sendDraft(
+        sender.binding,
+        env.SENT_MESSAGES,
+        { ...message, from: sender.from },
+        reply,
+      ),
     );
     // Keep the send and its archive write together if the client disconnects.
     defer(work);

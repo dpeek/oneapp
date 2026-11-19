@@ -8,6 +8,7 @@ import {
   folderApiPath,
   folderPath,
   inboxChanged,
+  inboxComposeLimits,
   InboxEntry,
   inboxEventsPath,
   InboxMessageId,
@@ -94,6 +95,7 @@ export const Message = defineMessageUnion({
   LiveChanged: {},
   RequestedMore: {},
   RetriedEntry: {},
+  RequestedReply: {},
   RequestedDelete: {},
   CanceledDelete: {},
   ConfirmedDelete: {},
@@ -298,6 +300,31 @@ const loadEntry = (model: Model): Update.Return<Model, Message> => {
   };
 };
 
+const replySubject = (original: string) => {
+  const subject = original.replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, " ").trim();
+  const reply = /^re:/iu.test(subject) ? subject : `Re: ${subject}`;
+  return reply
+    .slice(0, inboxComposeLimits.subject)
+    .replace(/[\uD800-\uDBFF]$/u, "")
+    .trimEnd();
+};
+
+const quoteMessage = (entry: typeof InboxEntry.Type) => {
+  const body = entry.text.trimEnd();
+  if (!body) return "";
+  const quote = body.replace(/\r\n?/gu, "\n").replace(/^/gmu, "> ");
+  const limit = Math.floor(inboxComposeLimits.text / 2);
+  const clipped = quote.slice(0, limit).replace(/[\uD800-\uDBFF]$/u, "");
+  const from =
+    entry.from
+      .replace(/\s+/gu, " ")
+      .trim()
+      .slice(0, 300)
+      .replace(/[\uD800-\uDBFF]$/u, "") || "The sender";
+  const truncated = quote.length > limit || entry.preview === "truncated";
+  return `\n\n${from} wrote:\n${clipped}${truncated ? "\n> [Original message truncated]" : ""}`;
+};
+
 export const update = (
   model: Model,
   message: Message,
@@ -346,6 +373,24 @@ export const update = (
     RequestedMore: () =>
       model.list?.cursor ? loadList(model, model.list.cursor) : { model },
     RetriedEntry: () => loadEntry(model),
+    RequestedReply: () => {
+      const from = model.list?.sender;
+      const entry = model.entry;
+      if (!from || !entry || !("receivedAt" in entry) || !entry.reply)
+        return { model };
+      return foldCompose(
+        model,
+        Compose.Message.OpenedReply({
+          from,
+          reply: {
+            ...entry.reply,
+            originalId: entry.id,
+            subject: replySubject(entry.subject),
+            text: quoteMessage(entry),
+          },
+        }),
+      );
+    },
     RequestedDelete: () =>
       model.entry && !model.deleteRequest
         ? { model: { ...model, confirmingDelete: true, deleteFailed: false } }
@@ -625,17 +670,35 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
           ...(entry === null
             ? []
             : [
-                h.button(
+                h.div(
+                  [h.Class("inbox-toolbar-actions")],
                   [
-                    h.Type("button"),
-                    h.Class("inbox-delete-button"),
-                    h.Disabled(model.deleteRequest !== null),
-                    h.OnClick(Message.RequestedDelete()),
-                  ],
-                  [
-                    model.deleteRequest?.id === selected
-                      ? "Deleting…"
-                      : "Delete",
+                    ...("receivedAt" in entry &&
+                    entry.reply &&
+                    model.list?.sender
+                      ? [
+                          h.button(
+                            [
+                              h.Type("button"),
+                              h.OnClick(Message.RequestedReply()),
+                            ],
+                            ["Reply"],
+                          ),
+                        ]
+                      : []),
+                    h.button(
+                      [
+                        h.Type("button"),
+                        h.Class("inbox-delete-button"),
+                        h.Disabled(model.deleteRequest !== null),
+                        h.OnClick(Message.RequestedDelete()),
+                      ],
+                      [
+                        model.deleteRequest?.id === selected
+                          ? "Deleting…"
+                          : "Delete",
+                      ],
+                    ),
                   ],
                 ),
               ]),

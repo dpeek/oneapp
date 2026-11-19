@@ -77,11 +77,13 @@ export const MailPage = Schema.Struct({
 export const inboxComposeLimits = { to: 254, subject: 200, text: 32_768 };
 const decodeMailbox = Schema.decodeUnknownOption(AuthSchema.Email);
 
+export const ComposeRecipient = Schema.Trim.check(
+  Schema.isMaxLength(inboxComposeLimits.to),
+  Schema.makeFilter((value) => decodeMailbox(value)._tag === "Some"),
+);
+
 export const InboxDraft = Schema.Struct({
-  to: Schema.Trim.check(
-    Schema.isMaxLength(inboxComposeLimits.to),
-    Schema.makeFilter((value) => decodeMailbox(value)._tag === "Some"),
-  ),
+  to: ComposeRecipient,
   subject: Schema.Trim.check(
     Schema.isMaxLength(inboxComposeLimits.subject),
     Schema.isPattern(/^[^\p{Cc}\p{Zl}\p{Zp}]+$/u),
@@ -90,6 +92,11 @@ export const InboxDraft = Schema.Struct({
     Schema.isMaxLength(inboxComposeLimits.text),
     Schema.makeFilter((value) => value.trim().length > 0),
   ),
+});
+
+export const InboxSend = Schema.Struct({
+  ...InboxDraft.fields,
+  replyToId: Schema.optionalKey(InboxMessageId),
 });
 
 const previewFields = {
@@ -101,6 +108,12 @@ export const InboxEntry = Schema.Struct({
   ...InboxSummary.fields,
   ...previewFields,
   to: Schema.String,
+  reply: Schema.optionalKey(
+    Schema.Struct({
+      to: Schema.String,
+      threaded: Schema.Boolean,
+    }),
+  ),
 });
 
 export const SentEntry = Schema.Struct({

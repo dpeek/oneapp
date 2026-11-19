@@ -412,6 +412,142 @@ it("lets only the owner send plain-text mail from the configured Inbox address",
   expect((await call(detail, undefined, session)).status).toBe(404);
 });
 
+it("threads replies from the stored message and archives the sent copy", async () => {
+  using sqlite = new Database(":memory:");
+  const from = "mail@app.example.net";
+  const originalId = "0-8199999999990-00000000-0000-4000-8000-000000000000.eml";
+  const legacyId = "0-8199999999991-00000000-0000-4000-8000-000000000000.eml";
+  const messageId = "<parent@example.net>";
+  const root = "<root@example.net>";
+  const ancestor = "<ancestor@example.net>";
+  const encode = (lines: string[]) =>
+    new TextEncoder().encode(lines.join("\r\n"));
+  const originals = new Map([
+    [
+      originalId,
+      encode([
+        "From: Sender <sender@example.net>",
+        "Reply-To: Desk <desk@example.net>",
+        "Subject: Checking in",
+        `Message-ID: ${messageId}`,
+        `References: ${root}`,
+        ` ${ancestor} ${root}`,
+        "",
+        "Hello.",
+        "",
+      ]),
+    ],
+    [
+      legacyId,
+      encode([
+        "From: Sender <sender@example.net>",
+        "Subject: Checking in",
+        `In-Reply-To: ${root}`,
+        "",
+        "Remember me?",
+        "",
+      ]),
+    ],
+  ]);
+  const get = vi.fn(
+    async (key: string, options?: { range: { length: number } }) => {
+      const bytes = originals.get(key);
+      if (!bytes) return null;
+      const body = new Response(bytes.slice(0, options?.range.length));
+      return {
+        key,
+        size: bytes.length,
+        uploaded: new Date("2026-11-19T00:15:00.000Z"),
+        customMetadata: {
+          envelopeFrom: "bounce@example.net",
+          envelopeTo: from,
+        },
+        text: () => body.text(),
+        arrayBuffer: () => body.arrayBuffer(),
+      };
+    },
+  );
+  const send = vi.fn(async (_message: EmailMessageBuilder) => ({
+    messageId: "reply-fixture",
+  }));
+  const put = vi.fn(async (_id: string, _json: string) => ({}));
+  const { call, signIn, cookies } = await setup(sqlite, {
+    INBOX_EMAIL_ADDRESS: from,
+    INBOX_EMAIL_FROM: from,
+    INBOX_SEND: { send } as SendEmail,
+    INBOX_SEND_LIMIT: { limit: async () => ({ success: true }) },
+    INBOX_MESSAGES: { get } as unknown as WorkerEnv["INBOX_MESSAGES"],
+    SENT_MESSAGES: { put } as unknown as WorkerEnv["SENT_MESSAGES"],
+  });
+  const session = cookies(await signIn(password));
+  const opened = await call(inboxMessageApi(originalId), undefined, session);
+  expect(await opened.json()).toMatchObject({
+    reply: { to: "desk@example.net", threaded: true },
+  });
+  const legacy = await call(inboxMessageApi(legacyId), undefined, session);
+  expect(await legacy.json()).toMatchObject({
+    reply: { to: "sender@example.net", threaded: false },
+  });
+  const draft = {
+    to: "desk@example.net",
+    subject: "Re: Checking in",
+    text: "Thanks!\n\n> Hello.",
+  };
+  const reply = { ...draft, replyToId: originalId };
+  expect((await call(inboxSendPath, reply)).status).toBe(401);
+  expect(
+    (
+      await call(
+        inboxSendPath,
+        { ...reply, headers: { "In-Reply-To": "<forged@example.net>" } },
+        session,
+      )
+    ).status,
+  ).toBe(400);
+  const missingId = originalId.replace("8199999999990", "8199999999999");
+  expect(
+    (await call(inboxSendPath, { ...reply, replyToId: missingId }, session))
+      .status,
+  ).toBe(404);
+  expect(send).not.toHaveBeenCalled();
+
+  const accepted = await call(inboxSendPath, reply, session);
+  expect(accepted.status).toBe(204);
+  const headers = {
+    "In-Reply-To": messageId,
+    References: `${root} ${ancestor} ${messageId}`,
+  };
+  expect(send).toHaveBeenCalledExactlyOnceWith({ ...draft, from, headers });
+  expect(get).toHaveBeenLastCalledWith(originalId, {
+    range: { offset: 0, length: 256 * 1024 },
+  });
+  const [key, record] = put.mock.lastCall ?? [];
+  if (!key || !record) throw new Error("Expected a Sent copy");
+  expect(JSON.parse(record)).toMatchObject({
+    ...draft,
+    id: key,
+    from,
+    providerMessageId: "reply-fixture",
+    reply: { originalId, headers },
+  });
+
+  const legacyDraft = { ...draft, to: "sender@example.net" };
+  expect(
+    (
+      await call(
+        inboxSendPath,
+        { ...legacyDraft, replyToId: legacyId },
+        session,
+      )
+    ).status,
+  ).toBe(204);
+  expect(send).toHaveBeenLastCalledWith({
+    ...legacyDraft,
+    from,
+    headers: { References: root },
+  });
+});
+
 it("only upgrades Inbox sockets for a same-origin owner session", async () => {
   using sqlite = new Database(":memory:");
   const accept = vi.fn(

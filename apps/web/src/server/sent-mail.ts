@@ -1,11 +1,27 @@
 import type { R2Bucket, R2Object, R2Objects } from "@cloudflare/workers-types";
 import { Effect, Schedule, Schema } from "effect";
-import { SentMessageId, SentSummary } from "../inbox-contract.ts";
+import {
+  InboxMessageId,
+  SentMessageId,
+  SentSummary,
+} from "../inbox-contract.ts";
+
+const SentReply = Schema.Struct({
+  originalId: InboxMessageId,
+  headers: Schema.optionalKey(
+    Schema.Struct({
+      "In-Reply-To": Schema.optionalKey(Schema.String),
+      References: Schema.String,
+    }),
+  ),
+});
+export type SentReply = typeof SentReply.Type;
 
 const SentRecord = Schema.Struct({
   ...SentSummary.fields,
   text: Schema.String,
   providerMessageId: Schema.String,
+  reply: Schema.optionalKey(SentReply),
 });
 
 type SentRecord = typeof SentRecord.Type;

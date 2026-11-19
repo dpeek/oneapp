@@ -1088,6 +1088,13 @@ button {
   font-size: 0.875rem;
 }
 
+.inbox-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
 .inbox-reader button.inbox-delete-button {
   color: light-dark(#a42020, #ff9797);
 }

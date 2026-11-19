@@ -1219,19 +1219,14 @@ button {
   font-size: 0.875rem;
 }
 
-.inbox-list-header p {
-  flex: 1 1 8rem;
-  min-width: 0;
-  margin: 0;
-  overflow-wrap: anywhere;
-  font-size: 0.875rem;
-  color: var(--muted);
-}
-
 .inbox-status,
 .inbox-list-footer {
   margin: 0;
   padding: 0.75rem;
+}
+
+.inbox-status > [role="alert"] {
+  margin-block: 0 0.5rem;
 }
 
 .inbox-messages {

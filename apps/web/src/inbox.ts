@@ -883,20 +883,6 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
   h.section(
     [h.Class("workspace-list inbox-list"), h.AriaLabel("Messages")],
     [
-      h.header(
-        [h.Class("workspace-list-header inbox-list-header")],
-        [
-          h.p([], [model.list?.address ?? "Messages"]),
-          ...(model.listError
-            ? [
-                h.button(
-                  [h.Type("button"), h.OnClick(Message.RetriedList())],
-                  ["Retry"],
-                ),
-              ]
-            : []),
-        ],
-      ),
       h.div(
         [h.Key(model.folder), h.Class("workspace-results")],
         [
@@ -911,9 +897,15 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
           ...(model.listError === null
             ? []
             : [
-                h.p(
-                  [h.Class("inbox-status"), h.Role("alert")],
-                  [model.listError],
+                h.div(
+                  [h.Class("inbox-status")],
+                  [
+                    h.p([h.Role("alert")], [model.listError]),
+                    h.button(
+                      [h.Type("button"), h.OnClick(Message.RetriedList())],
+                      ["Retry"],
+                    ),
+                  ],
                 ),
               ]),
           ...(model.list?.indexing

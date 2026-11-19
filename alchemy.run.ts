@@ -40,6 +40,7 @@ export const Web = Cloudflare.Worker(
           "/api",
           "/api/*",
           "/identity/*",
+          "/icons/*",
           "/notifications/*",
           "/sso-connector.html",
           "/mcp",
@@ -50,7 +51,10 @@ export const Web = Cloudflare.Worker(
           resetPasswordPage,
         ],
       },
-      compatibility: { date: "2026-11-01", flags: ["nodejs_compat"] },
+      compatibility: {
+        date: "2026-11-01",
+        flags: ["nodejs_compat", "global_fetch_strictly_public"],
+      },
       domain: Option.getOrUndefined(domain),
       workersDev: { enabled: Option.isNone(domain), previewsEnabled: false },
       observability: {
@@ -71,6 +75,10 @@ export const Web = Cloudflare.Worker(
         DB: Database,
         VAULT_FILES: VaultFiles,
         APP_ORIGIN: Cloudflare.Worker.URL,
+        BITWARDEN_ICON_LIMIT: Cloudflare.RateLimit("BitwardenIconLimit", {
+          namespaceId: 1004,
+          simple: { limit: 300, period: 60 },
+        }),
         AUTH_SECRET: Config.Redacted("AUTH_SECRET"),
         MCP_OAUTH_SECRET: Config.Redacted("MCP_OAUTH_SECRET"),
         AUTH_LIMIT: Cloudflare.RateLimit("AuthLimit", {

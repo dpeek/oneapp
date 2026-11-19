@@ -19,6 +19,7 @@ import { cloudflareEmail, disabledEmail } from "./account-email.ts";
 import { accountRoutes } from "./account.ts";
 import { AppAuth, authHttp, sessionCookieName } from "./auth.ts";
 import { bitwardenDeviceRoutes } from "./bitwarden/devices.ts";
+import { bitwardenIcon } from "./bitwarden/icons.ts";
 import { bitwardenFetch, isBitwardenPath } from "./bitwarden/routes.ts";
 import { privateHeaders } from "./api-response.ts";
 import { cliLoginRoutes } from "./cli-login.ts";
@@ -69,6 +70,8 @@ export default {
       if (context) context.waitUntil(work);
       else void work;
     };
+    if (path.startsWith("/icons/"))
+      return bitwardenIcon(request, url, env, defer);
     if (
       (path === forgotPasswordPage || path === resetPasswordPage) &&
       env.ASSETS

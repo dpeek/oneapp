@@ -52,7 +52,7 @@ const makeRuntime = () =>
     modulesRoot: directory,
     scriptPath: join(directory, "worker.mjs"),
     compatibilityDate: "2026-11-01",
-    compatibilityFlags: ["nodejs_compat"],
+    compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"],
     d1Databases: { DB: "oneapp-bitwarden-e2e" },
     d1Persist: join(storage, "d1"),
     r2Buckets: { VAULT_FILES: "oneapp-bitwarden-files" },
@@ -65,6 +65,7 @@ const makeRuntime = () =>
     ratelimits: {
       // Two local profiles run a burst of explicit syncs from one test address.
       AUTH_LIMIT: limit(1001, 60),
+      BITWARDEN_ICON_LIMIT: limit(1004, 300),
       CLI_LOGIN_LIMIT: limit(1002, 30),
       ACCOUNT_EMAIL_LIMIT: limit(1003, 3),
     },
@@ -78,6 +79,7 @@ const makeRuntime = () =>
           user_worker: [
             "/api/*",
             "/identity/*",
+            "/icons/*",
             "/notifications/*",
             "/sso-connector.html",
           ],

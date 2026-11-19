@@ -16,9 +16,7 @@ import {
 } from "./inbox-display.ts";
 import {
   allMailApiPath,
-  allMailPath,
   archiveApiPath,
-  archivePath,
   Conversation,
   type ConversationMessage,
   conversationApi,
@@ -32,10 +30,10 @@ import {
   InboxEntry,
   inboxEventsPath,
   InboxMessageId,
-  inboxPath,
   inboxReadApi,
   InboxUnread,
   inboxUnreadPath,
+  isInboxView,
   MailEntry,
   MailFolder,
   MailboxView,
@@ -44,12 +42,15 @@ import {
   type MailPerson,
   mailMessageApi,
   mailMessagePage,
+  noiseApiPath,
   replySubject,
   SentEntry,
   sentApiPath,
   SentMessageId,
   SentPage,
-  sentPath,
+  SenderPriority,
+  SenderRule,
+  senderRuleApiPath,
 } from "./inbox-contract.ts";
 import { unreadBadge } from "./navigation.ts";
 import {
@@ -69,46 +70,40 @@ const isInboxMessageId = Schema.is(InboxMessageId);
 const isSentMessageId = Schema.is(SentMessageId);
 const isPersonEmail = Schema.is(PersonEmail);
 const isMailMessageId = Schema.is(MailMessageId);
+const isSenderPriority = Schema.is(SenderPriority);
 const mailboxLabels = {
   inbox: "Inbox",
+  noise: "Inbox",
   sent: "Sent",
   all: "All mail",
   archive: "Archive",
 } satisfies Record<MailboxView, string>;
 const mailboxApiPaths = {
   inbox: conversationsApiPath,
+  noise: noiseApiPath,
   sent: sentApiPath,
   all: allMailApiPath,
   archive: archiveApiPath,
 };
+const mailboxFolders = ["inbox", "noise", "sent", "all", "archive"] as const;
 export const MailRoute = Schema.Struct({
   folder: MailboxView,
   id: Schema.NullOr(MailMessageId),
 });
 export const routeFor = (pathname: string): typeof MailRoute.Type | null => {
-  if (pathname === inboxPath || pathname === `${inboxPath}/`)
-    return { folder: "inbox", id: null };
-  if (pathname === sentPath || pathname === `${sentPath}/`)
-    return { folder: "sent", id: null };
-  if (pathname === archivePath || pathname === `${archivePath}/`)
-    return { folder: "archive", id: null };
-  if (pathname === allMailPath || pathname === `${allMailPath}/`)
-    return { folder: "all", id: null };
-  if (pathname.startsWith(`${allMailPath}/`)) {
-    const id = pathname.slice(allMailPath.length + 1);
-    return isMailMessageId(id) ? { folder: "all", id } : null;
-  }
-  if (pathname.startsWith(`${sentPath}/`)) {
-    const id = pathname.slice(sentPath.length + 1);
-    return isSentMessageId(id) ? { folder: "sent", id } : null;
-  }
-  if (pathname.startsWith(`${archivePath}/`)) {
-    const id = pathname.slice(archivePath.length + 1);
-    return isInboxMessageId(id) ? { folder: "archive", id } : null;
-  }
-  if (pathname.startsWith(`${inboxPath}/`)) {
-    const id = pathname.slice(inboxPath.length + 1);
-    return isInboxMessageId(id) ? { folder: "inbox", id } : null;
+  for (const folder of mailboxFolders) {
+    const root = folderPath(folder);
+    if (pathname === root || pathname === `${root}/`)
+      return { folder, id: null };
+    if (!pathname.startsWith(`${root}/`)) continue;
+    const id = pathname.slice(root.length + 1);
+    const valid =
+      folder === "all"
+        ? isMailMessageId
+        : folder === "sent"
+          ? isSentMessageId
+          : isInboxMessageId;
+    if (valid(id)) return { folder, id };
   }
   return null;
 };
@@ -123,6 +118,11 @@ const ArchiveRequest = Schema.Struct({
   request: Schema.String,
   folder: MailboxView,
   selected: Schema.NullOr(MailMessageId),
+});
+
+const SenderRuleRequest = Schema.Struct({
+  ...SenderRule.fields,
+  request: Schema.String,
 });
 
 const messageFolder = (id: string): MailFolder =>
@@ -162,6 +162,8 @@ export const Model = Schema.Struct({
   archiveRequest: Schema.NullOr(ArchiveRequest),
   archiveNotice: Schema.NullOr(ArchiveChange),
   archiveError: Schema.NullOr(Schema.String),
+  senderRuleRequest: Schema.NullOr(SenderRuleRequest),
+  senderRuleFailed: Schema.Boolean,
   compose: Compose.Model,
   quickReply: QuickReply.Model,
 });
@@ -195,6 +197,8 @@ export const initial: Model = {
   archiveRequest: null,
   archiveNotice: null,
   archiveError: null,
+  senderRuleRequest: null,
+  senderRuleFailed: false,
   compose: Compose.initial,
   quickReply: QuickReply.initial,
 };
@@ -227,6 +231,9 @@ export const Message = defineMessageUnion({
   UndidArchive: {},
   ArchiveChanged: { request: Schema.String },
   ArchiveFailed: { request: Schema.String, error: Schema.String },
+  ChangedSenderPriority: { priority: Schema.String },
+  SenderRuleSaved: { request: Schema.String },
+  SenderRuleFailed: { request: Schema.String },
   LoadedList: {
     request: Schema.String,
     page: MailPage,
@@ -572,6 +579,33 @@ const SaveArchive = Command.define("SaveConversationArchive", {
     ),
 });
 
+const SaveSenderRule = Command.define("SaveMailSenderRule", {
+  args: SenderRuleRequest.fields,
+  messages: [
+    Message.SenderRuleSaved,
+    Message.SenderRuleFailed,
+    Message.SessionExpired,
+  ],
+  execute: ({ request, address, priority }) =>
+    Effect.tryPromise(async (signal) => {
+      const response = await fetch(senderRuleApiPath, {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          "x-effect-auth-csrf": "1",
+        },
+        body: JSON.stringify({ address, priority }),
+        signal,
+      });
+      if (response.status === 401) return Message.SessionExpired({ request });
+      return response.status === 204
+        ? Message.SenderRuleSaved({ request })
+        : Message.SenderRuleFailed({ request });
+    }).pipe(
+      Effect.catch(() => Effect.succeed(Message.SenderRuleFailed({ request }))),
+    ),
+});
+
 const loadList = (
   model: Model,
   cursor: string | null,
@@ -776,6 +810,7 @@ export const update = (
               deleteRequest: model.deleteRequest,
               archiveRequest: model.archiveRequest,
               archiveNotice: model.archiveNotice,
+              senderRuleRequest: model.senderRuleRequest,
               unreadCount: model.unreadCount,
               unreadRequest: model.unreadRequest,
               unreadRefreshQueued: model.unreadRefreshQueued,
@@ -788,6 +823,7 @@ export const update = (
               ...base,
               selected: id,
               middleRevealed: false,
+              senderRuleFailed: false,
               active: id ? { id, folder: messageFolder(id) } : null,
               thread: null,
               threadRequest: null,
@@ -880,8 +916,9 @@ export const update = (
     ArchiveChanged: ({ request }) => {
       const change = model.archiveRequest;
       if (!change || request !== change.request) return { model };
-      const removesRow =
-        model.folder === (change.archived ? "inbox" : "archive");
+      const removesRow = change.archived
+        ? isInboxView(model.folder)
+        : model.folder === "archive";
       const list =
         model.list && removesRow
           ? {
@@ -915,6 +952,52 @@ export const update = (
               archiveError: error,
             }),
           )
+        : { model },
+    ChangedSenderPriority: ({ priority }) => {
+      const rule = model.thread?.senderRule;
+      if (
+        !rule ||
+        model.senderRuleRequest ||
+        rule.priority === priority ||
+        !isSenderPriority(priority)
+      )
+        return { model };
+      const change = {
+        address: rule.address,
+        priority,
+        request: crypto.randomUUID(),
+      };
+      return {
+        model: { ...model, senderRuleRequest: change, senderRuleFailed: false },
+        commands: [SaveSenderRule(change)],
+      };
+    },
+    SenderRuleSaved: ({ request }) => {
+      const change = model.senderRuleRequest;
+      if (change?.request !== request) return { model };
+      const thread =
+        model.thread?.senderRule?.address === change.address
+          ? {
+              ...model.thread,
+              senderRule: {
+                address: change.address,
+                priority: change.priority,
+              },
+            }
+          : model.thread;
+      return withThread(
+        refreshList({ ...model, thread, senderRuleRequest: null }),
+      );
+    },
+    SenderRuleFailed: ({ request }) =>
+      request === model.senderRuleRequest?.request
+        ? {
+            model: {
+              ...model,
+              senderRuleRequest: null,
+              senderRuleFailed: true,
+            },
+          }
         : { model },
     ToggledUnread: () => {
       const entry = model.entry;
@@ -1284,6 +1367,21 @@ const archiveFeedback = (model: Model, h: HtmlBuilder<Message>) => [
     : []),
 ];
 
+const inboxPriorityTabs = (selected: MailboxView, h: HtmlBuilder<Message>) =>
+  h.nav(
+    [h.Class("inbox-priority-tabs"), h.AriaLabel("Inbox priority")],
+    (["inbox", "noise"] as const).map((view) =>
+      h.a(
+        [
+          h.Key(view),
+          h.Href(folderPath(view)),
+          ...(view === selected ? [h.AriaCurrent("page")] : []),
+        ],
+        [view === "inbox" ? "Signal" : "Noise"],
+      ),
+    ),
+  );
+
 const listView = (model: Model, h: HtmlBuilder<Message>) =>
   h.section(
     [
@@ -1293,6 +1391,9 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
       h.Tabindex(-1),
     ],
     [
+      ...(isInboxView(model.folder)
+        ? [inboxPriorityTabs(model.folder, h)]
+        : []),
       ...(model.selected === null ? archiveFeedback(model, h) : []),
       h.div(
         [h.Key(model.folder), h.Class("workspace-results")],
@@ -1339,7 +1440,9 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
                       [
                         model.folder === "archive"
                           ? "No archived conversations."
-                          : "No messages yet.",
+                          : isInboxView(model.folder)
+                            ? `No ${model.folder === "noise" ? "noise" : "signal"} conversations.`
+                            : "No messages yet.",
                       ],
                     )
                   : h.ul(
@@ -1348,7 +1451,7 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
                         const unread =
                           "unreadCount" in message && message.unreadCount > 0;
                         const markDoneId =
-                          model.folder === "inbox" &&
+                          isInboxView(model.folder) &&
                           "latestIncomingId" in message
                             ? message.latestIncomingId
                             : null;
@@ -1663,6 +1766,40 @@ const profileAvatar = (
       );
 };
 
+const senderPriorityControl = (
+  rule: typeof SenderRule.Type,
+  pending: Model["senderRuleRequest"],
+  h: HtmlBuilder<Message>,
+) => {
+  const priority =
+    pending?.address === rule.address ? pending.priority : rule.priority;
+  return h.label(
+    [h.Class("inbox-sender-priority"), h.Title(rule.address)],
+    [
+      "Sender priority",
+      h.select(
+        [
+          h.AriaLabel(`Sender priority for ${rule.address}`),
+          h.Disabled(pending !== null),
+          h.OnChange((priority) => Message.ChangedSenderPriority({ priority })),
+        ],
+        (
+          [
+            ["automatic", "Automatic"],
+            ["signal", "Signal"],
+            ["noise", "Noise"],
+          ] as const
+        ).map(([value, label]) =>
+          h.option(
+            [h.Key(value), h.Value(value), h.Selected(priority === value)],
+            [label],
+          ),
+        ),
+      ),
+    ],
+  );
+};
+
 const entryView = (
   model: Model,
   selected: NonNullable<Model["selected"]>,
@@ -1712,9 +1849,26 @@ const entryView = (
                 ),
               ]
             : []),
+          ...(model.thread?.senderRule
+            ? [
+                senderPriorityControl(
+                  model.thread.senderRule,
+                  model.senderRuleRequest,
+                  h,
+                ),
+              ]
+            : []),
         ],
       ),
       ...archiveFeedback(model, h),
+      ...(model.senderRuleFailed
+        ? [
+            h.p(
+              [h.Role("alert")],
+              ["Could not update sender priority. Try again."],
+            ),
+          ]
+        : []),
       ...(model.confirmingDelete ? [deleteDialog(h)] : []),
       ...(!model.thread &&
       model.threadRequest &&
@@ -1925,7 +2079,8 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
                       ...(count
                         ? [h.AriaLabel(`${label}, ${count} unread`)]
                         : []),
-                      ...(model.folder === folder
+                      ...(model.folder === folder ||
+                      (folder === "inbox" && isInboxView(model.folder))
                         ? [h.AriaCurrent("true")]
                         : []),
                     ],

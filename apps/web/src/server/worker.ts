@@ -37,7 +37,7 @@ import {
   notifyInbox,
   syncMailIndex,
 } from "./inbox.ts";
-import { indexMail } from "./mail-index.ts";
+import { indexMail, isMailingList } from "./mail-index.ts";
 import { mailPeople } from "./mail-people.ts";
 import { conversationMessageIds } from "./mail-reply.ts";
 import { linksRoutes } from "./links.ts";
@@ -108,6 +108,7 @@ export default {
         from: message.from,
         to: message.to,
         unread: true,
+        listMail: isMailingList(message.headers.get("list-id")),
         people: mailPeople(
           (name) => message.headers.get(name),
           message.from,

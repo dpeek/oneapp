@@ -30,11 +30,14 @@ import {
   InlineReply,
   type MailFolder,
   MailMessageId,
+  noiseApiPath,
   type ReplyCompletion,
   replyCompletionHeader,
   replySubject,
   SentEntry,
   SentPage,
+  senderRuleApiPath,
+  SenderRule,
   sentCopyHeader,
   sentMessageHeader,
 } from "../inbox-contract.ts";
@@ -42,6 +45,7 @@ import { jsonError, privateHeaders } from "./api-response.ts";
 import { AppAuth, ownerId, type authHttp } from "./auth.ts";
 import {
   indexMail,
+  isMailingList,
   inboxMessageUnread,
   conversationCursor,
   inboxUnread,
@@ -50,6 +54,7 @@ import {
   removeIndexedMail,
   scanMail,
   setInboxUnread,
+  setSenderRule,
   setThreadArchived,
 } from "./mail-index.ts";
 import {
@@ -198,6 +203,9 @@ const describeStoredInbox = async (bucket: InboxBucket, object: R2Object) => {
     from,
     to,
     people: describePeople(email, from, to),
+    listMail: isMailingList(
+      email?.headers.find(({ key }) => key === "list-id")?.value,
+    ),
     subject:
       object.customMetadata?.subject ??
       email?.subject?.trim().slice(0, 200) ??
@@ -884,6 +892,25 @@ export const inboxRoutes = (
       );
     }).pipe(Effect.catchTags(inboxErrors));
 
+  const updateSenderRule = Effect.gen(function* () {
+    if (!(yield* isJsonRequest))
+      return yield* jsonError(415, "Expected a JSON request");
+    const rule = yield* HttpServerRequest.schemaBodyJson(SenderRule, {
+      onExcessProperty: "error",
+    }).pipe(
+      Effect.provideService(
+        HttpServerRequest.MaxBodySize,
+        ByteSize.kibibytes(1),
+      ),
+      Effect.option,
+    );
+    if (rule._tag === "None")
+      return yield* jsonError(400, "Invalid sender priority");
+    yield* Effect.tryPromise(() => setSenderRule(env.DB, rule.value));
+    yield* Effect.sync(() => defer(notifyInbox(env)));
+    return HttpServerResponse.empty({ status: 204, headers: privateHeaders });
+  });
+
   return Layer.mergeAll(
     folderRoutes("inbox"),
     folderRoutes("sent"),
@@ -916,8 +943,25 @@ export const inboxRoutes = (
       ),
     ),
     HttpRouter.add("GET", conversationsApiPath, listThreads("inbox")),
+    HttpRouter.add("GET", noiseApiPath, listThreads("noise")),
     HttpRouter.add("GET", archiveApiPath, listThreads("archive")),
     HttpRouter.add("GET", allMailApiPath, listThreads("all")),
+    HttpRouter.add(
+      "PATCH",
+      senderRuleApiPath,
+      Effect.gen(function* () {
+        if (!(yield* requireInboxOwner))
+          return yield* jsonError(403, "Access denied");
+        return yield* http.protect(updateSenderRule);
+      }).pipe(
+        Effect.catchTags({
+          ...inboxErrors,
+          HookDenied: () => jsonError(403, "Request not allowed"),
+          UnknownError: () =>
+            jsonError(503, "Could not update sender priority."),
+        }),
+      ),
+    ),
     HttpRouter.add(
       "PATCH",
       `${conversationsApiPath}/:id/archive`,

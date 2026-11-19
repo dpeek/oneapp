@@ -2,19 +2,31 @@ import type { D1Database, R2Bucket, R2Object } from "@cloudflare/workers-types";
 import { Schema } from "effect";
 import {
   InboxMessageId,
+  isInboxView,
   MailMessageId,
   MailPeople,
   type ConversationMessage,
   type MailFolder,
   type MailboxView,
+  type SenderRule,
 } from "../inbox-contract.ts";
 import { conversationPeople, conversationSubject } from "../inbox-display.ts";
+import { normalizePersonEmail, PersonEmail } from "../people-contract.ts";
 import { mailPeople } from "./mail-people.ts";
 
 export type IndexedMail = ConversationMessage & {
   messageIds: readonly string[];
   originalId?: string;
+  listMail?: boolean;
 };
+
+export const isMailingList = (listId: string | null | undefined) =>
+  listId?.match(/<([^<>\s]+)>/u)?.[1]?.includes(".") ?? false;
+
+const indexedSender =
+  "lower(trim(coalesce(json_extract(m.people, '$.sender.address'), m.sender)))";
+const senderPriority = `SELECT priority FROM mail_sender_rules WHERE address = ${indexedSender}`;
+const isPersonEmail = Schema.is(PersonEmail);
 
 const localIdentity = (id: string) => `mail:${id}`;
 const hashMessageId = async (id: string) => {
@@ -46,6 +58,7 @@ const indexStatements = async (
     originalId,
     unread,
     people,
+    listMail,
   } = mail;
   const aliases = JSON.stringify([
     localIdentity(id),
@@ -84,7 +97,7 @@ const indexStatements = async (
     db
       .prepare(
         `
-      INSERT INTO mail_index_messages (id, thread_id, folder, sender, recipient, subject, timestamp, unread, people, archived)
+      INSERT INTO mail_index_messages (id, thread_id, folder, sender, recipient, subject, timestamp, unread, people, archived, list_mail)
       VALUES (?1, (SELECT thread_id FROM mail_index_keys WHERE identity = ?2), ?3, ?4, ?5, ?6, ?7, ?8, ?9,
         CASE WHEN ?3 = 'inbox' AND ?10 = 0 THEN coalesce((
           SELECT CASE WHEN (timestamp, id) > (?7, ?1) THEN archived ELSE 0 END
@@ -92,10 +105,15 @@ const indexStatements = async (
           WHERE thread_id = (SELECT thread_id FROM mail_index_keys WHERE identity = ?2)
             AND folder = 'inbox' AND deleted = 0
           ORDER BY timestamp DESC, id DESC LIMIT 1
-        ), 0) ELSE 0 END
+        ), 0) ELSE 0 END, ?11
       )
-      ON CONFLICT(id) DO UPDATE SET people = excluded.people
-      WHERE mail_index_messages.people IS NULL AND mail_index_messages.deleted = 0
+      ON CONFLICT(id) DO UPDATE SET
+        people = coalesce(mail_index_messages.people, excluded.people),
+        list_mail = coalesce(mail_index_messages.list_mail, excluded.list_mail)
+      WHERE mail_index_messages.deleted = 0 AND (
+        (mail_index_messages.people IS NULL AND excluded.people IS NOT NULL) OR
+        (mail_index_messages.list_mail IS NULL AND excluded.list_mail IS NOT NULL)
+      )
     `,
       )
       .bind(
@@ -109,6 +127,7 @@ const indexStatements = async (
         folder === "inbox" && unread ? 1 : 0,
         people ? JSON.stringify(people) : null,
         reopensArchive ? 1 : 0,
+        listMail === undefined ? null : Number(listMail),
       ),
     // Incoming mail and merges with an active conversation reopen the whole
     // thread. Keep that state even if the new incoming message is later deleted.
@@ -314,6 +333,7 @@ export const listConversations = async (
         : ""
     }
     WHERE m.deleted = 0 ${all ? "" : "AND m.folder = 'inbox' AND m.archived = ?4"}
+      ${isInboxView(view) ? `AND coalesce((${senderPriority}), CASE WHEN m.list_mail = 1 THEN 'noise' ELSE 'signal' END) = ?5` : ""}
       AND (?1 IS NULL OR (m.timestamp, m.id) < (?1, ?2))
       AND NOT EXISTS (
         SELECT 1 FROM mail_index_messages newer
@@ -329,6 +349,7 @@ export const listConversations = async (
       cursor.id,
       pageSize + 1,
       ...(all ? [] : [view === "archive" ? 1 : 0]),
+      ...(isInboxView(view) ? [view === "noise" ? "noise" : "signal"] : []),
     )
     .all<{
       id: string;
@@ -368,8 +389,10 @@ export const readThread = async (db: D1Database, id: string) => {
   const { results } = await db
     .prepare(
       `
-    SELECT id, folder, sender AS "from", recipient AS "to", subject, timestamp, unread, people, archived
-    FROM mail_index_messages
+    SELECT id, folder, sender AS "from", recipient AS "to", subject, timestamp, unread, people, archived,
+           CASE WHEN m.folder = 'inbox' THEN ${indexedSender} END AS senderAddress,
+           CASE WHEN m.folder = 'inbox' THEN (${senderPriority}) END AS senderPriority
+    FROM mail_index_messages m
     WHERE thread_id = (SELECT thread_id FROM mail_index_keys WHERE identity = ?)
       AND deleted = 0
     ORDER BY timestamp, id
@@ -381,15 +404,56 @@ export const readThread = async (db: D1Database, id: string) => {
         unread: number;
         archived: number;
         people: string | null;
+        senderAddress: string | null;
+        senderPriority: "signal" | "noise" | null;
       }
     >();
+  const incoming = results.findLast(({ folder }) => folder === "inbox");
+  const address = incoming?.senderAddress;
   return {
     archived: results.some(({ archived }) => archived === 1),
-    messages: results.map(({ unread, archived: _archived, ...message }) => ({
-      ...withPeople(message),
-      unread: unread === 1,
-    })),
+    ...(isPersonEmail(address)
+      ? {
+          senderRule: {
+            address,
+            priority: incoming?.senderPriority ?? "automatic",
+          } satisfies typeof SenderRule.Type,
+        }
+      : {}),
+    messages: results.map(
+      ({
+        unread,
+        archived: _archived,
+        senderAddress: _senderAddress,
+        senderPriority: _senderPriority,
+        ...message
+      }) => ({
+        ...withPeople(message),
+        unread: unread === 1,
+      }),
+    ),
   };
+};
+
+export const setSenderRule = (
+  db: D1Database,
+  { address, priority }: typeof SenderRule.Type,
+) => {
+  const sender = normalizePersonEmail(address);
+  return priority === "automatic"
+    ? db
+        .prepare("DELETE FROM mail_sender_rules WHERE address = ?")
+        .bind(sender)
+        .run()
+    : db
+        .prepare(
+          `
+        INSERT INTO mail_sender_rules (address, priority) VALUES (?, ?)
+        ON CONFLICT(address) DO UPDATE SET priority = excluded.priority
+      `,
+        )
+        .bind(sender, priority)
+        .run();
 };
 
 export const scanMail = async (
@@ -399,8 +463,7 @@ export const scanMail = async (
   describe: (object: R2Object) => Promise<IndexedMail | null>,
   reconcile: boolean,
 ) => {
-  // This scan also enriches rows created before message participants were indexed.
-  const scanId = `${folder}:people`;
+  const scanId = folder === "inbox" ? "inbox:list-mail" : "sent:people";
   const state = await db
     .prepare(
       "SELECT cursor, scanned_at AS scannedAt, ready FROM mail_index_scans WHERE folder = ?",
@@ -408,6 +471,15 @@ export const scanMail = async (
     .bind(scanId)
     .first<{ cursor: string | null; scannedAt: number; ready: number }>();
   if (state?.ready && !reconcile) return false;
+  // A mailbox indexed by the older scan can be used while list headers backfill.
+  const alreadyIndexed =
+    folder === "inbox" && !state?.ready
+      ? await db
+          .prepare(
+            "SELECT ready FROM mail_index_scans WHERE folder = 'inbox:people'",
+          )
+          .first<{ ready: number }>()
+      : null;
   const page = await bucket.list({
     limit: scanSize,
     cursor: state?.cursor ?? undefined,
@@ -416,7 +488,9 @@ export const scanMail = async (
   if (page.objects.length) {
     const { results } = await db
       .prepare(
-        "SELECT id FROM mail_index_messages WHERE (deleted = 1 OR people IS NOT NULL) AND id IN (SELECT value FROM json_each(?))",
+        `SELECT id FROM mail_index_messages
+         WHERE (deleted = 1 OR (people IS NOT NULL AND (folder = 'sent' OR list_mail IS NOT NULL)))
+           AND id IN (SELECT value FROM json_each(?))`,
       )
       .bind(JSON.stringify(page.objects.map(({ key }) => key)))
       .all<{ id: string }>();
@@ -453,5 +527,5 @@ export const scanMail = async (
       state?.scannedAt ?? -1,
     )
     .run();
-  return page.truncated && !state?.ready;
+  return page.truncated && !state?.ready && !alreadyIndexed?.ready;
 };

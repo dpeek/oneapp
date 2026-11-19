@@ -4,6 +4,7 @@ export {
   mailIndexKeys,
   mailIndexMessages,
   mailIndexScans,
+  mailSenderRules,
 } from "./mail-tables.ts";
 
 export {

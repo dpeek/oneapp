@@ -1,7 +1,7 @@
 import { FileMetadata } from "@oneapp/core/files";
 import { Schema as AuthSchema } from "@yielded/auth";
 import { Schema } from "effect";
-import { PersonMatch } from "./people-contract.ts";
+import { PersonEmail, PersonMatch } from "./people-contract.ts";
 
 export const inboxPath = "/inbox";
 export const inboxApiPath = "/api/inbox";
@@ -9,6 +9,8 @@ export const inboxEventsPath = `${inboxApiPath}/events`;
 export const conversationsApiPath = `${inboxApiPath}/conversations`;
 export const archiveApiPath = `${inboxApiPath}/archive`;
 export const allMailApiPath = `${inboxApiPath}/all`;
+export const noiseApiPath = `${inboxApiPath}/noise`;
+export const senderRuleApiPath = `${inboxApiPath}/sender-rule`;
 export const conversationApi = (id: string) => `${conversationsApiPath}/${id}`;
 export const conversationArchiveApi = (id: string) =>
   `${conversationApi(id)}/archive`;
@@ -21,14 +23,24 @@ export const ReplyCompletion = Schema.Literals(["done", "new-mail", "failed"]);
 export const sentPath = `${inboxPath}/sent`;
 export const archivePath = `${inboxPath}/archive`;
 export const allMailPath = `${inboxPath}/all`;
+export const noisePath = `${inboxPath}/noise`;
 export const sentApiPath = `${inboxApiPath}/sent`;
 export const inboxChanged = "inbox.changed";
 export const MailFolder = Schema.Literals(["inbox", "sent"]);
 export type MailFolder = typeof MailFolder.Type;
-export const MailboxView = Schema.Literals(["inbox", "sent", "archive", "all"]);
+export const MailboxView = Schema.Literals([
+  "inbox",
+  "noise",
+  "sent",
+  "archive",
+  "all",
+]);
 export type MailboxView = typeof MailboxView.Type;
+export const isInboxView = (view: MailboxView) =>
+  view === "inbox" || view === "noise";
 const mailboxPaths = {
   inbox: inboxPath,
+  noise: noisePath,
   sent: sentPath,
   archive: archivePath,
   all: allMailPath,
@@ -54,6 +66,11 @@ export const InboxUnread = Schema.Struct({ unreadCount: Schema.Number });
 export const InboxReadUpdate = Schema.Struct({ unread: Schema.Boolean });
 export const ConversationArchiveUpdate = Schema.Struct({
   archived: Schema.Boolean,
+});
+export const SenderPriority = Schema.Literals(["automatic", "signal", "noise"]);
+export const SenderRule = Schema.Struct({
+  address: PersonEmail,
+  priority: SenderPriority,
 });
 
 // Accept both the current reverse-timestamp keys and the original ISO keys.
@@ -233,4 +250,5 @@ export const Conversation = Schema.Struct({
   messages: Schema.Array(ConversationMessage),
   profiles: Schema.optionalKey(Schema.Array(PersonMatch)),
   archived: Schema.optionalKey(Schema.Boolean),
+  senderRule: Schema.optionalKey(SenderRule),
 });

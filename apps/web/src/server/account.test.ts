@@ -39,7 +39,9 @@ import {
   inboxSendPath,
   inboxUnreadPath,
   mailMessageApi,
+  noiseApiPath,
   replyCompletionHeader,
+  senderRuleApiPath,
   sentApiPath,
   sentCopyHeader,
   sentMessageHeader,
@@ -819,6 +821,117 @@ it("threads replies from the stored message and archives the sent copy", async (
   expect(sentWithoutCopy.status).toBe(204);
   expect(sentWithoutCopy.headers.get(sentCopyHeader)).toBe("failed");
   expect(sentWithoutCopy.headers.get(replyCompletionHeader)).toBe("done");
+});
+
+it("classifies the latest incoming message and applies exact sender overrides before pagination", async () => {
+  using sqlite = new Database(":memory:");
+  const address = "mail@app.example.net";
+  const mailId = (n: number) =>
+    `0-8199999999990-00000000-0000-4000-8000-${String(n).padStart(12, "0")}.eml`;
+  const newsletter = {
+    key: mailId(0),
+    uploaded: new Date(1000),
+    customMetadata: { envelopeFrom: "bounce@example.net", envelopeTo: address },
+    text: async () =>
+      [
+        "From: Newsletter <News@Example.net>",
+        `To: ${address}`,
+        "Subject: Monthly newsletter",
+        "Message-ID: <monthly@example.net>",
+        "List-Id: Monthly <monthly.lists.example.net>",
+        "",
+        "News for this month.",
+      ].join("\r\n"),
+    size: 1024,
+  };
+  const empty = async () => ({ objects: [], truncated: false });
+  const { call, db, request, signIn, cookies } = await setup(sqlite, {
+    INBOX_EMAIL_ADDRESS: address,
+    INBOX_MESSAGES: {
+      list: async () => ({ objects: [newsletter], truncated: false }),
+      get: async () => newsletter,
+    } as unknown as WorkerEnv["INBOX_MESSAGES"],
+    SENT_MESSAGES: { list: empty } as unknown as WorkerEnv["SENT_MESSAGES"],
+  });
+  const existing = {
+    folder: "inbox" as const,
+    from: "bounce@example.net",
+    to: address,
+    subject: "Monthly newsletter",
+    timestamp: 1000,
+    messageIds: ["<monthly@example.net>"],
+    people: {
+      sender: { address: "News@Example.net", name: "Newsletter" },
+      members: [],
+    },
+  };
+  await indexMail(db, { ...existing, id: newsletter.key });
+  sqlite.exec(
+    "INSERT INTO mail_index_scans (folder, scanned_at, ready) VALUES ('inbox:people', 0, 1)",
+  );
+  for (let i = 1; i <= 21; i++) {
+    await indexMail(db, {
+      ...existing,
+      id: mailId(i),
+      from: "team@example.net",
+      subject: `Mail ${i}`,
+      people: undefined,
+      timestamp: 1000 + i,
+      messageIds: [],
+    });
+  }
+  expect((await call(noiseApiPath)).status).toBe(401);
+  const session = cookies(await signIn(password));
+  const get = async (path: string) => {
+    const response = await call(path, undefined, session);
+    expect(response.status).toBe(200);
+    return response.json();
+  };
+  const rule = (priority: string, csrf = true) =>
+    request(senderRuleApiPath, {
+      method: "PATCH",
+      headers: {
+        cookie: session,
+        "content-type": "application/json",
+        origin: "https://oneapp.example",
+        ...(csrf ? { "x-effect-auth-csrf": "1" } : {}),
+      },
+      body: JSON.stringify({ address: "NEWS@EXAMPLE.NET", priority }),
+    });
+  expect(await get(noiseApiPath)).toMatchObject({
+    messages: [{ id: newsletter.key }],
+    cursor: null,
+  });
+  expect((await rule("signal", false)).status).toBe(403);
+  expect((await rule("signal")).status).toBe(204);
+  expect(await get(noiseApiPath)).toMatchObject({ messages: [] });
+  expect(await get(conversationApi(newsletter.key))).toMatchObject({
+    senderRule: { address: "news@example.net", priority: "signal" },
+  });
+  const { cursor, messages } = await get(conversationsApiPath);
+  expect(messages).toHaveLength(20);
+  expect(
+    await get(`${conversationsApiPath}?${new URLSearchParams({ cursor })}`),
+  ).toMatchObject({
+    messages: [{ id: mailId(1) }, { id: newsletter.key }],
+    cursor: null,
+  });
+  expect((await rule("automatic")).status).toBe(204);
+  expect(await get(noiseApiPath)).toMatchObject({
+    messages: [{ id: newsletter.key }],
+  });
+  await indexMail(db, {
+    ...existing,
+    id: mailId(22),
+    timestamp: 2000,
+    from: "team@example.net",
+    people: undefined,
+    listMail: false,
+  });
+  expect(await get(noiseApiPath)).toMatchObject({ messages: [] });
+  expect(await get(conversationsApiPath)).toMatchObject({
+    messages: [{ id: mailId(22), messageCount: 2 }, ...messages.slice(0, 19)],
+  });
 });
 
 it("groups existing mail across Inbox and Sent as its threads are discovered", async () => {

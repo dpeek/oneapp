@@ -15,6 +15,7 @@ export const mailIndexMessages = sqliteTable(
     unread: integer().notNull().default(0),
     archived: integer().notNull().default(0),
     people: text(),
+    listMail: integer("list_mail"),
   },
   (table) => [
     index("mail_index_folder_date").on(
@@ -59,4 +60,9 @@ export const mailIndexScans = sqliteTable("mail_index_scans", {
   cursor: text(),
   scannedAt: integer("scanned_at").notNull(),
   ready: integer().notNull().default(0),
+});
+
+export const mailSenderRules = sqliteTable("mail_sender_rules", {
+  address: text().primaryKey(),
+  priority: text({ enum: ["signal", "noise"] }).notNull(),
 });

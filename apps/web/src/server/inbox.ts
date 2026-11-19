@@ -51,6 +51,7 @@ import {
   replyRecipient,
 } from "./mail-reply.ts";
 import { mailPeople } from "./mail-people.ts";
+import { normalizePersonEmail } from "../people-contract.ts";
 import { managedPersonAddresses, matchPeople } from "./people-store.ts";
 import {
   describeSent,
@@ -243,6 +244,15 @@ const loadConversation = async (env: InboxEnv, id: string) => {
   await indexMail(env.DB, mail);
   return readThread(env.DB, id);
 };
+
+const profilesFor = async (env: InboxEnv, addresses: string[]) =>
+  addresses.length
+    ? matchPeople(
+        env.DB,
+        addresses,
+        await managedPersonAddresses(env.DB, env.INBOX_EMAIL_ADDRESS),
+      )
+    : [];
 
 const replyInfo = (email: Email | null, envelopeFrom: string) => {
   const to = email && replyRecipient(email, envelopeFrom);
@@ -771,9 +781,28 @@ export const inboxRoutes = (
           query._tag === "Some" ? inboxThreadCursor(query.value.cursor) : null;
         if (!cursor) return yield* jsonError(400, "Invalid page cursor");
         const indexing = yield* Effect.tryPromise(() => syncMailIndex(env));
-        const page = yield* Effect.tryPromise(() =>
-          listInboxThreads(env.DB, cursor),
-        );
+        const page = yield* Effect.tryPromise(async () => {
+          const page = await listInboxThreads(env.DB, cursor);
+          const matches = await profilesFor(
+            env,
+            page.messages.flatMap(({ participants }) =>
+              participants.map(({ address }) => address),
+            ),
+          );
+          const profiles = new Map(
+            matches.map((match) => [match.email, match]),
+          );
+          return {
+            ...page,
+            messages: page.messages.map((message) => ({
+              ...message,
+              profiles: message.participants.flatMap(({ address }) => {
+                const match = profiles.get(normalizePersonEmail(address));
+                return match ? [match] : [];
+              }),
+            })),
+          };
+        });
         const sender = inboxSender(env);
         return yield* HttpServerResponse.schemaJson(InboxPage)(
           {
@@ -801,12 +830,8 @@ export const inboxRoutes = (
         const addresses = thread.messages.flatMap(
           ({ people }) => people?.members.map(({ address }) => address) ?? [],
         );
-        const profiles = yield* Effect.tryPromise(async () =>
-          matchPeople(
-            env.DB,
-            addresses,
-            await managedPersonAddresses(env.DB, env.INBOX_EMAIL_ADDRESS),
-          ),
+        const profiles = yield* Effect.tryPromise(() =>
+          profilesFor(env, addresses),
         );
         return yield* HttpServerResponse.schemaJson(Conversation)(
           { ...thread, profiles },

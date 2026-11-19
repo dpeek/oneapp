@@ -766,7 +766,7 @@ const update = (
         model.page !== "inbox"
       )
         return result;
-      const inbox = foldInbox(result.model, Inbox.Message.RetriedThread());
+      const inbox = foldInbox(result.model, Inbox.Message.UpdatedProfiles());
       return {
         model: inbox.model,
         commands: [...(result.commands ?? []), ...(inbox.commands ?? [])],

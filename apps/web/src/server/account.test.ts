@@ -767,11 +767,12 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
     timestamp: number,
     headers: string[],
     unread = false,
+    messageSubject = subject,
   ) => {
     const key = `0-819999999999${number}-00000000-0000-4000-8000-000000000000.eml`;
     const raw = [
       "From: Project Lead <sender@example.net>",
-      `Subject: ${subject}`,
+      `Subject: ${messageSubject}`,
       ...headers,
       "",
       "Hello.",
@@ -784,7 +785,7 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
       customMetadata: {
         envelopeFrom: "sender@example.net",
         envelopeTo: address,
-        subject,
+        subject: messageSubject,
         ...(unread ? { initialUnread: "1" } : {}),
       },
     };
@@ -795,7 +796,13 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
     "Cc: Reviewer <reviewer@example.net>, REVIEWER@example.net",
   ]);
   const branch = makeInbox(1, 2000, ["Message-ID: <b@example.net>"]);
-  const latest = makeInbox(2, 4000, ["In-Reply-To: <b@example.net>"], true);
+  const latest = makeInbox(
+    2,
+    4000,
+    ["In-Reply-To: <b@example.net>"],
+    true,
+    ` RE: Re: ${subject} `,
+  );
   const bridge = makeInbox(3, 3000, [
     "References: <a@example.net> <b@example.net>",
   ]);
@@ -812,9 +819,9 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
   const sent = {
     id: sentId,
     from: address,
-    to: "sender@example.net",
+    to: "outreach@example.net",
     subject: `Re: ${subject}`,
-    sentAt: 2500,
+    sentAt: 4500,
     text: "A saved reply.",
     providerMessageId: "<sent@example.net>",
     reply: { originalId: root.key },
@@ -857,6 +864,13 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
   expect((await call(conversationApi(root.key))).status).toBe(401);
   expect((await call(inboxUnreadPath)).status).toBe(401);
   const session = cookies(await signIn(password));
+  const customer = await call(
+    peopleApiPath,
+    { name: "Customer profile", addresses: ["customer@example.net"] },
+    session,
+  );
+  expect(customer.status).toBe(201);
+  const customerProfile = await customer.json();
   const get = async (path: string) => {
     const result = await call(path, undefined, session);
     expect(result.status).toBe(200);
@@ -871,11 +885,37 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
   });
   expect(await get(conversationsApiPath)).toMatchObject({
     messages: [
-      { id: separate.key, messageCount: 1, unreadCount: 1 },
-      { id: latest.key, messageCount: 5, unreadCount: 1 },
+      {
+        id: separate.key,
+        messageCount: 1,
+        unreadCount: 1,
+        profiles: [{ email: address, person: { self: true } }],
+      },
+      {
+        id: latest.key,
+        subject,
+        messageCount: 5,
+        unreadCount: 1,
+        receivedAt: 4000,
+        lastMessageAt: 4500,
+        participants: [
+          { address: "sender@example.net", name: "Project Lead" },
+          { address, name: "" },
+          { address: "customer@example.net", name: "Customer" },
+          { address: "reviewer@example.net", name: "Reviewer" },
+          { address: "outreach@example.net", name: "" },
+        ],
+        profiles: [
+          { email: address, person: { self: true } },
+          {
+            email: "customer@example.net",
+            person: { id: customerProfile.id, name: "Customer profile" },
+          },
+        ],
+      },
     ],
   });
-  const expected = [root.key, branch.key, sentId, bridge.key, latest.key];
+  const expected = [root.key, branch.key, bridge.key, latest.key, sentId];
   for (const anchor of [root.key, branch.key, sentId, latest.key]) {
     const thread = await get(conversationApi(anchor));
     expect(thread.messages.map(({ id }: { id: string }) => id)).toEqual(
@@ -943,12 +983,12 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
   expect(await get(conversationsApiPath)).toMatchObject({
     messages: [
       { id: separate.key, messageCount: 1 },
-      { id: bridge.key, messageCount: 4 },
+      { id: bridge.key, messageCount: 4, lastMessageAt: 4500 },
     ],
   });
   const updated = await get(conversationApi(root.key));
   expect(updated.messages.map(({ id }: { id: string }) => id)).toEqual(
-    expected.slice(0, -1),
+    expected.filter((id) => id !== latest.key),
   );
 });
 

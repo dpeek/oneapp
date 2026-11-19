@@ -32,6 +32,7 @@ import {
   MailFolder,
   MailMessageId,
   MailPage,
+  type MailPerson,
   mailMessageApi,
   mailMessagePage,
   replySubject,
@@ -44,6 +45,7 @@ import { unreadBadge } from "./navigation.ts";
 import {
   normalizePersonEmail,
   PersonEmail,
+  type PersonMatch,
   type PersonSummary,
 } from "./people-contract.ts";
 import { avatar } from "./people.ts";
@@ -147,6 +149,7 @@ export const Message = defineMessageUnion({
   RequestedMore: {},
   RetriedEntry: {},
   RetriedThread: {},
+  UpdatedProfiles: {},
   ToggledUnread: {},
   ToggledMessage: MessageLocation.fields,
   RequestedBack: {},
@@ -648,6 +651,8 @@ export const update = (
         : { model },
     RetriedEntry: () => loadEntry(model),
     RetriedThread: () => refreshThread(model),
+    UpdatedProfiles: () =>
+      withThread(model.folder === "inbox" ? refreshList(model) : { model }),
     ToggledUnread: () => {
       const entry = model.entry;
       return entry && "receivedAt" in entry
@@ -873,17 +878,108 @@ const messageTime = (h: HtmlBuilder<Message>, time: number) =>
     [messageDateFormat.format(time)],
   );
 
-const conversationCounts = (
-  message: (typeof MailPage.Type.messages)[number],
-) =>
-  "receivedAt" in message
-    ? [
-        ...((message.messageCount ?? 0) > 1
-          ? [`${message.messageCount} messages`]
-          : []),
-        ...(message.unreadCount ? [`${message.unreadCount} unread`] : []),
-      ].join(" · ")
-    : "";
+const participantTooltip = (
+  name: string,
+  address: string,
+  aliases: readonly string[],
+) => [name, address, ...aliases].filter(Boolean).join("\n") || "Unknown sender";
+
+const findProfiles = (matches: readonly PersonMatch[] | undefined) =>
+  new Map(matches?.map(({ email, person }) => [email, person]));
+
+const groupParticipants = (
+  participants: readonly MailPerson[],
+  profiles: ReadonlyMap<string, PersonSummary>,
+) => {
+  const groups = new Map<
+    string,
+    {
+      addresses: [string, ...string[]];
+      name: string;
+      person: PersonSummary | undefined;
+    }
+  >();
+  for (const { address, name } of participants) {
+    const email = normalizePersonEmail(address);
+    const person = profiles.get(email);
+    const key = person?.id ?? email;
+    const participant = groups.get(key);
+    if (participant) participant.addresses.push(address);
+    else
+      groups.set(key, {
+        addresses: [address],
+        name: person?.name || name,
+        person,
+      });
+  }
+  return [...groups];
+};
+
+const conversationRow = (
+  message: (typeof InboxPage.Type.messages)[number],
+  h: HtmlBuilder<Message>,
+) => {
+  const participants = groupParticipants(
+    message.participants ??
+      (message.from ? [{ address: message.from, name: "" }] : []),
+    findProfiles(message.profiles),
+  );
+  const timestamp = message.lastMessageAt ?? message.receivedAt;
+  const count = message.messageCount ?? 1;
+  const countLabel = `${count} ${count === 1 ? "message" : "messages"}${message.unreadCount ? `, ${message.unreadCount} unread` : ""}`;
+  return [
+    h.div(
+      [h.Class("inbox-conversation-summary")],
+      [
+        h.strong([], [conversationSubject([message])]),
+        h.span(
+          [
+            h.Class("inbox-conversation-count"),
+            h.Title(countLabel),
+            h.Role("img"),
+            h.AriaLabel(countLabel),
+          ],
+          [String(count)],
+        ),
+        h.time(
+          [
+            h.Datetime(new Date(timestamp).toISOString()),
+            h.Title(messageDateFormat.format(timestamp)),
+          ],
+          [compactMailTime(timestamp)],
+        ),
+      ],
+    ),
+    ...(participants.length
+      ? [
+          h.div(
+            [h.Class("inbox-list-avatars")],
+            participants.map(
+              ([
+                key,
+                {
+                  addresses: [address, ...aliases],
+                  name,
+                  person,
+                },
+              ]) => {
+                const tooltip = participantTooltip(name, address, aliases);
+                return h.span(
+                  [
+                    h.Key(key),
+                    h.Title(tooltip),
+                    h.Role("img"),
+                    h.AriaLabel(tooltip),
+                  ],
+                  [avatar(h, person, address, name)],
+                );
+              },
+            ),
+          ),
+        ]
+      : []),
+  ];
+};
 
 const listView = (model: Model, h: HtmlBuilder<Message>) =>
   h.section(
@@ -933,7 +1029,6 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
                   : h.ul(
                       [h.Class("inbox-messages")],
                       model.list.messages.map((message) => {
-                        const counts = conversationCounts(message);
                         const unread =
                           "receivedAt" in message &&
                           Boolean(message.unreadCount);
@@ -958,35 +1053,19 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
                                   ? [h.AriaCurrent("page")]
                                   : []),
                               ],
-                              [
-                                h.strong(
-                                  [],
-                                  [message.subject || "(No subject)"],
-                                ),
-                                "sentAt" in message
-                                  ? h.span(
+                              "sentAt" in message
+                                ? [
+                                    h.strong(
+                                      [],
+                                      [message.subject || "(No subject)"],
+                                    ),
+                                    h.span(
                                       [],
                                       [message.to || "Unknown recipient"],
-                                    )
-                                  : h.span(
-                                      [],
-                                      [message.from || "Unknown sender"],
                                     ),
-                                ...(counts
-                                  ? [
-                                      h.span(
-                                        [h.Class("inbox-message-counts")],
-                                        [counts],
-                                      ),
-                                    ]
-                                  : []),
-                                messageTime(
-                                  h,
-                                  "sentAt" in message
-                                    ? message.sentAt
-                                    : message.receivedAt,
-                                ),
-                              ],
+                                    messageTime(h, message.sentAt),
+                                  ]
+                                : conversationRow(message, h),
                             ),
                           ],
                         );
@@ -1210,8 +1289,7 @@ const profileAvatar = (
     editLabel: string;
   },
 ) => {
-  const tooltip =
-    [name, address, ...aliases].filter(Boolean).join("\n") || "Unknown sender";
+  const tooltip = participantTooltip(name, address, aliases);
   const picture = avatar(h, person, address, name);
   return isPersonEmail(address)
     ? h.button(
@@ -1236,30 +1314,8 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
     return h.div([h.Class("workspace-detail")], ["Select a message to read."]);
   const messages = readerMessages(model);
   const participants = conversationPeople(messages);
-  const profiles = new Map(
-    model.thread?.profiles?.map(({ email, person }) => [email, person]),
-  );
-  const participantAvatars = new Map<
-    string,
-    {
-      addresses: [string, ...string[]];
-      name: string;
-      person: PersonSummary | undefined;
-    }
-  >();
-  for (const { address, name } of participants) {
-    const email = normalizePersonEmail(address);
-    const person = profiles.get(email);
-    const key = person?.id ?? email;
-    const participant = participantAvatars.get(key);
-    if (participant) participant.addresses.push(address);
-    else
-      participantAvatars.set(key, {
-        addresses: [address],
-        name: person?.name || name,
-        person,
-      });
-  }
+  const profiles = findProfiles(model.thread?.profiles);
+  const participantAvatars = groupParticipants(participants, profiles);
   const latest = messages.at(-1);
   const grouped = messages.length > 1;
   return h.article(
@@ -1302,14 +1358,14 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
               [h.Class("inbox-conversation-heading")],
               [
                 h.h2([], [conversationSubject(messages)]),
-                ...(participantAvatars.size
+                ...(participantAvatars.length
                   ? [
                       h.ul(
                         [
                           h.Class("inbox-participant-avatars"),
                           h.AriaLabel("Participant profiles"),
                         ],
-                        [...participantAvatars].map(
+                        participantAvatars.map(
                           ([
                             key,
                             {

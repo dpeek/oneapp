@@ -48,12 +48,21 @@ const messageFields = {
   subject: Schema.String,
 };
 
+export const MailPerson = Schema.Struct({
+  address: Schema.String,
+  name: Schema.String,
+});
+export type MailPerson = typeof MailPerson.Type;
+
 export const InboxSummary = Schema.Struct({
   ...messageFields,
   id: InboxMessageId,
   receivedAt: Schema.Number,
   messageCount: Schema.optionalKey(Schema.Number),
   unreadCount: Schema.optionalKey(Schema.Number),
+  lastMessageAt: Schema.optionalKey(Schema.Number),
+  participants: Schema.optionalKey(Schema.Array(MailPerson)),
+  profiles: Schema.optionalKey(Schema.Array(PersonMatch)),
 });
 
 export const SentSummary = Schema.Struct({
@@ -121,11 +130,6 @@ export const replySubject = (original: string) => {
     .trimEnd();
 };
 
-export const MailPerson = Schema.Struct({
-  address: Schema.String,
-  name: Schema.String,
-});
-export type MailPerson = typeof MailPerson.Type;
 export const MailPeople = Schema.Struct({
   sender: Schema.NullOr(MailPerson),
   members: Schema.Array(MailPerson),

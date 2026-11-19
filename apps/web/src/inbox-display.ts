@@ -1,12 +1,14 @@
 import type { ConversationMessage, MailPerson } from "./inbox-contract.ts";
 
-export const conversationSubject = (messages: readonly ConversationMessage[]) =>
+export const conversationSubject = (
+  messages: readonly Pick<ConversationMessage, "subject">[],
+) =>
   messages
     .map(({ subject }) => subject.replace(/^(?:\s*re\s*:\s*)+/iu, "").trim())
     .find(Boolean) || "(No subject)";
 
 export const conversationPeople = (
-  messages: readonly ConversationMessage[],
+  messages: readonly Pick<ConversationMessage, "people">[],
 ) => {
   const people = new Map<string, MailPerson>();
   for (const message of messages) {

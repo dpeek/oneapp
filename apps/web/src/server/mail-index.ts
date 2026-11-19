@@ -6,6 +6,7 @@ import {
   type ConversationMessage,
   type MailFolder,
 } from "../inbox-contract.ts";
+import { conversationPeople, conversationSubject } from "../inbox-display.ts";
 import { mailPeople } from "./mail-people.ts";
 
 export type IndexedMail = ConversationMessage & {
@@ -179,6 +180,33 @@ export const inboxThreadCursor = (cursor: string | undefined) => {
     : null;
 };
 
+type IndexedThreadMember = Pick<
+  ConversationMessage,
+  "from" | "to" | "subject" | "timestamp"
+> & {
+  people: string | null;
+};
+
+const decodePeople = Schema.decodeUnknownOption(
+  Schema.fromJsonString(MailPeople),
+);
+
+const withPeople = <
+  Message extends { from: string; to: string; people: string | null },
+>({
+  people,
+  ...message
+}: Message) => {
+  const decoded = decodePeople(people);
+  return {
+    ...message,
+    people:
+      decoded._tag === "Some"
+        ? decoded.value
+        : mailPeople(() => undefined, message.from, message.to),
+  };
+};
+
 export const listInboxThreads = async (
   db: D1Database,
   cursor: NonNullable<ReturnType<typeof inboxThreadCursor>>,
@@ -187,8 +215,12 @@ export const listInboxThreads = async (
     .prepare(
       `
     SELECT m.id, m.sender AS "from", m.subject, m.timestamp AS receivedAt,
-           (SELECT count(*) FROM mail_index_messages member
-            WHERE member.thread_id = m.thread_id AND member.deleted = 0) AS messageCount,
+           (SELECT json_group_array(json_object(
+              'from', member.sender, 'to', member.recipient, 'subject', member.subject,
+              'timestamp', member.timestamp, 'people', member.people
+            ) ORDER BY member.timestamp, member.id)
+            FROM mail_index_messages member
+            WHERE member.thread_id = m.thread_id AND member.deleted = 0) AS metadata,
            (SELECT count(*) FROM mail_index_messages member
             WHERE member.thread_id = m.thread_id AND member.folder = 'inbox'
               AND member.deleted = 0 AND member.unread = 1) AS unreadCount
@@ -209,10 +241,21 @@ export const listInboxThreads = async (
       from: string;
       subject: string;
       receivedAt: number;
-      messageCount: number;
+      metadata: string;
       unreadCount: number;
     }>();
-  const messages = results.slice(0, pageSize);
+  const messages = results.slice(0, pageSize).map(({ metadata, ...row }) => {
+    const members = (JSON.parse(metadata) as IndexedThreadMember[]).map(
+      withPeople,
+    );
+    return {
+      ...row,
+      subject: conversationSubject(members),
+      lastMessageAt: members.at(-1)?.timestamp ?? row.receivedAt,
+      messageCount: members.length,
+      participants: conversationPeople(members),
+    };
+  });
   const last = messages.at(-1);
   return {
     messages,
@@ -222,10 +265,6 @@ export const listInboxThreads = async (
         : null,
   };
 };
-
-const decodePeople = Schema.decodeUnknownOption(
-  Schema.fromJsonString(MailPeople),
-);
 
 export const readThread = async (db: D1Database, id: string) => {
   const { results } = await db
@@ -246,17 +285,10 @@ export const readThread = async (db: D1Database, id: string) => {
       }
     >();
   return {
-    messages: results.map(({ unread, people, ...message }) => {
-      const decoded = decodePeople(people);
-      return {
-        ...message,
-        unread: unread === 1,
-        people:
-          decoded._tag === "Some"
-            ? decoded.value
-            : mailPeople(() => undefined, message.from, message.to),
-      };
-    }),
+    messages: results.map(({ unread, ...message }) => ({
+      ...withPeople(message),
+      unread: unread === 1,
+    })),
   };
 };
 

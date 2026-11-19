@@ -4,6 +4,7 @@ import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import {
   normalizePersonEmail,
   peopleApiPath,
+  PeopleList,
   Person,
   PersonDraft,
   PersonEmail,
@@ -15,6 +16,7 @@ import {
 import { jsonError, privateHeaders } from "./api-response.ts";
 import { AppAuth, ownerId, type authHttp } from "./auth.ts";
 import {
+  listPeople,
   managedPersonAddresses,
   matchPeople,
   readProfile,
@@ -29,7 +31,7 @@ type PeopleEnv = Pick<
 
 const isId = Schema.is(PersonId);
 const queryByEmail = HttpServerRequest.schemaSearchParams(
-  Schema.Struct({ email: PersonEmail }),
+  Schema.Struct({ email: Schema.optionalKey(PersonEmail) }),
 );
 const requireOwner = Effect.gen(function* () {
   const auth = yield* AppAuth;
@@ -223,13 +225,19 @@ export const peopleRoutes = (
         const query = yield* queryByEmail.pipe(Effect.option);
         if (query._tag === "None")
           return yield* jsonError(400, "Enter a valid email address.");
-        const person = yield* Effect.tryPromise(async () => {
-          const addresses = await managed();
-          const [match] = await matchPeople(
-            env.DB,
-            [query.value.email],
-            addresses,
+        const { email } = query.value;
+        const addresses = yield* Effect.tryPromise(managed);
+        if (email === undefined) {
+          const people = yield* Effect.tryPromise(() =>
+            listPeople(env.DB, addresses),
           );
+          return yield* HttpServerResponse.schemaJson(PeopleList)(
+            { people },
+            { headers: privateHeaders },
+          );
+        }
+        const person = yield* Effect.tryPromise(async () => {
+          const [match] = await matchPeople(env.DB, [email], addresses);
           return match ? readProfile(env.DB, match.person.id, addresses) : null;
         });
         return yield* HttpServerResponse.schemaJson(PersonLookup)(

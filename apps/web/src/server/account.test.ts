@@ -280,10 +280,21 @@ it("shares private people profiles across aliases and keeps account addresses li
     });
 
   expect((await call(selfProfilePath)).status).toBe(401);
+  expect((await call(peopleApiPath)).status).toBe(401);
   expect((await call(personLookupPath(mailbox))).status).toBe(401);
-  const self: Person = await (
-    await call(selfProfilePath, undefined, session)
-  ).json();
+  const list = async () => {
+    const response = await call(peopleApiPath, undefined, session);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    return (await response.json()).people as Person[];
+  };
+  const [self] = await list();
+  if (!self)
+    throw new Error("The directory did not include the account profile");
+  expect(await list()).toEqual([self]);
+  expect(
+    await (await call(selfProfilePath, undefined, session)).json(),
+  ).toEqual(self);
   expect(self).toMatchObject({
     self: true,
     addresses: [],
@@ -324,6 +335,20 @@ it("shares private people profiles across aliases and keeps account addresses li
   expect(create.status).toBe(201);
   const person: Person = await create.json();
   expect(await lookup(addresses[1])).toEqual(person);
+  const directory = await list();
+  expect(directory).toHaveLength(2);
+  expect(directory).toEqual(
+    expect.arrayContaining([
+      person,
+      {
+        ...(await updatedSelf.json()),
+        managedAddresses: [mailbox, email],
+      },
+    ]),
+  );
+  expect(
+    (await call(`${peopleApiPath}?email=`, undefined, session)).status,
+  ).toBe(400);
   const photoPath = personPhotoPath(person.id, person.photo!);
   expect((await call(photoPath)).status).toBe(401);
   const image = await call(photoPath, undefined, session);

@@ -892,7 +892,8 @@ oneapp-vault-reader {
 }
 
 .settings-profile-row .person-avatar,
-.person-photo-preview .person-avatar {
+.person-photo-preview .person-avatar,
+.people-detail-header .person-avatar {
   inline-size: 2.5rem;
   block-size: 2.5rem;
   font-size: 0.875rem;
@@ -1003,17 +1004,17 @@ oneapp-vault-reader {
   overflow-wrap: anywhere;
 }
 
-.person-dialog label {
+.person-fields label {
   display: grid;
   gap: 0.375rem;
 }
 
-.person-dialog input[type="file"] {
+.person-fields input[type="file"] {
   max-inline-size: 100%;
   min-inline-size: 0;
 }
 
-.person-dialog .person-photo-remove {
+.person-fields .person-photo-remove {
   display: flex;
   align-items: center;
 }
@@ -1022,6 +1023,97 @@ oneapp-vault-reader {
   display: flex;
   justify-content: flex-end;
   gap: 0.5rem;
+}
+
+.people-list-header {
+  justify-content: flex-end;
+}
+
+.people-detail-header h2 {
+  margin: 0;
+}
+
+.people-list-status {
+  padding-inline: 0.875rem;
+}
+
+.people-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.workspace .people-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.7rem 0.875rem;
+  border-block-end: 1px solid var(--border);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.people-row > span:last-child {
+  display: grid;
+  gap: 0.25rem;
+  overflow-wrap: anywhere;
+}
+
+.people-row > span > span {
+  color: var(--muted);
+}
+
+.people-row:focus-visible {
+  outline-offset: -2px;
+}
+
+.people-row:is(:hover, [aria-current="page"]) {
+  background: var(--selected);
+}
+
+.workspace .people-row[aria-current="page"] {
+  color: var(--accent);
+}
+
+.people-detail-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-block: 1rem;
+}
+
+.people-detail-header h2 {
+  flex: 1;
+  min-inline-size: 0;
+}
+
+.people-detail .person-fields {
+  max-inline-size: 30rem;
+}
+
+.people-self {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.people-addresses {
+  margin-block: 1rem;
+}
+
+.people-addresses h3 {
+  margin-block: 0 0.375rem;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+.people-addresses ul {
+  display: grid;
+  gap: 0.375rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 .page a {
@@ -1424,7 +1516,7 @@ button {
   gap: 0.375rem;
 }
 
-:is(.inbox-compose-dialog, .person-dialog) textarea {
+:is(.inbox-compose-dialog, .person-fields) textarea {
   box-sizing: border-box;
   width: 100%;
   padding: 0.65rem;

@@ -29,13 +29,16 @@ import { navigationView } from "./navigation.ts";
 import * as PasswordRecovery from "./password-recovery.ts";
 import { forgotPasswordPage } from "./password-recovery-contract.ts";
 import * as People from "./people.ts";
+import { PeopleRoute, peopleRouteFor } from "./people-contract.ts";
+import * as PeopleDirectory from "./people-directory.ts";
 import { vaultPath } from "./vault-setup-contract.ts";
 import * as VaultSetup from "./vault-setup.ts";
 
-const Page = Schema.Literals(["links", "inbox", "vault", "settings"]);
+const Page = Schema.Literals(["links", "inbox", "vault", "people", "settings"]);
 type Page = typeof Page.Type;
 const pageFor = (url: Url.Url): Page => {
   if (Inbox.routeFor(url.pathname)) return "inbox";
+  if (peopleRouteFor(url.pathname)) return "people";
   if (url.pathname === vaultPath || url.pathname === `${vaultPath}/`)
     return "vault";
   return url.pathname === "/settings" ||
@@ -54,6 +57,7 @@ const Model = Schema.Struct({
   inbox: Inbox.Model,
   people: People.Model,
   mailRoute: Schema.NullOr(Inbox.MailRoute),
+  peopleRoute: Schema.NullOr(PeopleRoute),
   signInNotice: Schema.NullOr(Schema.String),
   links: Schema.NullOr(LinkList),
   linkUrl: Schema.String,
@@ -340,7 +344,10 @@ const subscriptions = Subscription.make<Model, Message>()((entry) => ({
   ),
 }));
 
-const loadPage = (model: Model): Update.Return<Model, Message> => {
+const loadPage = (
+  model: Model,
+  previousPage?: Page,
+): Update.Return<Model, Message> => {
   if (!model.account || isApproval(model)) return { model };
   if (model.page === "links") {
     return model.pending || model.links !== null
@@ -354,6 +361,14 @@ const loadPage = (model: Model): Update.Return<Model, Message> => {
     return foldVaultSetup(model, VaultSetup.Message.Requested());
   if (model.mailRoute)
     return foldInbox(model, Inbox.Message.Opened(model.mailRoute));
+  if (model.peopleRoute)
+    return foldPeople(
+      model,
+      People.Message.VisitedDirectory({
+        id: model.peopleRoute.id,
+        refresh: previousPage !== "people",
+      }),
+    );
   const profile = foldPeople(model, People.Message.RequestedSelf());
   const clients = foldConnectedClients(
     profile.model,
@@ -376,6 +391,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     inbox: Inbox.initial,
     people: People.initial,
     mailRoute: Inbox.routeFor(url.pathname),
+    peopleRoute: peopleRouteFor(url.pathname),
     signInNotice: null,
     links: null,
     linkUrl: "",
@@ -410,7 +426,8 @@ const update = (
         (request.url.pathname === "/links" ||
           request.url.pathname === "/settings" ||
           request.url.pathname === vaultPath ||
-          pageFor(request.url) === "inbox")
+          Inbox.routeFor(request.url.pathname) ||
+          peopleRouteFor(request.url.pathname))
       ) {
         if (request.url.pathname === window.location.pathname) return { model };
         return {
@@ -427,11 +444,16 @@ const update = (
     ChangedUrl: ({ url }) => {
       const page = pageFor(url);
       const mailRoute = Inbox.routeFor(url.pathname);
+      const peopleRoute = peopleRouteFor(url.pathname);
       return page === model.page &&
         mailRoute?.folder === model.mailRoute?.folder &&
-        mailRoute?.id === model.mailRoute?.id
+        mailRoute?.id === model.mailRoute?.id &&
+        peopleRoute?.id === model.peopleRoute?.id
         ? { model }
-        : loadPage({ ...model, page, mailRoute, error: null });
+        : loadPage(
+            { ...model, page, mailRoute, peopleRoute, error: null },
+            model.page,
+          );
     },
     NavigationFinished: () => ({ model }),
     RetriedSessionCheck: () =>
@@ -467,6 +489,7 @@ const update = (
         inbox: Inbox.initial,
         people: People.initial,
         mailRoute: model.mailRoute,
+        peopleRoute: model.peopleRoute,
         signInNotice: null,
         links: null,
         linkUrl: "",
@@ -723,16 +746,23 @@ const update = (
     }),
     GotVaultSetupMessage: ({ message }) => foldVaultSetup(model, message),
     GotPeopleMessage: ({ message }) => {
-      const { selfRequest, loadRequest, saveRequest } = model.people;
+      const { selfRequest, loadRequest, saveRequest, directory } = model.people;
       if (
         message._tag === "SessionExpired" &&
-        [selfRequest, loadRequest, saveRequest].includes(message.request)
+        [
+          selfRequest,
+          loadRequest,
+          saveRequest,
+          directory.listRequest,
+          directory.editRequest,
+        ].includes(message.request)
       )
         return update(model, Message.LoadedAccount({ account: null }));
       const result = foldPeople(model, message);
       if (
         message._tag !== "Saved" ||
-        message.request !== saveRequest ||
+        (message.request !== saveRequest &&
+          message.request !== directory.editRequest) ||
         model.page !== "inbox"
       )
         return result;
@@ -1057,6 +1087,7 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
     links: "Links",
     inbox: "Inbox",
     vault: "Vault",
+    people: "People",
     settings: "Settings",
   }[model.page];
   return {
@@ -1084,6 +1115,13 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
                   view: VaultSetup.view,
                   model: model.vaultSetup,
                   toParentMessage: toVaultSetupMessage,
+                }),
+              people: () =>
+                h.submodel({
+                  slotId: "people-directory",
+                  view: PeopleDirectory.view,
+                  model: model.people.directory,
+                  toParentMessage: toPeopleMessage,
                 }),
               settings: () => settingsView(model, h),
             }[model.page](),

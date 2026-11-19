@@ -2,6 +2,8 @@ import { Schema as AuthSchema } from "@yielded/auth";
 import { Schema } from "effect";
 
 export const peopleApiPath = "/api/people";
+export const peoplePath = "/people";
+export const personPath = (id: string) => `${peoplePath}/${id}`;
 export const selfProfilePath = `${peopleApiPath}/me`;
 export const personApiPath = (id: string) => `${peopleApiPath}/${id}`;
 export const personPhotoPath = (id: string, key: string) =>
@@ -16,6 +18,17 @@ export const profilePhotoSize = 256;
 export const PersonId = Schema.String.check(
   Schema.isPattern(/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/u),
 );
+export const PeopleRoute = Schema.Struct({ id: Schema.NullOr(PersonId) });
+const isPersonId = Schema.is(PersonId);
+export const peopleRouteFor = (
+  pathname: string,
+): typeof PeopleRoute.Type | null => {
+  const path = pathname.replace(/\/$/u, "");
+  if (path === peoplePath) return { id: null };
+  if (!path.startsWith(`${peoplePath}/`)) return null;
+  const id = path.slice(peoplePath.length + 1);
+  return isPersonId(id) ? { id } : null;
+};
 
 export const normalizePersonEmail = (email: string) =>
   email.trim().toLowerCase();
@@ -40,6 +53,7 @@ export const Person = Schema.Struct({
   managedAddresses: Schema.Array(Schema.String),
 });
 export type Person = typeof Person.Type;
+export const PeopleList = Schema.Struct({ people: Schema.Array(Person) });
 
 export const PersonLookup = Schema.Struct({
   person: Schema.NullOr(Person),

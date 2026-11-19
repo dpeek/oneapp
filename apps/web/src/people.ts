@@ -5,6 +5,8 @@ import { defineMessageUnion } from "foldkit/message";
 import * as Mount from "foldkit/mount";
 import {
   peopleApiPath,
+  PeopleList,
+  PeopleRoute,
   Person,
   personAddressLimit,
   personApiPath,
@@ -28,6 +30,15 @@ export const Model = Schema.Struct({
   loadRequest: Schema.NullOr(Schema.String),
   saveRequest: Schema.NullOr(Schema.String),
   error: Schema.NullOr(Schema.String),
+  directory: Schema.Struct({
+    selected: PeopleRoute.fields.id,
+    records: Schema.NullOr(PeopleList.fields.people),
+    listRequest: Schema.NullOr(Schema.String),
+    listFailed: Schema.Boolean,
+    edit: Schema.NullOr(Person),
+    editRequest: Schema.NullOr(Schema.String),
+    editError: Schema.NullOr(Schema.String),
+  }),
 });
 type Model = typeof Model.Type;
 export const initial: Model = {
@@ -40,6 +51,15 @@ export const initial: Model = {
   loadRequest: null,
   saveRequest: null,
   error: null,
+  directory: {
+    selected: null,
+    records: null,
+    listRequest: null,
+    listFailed: false,
+    edit: null,
+    editRequest: null,
+    editError: null,
+  },
 };
 
 export const Message = defineMessageUnion({
@@ -53,10 +73,18 @@ export const Message = defineMessageUnion({
   Saved: { request: Schema.String, person: Person },
   Failed: { request: Schema.String, error: Schema.String },
   SessionExpired: { request: Schema.String },
+  VisitedDirectory: { ...PeopleRoute.fields, refresh: Schema.Boolean },
+  RetriedDirectory: {},
+  LoadedDirectory: { request: Schema.String, ...PeopleList.fields },
+  DirectoryFailed: { request: Schema.String },
+  EditedRecord: {},
+  CanceledEdit: {},
+  SubmittedEdit: {},
 });
 type Message = typeof Message.Type;
 
 const formId = "person-profile-form";
+const editFormId = "person-directory-edit";
 const decodeError = Schema.decodeUnknownOption(
   Schema.Struct({ error: Schema.String }),
 );
@@ -90,6 +118,30 @@ const Load = Command.define("LoadPersonProfile", {
           }),
         ),
       ),
+    ),
+});
+
+const LoadDirectory = Command.define("LoadPeopleDirectory", {
+  args: { request: Schema.String },
+  messages: [
+    Message.LoadedDirectory,
+    Message.DirectoryFailed,
+    Message.SessionExpired,
+  ],
+  execute: ({ request }) =>
+    Effect.tryPromise(async (signal) => {
+      const response = await fetch(peopleApiPath, {
+        cache: "no-store",
+        signal,
+      });
+      if (response.status === 401) return Message.SessionExpired({ request });
+      if (!response.ok) return Message.DirectoryFailed({ request });
+      return Message.LoadedDirectory({
+        request,
+        ...Schema.decodeUnknownSync(PeopleList)(await response.json()),
+      });
+    }).pipe(
+      Effect.catch(() => Effect.succeed(Message.DirectoryFailed({ request }))),
     ),
 });
 
@@ -127,9 +179,13 @@ const photoFor = async (file: File) => {
 };
 
 const Save = Command.define("SavePersonProfile", {
-  args: { request: Schema.String, person: Schema.NullOr(Person) },
+  args: {
+    request: Schema.String,
+    person: Schema.NullOr(Person),
+    formId: Schema.String,
+  },
   messages: [Message.Saved, Message.Failed, Message.SessionExpired],
-  execute: ({ request, person }) =>
+  execute: ({ request, person, formId }) =>
     Effect.promise(async (signal) => {
       const fail = (error: string) => Message.Failed({ request, error });
       try {
@@ -203,11 +259,27 @@ const loadDialog = (model: Model): Update.Return<Model, Message> => {
   };
 };
 
+const loadDirectory = (model: Model): Update.Return<Model, Message> => {
+  const request = crypto.randomUUID();
+  return {
+    model: {
+      ...model,
+      directory: {
+        ...model.directory,
+        listRequest: request,
+        listFailed: false,
+      },
+    },
+    commands: [LoadDirectory({ request })],
+  };
+};
+
 export const update = (
   model: Model,
   message: Message,
-): Update.Return<Model, Message> =>
-  Message.match<Update.Return<Model, Message>>(message, {
+): Update.Return<Model, Message> => {
+  const directory = model.directory;
+  return Message.match<Update.Return<Model, Message>>(message, {
     RequestedSelf: () => {
       if (model.selfRequest) return { model };
       const request = crypto.randomUUID();
@@ -223,6 +295,7 @@ export const update = (
             ...initial,
             self: model.self,
             selfRequest: model.selfRequest,
+            directory,
             opened: true,
             address,
           }),
@@ -234,6 +307,7 @@ export const update = (
               ...initial,
               self: model.self,
               selfRequest: model.selfRequest,
+              directory,
             },
           },
     Mounted: () => ({ model }),
@@ -258,20 +332,43 @@ export const update = (
       const request = crypto.randomUUID();
       return {
         model: { ...model, saveRequest: request, error: null },
-        commands: [Save({ request, person: model.person })],
+        commands: [Save({ request, person: model.person, formId })],
       };
     },
-    Saved: ({ request, person }) =>
-      request !== model.saveRequest
-        ? { model }
-        : {
-            model: {
-              ...initial,
-              self: person.self ? person : model.self,
-              selfRequest: person.self ? null : model.selfRequest,
+    Saved: ({ request, person }) => {
+      const editing = request === directory.editRequest;
+      if (!editing && request !== model.saveRequest) return { model };
+      const records = directory.records
+        ? [...directory.records.filter(({ id }) => id !== person.id), person]
+        : null;
+      return {
+        model: {
+          ...(editing ? model : initial),
+          self: person.self ? person : model.self,
+          selfRequest: person.self ? null : model.selfRequest,
+          directory: {
+            ...directory,
+            records,
+            listRequest: records ? null : directory.listRequest,
+            ...(editing
+              ? { edit: null, editRequest: null, editError: null }
+              : {}),
+          },
+        },
+      };
+    },
+    Failed: ({ request, error }) => {
+      if (request === directory.editRequest)
+        return {
+          model: {
+            ...model,
+            directory: {
+              ...directory,
+              editRequest: null,
+              editError: directory.edit ? error : null,
             },
           },
-    Failed: ({ request, error }) => {
+        };
       if (request === model.selfRequest)
         return { model: { ...model, selfRequest: null } };
       if (request !== model.loadRequest && request !== model.saveRequest)
@@ -281,7 +378,73 @@ export const update = (
       };
     },
     SessionExpired: () => ({ model }),
+    VisitedDirectory: ({ id, refresh }) => {
+      const next = {
+        ...model,
+        directory: { ...directory, selected: id, edit: null, editError: null },
+      };
+      return refresh || directory.records === null
+        ? loadDirectory(next)
+        : { model: next };
+    },
+    RetriedDirectory: () => loadDirectory(model),
+    LoadedDirectory: ({ request, people }) =>
+      request !== directory.listRequest
+        ? { model }
+        : {
+            model: {
+              ...model,
+              directory: { ...directory, records: people, listRequest: null },
+            },
+          },
+    DirectoryFailed: ({ request }) =>
+      request !== directory.listRequest
+        ? { model }
+        : {
+            model: {
+              ...model,
+              directory: { ...directory, listRequest: null, listFailed: true },
+            },
+          },
+    EditedRecord: () => {
+      const edit = directory.records?.find(
+        ({ id }) => id === directory.selected,
+      );
+      if (
+        !edit ||
+        directory.edit ||
+        directory.editRequest ||
+        directory.listRequest
+      )
+        return { model };
+      return {
+        model: { ...model, directory: { ...directory, edit, editError: null } },
+      };
+    },
+    CanceledEdit: () =>
+      directory.editRequest
+        ? { model }
+        : {
+            model: {
+              ...model,
+              directory: { ...directory, edit: null, editError: null },
+            },
+          },
+    SubmittedEdit: () => {
+      if (!directory.edit || directory.editRequest) return { model };
+      const request = crypto.randomUUID();
+      return {
+        model: {
+          ...model,
+          directory: { ...directory, editRequest: request, editError: null },
+        },
+        commands: [
+          Save({ request, person: directory.edit, formId: editFormId }),
+        ],
+      };
+    },
   });
+};
 
 const OpenDialog = Mount.define("OpenPersonProfileDialog", {
   messages: [Message.Mounted],
@@ -335,12 +498,106 @@ export const avatar = <Message>(
   );
 };
 
+const profileForm = (
+  h: HtmlBuilder<Message>,
+  person: typeof Person.Type | null,
+  address: string | null,
+  pending: boolean,
+  options: { formId: string; submit: Message; cancel: Message },
+) => {
+  const emails = person?.addresses ?? (address ? [address] : []);
+  return h.form(
+    [
+      h.Id(options.formId),
+      h.Class("person-fields"),
+      h.OnSubmit(options.submit),
+      h.OnMount(
+        PrepareForm({
+          name: person?.name ?? "",
+          addresses: emails.join("\n"),
+        }),
+      ),
+    ],
+    [
+      h.label(
+        [],
+        [
+          "Display name",
+          h.input([
+            h.Name("name"),
+            h.Type("text"),
+            h.Maxlength(personNameLimit),
+            h.Readonly(pending),
+          ]),
+        ],
+      ),
+      h.label(
+        [],
+        [
+          "Email addresses",
+          h.textarea([
+            h.Name("addresses"),
+            h.Rows(3),
+            h.Readonly(pending),
+            h.Placeholder("One address per line"),
+          ]),
+        ],
+      ),
+      h.label(
+        [],
+        [
+          "Profile photo",
+          h.input([
+            h.Name("photo"),
+            h.Type("file"),
+            h.Accept("image/jpeg,image/png,image/webp"),
+          ]),
+        ],
+      ),
+      ...(person?.photo
+        ? [
+            h.label(
+              [h.Class("person-photo-remove")],
+              [
+                h.input([h.Type("checkbox"), h.Name("removePhoto")]),
+                "Remove photo",
+              ],
+            ),
+          ]
+        : []),
+      h.div(
+        [h.Class("person-actions")],
+        [
+          h.button(
+            [h.Type("button"), h.Disabled(pending), h.OnClick(options.cancel)],
+            ["Cancel"],
+          ),
+          h.button(
+            [h.Type("submit"), h.Disabled(pending)],
+            [pending ? "Saving…" : "Save"],
+          ),
+        ],
+      ),
+    ],
+  );
+};
+
+export const editForm = (
+  h: HtmlBuilder<Message>,
+  person: typeof Person.Type,
+  pending: boolean,
+) =>
+  profileForm(h, person, null, pending, {
+    formId: editFormId,
+    submit: Message.SubmittedEdit(),
+    cancel: Message.CanceledEdit(),
+  });
+
 export const view = Submodel.defineView<Model, Message>((model, h) => {
   if (!model.opened) return h.div([], []);
   const { person, address } = model;
   const heading = person?.self || !address ? "Your profile" : "Person profile";
   const pending = model.saveRequest !== null;
-  const emails = person?.addresses ?? (address ? [address] : []);
   return h.dialog(
     [
       h.Class("person-dialog"),
@@ -390,83 +647,11 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
                   ),
                 ]
               : []),
-            h.form(
-              [
-                h.Id(formId),
-                h.OnSubmit(Message.Submitted()),
-                h.OnMount(
-                  PrepareForm({
-                    name: person?.name ?? "",
-                    addresses: emails.join("\n"),
-                  }),
-                ),
-              ],
-              [
-                h.label(
-                  [],
-                  [
-                    "Display name",
-                    h.input([
-                      h.Name("name"),
-                      h.Type("text"),
-                      h.Maxlength(personNameLimit),
-                      h.Readonly(pending),
-                    ]),
-                  ],
-                ),
-                h.label(
-                  [],
-                  [
-                    "Email addresses",
-                    h.textarea([
-                      h.Name("addresses"),
-                      h.Rows(3),
-                      h.Readonly(pending),
-                      h.Placeholder("One address per line"),
-                    ]),
-                  ],
-                ),
-                h.label(
-                  [],
-                  [
-                    "Profile photo",
-                    h.input([
-                      h.Name("photo"),
-                      h.Type("file"),
-                      h.Accept("image/jpeg,image/png,image/webp"),
-                    ]),
-                  ],
-                ),
-                ...(person?.photo
-                  ? [
-                      h.label(
-                        [h.Class("person-photo-remove")],
-                        [
-                          h.input([h.Type("checkbox"), h.Name("removePhoto")]),
-                          "Remove photo",
-                        ],
-                      ),
-                    ]
-                  : []),
-                h.div(
-                  [h.Class("person-actions")],
-                  [
-                    h.button(
-                      [
-                        h.Type("button"),
-                        h.Disabled(pending),
-                        h.OnClick(Message.Closed()),
-                      ],
-                      ["Cancel"],
-                    ),
-                    h.button(
-                      [h.Type("submit"), h.Disabled(pending)],
-                      [pending ? "Saving…" : "Save"],
-                    ),
-                  ],
-                ),
-              ],
-            ),
+            profileForm(h, person, address, pending, {
+              formId,
+              submit: Message.Submitted(),
+              cancel: Message.Closed(),
+            }),
           ]),
     ],
   );

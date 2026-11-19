@@ -63,26 +63,47 @@ const summary = (row: PersonRow) => ({
   self: row.accountId === ownerId,
 });
 
-const describe = async (
-  db: PeopleDb,
+const withAddresses = (
   row: PersonRow,
+  emails: string[],
   managed: string[],
-): Promise<Person> => {
+): Person => {
+  const managedAddresses = row.accountId === ownerId ? managed : [];
+  return {
+    ...summary(row),
+    revision: row.revision,
+    addresses: emails.filter((email) => !managedAddresses.includes(email)),
+    managedAddresses,
+  };
+};
+
+const describe = async (db: PeopleDb, row: PersonRow, managed: string[]) => {
   const { results } = await db
     .prepare(
       "SELECT email FROM person_addresses WHERE person_id = ? ORDER BY email",
     )
     .bind(row.id)
     .all<{ email: string }>();
-  const managedAddresses = row.accountId === ownerId ? managed : [];
-  return {
-    ...summary(row),
-    revision: row.revision,
-    addresses: results
-      .map(({ email }) => email)
-      .filter((email) => !managedAddresses.includes(email)),
-    managedAddresses,
-  };
+  return withAddresses(
+    row,
+    results.map(({ email }) => email),
+    managed,
+  );
+};
+
+export const listPeople = async (db: PeopleDb, managed: string[]) => {
+  await ensureSelf(db);
+  const { results } = await db
+    .prepare(
+      `SELECT p.id, p.account_id AS accountId, p.name, p.photo, p.revision,
+         json_group_array(a.email ORDER BY a.email) FILTER (WHERE a.email IS NOT NULL) AS emails
+       FROM people p LEFT JOIN person_addresses a ON a.person_id = p.id
+       GROUP BY p.id`,
+    )
+    .all<PersonRow & { emails: string }>();
+  return results.map((row) =>
+    withAddresses(row, JSON.parse(row.emails), managed),
+  );
 };
 
 export const readProfile = async (

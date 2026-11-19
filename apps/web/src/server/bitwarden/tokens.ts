@@ -1,6 +1,7 @@
 import { Base64Url } from "effect/encoding";
 
-export const browserClient = "browser";
+export const bitwardenClients = ["browser", "desktop"] as const;
+export type BitwardenClient = (typeof bitwardenClients)[number];
 export const bitwardenScope = "api offline_access";
 export const accessLifetimeSeconds = 360;
 export const deviceLifetimeMillis = 30 * 24 * 60 * 60 * 1000;
@@ -9,6 +10,7 @@ const encoder = new TextEncoder();
 export const randomSecret = () =>
   Base64Url.encode(crypto.getRandomValues(new Uint8Array(32)));
 export type GrantIdentity = {
+  clientId: BitwardenClient;
   id: string;
   vaultId: string;
   deviceId: string;
@@ -52,7 +54,7 @@ export const issueGrant = async (
     email_verified: identity.emailVerified === 1,
     premium: false,
     device: identity.deviceId,
-    client_id: browserClient,
+    client_id: identity.clientId,
     scope: bitwardenScope.split(" "),
     amr: ["Application", "external"],
   })}`;

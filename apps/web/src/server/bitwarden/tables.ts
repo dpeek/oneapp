@@ -1,5 +1,6 @@
 import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { personalVaults } from "../vault/tables.ts";
+import { bitwardenClients } from "./tokens.ts";
 
 export const bitwardenAuthorizations = sqliteTable(
   "bitwarden_authorizations",
@@ -9,6 +10,9 @@ export const bitwardenAuthorizations = sqliteTable(
       .notNull()
       .references(() => personalVaults.id, { onDelete: "cascade" }),
     browserSessionId: text("browser_session_id").notNull(),
+    clientId: text("client_id", { enum: bitwardenClients })
+      .notNull()
+      .default("browser"),
     securityRevision: text("security_revision").notNull(),
     consentDigest: text("consent_digest").unique(),
     codeDigest: text("code_digest").unique(),
@@ -28,6 +32,9 @@ export const bitwardenDeviceSessions = sqliteTable(
       .references(() => personalVaults.id, { onDelete: "cascade" }),
     deviceId: text("device_id").notNull(),
     deviceName: text("device_name"),
+    clientId: text("client_id", { enum: bitwardenClients })
+      .notNull()
+      .default("browser"),
     securityRevision: text("security_revision").notNull(),
     email: text().notNull(),
     emailVerified: integer("email_verified", { mode: "boolean" }).notNull(),

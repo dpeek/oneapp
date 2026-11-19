@@ -802,6 +802,120 @@ it("recovers only a verified address with a single-use link and revokes browser 
   }
 }, 20_000);
 
+it("authorizes Bitwarden Desktop and binds its code and refresh token to the desktop client", async () => {
+  using sqlite = new Database(":memory:");
+  const { request, signIn, cookies } = await setup(sqlite);
+  const origin = "https://oneapp.example";
+  const cookie = cookies(await signIn(password));
+  sqlite.run(
+    `INSERT INTO personal_vaults (id, owner_id, kdf_salt, kdf_iterations, wrapped_key,
+      key_id, wrapped_private_key, public_key, created_at, revision_at)
+     VALUES (?, 'owner', ?, 600000, 'wrapped', ?, 'private', 'public', 1, 1)`,
+    [crypto.randomUUID(), email, "0".repeat(32)],
+  );
+
+  const callback = "bitwarden://sso-callback";
+  const browserCallback = `${origin}/sso-connector.html`;
+  const state = "s".repeat(64);
+  const verifier = "v".repeat(64);
+  const authorize = "/identity/connect/authorize";
+  const query = new URLSearchParams({
+    client_id: "desktop",
+    redirect_uri: callback,
+    response_type: "code",
+    scope: "api offline_access",
+    state,
+    code_challenge: await digest(verifier),
+    code_challenge_method: "S256",
+  });
+  const start = (params: URLSearchParams, headers = {}) =>
+    request(`${authorize}?${params}`, { headers });
+  expect((await start(query)).status).toBe(303);
+  for (const redirect_uri of [
+    browserCallback,
+    `${callback}?extra=1`,
+    "bitwarden://unrelated",
+  ]) {
+    const invalid = new URLSearchParams(query);
+    invalid.set("redirect_uri", redirect_uri);
+    expect((await start(invalid, { cookie })).status).toBe(400);
+  }
+  const page = await start(query, { cookie });
+  expect(page.status).toBe(200);
+  const approval = (await page.text()).match(
+    /name="approval" value="([^"]+)"/u,
+  )?.[1];
+  expect(approval).toBeDefined();
+  const form = (path: string, body: Record<string, string>, headers = {}) =>
+    request(path, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        ...headers,
+      },
+      body: new URLSearchParams(body),
+    });
+  const approved = await form(
+    authorize,
+    { approval: approval! },
+    { cookie, origin },
+  );
+  expect(approved.status).toBe(303);
+  const target = new URL(approved.headers.get("location")!);
+  expect(`${target.protocol}//${target.host}${target.pathname}`).toBe(callback);
+  expect(target.searchParams.get("state")).toBe(state);
+  const code = target.searchParams.get("code")!;
+  const token = (body: Record<string, string>) =>
+    form("/identity/connect/token", { client_id: "desktop", ...body });
+  const redeem = {
+    grant_type: "authorization_code",
+    redirect_uri: callback,
+    code,
+    code_verifier: verifier,
+    deviceIdentifier: crypto.randomUUID(),
+    deviceName: "Mac desktop",
+  };
+  expect(
+    (await token({ ...redeem, redirect_uri: browserCallback })).status,
+  ).toBe(400);
+  expect(
+    (
+      await token({
+        ...redeem,
+        client_id: "browser",
+        redirect_uri: browserCallback,
+      })
+    ).status,
+  ).toBe(400);
+  const exchanged = await token(redeem);
+  expect(exchanged.status).toBe(200);
+  const issued = (await exchanged.json()) as {
+    access_token: string;
+    refresh_token: string;
+  };
+  const checkClient = (jwt: string) =>
+    JSON.parse(Buffer.from(jwt.split(".")[1]!, "base64url").toString())
+      .client_id;
+  expect(checkClient(issued.access_token)).toBe("desktop");
+  expect((await token(redeem)).status).toBe(400);
+  const refresh = {
+    grant_type: "refresh_token",
+    refresh_token: issued.refresh_token,
+  };
+  expect((await token({ ...refresh, client_id: "browser" })).status).toBe(400);
+  const refreshed = await token(refresh);
+  expect(refreshed.status).toBe(200);
+  const successor = (await refreshed.json()) as typeof issued;
+  expect(checkClient(successor.access_token)).toBe("desktop");
+  expect(
+    (
+      await request("/api/sync", {
+        headers: { authorization: `Bearer ${successor.access_token}` },
+      })
+    ).status,
+  ).toBe(200);
+});
+
 it("scopes Bitwarden and web writes to the current account and vault", async () => {
   using sqlite = new Database(":memory:");
   const origin = "https://oneapp.example";

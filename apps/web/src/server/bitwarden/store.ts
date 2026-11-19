@@ -7,7 +7,7 @@ import {
   type PersonalVault,
 } from "../vault/personal.ts";
 import { digest } from "../digest.ts";
-import type { GrantIdentity } from "./tokens.ts";
+import type { BitwardenClient, GrantIdentity } from "./tokens.ts";
 import {
   accessLifetimeSeconds,
   deviceLifetimeMillis,
@@ -33,6 +33,7 @@ export const startAuthorization = async (
   db: DB,
   browser: BrowserIdentity,
   vaultId: string,
+  clientId: BitwardenClient,
   state: string,
   challenge: string,
   consentDigest: string,
@@ -46,8 +47,8 @@ export const startAuthorization = async (
       .prepare(
         `
       INSERT INTO bitwarden_authorizations
-        (id, vault_id, browser_session_id, security_revision, consent_digest, state, challenge, expires_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        (id, vault_id, browser_session_id, security_revision, consent_digest, state, challenge, expires_at, client_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       )
       .bind(
@@ -59,6 +60,7 @@ export const startAuthorization = async (
         state,
         challenge,
         now + authorizationLifetime,
+        clientId,
       ),
   ]);
 };
@@ -77,7 +79,7 @@ export const approveAuthorization = async (
     SET consent_digest = NULL, code_digest = ?, expires_at = ?
     WHERE consent_digest = ? AND browser_session_id = ? AND security_revision = ? AND expires_at > ?
       AND vault_id IN (SELECT id FROM personal_vaults WHERE owner_id = ?)
-    RETURNING state
+    RETURNING state, client_id AS clientId
   `,
     )
     .bind(
@@ -89,7 +91,7 @@ export const approveAuthorization = async (
       now,
       browser.ownerId,
     )
-    .first<{ state: string }>();
+    .first<{ state: string; clientId: BitwardenClient }>();
 };
 
 const liveAuthorization = `
@@ -100,19 +102,20 @@ const liveAuthorization = `
     ON s.session_id = g.browser_session_id AND s.subject_id = a.id
     AND s.security_revision = g.security_revision AND s.expires_at > ? AND s.absolute_expires_at > ?
   JOIN oneapp_auth_identifiers i ON i.subject_id = a.id AND i.namespace = 'email' AND i.active = 1
-  WHERE g.code_digest = ? AND g.challenge = ? AND g.expires_at > ?
+  WHERE g.code_digest = ? AND g.challenge = ? AND g.expires_at > ? AND g.client_id = ?
 `;
 
 export const redeemAuthorization = async (
   db: DB,
   origin: string,
   secret: string,
+  clientId: BitwardenClient,
   codeDigest: string,
   challenge: string,
   device: { id: string; name: string | null },
 ) => {
   const now = Date.now();
-  const conditions = [now, now, codeDigest, challenge, now] as const;
+  const conditions = [now, now, codeDigest, challenge, now, clientId] as const;
   const record = await db
     .prepare(
       `
@@ -133,6 +136,7 @@ export const redeemAuthorization = async (
   const { ownerId, ...grantOwner } = record;
   const identity = {
     ...grantOwner,
+    clientId,
     deviceId: device.id,
     generation: 0,
     issuedAt: Math.floor(now / 1000),
@@ -153,9 +157,9 @@ export const redeemAuthorization = async (
         `
       INSERT INTO bitwarden_device_sessions
         (id, vault_id, device_id, device_name, security_revision, email, email_verified, expires_at,
-         generation, issued_at, access_digest, refresh_digest)
+         generation, issued_at, access_digest, refresh_digest, client_id)
       SELECT g.id, g.vault_id, ?, ?, g.security_revision, i.value, (i.verified_at IS NOT NULL),
-             ?, 0, ?, ?, ?
+             ?, 0, ?, ?, ?, g.client_id
       ${liveAuthorization} AND i.value = ? AND (i.verified_at IS NOT NULL) = ?
       ON CONFLICT(id) DO NOTHING
       RETURNING id
@@ -173,6 +177,7 @@ export const redeemAuthorization = async (
         codeDigest,
         challenge,
         atCommit,
+        clientId,
         record.email,
         record.emailVerified,
       ),
@@ -196,7 +201,7 @@ const deviceSource = `
 
 const liveDevices = `
   SELECT d.id, d.vault_id AS vaultId, d.device_id AS deviceId, v.owner_id AS ownerId,
-         d.email, d.email_verified AS emailVerified, d.generation, d.issued_at AS issuedAt,
+         d.email, d.email_verified AS emailVerified, d.generation, d.issued_at AS issuedAt, d.client_id AS clientId,
          d.previous_refresh_digest AS previousRefreshDigest
   ${deviceSource}
   WHERE d.expires_at > ?
@@ -270,23 +275,34 @@ export const editPersonalItem = (
   edit: Parameters<typeof editVaultItem>[3],
 ) => editVaultItem(db, deviceAuthorization(vault, accessDigest), id, edit);
 
-const readDeviceByRefresh = (db: DB, refreshDigest: string, now: number) =>
+const readDeviceByRefresh = (
+  db: DB,
+  clientId: BitwardenClient,
+  refreshDigest: string,
+  now: number,
+) =>
   db
     .prepare(
-      `${liveDevices} AND (d.refresh_digest = ? OR
+      `${liveDevices} AND d.client_id = ? AND (d.refresh_digest = ? OR
     (d.previous_refresh_digest = ? AND d.retry_until > ?))
   `,
     )
-    .bind(now, refreshDigest, refreshDigest, now)
+    .bind(now, clientId, refreshDigest, refreshDigest, now)
     .first<LiveDevice>();
 
 export const refreshDevice = async (
   db: DB,
   origin: string,
   secret: string,
+  clientId: BitwardenClient,
   refreshDigest: string,
 ) => {
-  const device = await readDeviceByRefresh(db, refreshDigest, Date.now());
+  const device = await readDeviceByRefresh(
+    db,
+    clientId,
+    refreshDigest,
+    Date.now(),
+  );
   if (!device) return null;
   // Concurrent stock clients can present the same refresh token. Reconstruct the
   // winning grant from its persisted generation and timestamp within the overlap.
@@ -334,7 +350,12 @@ export const refreshDevice = async (
     )
     .first<{ id: string }>();
   if (updated) return grant;
-  const winner = await readDeviceByRefresh(db, refreshDigest, Date.now());
+  const winner = await readDeviceByRefresh(
+    db,
+    clientId,
+    refreshDigest,
+    Date.now(),
+  );
   return winner?.previousRefreshDigest === refreshDigest
     ? issueGrant(origin, secret, winner)
     : null;

@@ -40,7 +40,12 @@ import {
   savePersonalItem,
   startAuthorization,
 } from "./store.ts";
-import { bitwardenScope, browserClient, randomSecret } from "./tokens.ts";
+import {
+  type BitwardenClient,
+  bitwardenClients,
+  bitwardenScope,
+  randomSecret,
+} from "./tokens.ts";
 import * as Wire from "./wire.ts";
 
 const connectorScript = "/identity/oneapp-connector.js";
@@ -83,7 +88,16 @@ const redirect = (location: URL) =>
     status: 303,
     headers: { ...privateHeaders, location: location.href },
   });
-const clientState = /^[a-zA-Z0-9]{64}:clientId=browser$/u;
+const clientState = {
+  browser: /^[a-zA-Z0-9]{64}:clientId=browser$/u,
+  desktop: /^[a-zA-Z0-9]{64}$/u,
+};
+const isClient = Schema.is(Schema.Literals(bitwardenClients));
+const callbackFor = (origin: string, client: BitwardenClient) =>
+  new URL(
+    client === "desktop" ? "bitwarden://sso-callback" : bitwardenConnectorPath,
+    origin,
+  );
 const secretShape = /^[a-zA-Z0-9_-]{43}$/u;
 const verifierShape = /^[a-zA-Z0-9._~-]{43,128}$/u;
 const isDeviceId = Schema.is(BitwardenDeviceId);
@@ -181,17 +195,18 @@ const authorize = async (
   env: WorkerEnv,
   browserIdentity: () => Promise<BrowserIdentity | null>,
 ) => {
-  const callback = new URL(bitwardenConnectorPath, env.APP_ORIGIN);
   if (request.method === "GET") {
+    const clientId = url.searchParams.get("client_id");
     const state = url.searchParams.get("state") ?? "";
     const challenge = url.searchParams.get("code_challenge") ?? "";
     if (
-      url.searchParams.get("client_id") !== browserClient ||
-      url.searchParams.get("redirect_uri") !== callback.href ||
+      !isClient(clientId) ||
+      url.searchParams.get("redirect_uri") !==
+        callbackFor(env.APP_ORIGIN, clientId).href ||
       url.searchParams.get("response_type") !== "code" ||
       url.searchParams.get("scope") !== bitwardenScope ||
       url.searchParams.get("code_challenge_method") !== "S256" ||
-      !clientState.test(state) ||
+      !clientState[clientId].test(state) ||
       !secretShape.test(challenge)
     )
       return error("invalid_request");
@@ -209,6 +224,7 @@ const authorize = async (
       env.DB,
       browser,
       vault.id,
+      clientId,
       state,
       challenge,
       await digest(consent),
@@ -235,6 +251,7 @@ const authorize = async (
     await digest(code),
   );
   if (!approval) return error("invalid_request");
+  const callback = callbackFor(env.APP_ORIGIN, approval.clientId);
   callback.searchParams.set("code", code);
   callback.searchParams.set("state", approval.state);
   return redirect(callback);
@@ -244,7 +261,8 @@ const token = async (request: Request, env: WorkerEnv) => {
   if (request.method !== "POST") return error("method_not_allowed", 405);
   const form = await readForm(request);
   if (!form) return error("invalid_request");
-  if (form.get("client_id") !== browserClient) return error("invalid_client");
+  const clientId = form.get("client_id");
+  if (!isClient(clientId)) return error("invalid_client");
   const type = form.get("grant_type");
 
   if (type === "authorization_code") {
@@ -255,8 +273,7 @@ const token = async (request: Request, env: WorkerEnv) => {
     const deviceName =
       (form.get("deviceName") ?? form.get("device_name"))?.trim() ?? "";
     if (
-      form.get("redirect_uri") !==
-        new URL(bitwardenConnectorPath, env.APP_ORIGIN).href ||
+      form.get("redirect_uri") !== callbackFor(env.APP_ORIGIN, clientId).href ||
       !secretShape.test(code) ||
       !verifierShape.test(verifier) ||
       !isDeviceId(deviceId)
@@ -266,6 +283,7 @@ const token = async (request: Request, env: WorkerEnv) => {
       env.DB,
       env.APP_ORIGIN,
       env.AUTH_SECRET,
+      clientId,
       await digest(code),
       await digest(verifier),
       {
@@ -287,6 +305,7 @@ const token = async (request: Request, env: WorkerEnv) => {
       env.DB,
       env.APP_ORIGIN,
       env.AUTH_SECRET,
+      clientId,
       await digest(refresh),
     );
     return grant ? json(grant) : error("invalid_grant");

@@ -209,13 +209,33 @@ oneapp-vault-reader {
 }
 
 .workspace {
+  --workspace-sidebar-width: clamp(13.5rem, 17vw, 16rem);
   display: grid;
   grid-template:
     "header items detail" auto
     "filters items detail" minmax(0, 1fr)
-    / clamp(13.5rem, 17vw, 16rem) clamp(17rem, 29vw, 32rem) minmax(0, 1fr);
+    / var(--workspace-sidebar-width) clamp(17rem, 29vw, 32rem) minmax(0, 1fr);
   block-size: calc(100dvh - var(--bottom-nav-size));
   background: var(--surface);
+}
+
+.inbox {
+  grid-template:
+    "header items" auto
+    "filters items" minmax(0, 1fr)
+    / var(--workspace-sidebar-width) minmax(0, 1fr);
+}
+
+.inbox .inbox-reader {
+  grid-area: items;
+}
+
+.inbox .inbox-list {
+  border-inline-end: 0;
+}
+
+.inbox[data-panel] .inbox-list {
+  visibility: hidden;
 }
 
 .workspace-header {
@@ -597,6 +617,14 @@ oneapp-vault-reader {
 
   .workspace .workspace-detail {
     grid-area: 2 / 1 / 3 / 3;
+  }
+
+  .inbox .inbox-reader {
+    grid-area: items;
+  }
+
+  .inbox[data-panel] .workspace-sidebar {
+    visibility: visible;
   }
 }
 

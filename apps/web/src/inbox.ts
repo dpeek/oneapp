@@ -1,5 +1,6 @@
 import { Effect, Option, Queue, Schema, Stream } from "effect";
 import { Command, Submodel, Update } from "foldkit";
+import { focus } from "foldkit/dom";
 import type { HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import * as Mount from "foldkit/mount";
@@ -308,6 +309,21 @@ const FocusEntry = Mount.define("FocusInboxEntry", {
         element.focus({ preventScroll: true });
       return Message.FocusUpdated();
     }),
+});
+
+const FocusList = Command.define("FocusInboxConversationList", {
+  args: { id: MailMessageId },
+  messages: [Message.FocusUpdated],
+  execute: ({ id }) => {
+    const list = ".inbox:not([data-panel]) .inbox-list";
+    return focus(`${list} [data-message-id="${CSS.escape(id)}"]`, {
+      preventScroll: true,
+    }).pipe(
+      Effect.catch(() => focus(list, { preventScroll: true })),
+      Effect.ignore,
+      Effect.as(Message.FocusUpdated()),
+    );
+  },
 });
 
 const ShowDeleteDialog = Mount.define("ShowInboxDeleteDialog", {
@@ -731,8 +747,23 @@ export const update = (
               confirmingDelete: false,
               deleteFailed: false,
             };
+      const previous = id === null ? base.selected : null;
       const list = id && next.list ? { model: next } : loadList(next, null);
-      return next.thread ? list : withThread(list);
+      const result = next.thread ? list : withThread(list);
+      if (!previous) return result;
+      const row = base.list?.messages.find(
+        ({ id }) =>
+          id === previous ||
+          (folder !== "sent" &&
+            base.thread?.messages.some((message) => message.id === id)),
+      );
+      return {
+        ...result,
+        commands: [
+          ...(result.commands ?? []),
+          FocusList({ id: row?.id ?? previous }),
+        ],
+      };
     },
     RetriedList: () => withUnread(withThread(loadList(model, null))),
     GotAttachmentMessage: ({ message }) => foldAttachments(model, message),
@@ -1197,7 +1228,12 @@ const archiveFeedback = (model: Model, h: HtmlBuilder<Message>) => [
 
 const listView = (model: Model, h: HtmlBuilder<Message>) =>
   h.section(
-    [h.Class("workspace-list inbox-list"), h.AriaLabel("Messages")],
+    [
+      h.Class("workspace-list inbox-list"),
+      h.AriaLabel("Messages"),
+      h.Inert(model.selected !== null),
+      h.Tabindex(-1),
+    ],
     [
       ...(model.selected === null ? archiveFeedback(model, h) : []),
       h.div(
@@ -1267,6 +1303,7 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
                                 h.Href(
                                   mailMessagePage(model.folder, message.id),
                                 ),
+                                h.DataAttribute("message-id", message.id),
                                 ...(model.selected === message.id ||
                                 (model.folder !== "sent" &&
                                   model.thread?.messages.some(
@@ -1544,10 +1581,12 @@ const profileAvatar = (
       );
 };
 
-const entryView = (model: Model, h: HtmlBuilder<Message>) => {
-  const { selected, active } = model;
-  if (!selected)
-    return h.div([h.Class("workspace-detail")], ["Select a message to read."]);
+const entryView = (
+  model: Model,
+  selected: NonNullable<Model["selected"]>,
+  h: HtmlBuilder<Message>,
+) => {
+  const { active } = model;
   const messages = readerMessages(model);
   const participants = conversationPeople(messages);
   const profiles = findProfiles(model.thread?.profiles);
@@ -1795,7 +1834,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
         ],
       ),
       listView(model, h),
-      entryView(model, h),
+      ...(model.selected ? [entryView(model, model.selected, h)] : []),
     ],
   ),
 );

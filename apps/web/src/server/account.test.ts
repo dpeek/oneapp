@@ -43,6 +43,7 @@ import {
   vaultBulkPath,
   vaultFolderPath,
   vaultFoldersPath,
+  VaultItem,
   vaultItemPath,
   vaultItemsPath,
   type VaultLifecycleAction,
@@ -2101,13 +2102,43 @@ it("scopes Bitwarden and web writes to the current account and vault", async () 
         ...extra,
       }),
     });
-  const initial = await Promise.all([browse(restored.id), browse(webItem.id)]);
   const otherFolder = crypto.randomUUID();
   sqlite.run("INSERT INTO personal_vault_folders VALUES (?, ?, ?, 1, NULL)", [
     otherFolder,
     otherVaultId,
     encrypted(16, 83),
   ]);
+  const original = await browse(webItem.id);
+  const editedName = encrypted(16, 84);
+  const editNote = (folderId: string | null, expectedRevision: number) =>
+    request(vaultItemPath(webItem.id), {
+      method: "PUT",
+      headers: browserJson,
+      body: JSON.stringify({
+        keyId,
+        type: 2,
+        name: editedName,
+        details: {},
+        expectedRevision,
+        folderId,
+      }),
+    });
+  expect((await editNote(otherFolder, original.revision)).status).toBe(409);
+  expect(await browse(webItem.id)).toEqual(original);
+  const filed = await editNote(folder.id, original.revision);
+  expect(filed.status).toBe(200);
+  const filedItem = Schema.decodeUnknownSync(VaultItem)(await filed.json());
+  expect(filedItem).toMatchObject({ name: editedName, folderId: folder.id });
+  expect(await (await editNote(folder.id, original.revision)).json()).toEqual(
+    filedItem,
+  );
+  expect((await editNote(null, original.revision)).status).toBe(409);
+  expect(await (await editNote(null, filedItem.revision)).json()).toMatchObject(
+    {
+      folderId: null,
+    },
+  );
+  const initial = await Promise.all([browse(restored.id), browse(webItem.id)]);
   const beforeMove = vaultRevision.get(vaultId);
   expect(
     (await select(initial, "move", { folderId: otherFolder })).status,

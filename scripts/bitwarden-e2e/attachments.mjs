@@ -83,7 +83,7 @@ export const checkAttachments = async ({
   const base = `/api/vault/attachments/${item}`;
   const wire = `/api/ciphers/${item}/attachment`;
   await button(webVault, itemName).press("Enter");
-  await button(webVault, "Attachments").press("Enter");
+  await button(webVault, "Edit").press("Enter");
   await webVault.getByLabel("Choose attachment").setInputFiles(webFile);
   const uploadIndex = first.responses.length;
   await app.evaluate((path) => {
@@ -214,21 +214,18 @@ export const checkAttachments = async ({
   await webVault.getByLabel("Vault master password").fill(password);
   await button(webVault, "Unlock vault").press("Enter");
   await button(webVault, itemName).press("Enter");
-  await button(webVault, "Attachments").press("Enter");
   const fileRow = webVault.locator("li").filter({ hasText: stockFile.name });
   const webDownload = await downloadBytes(app, () =>
-    button(fileRow, "Download plaintext").press("Enter"),
+    button(fileRow, `Download ${stockFile.name}`).press("Enter"),
   );
   assert.deepEqual(Buffer.from(webDownload), stockFile.buffer);
 
   await restartWorker(app, items);
   const persisted = await downloadBytes(app, () =>
-    button(fileRow, "Download plaintext").press("Enter"),
+    button(fileRow, `Download ${stockFile.name}`).press("Enter"),
   );
   assert.deepEqual(Buffer.from(persisted), stockFile.buffer);
   assertZip(await exportStockZip(secondClient, password));
-  await button(webVault, "Back to items").press("Enter");
-  await button(webVault, "Back to items").press("Enter");
   await button(webVault, "Export").press("Enter");
   await webVault.getByLabel("File format").selectOption("zip");
   await webVault.getByLabel("Vault master password").fill(password);
@@ -323,7 +320,7 @@ export const checkAttachmentCleanup = async ({
     0,
     "Private R2 still contains attachment objects after cleanup",
   );
-  await button(webVault, "Back to items").press("Enter");
+  await button(webVault, "All items").press("Enter");
   console.log(
     "PASS Stock file deletion and permanent deletion from web Trash removed the private R2 objects.",
   );

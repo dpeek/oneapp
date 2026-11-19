@@ -900,7 +900,7 @@ try {
     const editedWebBody = "First edit from the OneApp web vault.";
     const webEditPath = `${itemsPath}/${savedWebNote.id}`;
     const isWebEdit = (response) => endpoint(response, webEditPath, "PUT");
-    const editWebNote = button(webVault, "Edit Secure Note");
+    const editWebNote = button(webVault, "Edit");
     const webTitle = webVault.getByLabel("Title", { exact: true });
     const webBody = webVault.getByLabel("Note", { exact: true });
     const saveWebNote = button(webVault, "Save Secure Note");
@@ -1110,7 +1110,7 @@ try {
 
     step = "rotating the personal login password in OneApp";
     const rotatedWebPassword = "Rotated-In-OneApp!45";
-    const editWebLogin = button(webVault, "Edit Login");
+    const editWebLogin = button(webVault, "Edit");
     const saveWebLogin = button(webVault, "Save Login");
     const isWebLoginEdit = (response) =>
       endpoint(response, `${itemsPath}/${savedLogin.id}`, "PUT");
@@ -1236,7 +1236,7 @@ try {
     step = "moving the login to Trash in OneApp";
     await autofill(webLoginSite, webLoginUsername, latestLoginPassword);
     const lifecyclePath = `${itemsPath}/${savedLogin.id}`;
-    await button(webVault, "Move to Trash").press("Enter");
+    await button(webVault, "Delete").press("Enter");
     const movedToTrash = await localResponse((response) =>
       endpoint(response, `${lifecyclePath}/trash`, "PUT"),
     );

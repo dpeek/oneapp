@@ -80,10 +80,10 @@ const allItemTypes = [1, 2, ...extraItemTypes] as const;
 type Folder = typeof VaultFolder.Type;
 type ListedFolder = { folder: Folder; title: string };
 type BulkAction = (typeof VaultBulkChange.Type)["kind"];
-type EditTarget = { item: Item; title: string; cancel: () => void };
+type EditTarget = { entry: ListedItem; title: string; details: ItemDetails };
 type ItemField = readonly [
   label: string,
-  input: HTMLInputElement | HTMLTextAreaElement,
+  input: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
 ];
 type UnlockedVault = {
   parameters: Omit<Snapshot, "items" | "trash" | "folders">;
@@ -93,7 +93,6 @@ type UnlockedVault = {
 };
 type VaultWorkspace = {
   root: HTMLElement;
-  tools: HTMLDetailsElement;
   filters: HTMLElement;
   views: HTMLUListElement;
   itemFilters: HTMLElement;
@@ -187,17 +186,6 @@ const detailCard = (label: string, body: HTMLElement) => {
   section.append(create("h3", label), body);
   return section;
 };
-const menu = (label: string, ...buttons: (HTMLButtonElement | undefined)[]) => {
-  const disclosure = create("details");
-  disclosure.className = "vault-menu";
-  const actions = create("div");
-  for (const button of buttons) if (button) actions.append(button);
-  actions.addEventListener("click", (event) => {
-    if (event.target instanceof HTMLButtonElement) disclosure.open = false;
-  });
-  disclosure.append(create("summary", label), actions);
-  return disclosure;
-};
 const alert = (message: string) => {
   const status = create("p", message);
   status.setAttribute("role", "alert");
@@ -272,6 +260,14 @@ const readItemDetails = async (item: Item, userKey: VaultKey) => {
   return { properties: await decryptItemDetails(item.details, key), key };
 };
 type ItemDetails = Awaited<ReturnType<typeof readItemDetails>>;
+
+const sameEditableItem = (before: Item, after: Item) =>
+  before.type === after.type &&
+  before.name === after.name &&
+  before.wrappedKey === after.wrappedKey &&
+  before.folderId === after.folderId &&
+  before.archivedAt === after.archivedAt &&
+  JSON.stringify(before.details) === JSON.stringify(after.details);
 
 const openSnapshot = async (
   snapshot: Snapshot,
@@ -405,11 +401,9 @@ class VaultReader extends HTMLElement {
   #updateNavigation() {
     const workspace = this.#workspace;
     if (!workspace) return;
-    const { tools, filters, listPane, detail } = workspace;
-    tools.inert =
-      filters.inert =
-      listPane.inert =
-        this.#busy || detail.classList.contains("vault-editor");
+    const { filters, listPane, detail } = workspace;
+    filters.inert = listPane.inert =
+      this.#busy || detail.classList.contains("vault-editor");
     detail.inert = this.#busy;
   }
 
@@ -483,31 +477,11 @@ class VaultReader extends HTMLElement {
     root.className = "vault-workspace";
     const header = create("header");
     header.className = "vault-workspace-header";
-    const tools = menu(
-      "Vault tools",
-      ...(
-        [
-          ["Manage folders", () => this.#showFolders()],
-          ["Import", () => this.#showImport()],
-          ["Export", () => this.#showExport()],
-        ] as const
-      ).map(([label, open]) =>
-        action(label, () => {
-          this.#stopWork();
-          this.#selectItem();
-          open();
-        }),
-      ),
-    );
-    header.append(
-      create("h1", "Vault"),
-      tools,
-      action("Lock vault", this.#lock),
-    );
+    header.append(create("h1", "Vault"), action("Lock vault", this.#lock));
 
     const filters = create("nav");
     filters.className = "vault-filters";
-    filters.setAttribute("aria-label", "Vault filters");
+    filters.setAttribute("aria-label", "Vault navigation");
     const views = filterList("Vault views");
     views.classList.add("vault-views");
     for (const view of Object.keys(vaultViews) as VaultView[])
@@ -533,7 +507,24 @@ class VaultReader extends HTMLElement {
     const itemFilters = create("div");
     itemFilters.className = "vault-item-filters";
     itemFilters.append(typeFilter, folderFilter);
-    filters.append(views, itemFilters);
+    const tools = filterList("Vault tools");
+    tools.classList.add("vault-nav-tools");
+    for (const [label, open] of [
+      ["Import", () => this.#showImport()],
+      ["Export", () => this.#showExport()],
+      ["Manage folders", () => this.#showFolders()],
+    ] as const) {
+      const row = create("li");
+      row.append(
+        action(label, () => {
+          this.#stopWork();
+          this.#selectItem();
+          open();
+        }),
+      );
+      tools.append(row);
+    }
+    filters.append(views, itemFilters, tools);
 
     const listPane = create("section");
     listPane.className = "vault-list-pane";
@@ -567,7 +558,6 @@ class VaultReader extends HTMLElement {
     root.append(header, filters, listPane, detail);
     this.#workspace = {
       root,
-      tools,
       filters,
       views,
       itemFilters,
@@ -760,13 +750,17 @@ class VaultReader extends HTMLElement {
     this.#selectItem(this.#selectedId);
   }
 
-  async #reload(vault: UnlockedVault, signal: AbortSignal) {
+  async #readSnapshot(vault: UnlockedVault, signal: AbortSignal) {
     const response = await fetch(vaultItemsPath, { cache: "no-store", signal });
     if (!response.ok) throw new Error("Vault reload failed");
     const snapshot = decodeSnapshot(await response.json());
     if (snapshot.keyId !== vault.parameters.keyId)
       throw new Error("Vault key changed");
-    return openSnapshot(snapshot, vault.key);
+    return snapshot;
+  }
+
+  async #reload(vault: UnlockedVault, signal: AbortSignal) {
+    return openSnapshot(await this.#readSnapshot(vault, signal), vault.key);
   }
 
   #refresh(done: () => void) {
@@ -1135,159 +1129,188 @@ class VaultReader extends HTMLElement {
     format.focus();
   }
 
-  #showAttachments(entry: ListedItem, key: VaultKey, message?: string) {
-    this.#stopWork();
-    const vault = this.#vault;
-    if (!vault) return;
-    const item = entry.item;
-    const back = () => this.#open(entry);
-    const heading = create("h2", `Attachments for ${entry.title ?? "item"}`);
-    const status = alert("");
-    status.hidden = true;
-    const showError = (problem: string) => {
-      status.textContent = problem;
-      status.hidden = false;
-    };
+  #attachmentList(
+    item: Item,
+    key: VaultKey,
+    showError: (message: string) => void,
+    remove?: (attachment: AttachmentMetadata) => void,
+  ) {
     const list = create("ul");
-    const display = (attachment: AttachmentMetadata, name: string | null) => {
+    list.className = "vault-attachment-list";
+    list.hidden = item.attachments.length === 0;
+    for (const attachment of item.attachments) {
       const row = create("li");
-      row.append(create("span", name ?? "Unreadable attachment"));
-      if (name !== null) {
-        const download = action("Download plaintext", () => {
-          status.hidden = true;
-          download.disabled = true;
-          void this.#run(
-            (signal) => openVaultAttachment(item.id, attachment, key, signal),
-            (bytes) => {
-              const file = new Blob([bytes], {
-                type: "application/octet-stream",
-              });
-              bytes.fill(0);
-              downloadVaultFile(file, name);
-              download.disabled = false;
-            },
-            () => {
-              download.disabled = false;
-              showError("Could not read this attachment.");
-            },
-          );
-        });
-        row.append(download);
-      }
-      if (!entry.trashed)
-        row.append(
-          action("Remove", () => {
-            this.#replaceAttachment(
-              entry,
-              key,
-              "Attachment removed.",
-              (signal) => removeVaultAttachment(item.id, attachment.id, signal),
-              showError,
+      const filename = create("span", "Reading attachment…");
+      const actions = create("div");
+      const removeButton = remove && action("Remove", () => remove(attachment));
+      if (removeButton) actions.append(removeButton);
+      void decryptVaultText(attachment.name, key).then(
+        (name) => {
+          filename.textContent = name;
+          const download = action("Download", () => {
+            showError("");
+            void this.#run(
+              (signal) => openVaultAttachment(item.id, attachment, key, signal),
+              (bytes) => {
+                const file = new Blob([bytes], {
+                  type: "application/octet-stream",
+                });
+                bytes.fill(0);
+                downloadVaultFile(file, name);
+              },
+              () => showError("Could not read this attachment."),
+              { blockNavigation: true },
             );
-          }),
-        );
-      list.append(row);
-    };
-    if (item.attachments.length) {
-      void this.#run(
-        async () =>
-          Promise.all(
-            item.attachments.map(async (attachment) => ({
-              attachment,
-              name: await decryptVaultText(attachment.name, key).catch(
-                () => null,
-              ),
-            })),
-          ),
-        (records) => {
-          for (const { attachment, name } of records) display(attachment, name);
+          });
+          download.setAttribute("aria-label", `Download ${name}`);
+          actions.prepend(download);
+          removeButton?.setAttribute("aria-label", `Remove ${name}`);
         },
-        () => showError("Could not list attachments."),
+        () => {
+          filename.textContent = "Unreadable attachment";
+        },
       );
+      row.append(filename, actions);
+      list.append(row);
     }
-    const form = create("form");
-    form.method = "post";
+    return list;
+  }
+
+  #editAttachments(
+    { entry, details }: EditTarget,
+    vault: UnlockedVault,
+    onUpdate: (latest: ListedItem | undefined, canKeepEditing: boolean) => void,
+  ) {
+    let current = entry.item;
     const input = create("input");
     input.type = "file";
-    input.required = true;
-    const upload = create("button", "Upload attachment");
-    upload.type = "submit";
-    let sealed: Awaited<ReturnType<typeof encryptVaultAttachment>> | undefined;
-    input.addEventListener("change", () => {
-      sealed = undefined;
-    });
-    form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      const file = input.files?.[0];
-      if (!file || upload.disabled) return;
-      upload.disabled = input.disabled = true;
-      status.hidden = true;
-      this.#replaceAttachment(
-        entry,
-        key,
-        "Attachment uploaded.",
+    const status = statusMessage("");
+    const error = alert("");
+    const showError = (message: string) => {
+      error.textContent = message;
+      error.hidden = !message;
+    };
+    error.hidden = true;
+
+    const mutate = (
+      write: (signal: AbortSignal) => Promise<void>,
+      success: string,
+      done?: () => void,
+    ) => {
+      showError("");
+      status.textContent = "Updating attachments…";
+      let problem =
+        "Could not refresh attachments. Retry the attachment action.";
+      void this.#run(
         async (signal) => {
-          sealed ??= await encryptVaultAttachment(file, key);
+          try {
+            await write(signal);
+          } catch (error) {
+            problem =
+              error instanceof Error
+                ? error.message
+                : "Could not update this attachment. Try again.";
+            throw error;
+          }
+          const snapshot = await this.#readSnapshot(vault, signal);
+          const active = snapshot.items.find(({ id }) => id === current.id);
+          const item =
+            active ?? snapshot.trash.find(({ id }) => id === current.id);
+          if (!item) return { latest: undefined, canKeepEditing: false };
+          const trashed = !active;
+          // Attachment writes also bump the item revision. Keep the draft's
+          // revision tied to the fields it originally loaded.
+          const canKeepEditing = !trashed && sameEditableItem(current, item);
+          const latest = canKeepEditing
+            ? { ...entry, item }
+            : await readListedItem(item, vault.key, trashed).catch(() => ({
+                item,
+                title: null,
+                trashed,
+              }));
+          return { latest, canKeepEditing };
+        },
+        ({ latest, canKeepEditing }) => {
+          if (latest) this.#rememberItem(vault, latest);
+          else
+            vault.entries = vault.entries.filter(
+              ({ item }) => item.id !== current.id,
+            );
+          this.#renderResults();
+          done?.();
+          status.textContent = success;
+          onUpdate(latest, canKeepEditing);
+          if (canKeepEditing && latest) {
+            current = latest.item;
+            const next = this.#attachmentList(
+              current,
+              details.key,
+              showError,
+              remove,
+            );
+            list.replaceWith(next);
+            list = next;
+          } else fieldset.disabled = true;
+        },
+        () => {
+          status.textContent = "";
+          showError(problem);
+        },
+        { blockNavigation: true },
+      );
+    };
+    const remove = ({ id }: AttachmentMetadata) =>
+      mutate(
+        (signal) => removeVaultAttachment(current.id, id, signal),
+        "Attachment removed.",
+      );
+    let list = this.#attachmentList(current, details.key, showError, remove);
+    let sealed: Awaited<ReturnType<typeof encryptVaultAttachment>> | undefined;
+    const upload = action("Upload attachment", () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      mutate(
+        async (signal) => {
+          sealed ??= await encryptVaultAttachment(
+            file,
+            await unwrapVaultKey(current.wrappedKey, vault.key, "encrypt"),
+          );
           signal.throwIfAborted();
           await uploadVaultAttachment(
-            item.id,
-            item.revision,
+            current.id,
+            current.revision,
             vault.parameters.keyId,
             sealed,
             signal,
           );
         },
-        (error) => {
-          upload.disabled = input.disabled = false;
-          showError(error);
+        "Attachment uploaded.",
+        () => {
+          sealed = undefined;
+          input.value = "";
+          upload.disabled = true;
         },
       );
     });
-    form.append(itemField(["Choose attachment", input]), upload);
-    this.#showPanel([
-      this.#toolbar(back),
-      heading,
-      ...(message ? [statusMessage(message)] : []),
+    upload.disabled = true;
+    input.addEventListener("change", () => {
+      sealed = undefined;
+      upload.disabled = !input.files?.length;
+    });
+    const picker = create("div");
+    picker.className = "vault-attachment-picker";
+    picker.append(itemField(["Choose attachment", input]), upload);
+    const hint = create("p", "Attachment changes are saved immediately.");
+    hint.className = "vault-attachment-hint";
+    const fieldset = vaultItemFieldset(
+      "Attachments",
+      list,
+      picker,
+      hint,
       status,
-      item.attachments.length ? list : create("p", "No attachments."),
-      ...(entry.trashed ? [] : [form]),
-    ]);
-  }
-
-  #replaceAttachment(
-    entry: ListedItem,
-    key: VaultKey,
-    message: string,
-    mutate: (signal: AbortSignal) => Promise<void>,
-    failed: (message: string) => void,
-  ) {
-    const vault = this.#vault;
-    if (!vault) return;
-    let problem = "Could not update this attachment.";
-    void this.#run(
-      async (signal) => {
-        try {
-          await mutate(signal);
-        } catch (error) {
-          if (error instanceof Error) problem = error.message;
-          throw error;
-        }
-        return this.#reload(vault, signal);
-      },
-      (current) => {
-        this.#vault = current;
-        const latest = current.entries.find(
-          ({ item }) => item.id === entry.item.id,
-        );
-        if (latest && latest.item.wrappedKey === entry.item.wrappedKey) {
-          this.#updateFilters();
-          this.#renderResults();
-          this.#showAttachments(latest, key, message);
-        } else this.#showBrowse(message);
-      },
-      () => failed(problem),
-      { blockNavigation: true },
+      error,
     );
+    return fieldset;
   }
 
   #showFolders(message?: string) {
@@ -1474,31 +1497,28 @@ class VaultReader extends HTMLElement {
     ]);
   }
 
-  #showDetailedForm(
-    type: ItemType,
-    edit?: EditTarget & { details: ItemDetails },
-  ) {
+  #showDetailedForm(type: ItemType, edit?: EditTarget) {
     const editor = vaultItemEditor(
       type,
       edit?.details.properties ?? {},
-      Boolean(edit?.item.details.credentials?.fido2Credentials?.length),
+      Boolean(edit?.entry.item.details.credentials?.fido2Credentials?.length),
     );
     this.#showItemForm(
       itemTypes[type].label,
-      async (title, key) => {
+      async (title, key, previous) => {
         const encrypt = async (itemKey: VaultKey) => ({
           type,
           name:
-            title === edit?.title
-              ? edit.item.name
+            previous && title === edit?.title
+              ? previous.name
               : await encryptVaultText(title, itemKey),
-          details: await editor.encrypt(itemKey, edit?.item.details),
+          details: await editor.encrypt(itemKey, previous?.details),
         });
-        return edit
+        return previous
           ? {
-              expectedRevision: edit.item.revision,
+              expectedRevision: previous.revision,
               ...(await encrypt(
-                await unwrapVaultKey(edit.item.wrappedKey, key, "encrypt"),
+                await unwrapVaultKey(previous.wrappedKey, key, "encrypt"),
               )),
             }
           : encryptNewItem(key, encrypt);
@@ -1510,7 +1530,7 @@ class VaultReader extends HTMLElement {
 
   #showItemForm(
     label: string,
-    encrypt: (title: string, key: VaultKey) => Promise<object>,
+    encrypt: (title: string, key: VaultKey, previous?: Item) => Promise<object>,
     edit: EditTarget | undefined,
     properties: HTMLElement,
   ) {
@@ -1523,6 +1543,18 @@ class VaultReader extends HTMLElement {
     const title = create("input");
     title.required = true;
     title.value = edit?.title ?? "";
+    const folder = this.#folderOptions();
+    folder.setAttribute("aria-label", "Folder");
+    const initialFolder = edit?.entry.item.folderId;
+    if (
+      initialFolder &&
+      !Array.from(folder.options).some(({ value }) => value === initialFolder)
+    )
+      folder.add(new Option("Unreadable folder", initialFolder));
+    folder.value = initialFolder ?? "";
+    let editingEntry = edit?.entry;
+    let cancelEntry = editingEntry;
+    let conflict = false;
     const item =
       label === "Login" ? "login" : label === "Secure Note" ? "note" : "item";
     const saveLabel = `Save ${label}`;
@@ -1531,15 +1563,16 @@ class VaultReader extends HTMLElement {
     const error = alert("");
     error.hidden = true;
     const setBusy = (status?: string) => {
-      save.disabled = status !== undefined;
-      title.readOnly = save.disabled;
+      const busy = status !== undefined;
+      save.disabled = busy || conflict;
+      title.readOnly = folder.disabled = busy;
       properties
         .querySelectorAll<HTMLInputElement>("input, textarea, select, button")
         .forEach((input) => {
-          input.disabled = save.disabled;
+          input.disabled = busy;
         });
       save.textContent = status ?? saveLabel;
-      if (reload) reload.disabled = save.disabled;
+      if (reload) reload.disabled = busy;
     };
     const showError = (message: string) => {
       setBusy();
@@ -1567,10 +1600,13 @@ class VaultReader extends HTMLElement {
                 "Your vault changed. Copy your draft, then lock and unlock the vault.";
               throw new Error("Vault key changed");
             }
-            const active = snapshot.items.find(({ id }) => id === edit.item.id);
+            const active = snapshot.items.find(
+              ({ id }) => id === edit.entry.item.id,
+            );
             const latest =
-              active ?? snapshot.trash.find(({ id }) => id === edit.item.id);
-            return latest?.type === edit.item.type
+              active ??
+              snapshot.trash.find(({ id }) => id === edit.entry.item.id);
+            return latest?.type === edit.entry.item.type
               ? readListedItem(latest, vault.key, active === undefined)
               : null;
           },
@@ -1585,7 +1621,7 @@ class VaultReader extends HTMLElement {
               }
             } else {
               vault.entries = vault.entries.filter(
-                ({ item }) => item.id !== edit.item.id,
+                ({ item }) => item.id !== edit.entry.item.id,
               );
               this.#showBrowse(`This ${item} is no longer in your vault.`);
             }
@@ -1594,26 +1630,51 @@ class VaultReader extends HTMLElement {
           { blockNavigation: true },
         );
       });
+    // Reuse the encrypted request if a save may have reached D1 before it failed.
+    let sealed: string | undefined;
+    const clearSealed = () => {
+      sealed = undefined;
+      title.setCustomValidity("");
+    };
+    form.addEventListener("input", (event) => {
+      if (!(
+        event.target instanceof HTMLInputElement && event.target.type === "file"
+      ))
+        clearSealed();
+    });
+    folder.addEventListener("change", clearSealed);
+
     form.append(
       vaultItemFieldset(
         "Item details",
         vaultField({ label: "Title", value: title }).element,
+        itemField(["Folder", folder]),
       ),
       properties,
-      save,
-      error,
     );
+    if (edit) {
+      form.append(
+        this.#editAttachments(edit, vault, (latest, canKeepEditing) => {
+          cancelEntry = latest;
+          if (canKeepEditing && latest) {
+            if (editingEntry?.item.revision !== latest.item.revision)
+              sealed = undefined;
+            editingEntry = latest;
+            return;
+          }
+          conflict = true;
+          if (reload) reload.hidden = false;
+          showError(
+            `This ${item} changed since you opened it. Your draft is still here.`,
+          );
+        }),
+      );
+    }
+    form.append(save, error);
     if (reload) {
       reload.hidden = true;
       form.append(reload);
     }
-
-    // Reuse the encrypted request if a save may have reached D1 before it failed.
-    let sealed: string | undefined;
-    form.addEventListener("input", () => {
-      sealed = undefined;
-      title.setCustomValidity("");
-    });
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       if (save.disabled) return;
@@ -1629,7 +1690,14 @@ class VaultReader extends HTMLElement {
         async (signal) => {
           sealed ??= JSON.stringify({
             keyId: vault.parameters.keyId,
-            ...(await encrypt(title.value.trim(), vault.key)),
+            ...(await encrypt(
+              title.value.trim(),
+              vault.key,
+              editingEntry?.item,
+            )),
+            ...(folder.value !== (editingEntry?.item.folderId ?? "")
+              ? { folderId: folder.value || null }
+              : {}),
           });
           signal.throwIfAborted();
           if (sealed.length > vaultItemBodyLimit) {
@@ -1637,7 +1705,7 @@ class VaultReader extends HTMLElement {
             throw new Error("Encrypted item exceeds request limit");
           }
           const response = await fetch(
-            edit ? vaultItemPath(edit.item.id) : vaultItemsPath,
+            edit ? vaultItemPath(edit.entry.item.id) : vaultItemsPath,
             {
               method: edit ? "PUT" : "POST",
               headers: {
@@ -1671,12 +1739,17 @@ class VaultReader extends HTMLElement {
     });
     const cancel = action("Cancel", () => {
       form.reset();
-      (edit?.cancel ?? this.#showBrowse)();
+      if (edit && cancelEntry && !conflict)
+        this.#showDetails(cancelEntry, edit.details);
+      else if (cancelEntry) {
+        if (cancelEntry.trashed) this.#showTrash();
+        else this.#open(cancelEntry);
+      } else this.#showBrowse();
     });
     this.#showPanel(
       [
         this.#toolbar(undefined, cancel),
-        create("h2", `${edit ? "Edit" : "New"} ${label}`),
+        create("h2", edit ? "Edit" : `New ${label}`),
         form,
       ],
       true,
@@ -1869,6 +1942,19 @@ class VaultReader extends HTMLElement {
         }),
       ),
     );
+    if (item.attachments.length) {
+      const body = create("div");
+      const error = alert("");
+      error.hidden = true;
+      body.append(
+        this.#attachmentList(item, key, (message) => {
+          error.textContent = message;
+          error.hidden = !message;
+        }),
+        error,
+      );
+      content.push(detailCard("Attachments", body));
+    }
     return content.length
       ? content
       : [create("p", "This item has no details.")];
@@ -1880,57 +1966,30 @@ class VaultReader extends HTMLElement {
     titleNode.tabIndex = -1;
     const edit =
       !trashed && title !== null && details
-        ? action(`Edit ${itemTypes[item.type].label}`, () =>
-            this.#showDetailedForm(item.type, {
-              item,
-              title,
-              details,
-              cancel: () => this.#showDetails(entry, details),
-            }),
+        ? action("Edit", () =>
+            this.#showDetailedForm(item.type, { entry, title, details }),
           )
         : undefined;
-    const more = menu(
-      "More actions",
-      details && (!trashed || item.attachments.length > 0)
-        ? action("Attachments", () => {
-            const vault = this.#vault;
-            if (!vault) return;
-            void this.#run(
-              () => unwrapVaultKey(item.wrappedKey, vault.key, "both"),
-              (key) => this.#showAttachments(entry, key),
-              () =>
-                this.#showDetails(
-                  entry,
-                  details,
-                  "Could not open attachments.",
-                ),
-            );
-          })
-        : undefined,
-      action(trashed ? "Restore" : "Move to Trash", () =>
-        this.#changeLifecycle(entry, details),
-      ),
-      trashed
-        ? action("Permanently delete", () =>
-            this.#startBulk("trash", [entry], "purge"),
-          )
-        : action(
-            item.archivedAt === null ? "Archive item" : "Unarchive item",
-            () =>
-              this.#startBulk(
-                this.#viewFor(entry),
-                [entry],
-                item.archivedAt === null ? "archive" : "unarchive",
-              ),
-          ),
-      !trashed
-        ? action("Move to folder", () =>
-            this.#startBulk(this.#viewFor(entry), [entry], "move"),
-          )
-        : undefined,
+    const remove = action(trashed ? "Restore" : "Delete", () =>
+      this.#changeLifecycle(entry, details),
     );
+    if (!trashed) remove.title = "Move to Trash";
+    const archive = item.archivedAt === null;
+    const archiveOrPurge = trashed
+      ? action("Permanently delete", () =>
+          this.#startBulk("trash", [entry], "purge"),
+        )
+      : action(archive ? "Archive" : "Unarchive", () =>
+          this.#startBulk(
+            this.#viewFor(entry),
+            [entry],
+            archive ? "archive" : "unarchive",
+          ),
+        );
+    if (!trashed)
+      archiveOrPurge.title = archive ? "Archive item" : "Unarchive item";
     this.#showPanel([
-      this.#toolbar(this.#showBrowse, edit, more),
+      this.#toolbar(this.#showBrowse, edit, remove, archiveOrPurge),
       titleNode,
       ...(error ? [alert(error)] : []),
       ...(details ? this.#itemDetailCards(item, details) : []),

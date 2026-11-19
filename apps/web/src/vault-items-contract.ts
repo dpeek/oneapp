@@ -89,6 +89,7 @@ const EditDetailedItem = Schema.Struct({
   ...editItem,
   type: ItemType,
   details: EditableItemDetails,
+  folderId: Schema.optionalKey(Schema.NullOr(VaultItemId)),
 });
 export const EditVaultItem = Schema.Union([
   EditVaultLogin,

@@ -480,7 +480,7 @@ export const importFixturePasskey = async ({
   await importWeb(web, fixture.contents);
   await button(web, passkeyName).press("Enter");
   await web.getByText("Saved in this login", { exact: true }).waitFor();
-  await button(web, "Edit Login").press("Enter");
+  await button(web, "Edit").press("Enter");
   await web.getByLabel("Username", { exact: true }).fill("edited@example.net");
   await button(web, "Save Login").press("Enter");
   await web.getByText("edited@example.net", { exact: true }).waitFor();

@@ -26,6 +26,7 @@
     "foldkit": "0.170.0",
     "html-to-text": "10.0.1",
     "ipaddr.js": "^2.5.0",
+    "pdfjs-dist": "6.5.438",
     "postal-mime": "4.2.1"
   }
 }

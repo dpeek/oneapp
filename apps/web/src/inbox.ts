@@ -3,6 +3,7 @@ import { Command, Submodel, Update } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import * as Mount from "foldkit/mount";
+import * as Attachments from "./inbox-attachments.ts";
 import * as Compose from "./inbox-compose.ts";
 import * as QuickReply from "./inbox-inline-reply.ts";
 import {
@@ -123,6 +124,7 @@ export const Model = Schema.Struct({
   entry: Schema.NullOr(MailEntry),
   entryRequest: Schema.NullOr(Schema.String),
   entryError: Schema.NullOr(Schema.String),
+  attachmentPreview: Attachments.State,
   confirmingDelete: Schema.Boolean,
   deleteRequest: Schema.NullOr(
     Schema.Struct({
@@ -160,6 +162,7 @@ export const initial: Model = {
   entry: null,
   entryRequest: null,
   entryError: null,
+  attachmentPreview: null,
   confirmingDelete: false,
   deleteRequest: null,
   deleteFailed: false,
@@ -176,6 +179,7 @@ export const Message = defineMessageUnion({
   RefreshedUnread: {},
   GotComposeMessage: { message: Compose.Message },
   GotQuickReplyMessage: { message: QuickReply.Message },
+  GotAttachmentMessage: { message: Attachments.Message },
   LiveChanged: {},
   RequestedMore: {},
   RetriedEntry: {},
@@ -217,6 +221,18 @@ export const Message = defineMessageUnion({
   FocusUpdated: {},
 });
 type Message = typeof Message.Type;
+
+const toAttachmentMessage = (message: typeof Attachments.Message.Type) =>
+  message._tag === "SessionExpired"
+    ? Message.SessionExpired({ request: message.request })
+    : Message.GotAttachmentMessage({ message });
+
+const foldAttachments = Update.foldChild({
+  update: Attachments.update,
+  read: (model: Model) => Option.some(model.attachmentPreview),
+  write: (model, attachmentPreview) => ({ ...model, attachmentPreview }),
+  toParentMessage: toAttachmentMessage,
+});
 
 const toComposeMessage = (message: typeof Compose.Message.Type) =>
   message._tag === "SessionExpired"
@@ -711,6 +727,7 @@ export const update = (
               entry: null,
               entryRequest: null,
               entryError: null,
+              attachmentPreview: null,
               confirmingDelete: false,
               deleteFailed: false,
             };
@@ -718,6 +735,7 @@ export const update = (
       return next.thread ? list : withThread(list);
     },
     RetriedList: () => withUnread(withThread(loadList(model, null))),
+    GotAttachmentMessage: ({ message }) => foldAttachments(model, message),
     RefreshedUnread: () => refreshUnread(model),
     GotComposeMessage: ({ message }) => {
       const result = foldCompose(model, message);
@@ -822,6 +840,7 @@ export const update = (
         entry: null,
         entryRequest: null,
         entryError: null,
+        attachmentPreview: null,
         deleteFailed: false,
       }),
     RequestedBack: () => ({ model }),
@@ -893,6 +912,7 @@ export const update = (
               entry: null,
               entryRequest: null,
               entryError: null,
+              attachmentPreview: null,
             }
           : {}),
       };
@@ -1407,6 +1427,20 @@ const entryContent = (model: Model, h: HtmlBuilder<Message>) => {
                       : previewNotice[entry.preview],
                   ],
                 ),
+              ]
+            : []),
+          ...("receivedAt" in entry && entry.attachments?.length
+            ? [
+                h.submodel({
+                  slotId: `inbox-attachments-${entry.id}`,
+                  view: Attachments.view,
+                  model: {
+                    id: entry.id,
+                    attachments: entry.attachments,
+                    preview: model.attachmentPreview,
+                  },
+                  toParentMessage: toAttachmentMessage,
+                }),
               ]
             : []),
           h.div(

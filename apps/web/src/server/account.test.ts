@@ -28,6 +28,8 @@ import {
   conversationArchiveApi,
   conversationsApiPath,
   inboxApiPath,
+  inboxAttachmentApi,
+  inboxAttachmentPreviewApi,
   inboxEventsPath,
   inboxMessageApi,
   inboxOriginalApi,
@@ -1128,6 +1130,123 @@ it("only upgrades Inbox sockets for a same-origin owner session", async () => {
   expect(forwarded.get("x-oneapp-inbox-security-revision")).toBe(
     session?.revision,
   );
+});
+
+it("serves received attachments privately and previews only supported media", async () => {
+  using sqlite = new Database(":memory:");
+  const id = "0-8200000000000-d92d6b0a-61b8-4776-95cf-767cf1000000.eml";
+  const mailbox = "mail@app.example.net";
+  const png = Uint8Array.fromBase64(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN9sAAAAASUVORK5CYII=",
+  );
+  const markup =
+    "<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>";
+  const report = "Name,Total\r\n" + "Alex,10\r\n".repeat(4000);
+  const file = (type: string, filename: string, content: string) => [
+    "--oneapp-test",
+    "Content-Type: " + type,
+    "Content-Disposition: attachment; " + filename,
+    "Content-Transfer-Encoding: base64",
+    "",
+    content,
+  ];
+  const raw = [
+    "From: sender@example.net",
+    "To: " + mailbox,
+    "Subject: Attached report",
+    "Content-Type: multipart/mixed; boundary=oneapp-test",
+    "",
+    "--oneapp-test",
+    "Content-Type: text/plain",
+    "",
+    "Here is the report.",
+    ...file(
+      "application/octet-stream",
+      "filename*=UTF-8''..%2Fr%C3%A9sum%C3%A9.png",
+      png.toBase64(),
+    ),
+    ...file(
+      "image/png",
+      'filename="drawing.svg"',
+      new TextEncoder().encode(markup).toBase64(),
+    ),
+    ...file(
+      "text/csv",
+      'filename="report.csv"',
+      new TextEncoder().encode(report).toBase64(),
+    ),
+    "--oneapp-test--",
+    "",
+  ].join("\r\n");
+  const get = vi.fn(async (key: string) => {
+    if (key !== id) return null;
+    const response = new Response(raw);
+    return {
+      size: raw.length,
+      key,
+      uploaded: new Date("2026-11-19T00:15:00.000Z"),
+      customMetadata: {
+        envelopeFrom: "sender@example.net",
+        envelopeTo: mailbox,
+      },
+      body: response.body,
+      arrayBuffer: () => response.arrayBuffer(),
+    };
+  });
+  const { call, signIn, cookies } = await setup(sqlite, {
+    INBOX_EMAIL_ADDRESS: mailbox,
+    INBOX_MESSAGES: { get } as unknown as WorkerEnv["INBOX_MESSAGES"],
+  });
+  expect((await call(inboxAttachmentApi(id, 0))).status).toBe(401);
+  expect((await call(inboxAttachmentPreviewApi(id, 0))).status).toBe(401);
+  expect(get).not.toHaveBeenCalled();
+  const session = cookies(await signIn(password));
+  const signedIn = (path: string) => call(path, undefined, session);
+  const message = await signedIn(inboxMessageApi(id));
+  expect(message.status).toBe(200);
+  expect(await message.json()).toMatchObject({
+    attachments: [
+      {
+        part: 0,
+        name: "résumé.png",
+        mediaType: "image/png",
+        size: png.byteLength,
+        preview: "image",
+      },
+      { part: 1, name: "drawing.svg", preview: null },
+      { part: 2, name: "report.csv", mediaType: "text/csv", preview: "text" },
+    ],
+  });
+  get.mockClear();
+  expect((await signedIn(inboxAttachmentApi(id, 512))).status).toBe(404);
+  expect((await signedIn(inboxMessageApi(id) + "/attachments/01")).status).toBe(
+    404,
+  );
+  expect(get).not.toHaveBeenCalled();
+  expect((await signedIn(inboxAttachmentApi(id, 3))).status).toBe(404);
+
+  const image = await signedIn(inboxAttachmentPreviewApi(id, 0));
+  expect(image.headers.get("content-type")).toBe("image/png");
+  expect(image.headers.get("content-disposition")).toBe("inline");
+  expect(image.headers.get("cache-control")).toBe("no-store");
+  expect(image.headers.get("cross-origin-resource-policy")).toBe("same-origin");
+  expect(new Uint8Array(await image.arrayBuffer())).toEqual(png);
+  const download = await signedIn(inboxAttachmentApi(id, 0));
+  expect(download.headers.get("content-disposition")).toContain(
+    "filename*=UTF-8''r%C3%A9sum%C3%A9.png",
+  );
+  expect(new Uint8Array(await download.arrayBuffer())).toEqual(png);
+  expect((await signedIn(inboxAttachmentPreviewApi(id, 1))).status).toBe(415);
+  const unsafe = await signedIn(inboxAttachmentApi(id, 1));
+  expect(unsafe.headers.get("content-type")).toBe("application/octet-stream");
+  expect(unsafe.headers.get("content-disposition")).toMatch(/^attachment;/u);
+  expect(unsafe.headers.get("x-content-type-options")).toBe("nosniff");
+  expect(unsafe.headers.get("content-security-policy")).toContain("sandbox");
+  expect(await unsafe.text()).toBe(markup);
+  const text = await signedIn(inboxAttachmentPreviewApi(id, 2));
+  expect(text.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+  expect(await text.text()).toBe(report.slice(0, 32 * 1024));
+  expect(await (await signedIn(inboxAttachmentApi(id, 2))).text()).toBe(report);
 });
 
 it("allows the owner to list, read, download, and permanently delete stored mail", async () => {

@@ -806,6 +806,7 @@ const update = (
           Object.values(model.inbox.readRequests).includes(message.request) ||
           message.request === model.inbox.compose.request ||
           message.request === model.inbox.quickReply.request ||
+          message.request === model.inbox.attachmentPreview?.request ||
           message.request === deleting?.request ||
           message.request === moving?.request)
       ) {

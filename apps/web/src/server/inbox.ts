@@ -48,6 +48,12 @@ import {
   setThreadArchived,
 } from "./mail-index.ts";
 import {
+  attachmentResponse,
+  describeAttachments,
+  mailMimeOptions as mimeOptions,
+  receivedMessageLimit,
+} from "./mail-attachments.ts";
+import {
   conversationMessageIds,
   parentMessageId,
   replyHeaders,
@@ -102,15 +108,8 @@ export type InboxSocketSession = {
 const isInboxMessageId = Schema.is(InboxMessageId);
 const isMailMessageId = Schema.is(MailMessageId);
 const headerLimit = 64 * 1024;
-const messageLimit = 8 * 1024 * 1024;
 const textLimit = 256 * 1024;
 const htmlLimit = 1024 * 1024;
-const mimeOptions = {
-  maxHeadersSize: 256 * 1024,
-  maxNestingDepth: 32,
-  maxPartCount: 512,
-  forceRfc822Attachments: true,
-};
 const htmlToText = compile({
   wordwrap: false,
   limits: { maxDepth: 48 },
@@ -321,7 +320,7 @@ const readMessage = async (
       preview,
     };
   };
-  if (object.size > messageLimit) {
+  if (object.size > receivedMessageLimit) {
     await object.body.cancel();
     return fallback("tooLarge");
   }
@@ -334,6 +333,7 @@ const readMessage = async (
       ? htmlToText(html.slice(0, htmlLimit))
       : (email.text ?? "");
     const from = email.from?.address;
+    const attachments = describeAttachments(email.attachments);
     return {
       ...summary(object, email.subject?.trim().slice(0, 200) ?? ""),
       ...replyInfo(email, envelopeFrom),
@@ -345,6 +345,7 @@ const readMessage = async (
         : envelopeFrom,
       to,
       unread,
+      ...(attachments.length ? { attachments } : {}),
       text: text.slice(0, textLimit),
       preview:
         html.length > htmlLimit || text.length > textLimit
@@ -684,6 +685,27 @@ export const inboxRoutes = (
     );
   };
 
+  const readAttachment = (preview: boolean) =>
+    Effect.gen(function* () {
+      if (!(yield* requireInboxOwner))
+        return yield* jsonError(403, "Access denied");
+      const { id, part } = yield* HttpRouter.params;
+      if (
+        !isInboxMessageId(id) ||
+        typeof part !== "string" ||
+        !/^(?:0|[1-9]\d{0,2})$/u.test(part)
+      )
+        return yield* notFound();
+      const position = Number(part);
+      if (position >= mimeOptions.maxPartCount) return yield* notFound();
+      const response = yield* Effect.tryPromise(() =>
+        attachmentResponse(env.INBOX_MESSAGES, id, position, preview),
+      );
+      return response
+        ? HttpServerResponse.fromWeb(response)
+        : yield* notFound();
+    }).pipe(Effect.catchTags(inboxErrors));
+
   const updateReadStatus = Effect.gen(function* () {
     const { id } = yield* HttpRouter.params;
     if (!isInboxMessageId(id)) return yield* notFound();
@@ -887,6 +909,16 @@ export const inboxRoutes = (
       }).pipe(Effect.catchTags(inboxErrors)),
     ),
     HttpRouter.add("GET", `${inboxApiPath}/:id/original`, read("inbox", true)),
+    HttpRouter.add(
+      "GET",
+      `${inboxApiPath}/:id/attachments/:part`,
+      readAttachment(false),
+    ),
+    HttpRouter.add(
+      "GET",
+      `${inboxApiPath}/:id/attachments/:part/preview`,
+      readAttachment(true),
+    ),
     send(inboxSendPath, sendEmail(env, defer)),
     send(`${inboxApiPath}/:id/reply`, sendInlineReply(env, defer)),
   );

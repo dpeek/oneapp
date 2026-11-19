@@ -1,3 +1,4 @@
+import { FileMetadata } from "@oneapp/core/files";
 import { Schema as AuthSchema } from "@yielded/auth";
 import { Schema } from "effect";
 import { PersonMatch } from "./people-contract.ts";
@@ -32,6 +33,11 @@ export const mailMessageApi = (folder: MailFolder, id: string) =>
 export const inboxMessageApi = (id: string) => `${inboxApiPath}/${id}`;
 export const inboxOriginalApi = (id: string) =>
   `${inboxMessageApi(id)}/original`;
+export const inboxAttachmentApi = (id: string, part: number) =>
+  `${inboxMessageApi(id)}/attachments/${part}`;
+export const inboxAttachmentPreviewApi = (id: string, part: number) =>
+  `${inboxAttachmentApi(id, part)}/preview`;
+export const inboxAttachmentTextPreviewLimit = 32 * 1024;
 export const inboxReadApi = (id: string) => `${inboxMessageApi(id)}/read`;
 export const inboxReplyApi = (id: string) => `${inboxMessageApi(id)}/reply`;
 export const InboxUnread = Schema.Struct({ unreadCount: Schema.Number });
@@ -145,6 +151,17 @@ export const MailPeople = Schema.Struct({
 });
 export type MailPeople = typeof MailPeople.Type;
 
+export const AttachmentPart = Schema.Number.check(
+  Schema.isInt(),
+  Schema.isGreaterThanOrEqualTo(0),
+);
+export const InboxAttachment = Schema.Struct({
+  ...FileMetadata.fields,
+  part: AttachmentPart,
+  preview: Schema.NullOr(Schema.Literals(["image", "pdf", "text"])),
+});
+export type InboxAttachment = typeof InboxAttachment.Type;
+
 const previewFields = {
   text: Schema.String,
   people: Schema.optionalKey(MailPeople),
@@ -156,6 +173,7 @@ export const InboxEntry = Schema.Struct({
   ...previewFields,
   to: Schema.String,
   unread: Schema.optionalKey(Schema.Boolean),
+  attachments: Schema.optionalKey(Schema.Array(InboxAttachment)),
   reply: Schema.optionalKey(
     Schema.Struct({
       to: Schema.String,

@@ -10,6 +10,14 @@ const destinations = [
     ],
   },
   {
+    page: "inbox",
+    label: "Inbox",
+    paths: [
+      "M5 5h14l2 9v4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-4l2-9Z",
+      "M3 14h5l1.5 2h5l1.5-2h5",
+    ],
+  },
+  {
     page: "vault",
     label: "Vault",
     paths: [

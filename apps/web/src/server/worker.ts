@@ -1,4 +1,5 @@
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
+import type { ForwardableEmailMessage } from "@cloudflare/workers-types";
 import { cliLoginPath } from "@oneapp/core/cli-auth";
 import { EmailDelivery } from "@yielded/auth";
 import { ProofDispatchScheduler } from "@yielded/auth/Proofs";
@@ -27,6 +28,7 @@ import { cliTokenRoutes } from "./cli-tokens.ts";
 import { authDependencies, databaseLayer } from "./database.ts";
 import { emailChangeRoutes } from "./email-change.ts";
 import { extensionAccessRoutes } from "./extension-access.ts";
+import { inboxMessageKey, inboxRoutes, inboxSubject } from "./inbox.ts";
 import { linksRoutes } from "./links.ts";
 import { mcpRoutes } from "./mcp.ts";
 import {
@@ -53,7 +55,31 @@ const health = HttpRouter.add(
   HttpServerResponse.json({ ok: true }),
 );
 
+declare const FixedLengthStream: typeof import("@cloudflare/workers-types").FixedLengthStream;
+
 export default {
+  async email(
+    message: Pick<
+      ForwardableEmailMessage,
+      "from" | "to" | "headers" | "raw" | "rawSize" | "setReject"
+    >,
+    env: Pick<WorkerEnv, "INBOX_EMAIL_ADDRESS" | "INBOX_MESSAGES">,
+  ) {
+    if (message.to.toLowerCase() !== env.INBOX_EMAIL_ADDRESS) {
+      message.setReject("Unknown recipient");
+      return;
+    }
+
+    const raw = message.raw.pipeThrough(new FixedLengthStream(message.rawSize));
+    await env.INBOX_MESSAGES.put(inboxMessageKey(), raw, {
+      httpMetadata: { contentType: "message/rfc822" },
+      customMetadata: {
+        envelopeFrom: message.from,
+        envelopeTo: message.to,
+        subject: inboxSubject(message.headers.get("subject")),
+      },
+    });
+  },
   async scheduled(_event: unknown, env: WorkerEnv) {
     await collectAttachments(env.DB, env.VAULT_FILES);
   },
@@ -240,6 +266,7 @@ export default {
           ),
           passwordRecoveryRoutes(http, emailTransport !== disabledEmail),
           linksRoutes(http),
+          inboxRoutes(http, env),
           vaultSetupRoutes(http, env.DB),
           vaultItemRoutes(http, env.DB),
           vaultManagementRoutes(http, env, defer),

@@ -122,7 +122,7 @@ const action = (label: string, run: () => void) => {
 };
 const filterList = (label: string) => {
   const list = create("ul");
-  list.className = "vault-filter-list";
+  list.className = "vault-filter-list workspace-nav-list";
   list.setAttribute("aria-label", label);
   return list;
 };
@@ -468,13 +468,13 @@ class VaultReader extends HTMLElement {
 
   #mountWorkspace() {
     const root = create("div");
-    root.className = "vault-workspace";
+    root.className = "vault-workspace workspace";
     const header = create("header");
-    header.className = "vault-workspace-header";
+    header.className = "vault-workspace-header workspace-header";
     header.append(create("h1", "Vault"), action("Lock vault", this.#lock));
 
     const filters = create("nav");
-    filters.className = "vault-filters";
+    filters.className = "vault-filters workspace-sidebar";
     filters.setAttribute("aria-label", "Vault navigation");
     const views = filterList("Vault views");
     views.classList.add("vault-views");
@@ -521,10 +521,10 @@ class VaultReader extends HTMLElement {
     filters.append(views, itemFilters, tools);
 
     const listPane = create("section");
-    listPane.className = "vault-list-pane";
+    listPane.className = "vault-list-pane workspace-list";
     listPane.setAttribute("aria-label", "Vault items");
     const listHeader = create("div");
-    listHeader.className = "vault-list-header";
+    listHeader.className = "vault-list-header workspace-list-header";
     const search = create("input");
     search.type = "search";
     search.placeholder = "Search items";
@@ -545,11 +545,11 @@ class VaultReader extends HTMLElement {
     bulk.setAttribute("aria-label", "Selected item actions");
     bulk.hidden = true;
     const results = create("div");
-    results.className = "vault-results";
+    results.className = "vault-results workspace-results";
     listPane.append(listHeader, status, results, bulk);
 
     const detail = create("section");
-    detail.className = "vault-detail";
+    detail.className = "vault-detail workspace-detail";
     detail.tabIndex = -1;
     detail.setAttribute("aria-label", "Item details");
     root.append(header, filters, listPane, detail);

@@ -23,6 +23,11 @@ import {
 } from "../account-contract.ts";
 import { bitwardenDevicesPath } from "../bitwarden-device-contract.ts";
 import {
+  inboxApiPath,
+  inboxMessageApi,
+  inboxOriginalApi,
+} from "../inbox-contract.ts";
+import {
   codexClientId,
   McpGrantList,
   mcpGrantsPath,
@@ -61,7 +66,10 @@ import worker from "./worker.ts";
 const email = "owner@example.net";
 const password = "p".repeat(43);
 
-const setup = async (sqlite: Database) => {
+const setup = async (
+  sqlite: Database,
+  inbox?: Pick<WorkerEnv, "INBOX_MESSAGES" | "INBOX_EMAIL_ADDRESS">,
+) => {
   const migrationRoot = new URL("../../drizzle/", import.meta.url).pathname;
   for (const entry of Array.from(
     new Bun.Glob("*/migration.sql").scanSync(migrationRoot),
@@ -89,6 +97,7 @@ const setup = async (sqlite: Database) => {
     { bytes: Uint8Array<ArrayBuffer>; customMetadata: { sha256: string } }
   >();
   const env = {
+    ...inbox,
     VAULT_FILES: {
       put: async (
         id: string,
@@ -206,6 +215,159 @@ const setup = async (sqlite: Database) => {
     },
   };
 };
+
+it("allows the owner to list, read, download, and permanently delete stored mail", async () => {
+  using sqlite = new Database(":memory:");
+  const address = "mail@app.example.net";
+  const sender = "bounces@example.net";
+  const legacy =
+    "2026-11-19T00:15:00.000Z-85c03fc3-8e33-42dd-af09-76d1890aa307.eml";
+  const newest = "0-8200000000000-85c03fc3-8e33-42dd-af09-76d1890aa307.eml";
+  const metadata = { envelopeFrom: sender, envelopeTo: address };
+  const raw = [
+    "From: Example Team <team@example.net>",
+    "Subject: =?UTF-8?Q?Coffee_=E2=98=95?=",
+    "Content-Type: text/html; charset=utf-8",
+    "",
+    '<p>Hello <strong>there</strong>.</p><script>secret()</script><img src="https://tracking.example.net/pixel">',
+    "",
+  ].join("\r\n");
+  const bytes = new TextEncoder().encode(raw);
+  const stored = new Set([legacy, newest]);
+  const object = (key: string) => ({
+    key,
+    size: bytes.length,
+    uploaded: new Date("2026-11-19T00:15:00.000Z"),
+    customMetadata:
+      key === newest ? { ...metadata, subject: "Coffee ☕" } : metadata,
+  });
+  const list = vi.fn(async ({ cursor }: { cursor?: string }) =>
+    cursor
+      ? {
+          objects: stored.has(legacy) ? [object(legacy)] : [],
+          truncated: false,
+        }
+      : { objects: [object(newest)], truncated: true, cursor: "next-page" },
+  );
+  const get = vi.fn(
+    async (key: string, options?: { range: { length: number } }) => {
+      if (!stored.has(key)) return null;
+      const response = new Response(
+        options ? bytes.slice(0, options.range.length) : bytes,
+      );
+      return {
+        ...object(key),
+        body: response.body,
+        text: () => response.text(),
+        arrayBuffer: () => response.arrayBuffer(),
+      };
+    },
+  );
+  const remove = vi.fn(async (key: string) => {
+    stored.delete(key);
+  });
+  const { call, request, signIn, cookies } = await setup(sqlite, {
+    INBOX_EMAIL_ADDRESS: address,
+    INBOX_MESSAGES: {
+      list,
+      get,
+      delete: remove,
+    } as WorkerEnv["INBOX_MESSAGES"],
+  });
+  for (const path of [
+    inboxApiPath,
+    inboxMessageApi(legacy),
+    inboxOriginalApi(legacy),
+  ]) {
+    expect((await call(path)).status).toBe(401);
+  }
+  expect(list).not.toHaveBeenCalled();
+  expect(get).not.toHaveBeenCalled();
+
+  const session = cookies(await signIn(password));
+  const first = await call(inboxApiPath, undefined, session);
+  expect(first.headers.get("cache-control")).toBe("no-store");
+  expect(await first.json()).toMatchObject({
+    address,
+    cursor: "next-page",
+    messages: [{ id: newest, from: sender, subject: "Coffee ☕" }],
+  });
+  expect(get).not.toHaveBeenCalled();
+  const next = await call(
+    inboxApiPath + "?cursor=next-page",
+    undefined,
+    session,
+  );
+  expect(await next.json()).toMatchObject({
+    cursor: null,
+    messages: [{ id: legacy, subject: "Coffee ☕" }],
+  });
+  expect(get).toHaveBeenLastCalledWith(legacy, {
+    range: { offset: 0, length: bytes.length },
+  });
+
+  const opened = await call(inboxMessageApi(legacy), undefined, session);
+  expect(opened.headers.get("cache-control")).toBe("no-store");
+  expect(await opened.json()).toMatchObject({
+    subject: "Coffee ☕",
+    from: "Example Team <team@example.net>",
+    to: address,
+    text: "Hello there.",
+    preview: "complete",
+  });
+  const original = await call(inboxOriginalApi(legacy), undefined, session);
+  expect(original.headers.get("content-disposition")).toBe(
+    `attachment; filename="${legacy}"`,
+  );
+  expect(original.headers.get("cache-control")).toBe("no-store");
+  expect(await original.text()).toBe(raw);
+  expect(
+    (await call(inboxMessageApi("unknown"), undefined, session)).status,
+  ).toBe(404);
+
+  const deleteMail = (headers: HeadersInit, key = legacy) =>
+    request(inboxMessageApi(key), { method: "DELETE", headers });
+  const authorized = {
+    cookie: session,
+    origin: "https://oneapp.example",
+    "x-effect-auth-csrf": "1",
+  };
+  expect((await deleteMail({})).status).toBe(401);
+  expect(
+    (await deleteMail({ cookie: session, origin: authorized.origin })).status,
+  ).toBe(403);
+  expect(
+    (await deleteMail({ ...authorized, origin: "https://other.example" }))
+      .status,
+  ).toBe(403);
+  expect((await deleteMail(authorized, "unknown")).status).toBe(404);
+  expect(remove).not.toHaveBeenCalled();
+
+  remove.mockRejectedValueOnce(new Error("R2 unavailable"));
+  expect((await deleteMail(authorized)).status).toBe(503);
+  expect(stored.has(legacy)).toBe(true);
+  const deleted = await deleteMail(authorized);
+  expect(deleted.status).toBe(204);
+  expect(deleted.headers.get("cache-control")).toBe("no-store");
+  expect(remove).toHaveBeenLastCalledWith(legacy);
+  expect((await deleteMail(authorized)).status).toBe(204);
+  expect((await call(inboxMessageApi(legacy), undefined, session)).status).toBe(
+    404,
+  );
+  expect(
+    (await call(inboxOriginalApi(legacy), undefined, session)).status,
+  ).toBe(404);
+  const afterDelete = await call(
+    inboxApiPath + "?cursor=next-page",
+    undefined,
+    session,
+  );
+  expect(await afterDelete.json()).toMatchObject({
+    messages: [],
+    cursor: null,
+  });
+  expect(stored.has(newest)).toBe(true);
+});
 
 it("issues scoped CLI tokens and applies read and write scopes to the Links API", async () => {
   using sqlite = new Database(":memory:");

@@ -14,6 +14,8 @@ import { Account, AuthApi } from "./auth-contract.ts";
 import * as CliLogin from "./cli-login.ts";
 import * as ConnectedClients from "./connected-clients.ts";
 import * as ExtensionAccess from "./extension-access.ts";
+import * as Inbox from "./inbox.ts";
+import { inboxPath, InboxMessageId } from "./inbox-contract.ts";
 import { deleteLink, readLinks, saveLink } from "./links-client.ts";
 import { mcpAuthorizePath, mcpLoginQuery } from "./mcp-access-contract.ts";
 import { navigationView } from "./navigation.ts";
@@ -22,9 +24,15 @@ import { forgotPasswordPage } from "./password-recovery-contract.ts";
 import { vaultPath } from "./vault-setup-contract.ts";
 import * as VaultSetup from "./vault-setup.ts";
 
-const Page = Schema.Literals(["links", "vault", "settings"]);
+const Page = Schema.Literals(["links", "inbox", "vault", "settings"]);
 type Page = typeof Page.Type;
 const pageFor = (url: Url.Url): Page => {
+  if (
+    url.pathname === inboxPath ||
+    url.pathname === `${inboxPath}/` ||
+    Inbox.messageIdFor(url.pathname)
+  )
+    return "inbox";
   if (url.pathname === vaultPath || url.pathname === `${vaultPath}/`)
     return "vault";
   return url.pathname === "/settings" ||
@@ -40,6 +48,8 @@ const Model = Schema.Struct({
   sessionCheck: Schema.Literals(["checking", "failed", "resolved"]),
   accountSettings: AccountSettings.Model,
   vaultSetup: VaultSetup.Model,
+  inbox: Inbox.Model,
+  inboxId: Schema.NullOr(InboxMessageId),
   signInNotice: Schema.NullOr(Schema.String),
   links: Schema.NullOr(LinkList),
   linkUrl: Schema.String,
@@ -63,6 +73,7 @@ const Message = defineMessageUnion({
   LoadedAccount: { account: Schema.NullOr(Account) },
   GotAccountSettingsMessage: { message: AccountSettings.Message },
   GotVaultSetupMessage: { message: VaultSetup.Message },
+  GotInboxMessage: { message: Inbox.Message },
   ChangedLinkUrl: { url: Schema.String },
   SubmittedLink: {},
   RequestedLinkDeletion: { id: Schema.String },
@@ -101,6 +112,15 @@ const foldVaultSetup = Update.foldChild({
     model.account ? Option.some(model.vaultSetup) : Option.none(),
   write: (model, vaultSetup) => ({ ...model, vaultSetup }),
   toParentMessage: toVaultSetupMessage,
+});
+const toInboxMessage = (message: typeof Inbox.Message.Type) =>
+  Message.GotInboxMessage({ message });
+const foldInbox = Update.foldChild({
+  update: Inbox.update,
+  read: (model: Model) =>
+    model.account ? Option.some(model.inbox) : Option.none(),
+  write: (model, inbox) => ({ ...model, inbox }),
+  toParentMessage: toInboxMessage,
 });
 const toConnectedClientsMessage = (
   message: typeof ConnectedClients.Message.Type,
@@ -305,6 +325,8 @@ const loadPage = (model: Model): Update.Return<Model, Message> => {
   }
   if (model.page === "vault")
     return foldVaultSetup(model, VaultSetup.Message.Requested());
+  if (model.page === "inbox")
+    return foldInbox(model, Inbox.Message.Opened({ id: model.inboxId }));
   return foldConnectedClients(model, ConnectedClients.Message.Requested());
 };
 
@@ -316,6 +338,8 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     sessionCheck: "checking",
     accountSettings: AccountSettings.initial,
     vaultSetup: VaultSetup.initial,
+    inbox: Inbox.initial,
+    inboxId: Inbox.messageIdFor(url.pathname),
     signInNotice: null,
     links: null,
     linkUrl: "",
@@ -349,7 +373,8 @@ const update = (
         !isApproval(model) &&
         (request.url.pathname === "/links" ||
           request.url.pathname === "/settings" ||
-          request.url.pathname === vaultPath)
+          request.url.pathname === vaultPath ||
+          pageFor(request.url) === "inbox")
       ) {
         if (request.url.pathname === window.location.pathname) return { model };
         return {
@@ -365,9 +390,10 @@ const update = (
     },
     ChangedUrl: ({ url }) => {
       const page = pageFor(url);
-      return page === model.page
+      const inboxId = Inbox.messageIdFor(url.pathname);
+      return page === model.page && inboxId === model.inboxId
         ? { model }
-        : loadPage({ ...model, page, error: null });
+        : loadPage({ ...model, page, inboxId, error: null });
     },
     NavigationFinished: () => ({ model }),
     RetriedSessionCheck: () =>
@@ -400,6 +426,8 @@ const update = (
         sessionCheck: "resolved",
         accountSettings: AccountSettings.initial,
         vaultSetup: VaultSetup.initial,
+        inbox: Inbox.initial,
+        inboxId: model.inboxId,
         signInNotice: null,
         links: null,
         linkUrl: "",
@@ -649,6 +677,33 @@ const update = (
       model: { ...model, deletingLink: null, pending: false, error },
     }),
     GotVaultSetupMessage: ({ message }) => foldVaultSetup(model, message),
+    GotInboxMessage: ({ message }) => {
+      const deleting = model.inbox.deleteRequest;
+      if (
+        message._tag === "SessionExpired" &&
+        (message.request === model.inbox.listRequest ||
+          message.request === model.inbox.entryRequest ||
+          message.request === deleting?.request)
+      ) {
+        return update(model, Message.LoadedAccount({ account: null }));
+      }
+      const result = foldInbox(model, message);
+      if (
+        message._tag === "DeletedEntry" &&
+        message.request === deleting?.request &&
+        model.page === "inbox" &&
+        model.inboxId === message.id
+      ) {
+        return {
+          ...result,
+          commands: [
+            ...(result.commands ?? []),
+            Navigate({ href: inboxPath, mode: "replace" }),
+          ],
+        };
+      }
+      return result;
+    },
     GotConnectedClientsMessage: ({ message }) =>
       foldConnectedClients(model, message),
     GotCliLoginMessage: ({ message }) => foldCliLogin(model, message),
@@ -880,6 +935,7 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
   }
   const title = {
     links: "Links",
+    inbox: "Inbox",
     vault: "Vault",
     settings: "Settings",
   }[model.page];
@@ -893,16 +949,24 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
           [h.Class("page")],
           [
             h.h1([], [title]),
-            model.page === "links"
-              ? linksView(model, h)
-              : model.page === "vault"
-                ? h.submodel({
-                    slotId: "vault-setup",
-                    view: VaultSetup.view,
-                    model: model.vaultSetup,
-                    toParentMessage: toVaultSetupMessage,
-                  })
-                : settingsView(model, h),
+            {
+              links: () => linksView(model, h),
+              inbox: () =>
+                h.submodel({
+                  slotId: "inbox",
+                  view: Inbox.view,
+                  model: model.inbox,
+                  toParentMessage: toInboxMessage,
+                }),
+              vault: () =>
+                h.submodel({
+                  slotId: "vault-setup",
+                  view: VaultSetup.view,
+                  model: model.vaultSetup,
+                  toParentMessage: toVaultSetupMessage,
+                }),
+              settings: () => settingsView(model, h),
+            }[model.page](),
             error,
           ],
         ),

@@ -14,6 +14,19 @@ const Database = Cloudflare.D1.Database("Database", {
 
 const VaultFiles = Cloudflare.R2.Bucket("VaultFiles", { publicAccess: false });
 
+const InboxMessages = Cloudflare.R2.Bucket("InboxMessages", {
+  publicAccess: false,
+});
+
+const inboxRouting = Effect.gen(function* () {
+  const zoneId = yield* Config.option(Config.String("INBOX_EMAIL_ZONE_ID"));
+  if (Option.isNone(zoneId)) return undefined;
+  const hostname = yield* Config.String("APP_DOMAIN");
+  return { zoneId: zoneId.value, name: hostname.toLowerCase() };
+});
+
+const inboxAddress = (hostname: string) => `mail@${hostname}`;
+
 export const Web = Cloudflare.Worker(
   "Web",
   Effect.gen(function* () {
@@ -21,6 +34,7 @@ export const Web = Cloudflare.Worker(
     const emailZone = yield* Config.option(
       Config.String("ACCOUNT_EMAIL_ZONE_ID"),
     );
+    const inbox = yield* inboxRouting;
     const sending = yield* Effect.gen(function* () {
       if (Option.isNone(emailZone)) return undefined;
       const hostname = yield* Config.String("APP_DOMAIN");
@@ -74,6 +88,8 @@ export const Web = Cloudflare.Worker(
       env: {
         DB: Database,
         VAULT_FILES: VaultFiles,
+        INBOX_MESSAGES: InboxMessages,
+        ...(inbox ? { INBOX_EMAIL_ADDRESS: inboxAddress(inbox.name) } : {}),
         APP_ORIGIN: Cloudflare.Worker.URL,
         BITWARDEN_ICON_LIMIT: Cloudflare.RateLimit("BitwardenIconLimit", {
           namespaceId: 1004,
@@ -117,9 +133,27 @@ export default Alchemy.Stack(
     state: Alchemy.localState(),
   },
   Effect.gen(function* () {
+    const inbox = yield* inboxRouting;
     const database = yield* Database;
     yield* provisionOwner(database)({ databaseId: database.databaseId });
     const worker = yield* Web;
+    if (inbox) {
+      const subdomain = yield* Cloudflare.Email.RoutingSubdomain(
+        "InboxEmailDomain",
+        inbox,
+      );
+      yield* Cloudflare.Email.Rule("InboxEmailRule", {
+        zone: subdomain.zoneId,
+        matchers: [
+          {
+            type: "literal",
+            field: "to",
+            value: subdomain.name.pipe(Output.map(inboxAddress)),
+          },
+        ],
+        actions: [{ type: "worker", value: [worker.workerName] }],
+      });
+    }
     return { url: worker.url };
   }),
 );

@@ -4,6 +4,7 @@ import type {
   ItemType,
 } from "./vault-item-content.ts";
 import { itemTypes } from "./vault-item-content.ts";
+import { identityEditGroups } from "./vault-identity-layout.ts";
 import {
   decryptVaultText,
   encryptOptionalText,
@@ -130,6 +131,44 @@ const input = (value: string | null | undefined, type = "text") => {
   return el;
 };
 
+const identityInputs = (element: HTMLElement, data: Details["data"]) =>
+  identityEditGroups.flatMap((group) => {
+    const section = document.createElement("fieldset");
+    section.className = "vault-identity-edit-group";
+    const heading = document.createElement("legend");
+    heading.textContent = group.label;
+    section.append(heading);
+    element.append(section);
+    return group.fields.map(({ name, label, visibility, inputMode }) => {
+      const control = input(
+        data?.[name],
+        visibility === "masked" ? "password" : "text",
+      );
+      control.autocomplete = "off";
+      if (inputMode) control.inputMode = inputMode;
+      const labelled = field(label, control);
+      if (visibility === "masked") {
+        const row = document.createElement("div");
+        row.className = "vault-identity-input";
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        const update = () => {
+          const verb = control.type === "password" ? "Show" : "Hide";
+          toggle.textContent = verb;
+          toggle.setAttribute("aria-label", `${verb} ${label}`);
+        };
+        toggle.addEventListener("click", () => {
+          control.type = control.type === "password" ? "text" : "password";
+          update();
+        });
+        update();
+        row.append(labelled, toggle);
+        section.append(row);
+      } else section.append(labelled);
+      return [name, control] as const;
+    });
+  });
+
 const choice = (
   values: readonly string[],
   selected: number | null | undefined,
@@ -189,24 +228,27 @@ export const vaultItemEditor = (type: ItemType, initial: Details) => {
   const reprompt = input(undefined, "checkbox");
   reprompt.checked = initial.reprompt === 1;
 
-  const data = Object.entries(itemTypes[type].fields).map(([name, label]) => {
-    if (type === 5) {
-      const value = document.createElement("textarea");
-      value.value = initial.data?.[name] ?? "";
-      value.rows = 4;
-      if (name === "privateKey") {
-        const disclosure = document.createElement("details");
-        const summary = document.createElement("summary");
-        summary.textContent = "Show or edit private key";
-        disclosure.append(summary, field(label, value));
-        element.append(disclosure);
-      } else element.append(field(label, value));
-      return [name, value] as const;
-    }
-    const value = input(initial.data?.[name], "password");
-    element.append(field(label, value));
-    return [name, value] as const;
-  });
+  const data =
+    type === 4
+      ? identityInputs(element, initial.data)
+      : Object.entries(itemTypes[type].fields).map(([name, label]) => {
+          if (type === 5) {
+            const value = document.createElement("textarea");
+            value.value = initial.data?.[name] ?? "";
+            value.rows = 4;
+            if (name === "privateKey") {
+              const disclosure = document.createElement("details");
+              const summary = document.createElement("summary");
+              summary.textContent = "Show or edit private key";
+              disclosure.append(summary, field(label, value));
+              element.append(disclosure);
+            } else element.append(field(label, value));
+            return [name, value] as const;
+          }
+          const value = input(initial.data?.[name], "password");
+          element.append(field(label, value));
+          return [name, value] as const;
+        });
 
   const login = initial.credentials;
   const username = input(login?.username);
@@ -366,14 +408,22 @@ export const vaultItemEditor = (type: ItemType, initial: Details) => {
         ...(data.length > 0 && {
           data: Object.fromEntries(
             await Promise.all(
-              data.map(async ([name, value]) => [
-                name,
-                await seal(
-                  value.value,
-                  initial.data?.[name],
-                  previous?.data?.[name],
-                ),
-              ]),
+              data
+                // Keep untouched optional Identity fields absent across import and export.
+                .filter(
+                  ([name, value]) =>
+                    type !== 4 ||
+                    value.value !== "" ||
+                    Object.hasOwn(previous?.data ?? {}, name),
+                )
+                .map(async ([name, value]) => [
+                  name,
+                  await seal(
+                    value.value,
+                    initial.data?.[name],
+                    previous?.data?.[name],
+                  ),
+                ]),
             ),
           ),
         }),

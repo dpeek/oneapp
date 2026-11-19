@@ -547,6 +547,42 @@ oneapp-vault-reader {
   margin-inline-start: 0.65rem;
 }
 
+.vault-identity-section,
+.vault-identity-edit-group {
+  min-inline-size: 0;
+  margin: 0 0 0.875rem;
+  padding: 0.875rem;
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+}
+
+.vault-identity-section h3,
+.vault-identity-edit-group legend {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.vault-identity-section h3 {
+  margin: 0 0 0.75rem;
+}
+
+.vault-identity-section dl,
+.vault-identity-section dd:last-child {
+  margin: 0;
+}
+
+.vault-identity-edit-group {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.vault-identity-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.5rem;
+}
+
 .vault-connect {
   margin-block-start: 1.25rem;
   padding-block-start: 1rem;

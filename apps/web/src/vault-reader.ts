@@ -39,6 +39,7 @@ import {
   uriMatchLabels,
   vaultItemEditor,
 } from "./vault-item-editor.ts";
+import { identityDisplayGroups } from "./vault-identity-layout.ts";
 import {
   openPortableVault,
   readPortableVault,
@@ -1762,9 +1763,9 @@ class VaultReader extends HTMLElement {
     const { item, title, trashed } = entry;
     const fields = create("dl");
     fields.className = "vault-item-fields";
-    const add = (label: string, value: string) => {
+    const add = (label: string, value: string, target = fields) => {
       const content = create("dd", value);
-      fields.append(create("dt", label), content);
+      target.append(create("dt", label), content);
       return content;
     };
     const mask = (label: string, value: string, content: HTMLElement) => {
@@ -1814,9 +1815,13 @@ class VaultReader extends HTMLElement {
           );
         else if (property.value != null) add(label, property.value);
       }
-      for (const [name, label] of Object.entries(itemTypes[item.type].fields)) {
-        const value = details.properties.data?.[name];
-        if (value != null) mask(label, value, add(label, ""));
+      if (item.type !== 4) {
+        for (const [name, label] of Object.entries(
+          itemTypes[item.type].fields,
+        )) {
+          const value = details.properties.data?.[name];
+          if (value != null) mask(label, value, add(label, ""));
+        }
       }
       const history = item.details.passwordHistory ?? [];
       if (history.length) {
@@ -1857,6 +1862,27 @@ class VaultReader extends HTMLElement {
       }
     }
     if (details?.notes != null) add("Notes", details.notes);
+    const content: HTMLElement[] = [];
+    if (details && item.type === 4) {
+      for (const { label, rows } of identityDisplayGroups(
+        details.properties.data,
+      )) {
+        const section = create("section");
+        section.className = "vault-identity-section";
+        const group = create("dl");
+        group.className = "vault-item-fields";
+        for (const { label, value, visibility } of rows) {
+          if (visibility === "masked")
+            mask(label, value, add(label, "", group));
+          else add(label, value, group);
+        }
+        section.append(create("h3", label), group);
+        content.push(section);
+      }
+    }
+    if (fields.childElementCount) content.push(fields);
+    if (details && content.length === 0)
+      content.push(create("p", "This item has no details."));
     const titleNode = create("h2", title ?? "Unreadable item");
     titleNode.tabIndex = -1;
     let edit: HTMLButtonElement | undefined;
@@ -1924,13 +1950,7 @@ class VaultReader extends HTMLElement {
       this.#toolbar(this.#showBrowse, edit, more),
       titleNode,
       ...(error ? [alert(error)] : []),
-      ...(details
-        ? [
-            fields.childElementCount
-              ? fields
-              : create("p", "This item has no details."),
-          ]
-        : []),
+      ...content,
     ]);
     if (this.#workspace?.detail === document.activeElement) titleNode.focus();
   }

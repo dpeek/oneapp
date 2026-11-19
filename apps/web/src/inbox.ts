@@ -41,7 +41,11 @@ import {
   sentPath,
 } from "./inbox-contract.ts";
 import { unreadBadge } from "./navigation.ts";
-import { normalizePersonEmail, PersonEmail } from "./people-contract.ts";
+import {
+  normalizePersonEmail,
+  PersonEmail,
+  type PersonSummary,
+} from "./people-contract.ts";
 import { avatar } from "./people.ts";
 
 const MessageLocation = Schema.Struct({
@@ -1197,6 +1201,15 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
   const profiles = new Map(
     model.thread?.profiles?.map(({ email, person }) => [email, person]),
   );
+  const participantProfiles = new Map<
+    string,
+    { address: string; person: PersonSummary }
+  >();
+  for (const { address } of participants) {
+    const person = profiles.get(normalizePersonEmail(address));
+    if (person && !participantProfiles.has(person.id))
+      participantProfiles.set(person.id, { address, person });
+  }
   const latest = messages.at(-1);
   const grouped = messages.length > 1;
   return h.article(
@@ -1239,6 +1252,38 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
               [h.Class("inbox-conversation-heading")],
               [
                 h.h2([], [conversationSubject(messages)]),
+                ...(participantProfiles.size
+                  ? [
+                      h.ul(
+                        [
+                          h.Class("inbox-participant-avatars"),
+                          h.AriaLabel("Participant profiles"),
+                        ],
+                        [...participantProfiles.values()].map(
+                          ({ address, person }) =>
+                            h.li(
+                              [h.Key(person.id)],
+                              [
+                                h.button(
+                                  [
+                                    h.Type("button"),
+                                    h.Class("inbox-profile-button"),
+                                    h.Title(person.name || address),
+                                    h.AriaLabel(
+                                      `Edit participant profile for ${address}`,
+                                    ),
+                                    h.OnClick(
+                                      Message.RequestedPerson({ address }),
+                                    ),
+                                  ],
+                                  [avatar(h, person, address)],
+                                ),
+                              ],
+                            ),
+                        ),
+                      ),
+                    ]
+                  : []),
                 ...(participants.length
                   ? [
                       h.p(
@@ -1295,7 +1340,7 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
                           ? h.button(
                               [
                                 h.Type("button"),
-                                h.Class("inbox-sender-profile"),
+                                h.Class("inbox-profile-button"),
                                 h.AriaLabel(`Edit profile for ${address}`),
                                 h.OnClick(Message.RequestedPerson({ address })),
                               ],

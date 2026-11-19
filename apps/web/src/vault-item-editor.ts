@@ -3,8 +3,12 @@ import type {
   ItemDetails,
   ItemType,
 } from "./vault-item-content.ts";
-import { itemTypes } from "./vault-item-content.ts";
+import { hostUriMatch } from "./vault-items-contract.ts";
 import { identityEditGroups } from "./vault-identity-layout.ts";
+import {
+  structuredEditGroup,
+  type VaultFieldPresentation,
+} from "./vault-item-layout.ts";
 import {
   decryptVaultText,
   encryptOptionalText,
@@ -131,43 +135,91 @@ const input = (value: string | null | undefined, type = "text") => {
   return el;
 };
 
-const identityInputs = (element: HTMLElement, data: Details["data"]) =>
-  identityEditGroups.flatMap((group) => {
-    const section = document.createElement("fieldset");
-    section.className = "vault-identity-edit-group";
-    const heading = document.createElement("legend");
-    heading.textContent = group.label;
-    section.append(heading);
+export const vaultItemFieldset = (
+  caption: string,
+  ...children: HTMLElement[]
+) => {
+  const element = document.createElement("fieldset");
+  element.className = "vault-item-edit-card";
+  const legend = document.createElement("legend");
+  legend.textContent = caption;
+  element.append(legend, ...children);
+  return element;
+};
+
+const revealField = (label: string, control: HTMLInputElement) => {
+  const element = document.createElement("div");
+  element.className = "vault-reveal-field";
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  const setMasked = (masked: boolean) => {
+    control.type = masked ? "password" : "text";
+    const verb = masked ? "Show" : "Hide";
+    toggle.textContent = verb;
+    toggle.setAttribute("aria-label", `${verb} ${label}`);
+  };
+  toggle.addEventListener("click", () =>
+    setMasked(control.type !== "password"),
+  );
+  element.append(field(label, control), toggle);
+  setMasked(true);
+  return { element, toggle, setMasked };
+};
+
+const builtInInputs = (
+  element: HTMLElement,
+  type: ItemType,
+  data: Details["data"],
+) => {
+  if (type === 1 || type === 2) return [];
+  const groups = type === 4 ? identityEditGroups : [structuredEditGroup(type)];
+  return groups.flatMap(({ label, fields }) => {
+    const section = vaultItemFieldset(label);
     element.append(section);
-    return group.fields.map(({ name, label, visibility, inputMode }) => {
-      const control = input(
-        data?.[name],
-        visibility === "masked" ? "password" : "text",
-      );
-      control.autocomplete = "off";
-      if (inputMode) control.inputMode = inputMode;
-      const labelled = field(label, control);
-      if (visibility === "masked") {
-        const row = document.createElement("div");
-        row.className = "vault-identity-input";
-        const toggle = document.createElement("button");
-        toggle.type = "button";
-        const update = () => {
-          const verb = control.type === "password" ? "Show" : "Hide";
-          toggle.textContent = verb;
-          toggle.setAttribute("aria-label", `${verb} ${label}`);
-        };
-        toggle.addEventListener("click", () => {
-          control.type = control.type === "password" ? "text" : "password";
-          update();
-        });
-        update();
-        row.append(labelled, toggle);
-        section.append(row);
-      } else section.append(labelled);
-      return [name, control] as const;
-    });
+    return fields.map(
+      ({
+        name,
+        label,
+        visibility,
+        inputMode,
+        multiline,
+        date,
+      }: VaultFieldPresentation & { name: string; label: string }) => {
+        if (multiline) {
+          const value = document.createElement("textarea");
+          value.value = data?.[name] ?? "";
+          value.rows = 4;
+          const labelled = field(label, value);
+          if (visibility === "masked") {
+            const disclosure = document.createElement("details");
+            const summary = document.createElement("summary");
+            summary.textContent = `Show or edit ${label.toLowerCase()}`;
+            disclosure.append(summary, labelled);
+            section.append(disclosure);
+          } else section.append(labelled);
+          return [name, value] as const;
+        }
+        const control = input(data?.[name]);
+        if (inputMode) control.inputMode = inputMode;
+        if (date) control.placeholder = "YYYY-MM-DD";
+        section.append(
+          visibility === "masked"
+            ? revealField(label, control).element
+            : field(label, control),
+        );
+        return [name, control] as const;
+      },
+    );
   });
+};
+
+const websiteAddress = (value: string, match: string) => {
+  const address = value.trim();
+  if (match === "4" || !/^https?:/iu.test(address)) return address;
+  return /^https?:\/\//iu.test(address)
+    ? (URL.parse(address)?.href ?? null)
+    : null;
+};
 
 const choice = (
   values: readonly string[],
@@ -183,20 +235,20 @@ const choice = (
 
 const rows = <Value, Row extends { element: HTMLElement }>(
   caption: string,
-  initial: readonly Value[],
+  addLabel: string,
+  initial: readonly (Value | undefined)[],
   makeRow: (value?: Value) => Row,
 ) => {
-  const element = document.createElement("fieldset");
-  const legend = document.createElement("legend");
-  legend.textContent = caption;
+  const element = vaultItemFieldset(caption);
   const add = document.createElement("button");
   add.type = "button";
-  add.textContent = `Add ${caption === "Websites" ? "website" : "custom field"}`;
+  add.textContent = addLabel;
   const contents: Row[] = [];
   const changed = () =>
     element.dispatchEvent(new Event("input", { bubbles: true }));
   const append = (value?: Value) => {
     const row = makeRow(value);
+    row.element.className = "vault-item-repeat-row";
     const remove = document.createElement("button");
     remove.type = "button";
     remove.textContent = "Remove";
@@ -213,12 +265,16 @@ const rows = <Value, Row extends { element: HTMLElement }>(
     append();
     changed();
   });
-  element.append(legend, add);
+  element.append(add);
   initial.forEach(append);
   return { element, contents };
 };
 
-export const vaultItemEditor = (type: ItemType, initial: Details) => {
+export const vaultItemEditor = (
+  type: ItemType,
+  initial: Details,
+  hasPasskey: boolean,
+) => {
   const element = document.createElement("div");
   const notes = document.createElement("textarea");
   notes.rows = 5;
@@ -228,90 +284,106 @@ export const vaultItemEditor = (type: ItemType, initial: Details) => {
   const reprompt = input(undefined, "checkbox");
   reprompt.checked = initial.reprompt === 1;
 
-  const data =
-    type === 4
-      ? identityInputs(element, initial.data)
-      : Object.entries(itemTypes[type].fields).map(([name, label]) => {
-          if (type === 5) {
-            const value = document.createElement("textarea");
-            value.value = initial.data?.[name] ?? "";
-            value.rows = 4;
-            if (name === "privateKey") {
-              const disclosure = document.createElement("details");
-              const summary = document.createElement("summary");
-              summary.textContent = "Show or edit private key";
-              disclosure.append(summary, field(label, value));
-              element.append(disclosure);
-            } else element.append(field(label, value));
-            return [name, value] as const;
-          }
-          const value = input(initial.data?.[name], "password");
-          element.append(field(label, value));
-          return [name, value] as const;
-        });
-
+  const data = builtInInputs(element, type, initial.data);
   const login = initial.credentials;
   const username = input(login?.username);
   const password = input(login?.password, "password");
   const totp = input(login?.totp, "password");
-  const websites = rows("Websites", login?.uris ?? [], (value) => {
-    const element = document.createElement("div");
-    const uri = input(value?.uri);
-    const match = choice(uriMatchLabels, value?.match, "Default");
-    element.append(field("Website", uri), field("URI match", match));
-    return { element, uri, match, previous: value };
-  });
-  if (type === 1)
-    element.append(
-      field("Username", username),
-      field("Password", password),
-      field("TOTP seed", totp),
-      websites.element,
-    );
-
-  const fields = rows("Custom fields", initial.fields ?? [], (previous) => {
-    const element = document.createElement("div");
-    const name = input(previous?.name);
-    const value = input(previous?.value, "password");
-    const linked = document.createElement("select");
-    linked.add(new Option("Choose a field", ""));
-    const supported = linkedFields[type];
-    for (const [id, label] of Object.entries(supported ?? {}))
-      linked.add(new Option(label, id));
-    const previousId = previous?.linkedId;
-    if (previousId != null && !supported?.[previousId])
-      linked.add(
-        new Option(linkedFieldLabel(type, previousId), String(previousId)),
+  const websites = rows(
+    "Autofill options",
+    "Add website",
+    login?.uris?.length ? login.uris : [undefined],
+    (value) => {
+      const element = document.createElement("div");
+      const uri = input(value?.uri);
+      uri.inputMode = "url";
+      uri.placeholder = "https://example.com";
+      const match = choice(
+        uriMatchLabels,
+        value ? value.match : hostUriMatch,
+        "Default",
       );
-    linked.value = previousId?.toString() ?? "";
-    const boolean = input(undefined, "checkbox");
-    boolean.checked = previous?.value === "true";
-    const kind = choice(customFieldLabels, previous?.type);
-    if (!supported && previous?.type !== 3) kind.options[3]!.disabled = true;
-    const valueField = field("Field value", value);
-    const booleanField = field("True", boolean);
-    const linkedField = field("Linked field", linked);
-    const showValue = () => {
-      valueField.hidden = kind.value === "2" || kind.value === "3";
-      booleanField.hidden = kind.value !== "2";
-      linkedField.hidden = kind.value !== "3";
-      value.type = kind.value === "1" ? "password" : "text";
-    };
-    kind.addEventListener("change", showValue);
-    showValue();
-    element.append(
-      field("Field name", name),
-      field("Field type", kind),
-      valueField,
-      booleanField,
-      linkedField,
+      const validate = () =>
+        uri.setCustomValidity(
+          uri.value === (value?.uri ?? "") ||
+            websiteAddress(uri.value, match.value) !== null
+            ? ""
+            : "Enter an HTTP or HTTPS website address.",
+        );
+      uri.addEventListener("input", validate);
+      match.addEventListener("change", validate);
+      element.append(field("Website", uri), field("URI match", match));
+      return { element, uri, match, previous: value };
+    },
+  );
+  if (type === 1) {
+    const credentials = vaultItemFieldset(
+      "Login credentials",
+      field("Username", username),
+      revealField("Password", password).element,
+      revealField("TOTP seed", totp).element,
     );
-    return { element, name, kind, value, linked, boolean, previous };
-  });
+    if (hasPasskey) {
+      const passkey = document.createElement("p");
+      passkey.textContent = "Passkey saved in this login.";
+      credentials.append(passkey);
+    }
+    element.append(credentials, websites.element);
+  }
+
+  const fields = rows(
+    "Custom fields",
+    "Add custom field",
+    initial.fields ?? [],
+    (previous) => {
+      const element = document.createElement("div");
+      const name = input(previous?.name);
+      const value = input(previous?.value, "password");
+      const linked = document.createElement("select");
+      linked.add(new Option("Choose a field", ""));
+      const supported = linkedFields[type];
+      for (const [id, label] of Object.entries(supported ?? {}))
+        linked.add(new Option(label, id));
+      const previousId = previous?.linkedId;
+      if (previousId != null && !supported?.[previousId])
+        linked.add(
+          new Option(linkedFieldLabel(type, previousId), String(previousId)),
+        );
+      linked.value = previousId?.toString() ?? "";
+      const boolean = input(undefined, "checkbox");
+      boolean.checked = previous?.value === "true";
+      const kind = choice(customFieldLabels, previous?.type);
+      if (!supported && previous?.type !== 3) kind.options[3]!.disabled = true;
+      const valueField = revealField("Field value", value);
+      const booleanField = field("True", boolean);
+      const linkedField = field("Linked field", linked);
+      const showValue = () => {
+        valueField.element.hidden = kind.value === "2" || kind.value === "3";
+        booleanField.hidden = kind.value !== "2";
+        linkedField.hidden = kind.value !== "3";
+        valueField.toggle.hidden = kind.value !== "1";
+        valueField.setMasked(kind.value === "1");
+      };
+      kind.addEventListener("change", showValue);
+      showValue();
+      element.append(
+        field("Field name", name),
+        field("Field type", kind),
+        valueField.element,
+        booleanField,
+        linkedField,
+      );
+      return { element, name, kind, value, linked, boolean, previous };
+    },
+  );
+  const favoriteField = field("Favourite", favorite);
+  const repromptField = field("Require master password", reprompt);
+  favoriteField.classList.add("vault-item-checkbox");
+  repromptField.classList.add("vault-item-checkbox");
+  notes.setAttribute("aria-label", type === 2 ? "Note" : "Notes");
   element.append(
-    field("Notes", notes),
-    field("Favourite", favorite),
-    field("Require master password", reprompt),
+    vaultItemFieldset("Notes", notes),
+    vaultItemFieldset("Item options", favoriteField, repromptField),
     fields.element,
   );
   return {
@@ -380,28 +452,38 @@ export const vaultItemEditor = (type: ItemType, initial: Details) => {
               previous?.credentials?.totp,
             ),
             uris: await Promise.all(
-              websites.contents.map(async (row) => {
-                const match =
-                  row.match.value === ""
-                    ? null
-                    : (Number(row.match.value) as 0 | 1 | 2 | 3 | 4 | 5);
-                const index = row.previous
-                  ? (login?.uris?.indexOf(row.previous) ?? -1)
-                  : -1;
-                const existing = previous?.credentials?.uris?.[index];
-                if (
-                  existing &&
-                  (row.previous?.uri ?? "") === row.uri.value &&
-                  (row.previous?.match ?? null) === match
+              websites.contents
+                .filter(
+                  ({ uri, previous }) =>
+                    uri.value.trim() ||
+                    (previous && uri.value === (previous.uri ?? "")),
                 )
-                  return existing;
-                return {
-                  ...(row.uri.value
-                    ? await encryptWebsite(row.uri.value, key)
-                    : { uri: null, uriChecksum: null }),
-                  match,
-                };
-              }),
+                .map(async (row) => {
+                  const match =
+                    row.match.value === ""
+                      ? null
+                      : (Number(row.match.value) as 0 | 1 | 2 | 3 | 4 | 5);
+                  const index = row.previous
+                    ? (login?.uris?.indexOf(row.previous) ?? -1)
+                    : -1;
+                  const existing = previous?.credentials?.uris?.[index];
+                  if (existing && (row.previous?.uri ?? "") === row.uri.value)
+                    return (row.previous?.match ?? null) === match
+                      ? existing
+                      : { ...existing, match };
+                  const address = websiteAddress(
+                    row.uri.value,
+                    row.match.value,
+                  );
+                  if (address === null)
+                    throw new Error("Invalid website address");
+                  return {
+                    ...(address
+                      ? await encryptWebsite(address, key)
+                      : { uri: null, uriChecksum: null }),
+                    match,
+                  };
+                }),
             ),
           },
         }),
@@ -409,10 +491,9 @@ export const vaultItemEditor = (type: ItemType, initial: Details) => {
           data: Object.fromEntries(
             await Promise.all(
               data
-                // Keep untouched optional Identity fields absent across import and export.
+                // Preserve omitted optional fields from imported items.
                 .filter(
                   ([name, value]) =>
-                    type !== 4 ||
                     value.value !== "" ||
                     Object.hasOwn(previous?.data ?? {}, name),
                 )

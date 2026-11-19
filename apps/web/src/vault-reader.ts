@@ -2,13 +2,8 @@ import { Schema } from "effect";
 import { CustomElement } from "foldkit";
 import {
   decryptVaultText,
-  encryptLogin,
-  encryptNoteFields,
   encryptNewItem,
-  encryptOptionalText,
-  encryptSecureNote,
   encryptVaultText,
-  encryptWebsite,
   unlockVault,
   unwrapVaultKey,
   type VaultKey,
@@ -24,8 +19,6 @@ import {
   vaultItemPath,
   vaultItemsPath,
   vaultLifecyclePath,
-  type VaultLogin,
-  VaultSecureNote,
   VaultSnapshot,
 } from "./vault-items-contract.ts";
 import {
@@ -38,8 +31,10 @@ import {
   linkedFieldLabel,
   uriMatchLabels,
   vaultItemEditor,
+  vaultItemFieldset,
 } from "./vault-item-editor.ts";
 import { identityDisplayGroups } from "./vault-identity-layout.ts";
+import { structuredDisplayGroup } from "./vault-item-layout.ts";
 import {
   openPortableVault,
   readPortableVault,
@@ -78,14 +73,6 @@ type Folder = typeof VaultFolder.Type;
 type ListedFolder = { folder: Folder; title: string };
 type BulkAction = (typeof VaultBulkChange.Type)["kind"];
 type EditTarget = { item: Item; title: string; cancel: () => void };
-type NoteEdit = EditTarget & {
-  item: typeof VaultSecureNote.Type;
-  notes: string | null;
-};
-type LoginEdit = EditTarget & {
-  item: typeof VaultLogin.Type;
-  login: NonNullable<ItemDetails["login"]>;
-};
 type ItemField = readonly [
   label: string,
   input: HTMLInputElement | HTMLTextAreaElement,
@@ -100,9 +87,10 @@ type VaultWorkspace = {
   root: HTMLElement;
   tools: HTMLDetailsElement;
   filters: HTMLElement;
-  views: HTMLButtonElement[];
-  type: HTMLSelectElement;
-  folder: HTMLSelectElement;
+  views: HTMLUListElement;
+  itemFilters: HTMLElement;
+  types: HTMLUListElement;
+  folders: HTMLUListElement;
   listPane: HTMLElement;
   search: HTMLInputElement;
   newItem: HTMLButtonElement;
@@ -124,6 +112,68 @@ const action = (label: string, run: () => void) => {
   button.type = "button";
   button.addEventListener("click", () => run());
   return button;
+};
+const filterList = (label: string) => {
+  const list = create("ul");
+  list.className = "vault-filter-list";
+  list.setAttribute("aria-label", label);
+  return list;
+};
+const filterOption = (
+  list: HTMLUListElement,
+  label: string,
+  value: string,
+  select: () => void,
+) => {
+  const button = action(label, () => {
+    button.focus({ preventScroll: true });
+    select();
+  });
+  button.value = value;
+  const option = create("li");
+  option.append(button);
+  list.append(option);
+};
+const selectFilterOption = (list: HTMLUListElement, value: string) => {
+  for (const button of list.querySelectorAll("button")) {
+    if (button.value === value) button.setAttribute("aria-current", "true");
+    else button.removeAttribute("aria-current");
+  }
+};
+type DetailRow = {
+  label: string;
+  value: string;
+  suffix?: string;
+  visibility?: "visible" | "masked";
+  revealLabel?: string;
+};
+const mask = (label: string, value: string, content: HTMLElement) => {
+  const rendered = create("span", "••••••••");
+  let visible = false;
+  const toggle = action(`Show ${label}`, () => {
+    visible = !visible;
+    rendered.textContent = visible ? value : "••••••••";
+    toggle.textContent = `${visible ? "Hide" : "Show"} ${label}`;
+  });
+  content.append(rendered, toggle);
+};
+const detailFields = (rows: readonly DetailRow[]) => {
+  const fields = create("dl");
+  fields.className = "vault-item-fields";
+  for (const { label, value, suffix, visibility, revealLabel } of rows) {
+    const content = create("dd");
+    if (visibility === "masked") mask(revealLabel ?? label, value, content);
+    else if (suffix) content.append(create("span", value), suffix);
+    else content.textContent = value;
+    fields.append(create("dt", label), content);
+  }
+  return fields;
+};
+const detailCard = (label: string, body: HTMLElement) => {
+  const section = create("section");
+  section.className = "vault-item-card";
+  section.append(create("h3", label), body);
+  return section;
 };
 const menu = (label: string, ...buttons: (HTMLButtonElement | undefined)[]) => {
   const disclosure = create("details");
@@ -188,22 +238,7 @@ const readTitle = async (item: Item, userKey: VaultKey) =>
 
 const readItemDetails = async (item: Item, userKey: VaultKey) => {
   const key = await unwrapVaultKey(item.wrappedKey, userKey);
-  const properties = await decryptItemDetails(item.details, key);
-  const notes = properties.notes ?? null;
-  if (item.type !== 1) return { notes, login: null, properties, key };
-  const credentials = properties.credentials;
-  return {
-    notes,
-    login: {
-      username: credentials?.username ?? null,
-      password: credentials?.password ?? null,
-      uris: (credentials?.uris ?? []).flatMap(({ uri }) =>
-        uri === null ? [] : [uri],
-      ),
-    },
-    properties,
-    key,
-  };
+  return { properties: await decryptItemDetails(item.details, key), key };
 };
 type ItemDetails = Awaited<ReturnType<typeof readItemDetails>>;
 
@@ -258,6 +293,7 @@ class VaultReader extends HTMLElement {
   #pending: AbortController | null = null;
   #workspace: VaultWorkspace | null = null;
   #view: VaultView = "active";
+  #itemType: ItemType | undefined;
   #folderId: string | undefined;
   #selectedId: string | undefined;
   #busy = false;
@@ -288,6 +324,7 @@ class VaultReader extends HTMLElement {
     this.#vault = null;
     this.#workspace = null;
     this.#view = "active";
+    this.#itemType = undefined;
     this.#folderId = undefined;
     this.#selectedId = undefined;
     this.querySelectorAll("form").forEach((form) => form.reset());
@@ -399,9 +436,8 @@ class VaultReader extends HTMLElement {
         : "active";
   }
 
-  #folderOptions(all: boolean) {
+  #folderOptions() {
     const select = create("select");
-    if (all) select.add(new Option("All folders", "*"));
     select.add(new Option("No folder", ""));
     for (const { folder, title } of this.#vault?.folders ?? [])
       select.add(new Option(title, folder.id));
@@ -438,27 +474,32 @@ class VaultReader extends HTMLElement {
     const filters = create("nav");
     filters.className = "vault-filters";
     filters.setAttribute("aria-label", "Vault filters");
-    const viewButtons = create("div");
-    viewButtons.className = "vault-views";
-    const views = (Object.keys(vaultViews) as VaultView[]).map((view) => {
-      const button = action(vaultViews[view], () => {
-        button.focus({ preventScroll: true });
-        this.#showItems(view);
+    const views = filterList("Vault views");
+    views.classList.add("vault-views");
+    for (const view of Object.keys(vaultViews) as VaultView[])
+      filterOption(views, vaultViews[view], view, () => this.#showItems(view));
+
+    const types = filterList("Item types");
+    const addType = (label: string, kind?: ItemType) => {
+      const value = String(kind ?? "");
+      filterOption(types, label, value, () => {
+        if (this.#itemType === kind) return;
+        this.#itemType = kind;
+        selectFilterOption(types, value);
+        this.#renderResults(true);
       });
-      button.value = view;
-      viewButtons.append(button);
-      return button;
-    });
-    const type = create("select");
-    type.add(new Option("All types", ""));
-    for (const kind of allItemTypes)
-      type.add(new Option(itemTypes[kind].label, String(kind)));
-    const folder = create("select");
-    const typeFilter = create("label", "Item type");
-    typeFilter.append(type);
-    const folderFilter = create("label", "Folder");
-    folderFilter.append(folder);
-    filters.append(viewButtons, typeFilter, folderFilter);
+    };
+    addType("All types");
+    for (const kind of allItemTypes) addType(itemTypes[kind].label, kind);
+    const folders = filterList("Folders");
+    const typeFilter = create("div");
+    typeFilter.append(create("h2", "Item types"), types);
+    const folderFilter = create("div");
+    folderFilter.append(create("h2", "Folders"), folders);
+    const itemFilters = create("div");
+    itemFilters.className = "vault-item-filters";
+    itemFilters.append(typeFilter, folderFilter);
+    filters.append(views, itemFilters);
 
     const listPane = create("section");
     listPane.className = "vault-list-pane";
@@ -495,8 +536,9 @@ class VaultReader extends HTMLElement {
       tools,
       filters,
       views,
-      type,
-      folder,
+      itemFilters,
+      types,
+      folders,
       listPane,
       search,
       newItem,
@@ -506,11 +548,6 @@ class VaultReader extends HTMLElement {
       detail,
     };
     search.addEventListener("input", () => this.#renderResults(true));
-    type.addEventListener("change", () => this.#renderResults(true));
-    folder.addEventListener("change", () => {
-      this.#folderId = folder.value === "*" ? undefined : folder.value;
-      this.#renderResults(true);
-    });
     this.replaceChildren(root);
   }
 
@@ -539,21 +576,32 @@ class VaultReader extends HTMLElement {
   #updateFilters() {
     const workspace = this.#workspace;
     if (!workspace) return;
-    const { folder, type, views, newItem } = workspace;
-    for (const button of views) {
-      if (button.value === this.#view)
-        button.setAttribute("aria-current", "true");
-      else button.removeAttribute("aria-current");
-    }
-    folder.replaceChildren(...this.#folderOptions(true).options);
-    const active = this.#view === "active";
+    const { folders, types, views, itemFilters, newItem } = workspace;
+    selectFilterOption(views, this.#view);
+    selectFilterOption(types, String(this.#itemType ?? ""));
+
+    const records = this.#vault?.folders ?? [];
     if (
-      !Array.from(folder.options).some(({ value }) => value === this.#folderId)
+      this.#folderId &&
+      !records.some(({ folder }) => folder.id === this.#folderId)
     )
       this.#folderId = undefined;
-    folder.value = this.#folderId ?? "*";
-    folder.disabled = !active;
-    type.disabled = !active;
+    folders.replaceChildren();
+    const addFolder = (label: string, id?: string) => {
+      const value = id ?? "*";
+      filterOption(folders, label, value, () => {
+        if (this.#folderId === id) return;
+        this.#folderId = id;
+        selectFilterOption(folders, value);
+        this.#renderResults(true);
+      });
+    };
+    addFolder("All folders");
+    addFolder("No folder", "");
+    for (const { folder, title } of records) addFolder(title, folder.id);
+    selectFilterOption(folders, this.#folderId ?? "*");
+    const active = this.#view === "active";
+    itemFilters.hidden = !active;
     newItem.hidden = !active;
   }
 
@@ -601,7 +649,7 @@ class VaultReader extends HTMLElement {
     const vault = this.#vault;
     const workspace = this.#workspace;
     if (!vault || !workspace) return;
-    const { search, type, results, bulk } = workspace;
+    const { search, results, bulk } = workspace;
     const view = this.#view;
     const query = search.value.trim().toLowerCase();
     const scroll = resetScroll ? 0 : results.scrollTop;
@@ -613,7 +661,7 @@ class VaultReader extends HTMLElement {
         ({ item, title }) =>
           (!query || (title ?? "").toLowerCase().includes(query)) &&
           (view !== "active" ||
-            ((!type.value || String(item.type) === type.value) &&
+            ((this.#itemType === undefined || item.type === this.#itemType) &&
               (this.#folderId === undefined ||
                 (item.folderId ?? "") === this.#folderId))),
       )
@@ -664,7 +712,8 @@ class VaultReader extends HTMLElement {
       list.append(row);
     }
     const filtered =
-      view === "active" && (type.value || this.#folderId !== undefined);
+      view === "active" &&
+      (this.#itemType !== undefined || this.#folderId !== undefined);
     const empty = create(
       "p",
       query || filtered ? "No matching items." : "No items in this view.",
@@ -704,7 +753,7 @@ class VaultReader extends HTMLElement {
 
   #startBulk(view: VaultView, entries: ListedItem[], kind: BulkAction) {
     this.#stopWork();
-    const folder = this.#folderOptions(false);
+    const folder = this.#folderOptions();
     const execute = () =>
       this.#applyBulk(view, entries, kind, folder.value || null);
     if (kind === "move") {
@@ -1373,112 +1422,6 @@ class VaultReader extends HTMLElement {
     );
   }
 
-  #showNoteForm(edit?: NoteEdit) {
-    const note = create("textarea");
-    note.rows = 6;
-    note.value = edit?.notes ?? "";
-    this.#showItemForm(
-      "Secure Note",
-      [["Note", note]],
-      async (title, key) =>
-        edit
-          ? {
-              expectedRevision: edit.item.revision,
-              ...(await encryptNoteFields(
-                title,
-                note.value,
-                await unwrapVaultKey(edit.item.wrappedKey, key, "encrypt"),
-              )),
-            }
-          : encryptSecureNote(title, note.value, key),
-      edit,
-    );
-  }
-
-  #showLoginForm(edit?: LoginEdit) {
-    const username = create("input");
-    username.value = edit?.login.username ?? "";
-    const password = create("input");
-    password.type = "password";
-    password.autocomplete = "new-password";
-    password.value = edit?.login.password ?? "";
-    const website = create("input");
-    website.inputMode = "url";
-    website.placeholder = "https://example.com";
-    website.value = edit?.login.uris[0] ?? "";
-    const previousWebsite = website.value;
-    const normalizedWebsite = () => {
-      const address = website.value.trim();
-      if (!address) return "";
-      if (!/^https?:\/\//iu.test(address)) return null;
-      return URL.parse(address)?.href ?? null;
-    };
-    website.addEventListener("input", () =>
-      website.setCustomValidity(
-        website.value === previousWebsite || normalizedWebsite() !== null
-          ? ""
-          : "Enter an HTTP or HTTPS website address.",
-      ),
-    );
-    this.#showItemForm(
-      "Login",
-      [
-        ["Username", username],
-        ["Password", password],
-        [
-          (edit?.login.uris.length ?? 0) > 1 ? "Primary website" : "Website",
-          website,
-        ],
-      ],
-      async (title, key) => {
-        const websiteChanged = website.value !== previousWebsite;
-        const address = websiteChanged ? normalizedWebsite() : "";
-        if (address === null) throw new Error("Invalid website address");
-        if (!edit)
-          return encryptLogin(
-            {
-              title,
-              username: username.value,
-              password: password.value,
-              website: address,
-            },
-            key,
-          );
-        const itemKey = await unwrapVaultKey(
-          edit.item.wrappedKey,
-          key,
-          "encrypt",
-        );
-        return {
-          type: 1,
-          expectedRevision: edit.item.revision,
-          name:
-            title === edit.title
-              ? edit.item.name
-              : await encryptVaultText(title, itemKey),
-          username:
-            username.value === (edit.login.username ?? "")
-              ? edit.item.username
-              : await encryptOptionalText(username.value, itemKey),
-          password:
-            password.value === (edit.login.password ?? "")
-              ? edit.item.password
-              : await encryptOptionalText(password.value, itemKey),
-          website: websiteChanged
-            ? {
-                previousUri: edit.item.uris[0] ?? null,
-                replacement:
-                  address === ""
-                    ? null
-                    : await encryptWebsite(address, itemKey),
-              }
-            : undefined,
-        };
-      },
-      edit,
-    );
-  }
-
   #showItemTypes() {
     this.#stopWork();
     const choices = create("ul");
@@ -1486,11 +1429,7 @@ class VaultReader extends HTMLElement {
     for (const type of allItemTypes) {
       const row = create("li");
       row.append(
-        action(itemTypes[type].label, () => {
-          if (type === 1) this.#showLoginForm();
-          else if (type === 2) this.#showNoteForm();
-          else this.#showDetailedForm(type);
-        }),
+        action(itemTypes[type].label, () => this.#showDetailedForm(type)),
       );
       choices.append(row);
     }
@@ -1505,10 +1444,13 @@ class VaultReader extends HTMLElement {
     type: ItemType,
     edit?: EditTarget & { details: ItemDetails },
   ) {
-    const editor = vaultItemEditor(type, edit?.details.properties ?? {});
+    const editor = vaultItemEditor(
+      type,
+      edit?.details.properties ?? {},
+      Boolean(edit?.item.details.credentials?.fido2Credentials?.length),
+    );
     this.#showItemForm(
       itemTypes[type].label,
-      [],
       async (title, key) => {
         const encrypt = async (itemKey: VaultKey) => ({
           type,
@@ -1534,10 +1476,9 @@ class VaultReader extends HTMLElement {
 
   #showItemForm(
     label: string,
-    fields: readonly ItemField[],
     encrypt: (title: string, key: VaultKey) => Promise<object>,
-    edit?: EditTarget,
-    properties?: HTMLElement,
+    edit: EditTarget | undefined,
+    properties: HTMLElement,
   ) {
     const vault = this.#vault;
     if (!vault) return;
@@ -1548,7 +1489,6 @@ class VaultReader extends HTMLElement {
     const title = create("input");
     title.required = true;
     title.value = edit?.title ?? "";
-    const inputs: readonly ItemField[] = [["Title", title], ...fields];
     const item =
       label === "Login" ? "login" : label === "Secure Note" ? "note" : "item";
     const saveLabel = `Save ${label}`;
@@ -1558,9 +1498,9 @@ class VaultReader extends HTMLElement {
     error.hidden = true;
     const setBusy = (status?: string) => {
       save.disabled = status !== undefined;
-      for (const [, input] of inputs) input.readOnly = save.disabled;
+      title.readOnly = save.disabled;
       properties
-        ?.querySelectorAll<HTMLInputElement>("input, textarea, select, button")
+        .querySelectorAll<HTMLInputElement>("input, textarea, select, button")
         .forEach((input) => {
           input.disabled = save.disabled;
         });
@@ -1625,8 +1565,8 @@ class VaultReader extends HTMLElement {
         );
       });
     form.append(
-      ...inputs.map(itemField),
-      ...(properties ? [properties] : []),
+      vaultItemFieldset("Item details", itemField(["Title", title])),
+      properties,
       save,
       error,
     );
@@ -1759,148 +1699,147 @@ class VaultReader extends HTMLElement {
     }
   }
 
-  #showDetails(entry: ListedItem, details: ItemDetails | null, error?: string) {
-    const { item, title, trashed } = entry;
-    const fields = create("dl");
-    fields.className = "vault-item-fields";
-    const add = (label: string, value: string, target = fields) => {
-      const content = create("dd", value);
-      target.append(create("dt", label), content);
-      return content;
-    };
-    const mask = (label: string, value: string, content: HTMLElement) => {
-      const rendered = create("span", "••••••••");
-      const toggle = action(`Show ${label}`, () => {
-        const hidden = toggle.textContent?.startsWith("Show");
-        rendered.textContent = hidden ? value : "••••••••";
-        toggle.textContent = `${hidden ? "Hide" : "Show"} ${label}`;
-      });
-      content.append(rendered, toggle);
+  #itemDetailCards(item: Item, { properties, key }: ItemDetails) {
+    const content: HTMLElement[] = [];
+    const addFields = (label: string, rows: readonly DetailRow[]) => {
+      if (rows.length) content.push(detailCard(label, detailFields(rows)));
     };
     const folder = this.#vault?.folders.find(
       ({ folder }) => folder.id === item.folderId,
     );
-    if (folder) add("Folder", folder.title);
-    const login = details?.login;
-    if (login) {
-      if (login.username !== null) add("Username", login.username);
-      if (login.password !== null)
-        mask("password", login.password, add("Password", ""));
-      const credentials = details?.properties.credentials;
-      if (item.type === 1 && item.details.credentials?.fido2Credentials?.length)
-        add("Passkey", "Saved in this login");
-      if (credentials?.totp)
-        mask("TOTP seed", credentials.totp, add("TOTP seed", ""));
-      for (const { uri, match } of credentials?.uris ?? []) {
-        if (uri === null) continue;
-        const website = add("Website", "");
-        website.append(create("span", uri));
-        if (match != null) website.append(` (${uriMatchLabels[match]})`);
-      }
-    }
-    if (details) {
-      if (details.properties.favorite) add("Favourite", "Yes");
-      if (details.properties.reprompt === 1)
-        add("Master password reprompt", "Required");
-      for (const property of details.properties.fields ?? []) {
-        const label = property.name || "Custom field";
-        if (property.type === 1 && property.value != null)
-          mask(label, property.value, add(label, ""));
-        else if (property.type === 3)
-          add(
-            label,
-            property.linkedId == null
-              ? "Linked field"
-              : linkedFieldLabel(item.type, property.linkedId),
-          );
-        else if (property.value != null) add(label, property.value);
-      }
-      if (item.type !== 4) {
-        for (const [name, label] of Object.entries(
-          itemTypes[item.type].fields,
-        )) {
-          const value = details.properties.data?.[name];
-          if (value != null) mask(label, value, add(label, ""));
-        }
-      }
-      const history = item.details.passwordHistory ?? [];
-      if (history.length) {
-        const output = add("Password history", "");
-        const show = action("Show password history", () => {
-          void this.#run(
-            async () =>
-              Promise.all(
-                history.map(async ({ password, lastUsedDate }) => ({
-                  password: await readText(password ?? null, details.key),
-                  lastUsedDate,
-                })),
-              ),
-            (entries) => {
-              const list = create("ul");
-              for (const { password, lastUsedDate } of entries) {
-                if (password === null) continue;
-                const row = create(
-                  "li",
-                  lastUsedDate
-                    ? new Date(lastUsedDate).toLocaleDateString() + " "
-                    : "",
-                );
-                mask("previous password", password, row);
-                list.append(row);
-              }
-              output.replaceChildren(
-                action("Hide password history", () =>
-                  output.replaceChildren(show),
-                ),
-                list,
-              );
-            },
-            () => output.append(alert("Could not read password history.")),
-          );
+    const metadata: DetailRow[] = [];
+    if (folder) metadata.push({ label: "Folder", value: folder.title });
+    if (properties.favorite)
+      metadata.push({ label: "Favourite", value: "Yes" });
+    if (properties.reprompt === 1)
+      metadata.push({ label: "Master password reprompt", value: "Required" });
+    addFields("Item details", metadata);
+
+    if (item.type === 1) {
+      const credentials = properties.credentials;
+      const rows: DetailRow[] = [];
+      if (credentials?.username)
+        rows.push({ label: "Username", value: credentials.username });
+      if (credentials?.password)
+        rows.push({
+          label: "Password",
+          value: credentials.password,
+          visibility: "masked",
+          revealLabel: "password",
         });
-        output.append(show);
-      }
+      if (item.details.credentials?.fido2Credentials?.length)
+        rows.push({ label: "Passkey", value: "Saved in this login" });
+      if (credentials?.totp)
+        rows.push({
+          label: "TOTP seed",
+          value: credentials.totp,
+          visibility: "masked",
+        });
+      addFields("Login credentials", rows);
+      addFields(
+        "Autofill options",
+        (credentials?.uris ?? []).flatMap(({ uri, match }) =>
+          uri == null
+            ? []
+            : [
+                {
+                  label: "Website",
+                  value: uri,
+                  suffix:
+                    match == null ? undefined : ` (${uriMatchLabels[match]})`,
+                },
+              ],
+        ),
+      );
+    } else if (item.type === 4) {
+      for (const { label, rows } of identityDisplayGroups(properties.data))
+        addFields(label, rows);
+    } else if (item.type !== 2) {
+      const { label, rows } = structuredDisplayGroup(
+        item.type,
+        properties.data,
+      );
+      addFields(label, rows);
     }
-    if (details?.notes != null) add("Notes", details.notes);
-    const content: HTMLElement[] = [];
-    if (details && item.type === 4) {
-      for (const { label, rows } of identityDisplayGroups(
-        details.properties.data,
-      )) {
-        const section = create("section");
-        section.className = "vault-identity-section";
-        const group = create("dl");
-        group.className = "vault-item-fields";
-        for (const { label, value, visibility } of rows) {
-          if (visibility === "masked")
-            mask(label, value, add(label, "", group));
-          else add(label, value, group);
-        }
-        section.append(create("h3", label), group);
-        content.push(section);
-      }
+
+    if (properties.notes) {
+      const notes = create("p", properties.notes);
+      notes.className = "vault-item-note";
+      content.push(detailCard("Notes", notes));
     }
-    if (fields.childElementCount) content.push(fields);
-    if (details && content.length === 0)
-      content.push(create("p", "This item has no details."));
+    const history = item.details.passwordHistory;
+    if (history?.length) {
+      const output = create("div");
+      const show = action("Show password history", () => {
+        void this.#run(
+          () =>
+            Promise.all(
+              history.map(async ({ password, lastUsedDate }) => ({
+                password: await readText(password ?? null, key),
+                lastUsedDate,
+              })),
+            ),
+          (entries) => {
+            const list = create("ul");
+            for (const { password, lastUsedDate } of entries) {
+              if (password === null) continue;
+              const row = create(
+                "li",
+                lastUsedDate
+                  ? new Date(lastUsedDate).toLocaleDateString() + " "
+                  : "",
+              );
+              mask("previous password", password, row);
+              list.append(row);
+            }
+            output.replaceChildren(
+              action("Hide password history", () =>
+                output.replaceChildren(show),
+              ),
+              list,
+            );
+          },
+          () => output.append(alert("Could not read password history.")),
+        );
+      });
+      output.append(show);
+      content.push(detailCard("Password history", output));
+    }
+    addFields(
+      "Custom fields",
+      (properties.fields ?? []).map(
+        ({ name, value, type, linkedId }): DetailRow => ({
+          label: name || "Custom field",
+          value:
+            type === 3
+              ? linkedId == null
+                ? "Linked field"
+                : linkedFieldLabel(item.type, linkedId)
+              : (value ?? ""),
+          visibility: type === 1 && value != null ? "masked" : "visible",
+        }),
+      ),
+    );
+    return content.length
+      ? content
+      : [create("p", "This item has no details.")];
+  }
+
+  #showDetails(entry: ListedItem, details: ItemDetails | null, error?: string) {
+    const { item, title, trashed } = entry;
     const titleNode = create("h2", title ?? "Unreadable item");
     titleNode.tabIndex = -1;
-    let edit: HTMLButtonElement | undefined;
-    const cancel = () => this.#showDetails(entry, details);
-    if (!trashed && title !== null && details) {
-      if (item.type === 2)
-        edit = action("Edit Secure Note", () =>
-          this.#showNoteForm({ item, title, cancel, notes: details.notes }),
-        );
-      else if (item.type === 1 && login)
-        edit = action("Edit Login", () =>
-          this.#showLoginForm({ item, title, cancel, login }),
-        );
-      else
-        edit = action(`Edit ${itemTypes[item.type].label}`, () =>
-          this.#showDetailedForm(item.type, { item, title, cancel, details }),
-        );
-    }
+    const edit =
+      !trashed && title !== null && details
+        ? action(`Edit ${itemTypes[item.type].label}`, () =>
+            this.#showDetailedForm(item.type, {
+              item,
+              title,
+              details,
+              cancel: () => this.#showDetails(entry, details),
+            }),
+          )
+        : undefined;
     const more = menu(
       "More actions",
       details && (!trashed || item.attachments.length > 0)
@@ -1918,11 +1857,6 @@ class VaultReader extends HTMLElement {
                 ),
             );
           })
-        : undefined,
-      !trashed && title !== null && details && item.type <= 2
-        ? action("Edit item fields", () =>
-            this.#showDetailedForm(item.type, { item, title, cancel, details }),
-          )
         : undefined,
       action(trashed ? "Restore" : "Move to Trash", () =>
         this.#changeLifecycle(entry, details),
@@ -1950,7 +1884,7 @@ class VaultReader extends HTMLElement {
       this.#toolbar(this.#showBrowse, edit, more),
       titleNode,
       ...(error ? [alert(error)] : []),
-      ...content,
+      ...(details ? this.#itemDetailCards(item, details) : []),
     ]);
     if (this.#workspace?.detail === document.activeElement) titleNode.focus();
   }

@@ -23,6 +23,10 @@ const SentMessages = Cloudflare.R2.Bucket("SentMessages", {
   publicAccess: false,
 });
 
+const ProfilePhotos = Cloudflare.R2.Bucket("ProfilePhotos", {
+  publicAccess: false,
+});
+
 const inboxRouting = Effect.gen(function* () {
   const zoneId = yield* Config.option(Config.String("INBOX_EMAIL_ZONE_ID"));
   if (Option.isNone(zoneId)) return undefined;
@@ -95,6 +99,7 @@ export const Web = Cloudflare.Worker(
         VAULT_FILES: VaultFiles,
         INBOX_MESSAGES: InboxMessages,
         SENT_MESSAGES: SentMessages,
+        PROFILE_PHOTOS: ProfilePhotos,
         INBOX_UPDATES: Cloudflare.DurableObject<InboxUpdates>("InboxUpdates"),
         ...(inbox ? { INBOX_EMAIL_ADDRESS: inboxAddress(inbox.name) } : {}),
         APP_ORIGIN: Cloudflare.Worker.URL,

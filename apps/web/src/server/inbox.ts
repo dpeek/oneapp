@@ -51,6 +51,7 @@ import {
   replyRecipient,
 } from "./mail-reply.ts";
 import { mailPeople } from "./mail-people.ts";
+import { managedPersonAddresses, matchPeople } from "./people-store.ts";
 import {
   describeSent,
   describeStoredSent,
@@ -796,11 +797,21 @@ export const inboxRoutes = (
         const thread = yield* Effect.tryPromise(() =>
           loadConversation(env, id),
         );
-        return thread.messages.length
-          ? yield* HttpServerResponse.schemaJson(Conversation)(thread, {
-              headers: privateHeaders,
-            })
-          : yield* notFound();
+        if (!thread.messages.length) return yield* notFound();
+        const addresses = thread.messages.flatMap(
+          ({ people }) => people?.members.map(({ address }) => address) ?? [],
+        );
+        const profiles = yield* Effect.tryPromise(async () =>
+          matchPeople(
+            env.DB,
+            addresses,
+            await managedPersonAddresses(env.DB, env.INBOX_EMAIL_ADDRESS),
+          ),
+        );
+        return yield* HttpServerResponse.schemaJson(Conversation)(
+          { ...thread, profiles },
+          { headers: privateHeaders },
+        );
       }).pipe(Effect.catchTags(inboxErrors)),
     ),
     HttpRouter.add("GET", `${inboxApiPath}/:id/original`, read("inbox", true)),

@@ -28,6 +28,7 @@ import { mcpAuthorizePath, mcpLoginQuery } from "./mcp-access-contract.ts";
 import { navigationView } from "./navigation.ts";
 import * as PasswordRecovery from "./password-recovery.ts";
 import { forgotPasswordPage } from "./password-recovery-contract.ts";
+import * as People from "./people.ts";
 import { vaultPath } from "./vault-setup-contract.ts";
 import * as VaultSetup from "./vault-setup.ts";
 
@@ -51,6 +52,7 @@ const Model = Schema.Struct({
   accountSettings: AccountSettings.Model,
   vaultSetup: VaultSetup.Model,
   inbox: Inbox.Model,
+  people: People.Model,
   mailRoute: Schema.NullOr(Inbox.MailRoute),
   signInNotice: Schema.NullOr(Schema.String),
   links: Schema.NullOr(LinkList),
@@ -76,6 +78,7 @@ const Message = defineMessageUnion({
   GotAccountSettingsMessage: { message: AccountSettings.Message },
   GotVaultSetupMessage: { message: VaultSetup.Message },
   GotInboxMessage: { message: Inbox.Message },
+  GotPeopleMessage: { message: People.Message },
   ChangedLinkUrl: { url: Schema.String },
   SubmittedLink: {},
   RequestedLinkDeletion: { id: Schema.String },
@@ -123,6 +126,15 @@ const foldInbox = Update.foldChild({
     model.account ? Option.some(model.inbox) : Option.none(),
   write: (model, inbox) => ({ ...model, inbox }),
   toParentMessage: toInboxMessage,
+});
+const toPeopleMessage = (message: typeof People.Message.Type) =>
+  Message.GotPeopleMessage({ message });
+const foldPeople = Update.foldChild({
+  update: People.update,
+  read: (model: Model) =>
+    model.account ? Option.some(model.people) : Option.none(),
+  write: (model, people) => ({ ...model, people }),
+  toParentMessage: toPeopleMessage,
 });
 const toConnectedClientsMessage = (
   message: typeof ConnectedClients.Message.Type,
@@ -342,7 +354,15 @@ const loadPage = (model: Model): Update.Return<Model, Message> => {
     return foldVaultSetup(model, VaultSetup.Message.Requested());
   if (model.mailRoute)
     return foldInbox(model, Inbox.Message.Opened(model.mailRoute));
-  return foldConnectedClients(model, ConnectedClients.Message.Requested());
+  const profile = foldPeople(model, People.Message.RequestedSelf());
+  const clients = foldConnectedClients(
+    profile.model,
+    ConnectedClients.Message.Requested(),
+  );
+  return {
+    model: clients.model,
+    commands: [...(profile.commands ?? []), ...(clients.commands ?? [])],
+  };
 };
 
 const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
@@ -354,6 +374,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     accountSettings: AccountSettings.initial,
     vaultSetup: VaultSetup.initial,
     inbox: Inbox.initial,
+    people: People.initial,
     mailRoute: Inbox.routeFor(url.pathname),
     signInNotice: null,
     links: null,
@@ -444,6 +465,7 @@ const update = (
         accountSettings: AccountSettings.initial,
         vaultSetup: VaultSetup.initial,
         inbox: Inbox.initial,
+        people: People.initial,
         mailRoute: model.mailRoute,
         signInNotice: null,
         links: null,
@@ -700,7 +722,32 @@ const update = (
       model: { ...model, deletingLink: null, pending: false, error },
     }),
     GotVaultSetupMessage: ({ message }) => foldVaultSetup(model, message),
+    GotPeopleMessage: ({ message }) => {
+      const { selfRequest, loadRequest, saveRequest } = model.people;
+      if (
+        message._tag === "SessionExpired" &&
+        [selfRequest, loadRequest, saveRequest].includes(message.request)
+      )
+        return update(model, Message.LoadedAccount({ account: null }));
+      const result = foldPeople(model, message);
+      if (
+        message._tag !== "Saved" ||
+        message.request !== saveRequest ||
+        model.page !== "inbox"
+      )
+        return result;
+      const inbox = foldInbox(result.model, Inbox.Message.RetriedThread());
+      return {
+        model: inbox.model,
+        commands: [...(result.commands ?? []), ...(inbox.commands ?? [])],
+      };
+    },
     GotInboxMessage: ({ message }) => {
+      if (message._tag === "RequestedPerson")
+        return foldPeople(
+          model,
+          People.Message.Opened({ address: message.address }),
+        );
       if (message._tag === "LiveChanged" && model.page !== "inbox")
         return foldInbox(model, Inbox.Message.RefreshedUnread());
       if (
@@ -850,6 +897,34 @@ const settingsView = (model: Model, h: HtmlBuilder<Message>) =>
   h.div(
     [h.Class("settings")],
     [
+      h.section(
+        [h.Class("settings-profile")],
+        [
+          h.h2([], ["Profile"]),
+          h.div(
+            [h.Class("settings-profile-row")],
+            [
+              People.avatar(
+                h,
+                model.people.self,
+                model.people.self?.managedAddresses[0] ?? "",
+              ),
+              ...(model.people.self?.name
+                ? [h.strong([], [model.people.self.name])]
+                : []),
+              h.button(
+                [
+                  h.Type("button"),
+                  h.OnClick(
+                    toPeopleMessage(People.Message.Opened({ address: null })),
+                  ),
+                ],
+                ["Edit profile"],
+              ),
+            ],
+          ),
+        ],
+      ),
       h.section(
         [h.Class("settings-account")],
         [
@@ -1015,6 +1090,12 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
             error,
           ],
         ),
+        h.submodel({
+          slotId: "person-editor",
+          view: People.view,
+          model: model.people,
+          toParentMessage: toPeopleMessage,
+        }),
       ],
     ),
   };

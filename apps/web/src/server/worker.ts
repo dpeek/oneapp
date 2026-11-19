@@ -50,6 +50,7 @@ import {
   mcpOAuthLayer,
 } from "./mcp-oauth.ts";
 import { AccountPasswordPolicy } from "./password-policy.ts";
+import { peopleRoutes } from "./people.ts";
 import {
   passwordRecoveryRoutes,
   resetLinkRenderer,
@@ -341,6 +342,7 @@ export default {
           passwordRecoveryRoutes(http, emailTransport !== disabledEmail),
           linksRoutes(http),
           inboxRoutes(http, env, defer),
+          peopleRoutes(http, env, defer),
           vaultSetupRoutes(http, env.DB),
           vaultItemRoutes(http, env.DB),
           vaultManagementRoutes(http, env, defer),

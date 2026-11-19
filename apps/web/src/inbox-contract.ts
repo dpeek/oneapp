@@ -1,5 +1,6 @@
 import { Schema as AuthSchema } from "@yielded/auth";
 import { Schema } from "effect";
+import { PersonMatch } from "./people-contract.ts";
 
 export const inboxPath = "/inbox";
 export const inboxApiPath = "/api/inbox";
@@ -168,4 +169,5 @@ export const ConversationMessage = Schema.Struct({
 export type ConversationMessage = typeof ConversationMessage.Type;
 export const Conversation = Schema.Struct({
   messages: Schema.Array(ConversationMessage),
+  profiles: Schema.optionalKey(Schema.Array(PersonMatch)),
 });

@@ -41,6 +41,8 @@ import {
   sentPath,
 } from "./inbox-contract.ts";
 import { unreadBadge } from "./navigation.ts";
+import { normalizePersonEmail, PersonEmail } from "./people-contract.ts";
+import { avatar } from "./people.ts";
 
 const MessageLocation = Schema.Struct({
   folder: MailFolder,
@@ -143,6 +145,7 @@ export const Message = defineMessageUnion({
   ToggledUnread: {},
   ToggledMessage: MessageLocation.fields,
   RequestedBack: {},
+  RequestedPerson: { address: Schema.String },
   RequestedReply: {},
   RequestedDelete: {},
   CanceledDelete: {},
@@ -656,6 +659,7 @@ export const update = (
         deleteFailed: false,
       }),
     RequestedBack: () => ({ model }),
+    RequestedPerson: () => ({ model }),
     RequestedReply: () => {
       const from = model.list?.sender;
       const entry = model.entry;
@@ -704,6 +708,7 @@ export const update = (
         messages: model.list.messages.filter((message) => message.id !== id),
       };
       const thread = model.thread && {
+        ...model.thread,
         messages: model.thread.messages.filter((message) => message.id !== id),
       };
       const next: Model = {
@@ -1197,6 +1202,9 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
     return h.div([h.Class("workspace-detail")], ["Select a message to read."]);
   const messages = readerMessages(model);
   const participants = conversationPeople(messages);
+  const profiles = new Map(
+    model.thread?.profiles?.map(({ email, person }) => [email, person]),
+  );
   const latest = messages.at(-1);
   const grouped = messages.length > 1;
   return h.article(
@@ -1257,6 +1265,14 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
               messages.map((message) => {
                 const { id, folder, from, timestamp, unread } = message;
                 const sender = message.people?.sender;
+                const address = sender?.address || from;
+                const knownPerson = profiles.get(normalizePersonEmail(address));
+                const senderAvatar = avatar(
+                  h,
+                  knownPerson,
+                  address,
+                  sender?.name,
+                );
                 const expanded = active?.id === id;
                 const panel = `mail-content-${id}`;
                 const summaryClass = unread
@@ -1264,7 +1280,7 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
                   : "inbox-thread-summary";
                 const header = [
                   h.strong(sender ? [h.Title(sender.address)] : [], [
-                    sender?.address || from || "Unknown sender",
+                    address || "Unknown sender",
                   ]),
                   ...(unread
                     ? [h.span([h.Class("inbox-thread-unread")], ["Unread"])]
@@ -1280,18 +1296,36 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
                 return h.li(
                   [h.Key(id)],
                   [
-                    grouped
-                      ? h.button(
-                          [
-                            h.Type("button"),
-                            h.Class(summaryClass),
-                            h.AriaExpanded(expanded),
-                            ...(expanded ? [h.AriaControls(panel)] : []),
-                            h.OnClick(Message.ToggledMessage({ id, folder })),
-                          ],
-                          header,
-                        )
-                      : h.header([h.Class(summaryClass)], header),
+                    h.div(
+                      [h.Class("inbox-message-heading")],
+                      [
+                        Schema.is(PersonEmail)(address)
+                          ? h.button(
+                              [
+                                h.Type("button"),
+                                h.Class("inbox-sender-profile"),
+                                h.AriaLabel(`Edit profile for ${address}`),
+                                h.OnClick(Message.RequestedPerson({ address })),
+                              ],
+                              [senderAvatar],
+                            )
+                          : senderAvatar,
+                        grouped
+                          ? h.button(
+                              [
+                                h.Type("button"),
+                                h.Class(summaryClass),
+                                h.AriaExpanded(expanded),
+                                ...(expanded ? [h.AriaControls(panel)] : []),
+                                h.OnClick(
+                                  Message.ToggledMessage({ id, folder }),
+                                ),
+                              ],
+                              header,
+                            )
+                          : h.header([h.Class(summaryClass)], header),
+                      ],
+                    ),
                     ...(expanded
                       ? [
                           h.section(

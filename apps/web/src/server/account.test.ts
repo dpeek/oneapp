@@ -47,6 +47,14 @@ import {
   resetPasswordPage,
 } from "../password-recovery-contract.ts";
 import {
+  peopleApiPath,
+  personApiPath,
+  personLookupPath,
+  personPhotoPath,
+  selfProfilePath,
+  type Person,
+} from "../people-contract.ts";
+import {
   vaultAttachmentPath,
   vaultAttachmentsPath,
   vaultAttachmentLimit,
@@ -86,6 +94,7 @@ const setup = async (
       | "INBOX_UPDATES"
       | "INBOX_EMAIL_FROM"
       | "SENT_MESSAGES"
+      | "PROFILE_PHOTOS"
     >
   > & { INBOX_SEND?: SendEmail; INBOX_SEND_LIMIT?: RateLimit },
 ) => {
@@ -235,6 +244,110 @@ const setup = async (
     },
   };
 };
+
+it("shares private people profiles across aliases and keeps account addresses linked to the owner", async () => {
+  using sqlite = new Database(":memory:");
+  const mailbox = "mail@app.example.net";
+  const photos = new Map<string, Uint8Array<ArrayBuffer>>();
+  const { call, request, signIn, cookies, finishWork } = await setup(sqlite, {
+    INBOX_EMAIL_ADDRESS: mailbox,
+    PROFILE_PHOTOS: {
+      put: async (key: string, bytes: Uint8Array<ArrayBuffer>) =>
+        photos.set(key, bytes),
+      get: async (key: string) => {
+        const bytes = photos.get(key);
+        return bytes ? { body: new Response(bytes).body } : null;
+      },
+      delete: async (key: string) => void photos.delete(key),
+    } as unknown as WorkerEnv["PROFILE_PHOTOS"],
+  });
+  const session = cookies(await signIn(password));
+  const lookup = async (address: string): Promise<Person | null> => {
+    const response = await call(personLookupPath(address), undefined, session);
+    expect(response.status).toBe(200);
+    return (await response.json()).person;
+  };
+  const save = (profile: Person, draft: object) =>
+    request(personApiPath(profile.id), {
+      method: "PUT",
+      headers: {
+        cookie: session,
+        origin: "https://oneapp.example",
+        "content-type": "application/json",
+        "x-effect-auth-csrf": "1",
+      },
+      body: JSON.stringify({ revision: profile.revision, ...draft }),
+    });
+
+  expect((await call(selfProfilePath)).status).toBe(401);
+  expect((await call(personLookupPath(mailbox))).status).toBe(401);
+  const self: Person = await (
+    await call(selfProfilePath, undefined, session)
+  ).json();
+  expect(self).toMatchObject({
+    self: true,
+    addresses: [],
+    managedAddresses: [mailbox],
+  });
+  expect(await lookup(mailbox.toUpperCase())).toEqual(self);
+  expect(await lookup(email)).toBeNull();
+
+  sqlite
+    .query("UPDATE oneapp_auth_identifiers SET verified_at = ? WHERE value = ?")
+    .run(Date.now(), email);
+  expect(await lookup(email)).toMatchObject({
+    id: self.id,
+    managedAddresses: [mailbox, email],
+  });
+  expect(
+    (await call(peopleApiPath, { name: "", addresses: [mailbox] }, session))
+      .status,
+  ).toBe(409);
+  const updatedSelf = await save(self, {
+    name: "Owner",
+    addresses: ["ALIAS@example.net"],
+  });
+  expect(updatedSelf.status).toBe(200);
+  expect(await lookup("alias@example.net")).toMatchObject({
+    id: self.id,
+    name: "Owner",
+    self: true,
+  });
+
+  const addresses = ["lena@example.net", "LENA@alt.example.net"] as const;
+  const photo = new Uint8Array([0xff, 0xd8, 0xff, 0xff, 0xd9]);
+  const create = await call(
+    peopleApiPath,
+    { name: "Lena", addresses, photo: photo.toBase64() },
+    session,
+  );
+  expect(create.status).toBe(201);
+  const person: Person = await create.json();
+  expect(await lookup(addresses[1])).toEqual(person);
+  const photoPath = personPhotoPath(person.id, person.photo!);
+  expect((await call(photoPath)).status).toBe(401);
+  const image = await call(photoPath, undefined, session);
+  expect(image.headers.get("content-type")).toBe("image/jpeg");
+  expect(image.headers.get("cache-control")).toBe("no-store");
+  expect(new Uint8Array(await image.arrayBuffer())).toEqual(photo);
+
+  expect(
+    (await save(person, { name: "Changed", addresses: ["alias@example.net"] }))
+      .status,
+  ).toBe(409);
+  expect(await lookup(addresses[0])).toEqual(person);
+  expect(
+    (await save(person, { name: person.name, addresses, photo: "YQ==" }))
+      .status,
+  ).toBe(400);
+  expect(
+    (await save(person, { name: person.name, addresses, photo: null })).status,
+  ).toBe(200);
+  expect((await save(person, { name: "Stale", addresses })).status).toBe(409);
+  expect((await call(photoPath, undefined, session)).status).toBe(404);
+  await finishWork();
+  expect(photos.size).toBe(0);
+});
 
 it("lets only the owner send plain-text mail from the configured Inbox address", async () => {
   using sqlite = new Database(":memory:");

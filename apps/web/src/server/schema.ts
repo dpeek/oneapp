@@ -1,4 +1,5 @@
 import { authTables } from "./database.ts";
+export { people, personAddresses } from "./people-tables.ts";
 export {
   mailIndexKeys,
   mailIndexMessages,

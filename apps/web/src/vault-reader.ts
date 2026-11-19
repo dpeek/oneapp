@@ -71,10 +71,12 @@ type Snapshot = typeof VaultSnapshot.Type;
 type Item = Snapshot["items"][number];
 type ListedItem = { item: Item; title: string | null; trashed: boolean };
 type VaultView = "active" | "archive" | "trash";
+const vaultViews = { active: "All items", archive: "Archive", trash: "Trash" };
+const allItemTypes = [1, 2, ...extraItemTypes] as const;
 type Folder = typeof VaultFolder.Type;
 type ListedFolder = { folder: Folder; title: string };
 type BulkAction = (typeof VaultBulkChange.Type)["kind"];
-type EditTarget = { item: Item; title: string };
+type EditTarget = { item: Item; title: string; cancel: () => void };
 type NoteEdit = EditTarget & {
   item: typeof VaultSecureNote.Type;
   notes: string | null;
@@ -93,6 +95,21 @@ type UnlockedVault = {
   entries: ListedItem[];
   folders: ListedFolder[];
 };
+type VaultWorkspace = {
+  root: HTMLElement;
+  tools: HTMLDetailsElement;
+  filters: HTMLElement;
+  views: HTMLButtonElement[];
+  type: HTMLSelectElement;
+  folder: HTMLSelectElement;
+  listPane: HTMLElement;
+  search: HTMLInputElement;
+  newItem: HTMLButtonElement;
+  status: HTMLElement;
+  bulk: HTMLElement;
+  results: HTMLElement;
+  detail: HTMLElement;
+};
 
 const decodeSnapshot = Schema.decodeUnknownSync(VaultSnapshot);
 const decodeItem = Schema.decodeUnknownSync(VaultItem);
@@ -106,6 +123,17 @@ const action = (label: string, run: () => void) => {
   button.type = "button";
   button.addEventListener("click", () => run());
   return button;
+};
+const menu = (label: string, ...buttons: (HTMLButtonElement | undefined)[]) => {
+  const disclosure = create("details");
+  disclosure.className = "vault-menu";
+  const actions = create("div");
+  for (const button of buttons) if (button) actions.append(button);
+  actions.addEventListener("click", (event) => {
+    if (event.target instanceof HTMLButtonElement) disclosure.open = false;
+  });
+  disclosure.append(create("summary", label), actions);
+  return disclosure;
 };
 const alert = (message: string) => {
   const status = create("p", message);
@@ -227,7 +255,11 @@ const downloadVaultFile = (blob: Blob, name: string) => {
 class VaultReader extends HTMLElement {
   #vault: UnlockedVault | null = null;
   #pending: AbortController | null = null;
+  #workspace: VaultWorkspace | null = null;
+  #view: VaultView = "active";
   #folderId: string | undefined;
+  #selectedId: string | undefined;
+  #busy = false;
 
   connectedCallback() {
     window.addEventListener("pagehide", this.#onPageHide);
@@ -247,13 +279,17 @@ class VaultReader extends HTMLElement {
   #stopWork() {
     this.#pending?.abort();
     this.#pending = null;
+    this.#setBusy(false);
   }
 
   #clear() {
     this.#stopWork();
     this.#vault = null;
+    this.#workspace = null;
+    this.#view = "active";
     this.#folderId = undefined;
-    this.querySelector("form")?.reset();
+    this.#selectedId = undefined;
+    this.querySelectorAll("form").forEach((form) => form.reset());
     this.replaceChildren();
   }
 
@@ -267,18 +303,42 @@ class VaultReader extends HTMLElement {
     work: (signal: AbortSignal) => Promise<T>,
     complete: (result: T) => void,
     failed: () => void,
+    { blockNavigation = false } = {},
   ) {
     this.#stopWork();
     const controller = new AbortController();
     this.#pending = controller;
+    if (blockNavigation) this.#setBusy(true);
     try {
       const result = await work(controller.signal);
-      if (!controller.signal.aborted && this.isConnected) complete(result);
+      if (!controller.signal.aborted && this.isConnected) {
+        if (blockNavigation) this.#setBusy(false);
+        complete(result);
+      }
     } catch {
-      if (!controller.signal.aborted && this.isConnected) failed();
+      if (!controller.signal.aborted && this.isConnected) {
+        if (blockNavigation) this.#setBusy(false);
+        failed();
+      }
     } finally {
       if (this.#pending === controller) this.#pending = null;
     }
+  }
+
+  #setBusy(busy: boolean) {
+    this.#busy = busy;
+    this.#updateNavigation();
+  }
+
+  #updateNavigation() {
+    const workspace = this.#workspace;
+    if (!workspace) return;
+    const { tools, filters, listPane, detail } = workspace;
+    tools.inert =
+      filters.inert =
+      listPane.inert =
+        this.#busy || detail.classList.contains("vault-editor");
+    detail.inert = this.#busy;
   }
 
   #showUnlock(error?: string) {
@@ -304,7 +364,8 @@ class VaultReader extends HTMLElement {
         },
         (vault) => {
           this.#vault = vault;
-          this.#showList();
+          this.#mountWorkspace();
+          this.#showItems("active");
         },
         () => this.#showUnlock(failure),
       );
@@ -312,27 +373,21 @@ class VaultReader extends HTMLElement {
     this.replaceChildren(form, ...(error ? [alert(error)] : []));
   }
 
-  #toolbar(back?: () => void, ...actions: (HTMLButtonElement | undefined)[]) {
+  #toolbar(back?: () => void, ...actions: (HTMLElement | undefined)[]) {
     const toolbar = create("div");
     toolbar.className = "vault-toolbar";
     if (back)
       toolbar.append(
-        action(
-          back === this.#showTrash
-            ? "Back to Trash"
-            : back === this.#showArchive
-              ? "Back to Archive"
-              : "Back to items",
-          back,
-        ),
+        action("Back", () => {
+          this.#stopWork();
+          back();
+        }),
       );
     for (const button of actions) if (button) toolbar.append(button);
-    toolbar.append(action("Lock vault", this.#lock));
     return toolbar;
   }
 
-  #showList = (message?: string) => this.#showItems("active", message);
-  #showArchive = (message?: string) => this.#showItems("archive", message);
+  #showBrowse = (message?: string) => this.#showItems(this.#view, message);
   #showTrash = (message?: string) => this.#showItems("trash", message);
 
   #viewFor(entry: ListedItem): VaultView {
@@ -341,14 +396,6 @@ class VaultReader extends HTMLElement {
       : entry.item.archivedAt !== null
         ? "archive"
         : "active";
-  }
-
-  #backFor(entry: ListedItem) {
-    return entry.trashed
-      ? this.#showTrash
-      : entry.item.archivedAt !== null
-        ? this.#showArchive
-        : this.#showList;
   }
 
   #folderOptions(all: boolean) {
@@ -360,55 +407,224 @@ class VaultReader extends HTMLElement {
     return select;
   }
 
+  #mountWorkspace() {
+    const root = create("div");
+    root.className = "vault-workspace";
+    const header = create("header");
+    header.className = "vault-workspace-header";
+    const tools = menu(
+      "Vault tools",
+      ...(
+        [
+          ["Manage folders", () => this.#showFolders()],
+          ["Import", () => this.#showImport()],
+          ["Export", () => this.#showExport()],
+        ] as const
+      ).map(([label, open]) =>
+        action(label, () => {
+          this.#stopWork();
+          this.#selectItem();
+          open();
+        }),
+      ),
+    );
+    header.append(
+      create("h1", "Password vault"),
+      tools,
+      action("Lock vault", this.#lock),
+    );
+
+    const filters = create("nav");
+    filters.className = "vault-filters";
+    filters.setAttribute("aria-label", "Vault filters");
+    const viewButtons = create("div");
+    viewButtons.className = "vault-views";
+    const views = (Object.keys(vaultViews) as VaultView[]).map((view) => {
+      const button = action(vaultViews[view], () => {
+        button.focus({ preventScroll: true });
+        this.#showItems(view);
+      });
+      button.value = view;
+      viewButtons.append(button);
+      return button;
+    });
+    const type = create("select");
+    type.add(new Option("All types", ""));
+    for (const kind of allItemTypes)
+      type.add(new Option(itemTypes[kind].label, String(kind)));
+    const folder = create("select");
+    const typeFilter = create("label", "Item type");
+    typeFilter.append(type);
+    const folderFilter = create("label", "Folder");
+    folderFilter.append(folder);
+    filters.append(viewButtons, typeFilter, folderFilter);
+
+    const listPane = create("section");
+    listPane.className = "vault-list-pane";
+    listPane.setAttribute("aria-label", "Vault items");
+    const listHeader = create("div");
+    listHeader.className = "vault-list-header";
+    const search = create("input");
+    search.type = "search";
+    search.placeholder = "Search items";
+    search.setAttribute("aria-label", "Search items by title");
+    search.autocomplete = "off";
+    search.spellcheck = false;
+    const newItem = action("New item", () => {
+      this.#selectItem();
+      this.#showItemTypes();
+    });
+    newItem.className = "vault-primary";
+    listHeader.append(search, newItem);
+    const status = create("div");
+    const bulk = create("div");
+    bulk.className = "vault-bulk";
+    bulk.hidden = true;
+    const results = create("div");
+    results.className = "vault-results";
+    listPane.append(listHeader, status, bulk, results);
+
+    const detail = create("section");
+    detail.className = "vault-detail";
+    detail.tabIndex = -1;
+    detail.setAttribute("aria-label", "Item details");
+    root.append(header, filters, listPane, detail);
+    this.#workspace = {
+      root,
+      tools,
+      filters,
+      views,
+      type,
+      folder,
+      listPane,
+      search,
+      newItem,
+      status,
+      bulk,
+      results,
+      detail,
+    };
+    search.addEventListener("input", () => this.#renderResults(true));
+    type.addEventListener("change", () => this.#renderResults(true));
+    folder.addEventListener("change", () => {
+      this.#folderId = folder.value === "*" ? undefined : folder.value;
+      this.#renderResults(true);
+    });
+    this.replaceChildren(root);
+  }
+
+  #showPanel(nodes: HTMLElement[], editing = false) {
+    const workspace = this.#workspace;
+    if (!workspace) return;
+    workspace.root.dataset.panel = "";
+    workspace.detail.classList.toggle("vault-editor", editing);
+    workspace.detail.replaceChildren(...nodes);
+    workspace.detail.scrollTop = 0;
+    this.#updateNavigation();
+    if (document.activeElement !== workspace.search)
+      workspace.detail.focus({ preventScroll: true });
+  }
+
+  #selectItem(id?: string) {
+    this.#selectedId = id;
+    this.#workspace?.results
+      .querySelectorAll<HTMLButtonElement>(".vault-row")
+      .forEach((row) => {
+        if (row.value === id) row.setAttribute("aria-current", "true");
+        else row.removeAttribute("aria-current");
+      });
+  }
+
+  #updateFilters() {
+    const workspace = this.#workspace;
+    if (!workspace) return;
+    const { folder, type, views, newItem } = workspace;
+    for (const button of views) {
+      if (button.value === this.#view)
+        button.setAttribute("aria-current", "true");
+      else button.removeAttribute("aria-current");
+    }
+    folder.replaceChildren(...this.#folderOptions(true).options);
+    const active = this.#view === "active";
+    if (
+      !Array.from(folder.options).some(({ value }) => value === this.#folderId)
+    )
+      this.#folderId = undefined;
+    folder.value = this.#folderId ?? "*";
+    folder.disabled = !active;
+    type.disabled = !active;
+    newItem.hidden = !active;
+  }
+
   #showItems(view: VaultView, message?: string, problem?: string) {
     this.#stopWork();
+    const workspace = this.#workspace;
+    if (!workspace) return;
+    const { root, detail, search, status, results } = workspace;
+    const resetScroll = view !== this.#view;
+    const previousId = this.#selectedId;
+    const changed =
+      resetScroll ||
+      message !== undefined ||
+      problem !== undefined ||
+      !results.childElementCount;
+    this.#view = view;
+    this.#selectItem();
+    delete root.dataset.panel;
+    detail.classList.remove("vault-editor");
+    detail.replaceChildren(create("p", "Select an item to view its details."));
+    this.#updateNavigation();
+    if (changed) {
+      this.#updateFilters();
+      this.#renderResults(resetScroll);
+    }
+    status.replaceChildren(
+      ...(message ? [statusMessage(message)] : []),
+      ...(problem
+        ? [
+            alert(problem),
+            action("Reload vault", () =>
+              this.#refresh(() => this.#showItems(view, "Vault reloaded.")),
+            ),
+          ]
+        : []),
+    );
+    const previous = Array.from(
+      results.querySelectorAll<HTMLButtonElement>(".vault-row"),
+    ).find(({ value }) => value === previousId);
+    if (!workspace.filters.contains(document.activeElement))
+      (previous ?? search).focus({ preventScroll: true });
+  }
+
+  #renderResults(resetScroll = false) {
     const vault = this.#vault;
-    if (!vault) return;
-    const toolbar =
-      view === "active"
-        ? this.#toolbar(
-            undefined,
-            action("New Login", () => this.#showLoginForm()),
-            action("New Secure Note", () => this.#showNoteForm()),
-            action("Other item types", () => this.#showItemTypes()),
-            action("Folders", () => this.#showFolders()),
-            action("Import", () => this.#showImport()),
-            action("Export", () => this.#showExport()),
-            action("Archive", this.#showArchive),
-            action("Trash", this.#showTrash),
-          )
-        : this.#toolbar(this.#showList);
+    const workspace = this.#workspace;
+    if (!vault || !workspace) return;
+    const { search, type, results, bulk } = workspace;
+    const view = this.#view;
+    const query = search.value.trim().toLowerCase();
+    const scroll = resetScroll ? 0 : results.scrollTop;
     const list = create("ul");
     list.className = "vault-items";
-    const filter = this.#folderOptions(true);
-    filter.value = this.#folderId ?? "*";
-    filter.addEventListener("change", () => {
-      this.#folderId = filter.value === "*" ? undefined : filter.value;
-      this.#showItems(view);
-    });
-    const folderFilter = create("label", "Folder ");
-    folderFilter.append(filter);
     const entries = vault.entries
       .filter((entry) => this.#viewFor(entry) === view)
       .filter(
-        ({ item }) =>
-          view !== "active" ||
-          this.#folderId === undefined ||
-          (item.folderId ?? "") === this.#folderId,
+        ({ item, title }) =>
+          (!query || (title ?? "").toLowerCase().includes(query)) &&
+          (view !== "active" ||
+            ((!type.value || String(item.type) === type.value) &&
+              (this.#folderId === undefined ||
+                (item.folderId ?? "") === this.#folderId))),
       )
       .sort((a, b) => (a.title ?? "").localeCompare(b.title ?? ""));
     const selected = new Set<ListedItem>();
-    const bulk = create("div");
-    bulk.className = "vault-toolbar";
-    const buttons: HTMLButtonElement[] = [];
-    const operation = (label: string, kind: BulkAction) => {
-      const button = action(label, () =>
-        this.#startBulk(view, [...selected], kind),
-      );
-      button.disabled = true;
-      buttons.push(button);
-      return button;
-    };
+    bulk.replaceChildren();
+    bulk.hidden = true;
+    const count = create("span");
+    count.setAttribute("role", "status");
+    bulk.append(count);
+    const operation = (label: string, kind: BulkAction) =>
+      action(label, () => this.#startBulk(view, [...selected], kind));
     if (view === "trash")
       bulk.append(
         operation("Restore selected", "restore"),
@@ -433,36 +649,30 @@ class VaultReader extends HTMLElement {
       select.addEventListener("change", () => {
         if (select.checked) selected.add(entry);
         else selected.delete(entry);
-        for (const button of buttons) button.disabled = selected.size === 0;
+        count.textContent = `${selected.size} selected`;
+        bulk.hidden = selected.size === 0;
       });
-      row.append(
-        select,
-        action(entry.title ?? "Unreadable item", () => this.#open(entry)),
-        create("span", itemTypes[entry.item.type].label),
+      const open = action("", () => this.#open(entry));
+      open.className = "vault-row";
+      open.value = entry.item.id;
+      open.append(
+        create("span", entry.title ?? "Unreadable item"),
+        create("small", itemTypes[entry.item.type].label),
       );
+      row.append(open, select);
       list.append(row);
     }
-    this.replaceChildren(
-      toolbar,
-      ...(view === "trash"
-        ? [create("h3", "Trash")]
-        : view === "archive"
-          ? [create("h3", "Archive")]
-          : [folderFilter]),
-      ...(message ? [statusMessage(message)] : []),
-      ...(problem
-        ? [
-            alert(problem),
-            action("Reload vault", () =>
-              this.#refresh(() => this.#showItems(view)),
-            ),
-          ]
-        : []),
-      ...(list.childElementCount
-        ? [bulk, list]
-        : [create("p", "No items in this view.")]),
+    const filtered =
+      view === "active" && (type.value || this.#folderId !== undefined);
+    const empty = create(
+      "p",
+      query || filtered ? "No matching items." : "No items in this view.",
     );
-    toolbar.querySelector("button")?.focus();
+    empty.className = "vault-empty";
+    empty.setAttribute("role", "status");
+    results.replaceChildren(list.childElementCount ? list : empty);
+    results.scrollTop = scroll;
+    this.#selectItem(this.#selectedId);
   }
 
   async #reload(vault: UnlockedVault, signal: AbortSignal) {
@@ -484,37 +694,39 @@ class VaultReader extends HTMLElement {
         done();
       },
       () =>
-        this.append(
+        this.#workspace?.status.append(
           alert("Could not reload your vault. Lock and unlock to try again."),
         ),
+      { blockNavigation: true },
     );
   }
 
   #startBulk(view: VaultView, entries: ListedItem[], kind: BulkAction) {
+    this.#stopWork();
     const folder = this.#folderOptions(false);
     const execute = () =>
       this.#applyBulk(view, entries, kind, folder.value || null);
     if (kind === "move") {
       if (entries.length === 1) folder.value = entries[0]!.item.folderId ?? "";
-      this.replaceChildren(
+      this.#showPanel([
         this.#toolbar(() => this.#showItems(view)),
-        create("h3", "Move to folder"),
+        create("h2", "Move to folder"),
         folder,
         action("Move items", execute),
-      );
+      ]);
       folder.setAttribute("aria-label", "Destination folder");
       folder.focus();
     } else if (kind === "purge") {
-      this.replaceChildren(
+      this.#showPanel([
         this.#toolbar(() => this.#showItems(view)),
-        create("h3", "Permanently delete items?"),
+        create("h2", "Permanently delete items?"),
         create(
           "p",
           `Delete ${entries.length} selected item(s) permanently. This cannot be undone.`,
         ),
         action("Permanently delete", execute),
         action("Cancel", () => this.#showItems(view)),
-      );
+      ]);
     } else execute();
   }
 
@@ -527,7 +739,7 @@ class VaultReader extends HTMLElement {
     const vault = this.#vault;
     if (!vault) return;
     let problem = "Could not update the selected items. Try again.";
-    this.replaceChildren(this.#toolbar(), statusMessage("Updating items…"));
+    this.#showPanel([statusMessage("Updating items…")]);
     void this.#run(
       async (signal) => {
         const response = await fetch(vaultBulkPath, {
@@ -558,6 +770,7 @@ class VaultReader extends HTMLElement {
         );
       },
       () => this.#showItems(view, undefined, problem),
+      { blockNavigation: true },
     );
   }
 
@@ -637,11 +850,11 @@ class VaultReader extends HTMLElement {
         },
       );
     });
-    this.replaceChildren(
-      this.#toolbar(this.#showList),
-      create("h3", "Import into your vault"),
+    this.#showPanel([
+      this.#toolbar(this.#showBrowse),
+      create("h2", "Import into your vault"),
       form,
-    );
+    ]);
     file.focus();
   }
 
@@ -671,8 +884,7 @@ class VaultReader extends HTMLElement {
         },
         (current) => {
           this.#vault = current;
-          this.#folderId = undefined;
-          this.#showList(
+          this.#showBrowse(
             `Imported ${prepared.items} item(s) and ${prepared.folders} folder(s).`,
           );
         },
@@ -681,18 +893,19 @@ class VaultReader extends HTMLElement {
           error.textContent = failure;
           error.hidden = false;
         },
+        { blockNavigation: true },
       );
     });
-    this.replaceChildren(
+    this.#showPanel([
       this.#toolbar(() => this.#showImport()),
-      create("h3", "Review import"),
+      create("h2", "Review import"),
       create(
         "p",
         `Import ${prepared.items} item(s) and ${prepared.folders} folder(s). Importing the same file again creates copies.`,
       ),
       submit,
       error,
-    );
+    ]);
     submit.focus();
   }
 
@@ -802,13 +1015,13 @@ class VaultReader extends HTMLElement {
               const missing = create("ul");
               for (const name of result.failed)
                 missing.append(create("li", name));
-              this.replaceChildren(
-                this.#toolbar(this.#showList),
+              this.#showPanel([
+                this.#toolbar(this.#showBrowse),
                 alert(
                   `The ZIP contains ${result.count} attachment(s). ${result.failed.length} could not be included.`,
                 ),
                 missing,
-              );
+              ]);
               return;
             }
           } else {
@@ -819,7 +1032,7 @@ class VaultReader extends HTMLElement {
               chosen === "csv" ? "oneapp-vault.csv" : "oneapp-vault.json",
             );
           }
-          this.#showList("Vault export downloaded.");
+          this.#showBrowse("Vault export downloaded.");
         },
         () => {
           submit.disabled = false;
@@ -829,11 +1042,11 @@ class VaultReader extends HTMLElement {
         },
       );
     });
-    this.replaceChildren(
-      this.#toolbar(this.#showList),
-      create("h3", "Export your vault"),
+    this.#showPanel([
+      this.#toolbar(this.#showBrowse),
+      create("h2", "Export your vault"),
       form,
-    );
+    ]);
     format.focus();
   }
 
@@ -843,7 +1056,7 @@ class VaultReader extends HTMLElement {
     if (!vault) return;
     const item = entry.item;
     const back = () => this.#open(entry);
-    const heading = create("h3", `Attachments for ${entry.title ?? "item"}`);
+    const heading = create("h2", `Attachments for ${entry.title ?? "item"}`);
     const status = alert("");
     status.hidden = true;
     const showError = (problem: string) => {
@@ -946,14 +1159,14 @@ class VaultReader extends HTMLElement {
       );
     });
     form.append(itemField(["Choose attachment", input]), upload);
-    this.replaceChildren(
+    this.#showPanel([
       this.#toolbar(back),
       heading,
       ...(message ? [statusMessage(message)] : []),
       status,
       item.attachments.length ? list : create("p", "No attachments."),
       ...(entry.trashed ? [] : [form]),
-    );
+    ]);
   }
 
   #replaceAttachment(
@@ -981,11 +1194,14 @@ class VaultReader extends HTMLElement {
         const latest = current.entries.find(
           ({ item }) => item.id === entry.item.id,
         );
-        if (latest && latest.item.wrappedKey === entry.item.wrappedKey)
+        if (latest && latest.item.wrappedKey === entry.item.wrappedKey) {
+          this.#updateFilters();
+          this.#renderResults();
           this.#showAttachments(latest, key, message);
-        else this.#showList(message);
+        } else this.#showBrowse(message);
       },
       () => failed(problem),
+      { blockNavigation: true },
     );
   }
 
@@ -1001,15 +1217,15 @@ class VaultReader extends HTMLElement {
       );
       list.append(row);
     }
-    this.replaceChildren(
+    this.#showPanel([
       this.#toolbar(
-        this.#showList,
+        this.#showBrowse,
         action("New folder", () => this.#folderForm()),
       ),
-      create("h3", "Folders"),
+      create("h2", "Folders"),
       ...(message ? [statusMessage(message)] : []),
       list,
-    );
+    ]);
   }
 
   #folderForm(entry?: ListedFolder, deleting = false) {
@@ -1066,8 +1282,8 @@ class VaultReader extends HTMLElement {
         },
         (current) => {
           this.#vault = current;
-          if (deleting && this.#folderId === entry?.folder.id)
-            this.#folderId = undefined;
+          this.#updateFilters();
+          this.#renderResults();
           this.#showFolders(
             deleting
               ? "Folder deleted. Its items are still in your vault."
@@ -1080,6 +1296,7 @@ class VaultReader extends HTMLElement {
           status.hidden = false;
           status.textContent = failure;
         },
+        { blockNavigation: true },
       );
     });
     form.append(
@@ -1089,7 +1306,7 @@ class VaultReader extends HTMLElement {
       save,
       status,
     );
-    this.replaceChildren(this.#toolbar(back), create("h3", verb), form);
+    this.#showPanel([this.#toolbar(back), create("h2", verb), form]);
     (deleting ? save : input).focus();
   }
 
@@ -1104,10 +1321,10 @@ class VaultReader extends HTMLElement {
     const vault = this.#vault;
     if (!vault) return;
     const restoring = entry.trashed;
-    this.replaceChildren(
+    this.#showPanel([
       this.#toolbar(),
       statusMessage(restoring ? "Restoring item…" : "Moving item to Trash…"),
-    );
+    ]);
     let failure = restoring
       ? "Could not restore this item. Try again."
       : "Could not move this item to Trash. Try again.";
@@ -1151,6 +1368,7 @@ class VaultReader extends HTMLElement {
         );
       },
       () => this.#showDetails(entry, details, failure),
+      { blockNavigation: true },
     );
   }
 
@@ -1263,18 +1481,23 @@ class VaultReader extends HTMLElement {
   #showItemTypes() {
     this.#stopWork();
     const choices = create("ul");
-    for (const type of extraItemTypes) {
+    choices.className = "vault-item-types";
+    for (const type of allItemTypes) {
       const row = create("li");
       row.append(
-        action(itemTypes[type].label, () => this.#showDetailedForm(type)),
+        action(itemTypes[type].label, () => {
+          if (type === 1) this.#showLoginForm();
+          else if (type === 2) this.#showNoteForm();
+          else this.#showDetailedForm(type);
+        }),
       );
       choices.append(row);
     }
-    this.replaceChildren(
-      this.#toolbar(this.#showList),
-      create("h3", "New item"),
+    this.#showPanel([
+      this.#toolbar(this.#showBrowse),
+      create("h2", "New item"),
       choices,
-    );
+    ]);
   }
 
   #showDetailedForm(
@@ -1317,6 +1540,7 @@ class VaultReader extends HTMLElement {
   ) {
     const vault = this.#vault;
     if (!vault) return;
+    this.#stopWork();
     const form = create("form");
     form.method = "post";
     form.autocomplete = "off";
@@ -1384,15 +1608,19 @@ class VaultReader extends HTMLElement {
             if (latest) {
               this.#rememberItem(vault, latest);
               if (latest.trashed) this.#showTrash(`This ${item} is in Trash.`);
-              else this.#open(latest);
+              else {
+                this.#renderResults();
+                this.#open(latest);
+              }
             } else {
               vault.entries = vault.entries.filter(
                 ({ item }) => item.id !== edit.item.id,
               );
-              this.#showList(`This ${item} is no longer in your vault.`);
+              this.#showBrowse(`This ${item} is no longer in your vault.`);
             }
           },
           () => showError(failure),
+          { blockNavigation: true },
         );
       });
     form.append(
@@ -1465,18 +1693,24 @@ class VaultReader extends HTMLElement {
         (entry) => {
           form.reset();
           this.#rememberItem(vault, entry);
+          this.#renderResults();
           this.#open(entry);
         },
         () => showError(failure),
+        { blockNavigation: true },
       );
     });
-    this.replaceChildren(
-      this.#toolbar(() => {
-        form.reset();
-        this.#showList();
-      }),
-      create("h3", `${edit ? "Edit" : "New"} ${label}`),
-      form,
+    const cancel = action("Cancel", () => {
+      form.reset();
+      (edit?.cancel ?? this.#showBrowse)();
+    });
+    this.#showPanel(
+      [
+        this.#toolbar(undefined, cancel),
+        create("h2", `${edit ? "Edit" : "New"} ${label}`),
+        form,
+      ],
+      true,
     );
     title.focus();
   }
@@ -1484,15 +1718,16 @@ class VaultReader extends HTMLElement {
   #open(entry: ListedItem, error?: string) {
     const vault = this.#vault;
     if (!vault) return;
+    this.#stopWork();
+    this.#selectItem(entry.item.id);
     if (entry.title === null) {
       this.#showDetails(entry, null, "Could not read this item.");
       return;
     }
-    const back = this.#backFor(entry);
     const show = (password?: string) => {
       const status = create("p", "Opening item…");
       status.setAttribute("role", "status");
-      this.replaceChildren(this.#toolbar(back), status);
+      this.#showPanel([this.#toolbar(this.#showBrowse), status]);
       let failure = "Could not read this item.";
       void this.#run(
         async (signal) => {
@@ -1509,13 +1744,13 @@ class VaultReader extends HTMLElement {
       );
     };
     if (entry.item.requiresMasterPassword) {
-      this.replaceChildren(
-        this.#toolbar(back),
-        create("h3", entry.title),
+      this.#showPanel([
+        this.#toolbar(this.#showBrowse),
+        create("h2", entry.title),
         passwordForm("Open protected item", show),
         ...(error ? [alert(error)] : []),
-      );
-      this.querySelector("input")?.focus();
+      ]);
+      this.#workspace?.detail.querySelector("input")?.focus();
     } else if (error) {
       this.#showDetails(entry, null, error);
     } else {
@@ -1622,70 +1857,71 @@ class VaultReader extends HTMLElement {
       }
     }
     if (details?.notes != null) add("Notes", details.notes);
-    const titleNode = create("h3", title ?? "Unreadable item");
+    const titleNode = create("h2", title ?? "Unreadable item");
     titleNode.tabIndex = -1;
     let edit: HTMLButtonElement | undefined;
+    const cancel = () => this.#showDetails(entry, details);
     if (!trashed && title !== null && details) {
       if (item.type === 2)
         edit = action("Edit Secure Note", () =>
-          this.#showNoteForm({ item, title, notes: details.notes }),
+          this.#showNoteForm({ item, title, cancel, notes: details.notes }),
         );
       else if (item.type === 1 && login)
         edit = action("Edit Login", () =>
-          this.#showLoginForm({ item, title, login }),
+          this.#showLoginForm({ item, title, cancel, login }),
         );
       else
         edit = action(`Edit ${itemTypes[item.type].label}`, () =>
-          this.#showDetailedForm(item.type, { item, title, details }),
+          this.#showDetailedForm(item.type, { item, title, cancel, details }),
         );
     }
-    this.replaceChildren(
-      this.#toolbar(
-        this.#backFor(entry),
-        edit,
-        details && (!trashed || item.attachments.length > 0)
-          ? action("Attachments", () => {
-              const vault = this.#vault;
-              if (!vault) return;
-              void this.#run(
-                () => unwrapVaultKey(item.wrappedKey, vault.key, "both"),
-                (key) => this.#showAttachments(entry, key),
-                () =>
-                  this.#showDetails(
-                    entry,
-                    details,
-                    "Could not open attachments.",
-                  ),
-              );
-            })
-          : undefined,
-        !trashed && title !== null && details && item.type <= 2
-          ? action("Edit item fields", () =>
-              this.#showDetailedForm(item.type, { item, title, details }),
-            )
-          : undefined,
-        action(trashed ? "Restore" : "Move to Trash", () =>
-          this.#changeLifecycle(entry, details),
-        ),
-        trashed
-          ? action("Permanently delete", () =>
-              this.#startBulk("trash", [entry], "purge"),
-            )
-          : action(
-              item.archivedAt === null ? "Archive item" : "Unarchive item",
+    const more = menu(
+      "More actions",
+      details && (!trashed || item.attachments.length > 0)
+        ? action("Attachments", () => {
+            const vault = this.#vault;
+            if (!vault) return;
+            void this.#run(
+              () => unwrapVaultKey(item.wrappedKey, vault.key, "both"),
+              (key) => this.#showAttachments(entry, key),
               () =>
-                this.#startBulk(
-                  this.#viewFor(entry),
-                  [entry],
-                  item.archivedAt === null ? "archive" : "unarchive",
+                this.#showDetails(
+                  entry,
+                  details,
+                  "Could not open attachments.",
                 ),
-            ),
-        !trashed
-          ? action("Move to folder", () =>
-              this.#startBulk(this.#viewFor(entry), [entry], "move"),
-            )
-          : undefined,
+            );
+          })
+        : undefined,
+      !trashed && title !== null && details && item.type <= 2
+        ? action("Edit item fields", () =>
+            this.#showDetailedForm(item.type, { item, title, cancel, details }),
+          )
+        : undefined,
+      action(trashed ? "Restore" : "Move to Trash", () =>
+        this.#changeLifecycle(entry, details),
       ),
+      trashed
+        ? action("Permanently delete", () =>
+            this.#startBulk("trash", [entry], "purge"),
+          )
+        : action(
+            item.archivedAt === null ? "Archive item" : "Unarchive item",
+            () =>
+              this.#startBulk(
+                this.#viewFor(entry),
+                [entry],
+                item.archivedAt === null ? "archive" : "unarchive",
+              ),
+          ),
+      !trashed
+        ? action("Move to folder", () =>
+            this.#startBulk(this.#viewFor(entry), [entry], "move"),
+          )
+        : undefined,
+    );
+    this.#showPanel([
+      this.#toolbar(this.#showBrowse, edit, more),
       titleNode,
       ...(error ? [alert(error)] : []),
       ...(details
@@ -1695,8 +1931,8 @@ class VaultReader extends HTMLElement {
               : create("p", "This item has no details."),
           ]
         : []),
-    );
-    titleNode.focus();
+    ]);
+    if (this.#workspace?.detail === document.activeElement) titleNode.focus();
   }
 }
 

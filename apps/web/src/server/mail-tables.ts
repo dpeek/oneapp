@@ -1,4 +1,5 @@
 import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
 
 export const mailIndexMessages = sqliteTable(
   "mail_index_messages",
@@ -11,6 +12,8 @@ export const mailIndexMessages = sqliteTable(
     subject: text().notNull(),
     timestamp: integer().notNull(),
     deleted: integer().notNull().default(0),
+    unread: integer().notNull().default(0),
+    people: text(),
   },
   (table) => [
     index("mail_index_folder_date").on(
@@ -26,6 +29,9 @@ export const mailIndexMessages = sqliteTable(
       table.timestamp,
       table.id,
     ),
+    index("mail_index_unread")
+      .on(table.threadId)
+      .where(sql`folder = 'inbox' AND deleted = 0 AND unread = 1`),
   ],
 );
 

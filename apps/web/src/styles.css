@@ -61,6 +61,31 @@ body:has(.app-shell) {
   height: 1.375rem;
 }
 
+.inbox-unread-badge {
+  display: inline-grid;
+  place-items: center;
+  min-inline-size: 1.125rem;
+  min-block-size: 1.125rem;
+  box-sizing: border-box;
+  padding: 0.05rem 0.3rem;
+  border-radius: 1rem;
+  background: var(--accent);
+  color: light-dark(#fff, #1e2030);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.app-nav-link .inbox-unread-badge {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-end: 0;
+}
+
+.workspace-nav-list .inbox-unread-badge {
+  margin-inline-start: auto;
+}
+
 .app-nav-link:is(:hover, [aria-current="page"]) {
   background: var(--selected);
   color: var(--accent);
@@ -1079,6 +1104,21 @@ button {
   font-size: 0.875rem;
 }
 
+.inbox-message-row strong {
+  font-weight: 500;
+}
+
+.inbox-message-row.is-unread strong,
+.inbox-thread-summary.is-unread strong {
+  font-weight: 700;
+}
+
+.inbox-message-row.is-unread .inbox-message-counts,
+.inbox-thread-summary .inbox-thread-unread {
+  color: var(--accent);
+  font-weight: 650;
+}
+
 .inbox-toolbar {
   display: flex;
   align-items: center;
@@ -1091,9 +1131,38 @@ button {
 .inbox-toolbar-actions {
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 0.5rem;
-  margin-block-start: 0.75rem;
+  gap: 0.25rem;
+  margin-block-start: 0.5rem;
+}
+
+.inbox-toolbar-actions button {
+  padding: 0.25rem 0.45rem;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.inbox-toolbar-actions button:hover {
+  background: var(--selected);
+  color: var(--accent);
+}
+
+.inbox-conversation-heading {
+  margin-block-end: 1rem;
+  overflow-wrap: anywhere;
+}
+
+.inbox-conversation-heading h2 {
+  margin: 0;
+  font-size: 1.375rem;
+  line-height: 1.2;
+}
+
+.inbox-conversation-people {
+  margin: 0.375rem 0 0;
+  color: var(--muted);
+  font-size: 0.875rem;
 }
 
 .inbox-thread {
@@ -1110,20 +1179,24 @@ button {
   border-radius: 0.5rem;
 }
 
-.inbox-reader button.inbox-thread-summary {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.25rem 0.75rem;
+.inbox-reader .inbox-thread-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 0.625rem;
   inline-size: 100%;
+  box-sizing: border-box;
   border: 0;
   border-radius: 0.5rem;
   padding: 0.625rem 0.75rem;
-  background: var(--canvas);
+  background: transparent;
   text-align: start;
 }
 
 .inbox-thread-summary strong {
-  grid-column: 1 / -1;
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  font-size: 0.9375rem;
+  font-weight: 650;
 }
 
 .inbox-thread-summary :is(strong, span) {
@@ -1134,16 +1207,31 @@ button {
 
 .inbox-thread-summary :is(span, time) {
   color: var(--muted);
+  flex: none;
+  font-size: 0.75rem;
+  white-space: nowrap;
 }
 
-.inbox-thread-summary[aria-expanded="true"] {
-  border-end-start-radius: 0;
-  border-end-end-radius: 0;
+.inbox-reader button.inbox-thread-summary:hover {
+  background: var(--canvas);
+}
+
+.inbox-thread-summary[aria-expanded]::after {
+  content: "";
+  align-self: center;
+  inline-size: 0.375rem;
+  block-size: 0.375rem;
+  border-inline-end: 1px solid var(--muted);
+  border-block-end: 1px solid var(--muted);
+  transform: rotate(-45deg);
+}
+
+.inbox-thread-summary[aria-expanded="true"]::after {
+  transform: rotate(45deg);
 }
 
 .inbox-thread-content {
-  padding: 0.875rem;
-  border-block-start: 1px solid var(--border);
+  padding: 0 0.75rem 0.625rem;
 }
 
 .inbox-reader button.inbox-delete-button {
@@ -1226,37 +1314,40 @@ button {
   gap: 0.5rem;
 }
 
-.inbox-entry-header {
-  padding-block-end: 1.25rem;
-  border-block-end: 1px solid var(--border);
-}
-
-.inbox-entry-header h2 {
-  margin: 0 0 0.75rem;
-  line-height: 1.25;
-}
-
-.inbox-entry-header dl {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  gap: 0.25rem 0.75rem;
-  margin: 0;
-  font-size: 0.875rem;
-}
-
-.inbox-entry-header dt,
 .inbox-preview {
   color: var(--muted);
 }
 
-.inbox-entry-header dd {
-  margin: 0;
+.inbox-body {
+  display: grid;
+  gap: 0.75rem;
+  margin-block: 0.5rem 0.75rem;
+  line-height: 1.6;
 }
 
-.inbox-body {
-  margin-block: 1.5rem;
+.inbox-body-part,
+.inbox-quote blockquote {
   white-space: pre-wrap;
-  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.inbox-quote summary {
+  inline-size: fit-content;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.8125rem;
+}
+
+.inbox-quote:not([open]) .inbox-quote-open,
+.inbox-quote[open] .inbox-quote-closed {
+  display: none;
+}
+
+.inbox-quote blockquote {
+  margin: 0.375rem 0 0;
+  padding-inline-start: 0.75rem;
+  border-inline-start: 2px solid var(--border);
+  color: var(--muted);
 }
 
 .connected-clients {

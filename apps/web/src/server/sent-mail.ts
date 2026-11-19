@@ -2,6 +2,7 @@ import type { R2Bucket, R2Object, R2Objects } from "@cloudflare/workers-types";
 import { Effect, Schedule, Schema } from "effect";
 import { conversationMessageIds, outboundMessageId } from "./mail-reply.ts";
 import type { IndexedMail } from "./mail-index.ts";
+import { mailPeople } from "./mail-people.ts";
 import {
   InboxMessageId,
   SentMessageId,
@@ -43,6 +44,7 @@ export const describeSent = (record: SentRecord): IndexedMail => {
     subject,
     folder: "sent",
     timestamp: sentAt,
+    people: mailPeople(() => undefined, from, to),
     ...(reply ? { originalId: reply.originalId } : {}),
     messageIds: conversationMessageIds(
       (name) =>
@@ -122,5 +124,14 @@ export const readSent = async (bucket: R2Bucket, id: string) => {
     throw new Error("Could not read stored sent message");
   if (!record) return null;
   const { from, to, subject, sentAt, text } = record;
-  return { id, from, to, subject, sentAt, text, preview: "complete" as const };
+  return {
+    id,
+    from,
+    to,
+    subject,
+    sentAt,
+    text,
+    preview: "complete" as const,
+    people: mailPeople(() => undefined, from, to),
+  };
 };

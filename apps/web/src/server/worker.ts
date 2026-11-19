@@ -34,9 +34,11 @@ import {
   inboxRoutes,
   inboxSessionHeaders,
   inboxSubject,
+  notifyInbox,
   syncMailIndex,
 } from "./inbox.ts";
 import { indexMail } from "./mail-index.ts";
+import { mailPeople } from "./mail-people.ts";
 import { conversationMessageIds } from "./mail-reply.ts";
 import { linksRoutes } from "./links.ts";
 import { mcpRoutes } from "./mcp.ts";
@@ -92,6 +94,7 @@ export default {
         envelopeFrom: message.from,
         envelopeTo: message.to,
         subject,
+        initialUnread: "1",
       },
     });
     await indexMail(env.DB, {
@@ -101,17 +104,17 @@ export default {
       subject,
       from: message.from,
       to: message.to,
+      unread: true,
+      people: mailPeople(
+        (name) => message.headers.get(name),
+        message.from,
+        message.to,
+      ),
       messageIds: conversationMessageIds((name) => message.headers.get(name)),
     }).catch(() => console.warn("Could not index incoming email"));
-    if (env.INBOX_UPDATES) {
-      const notify = Promise.resolve()
-        .then(() => env.INBOX_UPDATES.getByName(ownerId).publish())
-        .catch(() => {
-          console.warn("Could not notify Inbox subscribers");
-        });
-      if (context) context.waitUntil(notify);
-      else await notify;
-    }
+    const notify = notifyInbox(env);
+    if (context) context.waitUntil(notify);
+    else await notify;
   },
   async scheduled(_event: unknown, env: WorkerEnv) {
     await Promise.all([

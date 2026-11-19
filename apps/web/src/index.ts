@@ -320,10 +320,7 @@ const subscriptions = Subscription.make<Model, Message>()((entry) => ({
     { active: Schema.Boolean },
     {
       modelToDependencies: (model) => ({
-        active:
-          model.account !== null &&
-          model.page === "inbox" &&
-          !isApproval(model),
+        active: model.account !== null && !isApproval(model),
       }),
       dependenciesToStream: ({ active }) =>
         active ? Inbox.changes.pipe(Stream.map(toInboxMessage)) : Stream.empty,
@@ -465,7 +462,13 @@ const update = (
         };
       if (account && cliLogin)
         return foldCliLogin(next, CliLogin.Message.Requested());
-      return loadPage(next);
+      const result = loadPage(next);
+      if (!account || isApproval(next)) return result;
+      const unread = foldInbox(result.model, Inbox.Message.RefreshedUnread());
+      return {
+        model: unread.model,
+        commands: [...(result.commands ?? []), ...(unread.commands ?? [])],
+      };
     },
     GotAccountSettingsMessage: ({ message }) => {
       const account = model.account;
@@ -699,7 +702,7 @@ const update = (
     GotVaultSetupMessage: ({ message }) => foldVaultSetup(model, message),
     GotInboxMessage: ({ message }) => {
       if (message._tag === "LiveChanged" && model.page !== "inbox")
-        return { model };
+        return foldInbox(model, Inbox.Message.RefreshedUnread());
       if (
         message._tag === "RequestedBack" &&
         model.account &&
@@ -721,6 +724,8 @@ const update = (
         (message.request === model.inbox.listRequest ||
           message.request === model.inbox.entryRequest ||
           message.request === model.inbox.threadRequest ||
+          message.request === model.inbox.unreadRequest ||
+          Object.values(model.inbox.readRequests).includes(message.request) ||
           message.request === model.inbox.compose.request ||
           message.request === deleting?.request)
       ) {
@@ -983,7 +988,7 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
     body: h.div(
       [h.Class("app-shell")],
       [
-        navigationView(model.page, h),
+        navigationView(model.page, model.inbox.unreadCount, h),
         h.main(
           [h.Class("page")],
           [

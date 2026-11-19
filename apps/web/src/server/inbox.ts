@@ -18,8 +18,11 @@ import {
   InboxEntry,
   InboxMessageId,
   InboxPage,
+  InboxReadUpdate,
   InboxSend,
   inboxSendPath,
+  InboxUnread,
+  inboxUnreadPath,
   type MailFolder,
   MailMessageId,
   SentEntry,
@@ -30,11 +33,14 @@ import { jsonError, privateHeaders } from "./api-response.ts";
 import { AppAuth, ownerId, type authHttp } from "./auth.ts";
 import {
   indexMail,
+  inboxMessageUnread,
   inboxThreadCursor,
+  inboxUnread,
   listInboxThreads,
   readThread,
   removeIndexedMail,
   scanMail,
+  setInboxUnread,
 } from "./mail-index.ts";
 import {
   conversationMessageIds,
@@ -42,6 +48,7 @@ import {
   replyHeaders,
   replyRecipient,
 } from "./mail-reply.ts";
+import { mailPeople } from "./mail-people.ts";
 import {
   describeSent,
   describeStoredSent,
@@ -58,9 +65,21 @@ type InboxEnv = Pick<
   | "INBOX_EMAIL_ADDRESS"
   | "INBOX_MESSAGES"
   | "INBOX_EMAIL_FROM"
+  | "INBOX_UPDATES"
   | "SENT_MESSAGES"
 > & { INBOX_SEND?: SendEmail; INBOX_SEND_LIMIT?: RateLimit };
 type InboxBucket = InboxEnv["INBOX_MESSAGES"];
+
+export const notifyInbox = async ({
+  INBOX_UPDATES,
+}: Pick<WorkerEnv, "INBOX_UPDATES">) => {
+  if (!INBOX_UPDATES) return;
+  try {
+    await INBOX_UPDATES.getByName(ownerId).publish();
+  } catch {
+    console.warn("Could not notify Inbox subscribers");
+  }
+};
 
 export const inboxSessionHeaders = {
   id: "x-oneapp-inbox-session-id",
@@ -88,6 +107,8 @@ const htmlToText = compile({
   wordwrap: false,
   limits: { maxDepth: 48 },
   selectors: [
+    { selector: ".gmail_quote", format: "blockquote" },
+    { selector: ".yahoo_quoted", format: "blockquote" },
     { selector: "img", format: "skip" },
     { selector: "a", options: { hideLinkHrefIfSameAsText: true } },
     { selector: "script", format: "skip" },
@@ -154,12 +175,17 @@ const describeStoredInbox = async (bucket: InboxBucket, object: R2Object) => {
   );
   if (!headers) return null;
   const { email } = headers;
+  const from =
+    object.customMetadata?.envelopeFrom ?? email?.from?.address ?? "";
+  const to = object.customMetadata?.envelopeTo ?? "";
   return {
     id: object.key,
     folder: "inbox" as const,
     timestamp: object.uploaded.getTime(),
-    from: object.customMetadata?.envelopeFrom ?? email?.from?.address ?? "",
-    to: object.customMetadata?.envelopeTo ?? "",
+    unread: object.customMetadata?.initialUnread === "1",
+    from,
+    to,
+    people: describePeople(email, from, to),
     subject:
       object.customMetadata?.subject ??
       email?.subject?.trim().slice(0, 200) ??
@@ -169,6 +195,17 @@ const describeStoredInbox = async (bucket: InboxBucket, object: R2Object) => {
     ),
   };
 };
+
+const describePeople = (email: Email | null, from: string, to: string) =>
+  mailPeople(
+    (name) =>
+      email?.headers
+        .filter(({ key }) => key === name)
+        .map(({ value }) => value)
+        .join(", "),
+    from,
+    to,
+  );
 
 export const syncMailIndex = async (env: InboxEnv, reconcile = false) => {
   const inbox = await scanMail(
@@ -245,6 +282,9 @@ const readMessage = async (
   const bucket = env.INBOX_MESSAGES;
   const object = await bucket.get(id);
   if (!object) return null;
+  const unread =
+    (await inboxMessageUnread(env.DB, id)) ??
+    object.customMetadata?.initialUnread === "1";
   const to = object.customMetadata?.envelopeTo ?? env.INBOX_EMAIL_ADDRESS ?? "";
   const envelopeFrom = object.customMetadata?.envelopeFrom ?? "";
   const fallback = async (preview: "tooLarge" | "unreadable") => {
@@ -257,7 +297,9 @@ const readMessage = async (
     return {
       ...summary(object, subject),
       ...replyInfo(headers?.email ?? null, envelopeFrom),
+      people: describePeople(headers?.email ?? null, envelopeFrom, to),
       to,
+      unread,
       text: "",
       preview,
     };
@@ -278,12 +320,14 @@ const readMessage = async (
     return {
       ...summary(object, email.subject?.trim().slice(0, 200) ?? ""),
       ...replyInfo(email, envelopeFrom),
+      people: describePeople(email, envelopeFrom, to),
       from: from
         ? email.from?.name
           ? `${email.from.name} <${from}>`
           : from
         : envelopeFrom,
       to,
+      unread,
       text: text.slice(0, textLimit),
       preview:
         html.length > htmlLimit || text.length > textLimit
@@ -532,6 +576,7 @@ export const inboxRoutes = (
       if (!validId(id)) return yield* notFound();
       yield* Effect.tryPromise(() => bucket.delete(id));
       yield* Effect.tryPromise(() => removeIndexedMail(env.DB, folder, id));
+      if (folder === "inbox") yield* Effect.sync(() => defer(notifyInbox(env)));
       return HttpServerResponse.empty({ status: 204, headers: privateHeaders });
     });
     return Effect.gen(function* () {
@@ -548,6 +593,34 @@ export const inboxRoutes = (
     );
   };
 
+  const updateReadStatus = Effect.gen(function* () {
+    const { id } = yield* HttpRouter.params;
+    if (!isInboxMessageId(id)) return yield* notFound();
+    const body = yield* HttpServerRequest.schemaBodyJson(InboxReadUpdate, {
+      onExcessProperty: "error",
+    }).pipe(
+      Effect.provideService(
+        HttpServerRequest.MaxBodySize,
+        ByteSize.kibibytes(1),
+      ),
+      Effect.option,
+    );
+    if (body._tag === "None")
+      return yield* jsonError(400, "Invalid read status");
+    const { unread } = body.value;
+    const result = yield* Effect.tryPromise(async () => {
+      const updated = await setInboxUnread(env.DB, id, unread);
+      if (updated !== "missing") return updated;
+      const thread = await loadConversation(env, id);
+      return thread.messages.some((message) => message.id === id)
+        ? setInboxUnread(env.DB, id, unread)
+        : "missing";
+    });
+    if (result === "missing") return yield* notFound();
+    if (result === "changed") yield* Effect.sync(() => defer(notifyInbox(env)));
+    return HttpServerResponse.empty({ status: 204, headers: privateHeaders });
+  });
+
   const folderRoutes = (folder: MailFolder) => {
     const path = folderApiPath(folder);
     return Layer.mergeAll(
@@ -560,6 +633,34 @@ export const inboxRoutes = (
   return Layer.mergeAll(
     folderRoutes("inbox"),
     folderRoutes("sent"),
+    HttpRouter.add(
+      "GET",
+      inboxUnreadPath,
+      Effect.gen(function* () {
+        if (!(yield* requireInboxOwner))
+          return yield* jsonError(403, "Access denied");
+        const unread = yield* Effect.tryPromise(() => inboxUnread(env.DB));
+        return yield* HttpServerResponse.schemaJson(InboxUnread)(unread, {
+          headers: privateHeaders,
+        });
+      }).pipe(Effect.catchTags(inboxErrors)),
+    ),
+    HttpRouter.add(
+      "PATCH",
+      `${inboxApiPath}/:id/read`,
+      Effect.gen(function* () {
+        if (!(yield* requireInboxOwner))
+          return yield* jsonError(403, "Access denied");
+        return yield* http.protect(updateReadStatus);
+      }).pipe(
+        Effect.catchTags({
+          ...inboxErrors,
+          HookDenied: () => jsonError(403, "Request not allowed"),
+          UnknownError: () =>
+            jsonError(503, "Could not update read status. Try again."),
+        }),
+      ),
+    ),
     HttpRouter.add(
       "GET",
       conversationsApiPath,

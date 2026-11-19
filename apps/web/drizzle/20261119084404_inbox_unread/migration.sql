@@ -1,0 +1,2 @@
+ALTER TABLE `mail_index_messages` ADD `unread` integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+CREATE INDEX `mail_index_unread` ON `mail_index_messages` (`thread_id`) WHERE folder = 'inbox' AND deleted = 0 AND unread = 1;

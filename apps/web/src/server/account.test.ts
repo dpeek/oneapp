@@ -29,7 +29,9 @@ import {
   inboxEventsPath,
   inboxMessageApi,
   inboxOriginalApi,
+  inboxReadApi,
   inboxSendPath,
+  inboxUnreadPath,
   mailMessageApi,
   sentApiPath,
   sentCopyHeader,
@@ -145,6 +147,7 @@ const setup = async (
     },
     DB: {
       prepare: (sql: string) => ({
+        ...bind(sql, []),
         bind: (...params: SQLQueryBindings[]) => bind(sql, params),
       }),
       batch: async (statements: ReturnType<typeof bind>[]) =>
@@ -365,6 +368,13 @@ it("lets only the owner send plain-text mail from the configured Inbox address",
   ).toBe(404);
   expect(await (await call(detail, undefined, session)).json()).toEqual({
     ...entrySummary,
+    people: {
+      sender: { address: from, name: "" },
+      members: [
+        { address: from, name: "" },
+        { address: "Alice+Details@Example.NET", name: "" },
+      ],
+    },
     text: draft.text,
     preview: "complete",
   });
@@ -554,10 +564,15 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
   using sqlite = new Database(":memory:");
   const address = "mail@app.example.net";
   const subject = "Status update";
-  const makeInbox = (number: number, timestamp: number, headers: string[]) => {
+  const makeInbox = (
+    number: number,
+    timestamp: number,
+    headers: string[],
+    unread = false,
+  ) => {
     const key = `0-819999999999${number}-00000000-0000-4000-8000-000000000000.eml`;
     const raw = [
-      "From: sender@example.net",
+      "From: Project Lead <sender@example.net>",
       `Subject: ${subject}`,
       ...headers,
       "",
@@ -572,16 +587,26 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
         envelopeFrom: "sender@example.net",
         envelopeTo: address,
         subject,
+        ...(unread ? { initialUnread: "1" } : {}),
       },
     };
   };
-  const root = makeInbox(0, 1000, ["Message-ID: <a@example.net>"]);
+  const root = makeInbox(0, 1000, [
+    "Message-ID: <a@example.net>",
+    `To: ${address}, Customer <customer@example.net>`,
+    "Cc: Reviewer <reviewer@example.net>, REVIEWER@example.net",
+  ]);
   const branch = makeInbox(1, 2000, ["Message-ID: <b@example.net>"]);
-  const latest = makeInbox(2, 4000, ["In-Reply-To: <b@example.net>"]);
+  const latest = makeInbox(2, 4000, ["In-Reply-To: <b@example.net>"], true);
   const bridge = makeInbox(3, 3000, [
     "References: <a@example.net> <b@example.net>",
   ]);
-  const separate = makeInbox(4, 5000, ["Message-ID: <separate@example.net>"]);
+  const separate = makeInbox(
+    4,
+    5000,
+    ["Message-ID: <separate@example.net>"],
+    true,
+  );
   const objects = new Map(
     [root, branch, latest, bridge, separate].map((item) => [item.key, item]),
   );
@@ -596,8 +621,12 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
     providerMessageId: "<sent@example.net>",
     reply: { originalId: root.key },
   };
+  const publish = vi.fn(async () => {});
   const { call, request, signIn, cookies } = await setup(sqlite, {
     INBOX_EMAIL_ADDRESS: address,
+    INBOX_UPDATES: {
+      getByName: () => ({ publish }),
+    } as WorkerEnv["INBOX_UPDATES"],
     INBOX_MESSAGES: {
       list: async ({ cursor }: { cursor?: string }) =>
         cursor
@@ -609,8 +638,16 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
             },
       get: async (id: string) => {
         const item = objects.get(id);
-        return item ? { ...item, text: async () => item.raw } : null;
+        return item
+          ? {
+              ...item,
+              text: async () => item.raw,
+              arrayBuffer: async () =>
+                new TextEncoder().encode(item.raw).buffer,
+            }
+          : null;
       },
+      head: async (id: string) => objects.get(id) ?? null,
       delete: async (id: string) => void objects.delete(id),
     } as unknown as WorkerEnv["INBOX_MESSAGES"],
     SENT_MESSAGES: {
@@ -620,6 +657,7 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
   });
   expect((await call(conversationsApiPath)).status).toBe(401);
   expect((await call(conversationApi(root.key))).status).toBe(401);
+  expect((await call(inboxUnreadPath)).status).toBe(401);
   const session = cookies(await signIn(password));
   const get = async (path: string) => {
     const result = await call(path, undefined, session);
@@ -635,8 +673,8 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
   });
   expect(await get(conversationsApiPath)).toMatchObject({
     messages: [
-      { id: separate.key, messageCount: 1 },
-      { id: latest.key, messageCount: 5 },
+      { id: separate.key, messageCount: 1, unreadCount: 1 },
+      { id: latest.key, messageCount: 5, unreadCount: 1 },
     ],
   });
   const expected = [root.key, branch.key, sentId, bridge.key, latest.key];
@@ -645,11 +683,53 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
     expect(thread.messages.map(({ id }: { id: string }) => id)).toEqual(
       expected,
     );
+    expect(thread.messages[0].people).toEqual({
+      sender: { address: "sender@example.net", name: "Project Lead" },
+      members: [
+        { address: "sender@example.net", name: "Project Lead" },
+        { address, name: "" },
+        { address: "customer@example.net", name: "Customer" },
+        { address: "reviewer@example.net", name: "Reviewer" },
+      ],
+    });
   }
   const qs = new URLSearchParams({ cursor: `5000/${separate.key}` });
   expect(await get(`${conversationsApiPath}?${qs}`)).toMatchObject({
     messages: [{ id: latest.key, messageCount: 5 }],
   });
+  expect(await get(inboxMessageApi(root.key))).toMatchObject({ unread: false });
+  expect(await get(inboxMessageApi(latest.key))).toMatchObject({
+    unread: true,
+  });
+  expect(await get(inboxUnreadPath)).toEqual({ unreadCount: 2 });
+  const mark = (
+    id: string,
+    unread: boolean,
+    headers: Record<string, string> = {},
+  ) =>
+    request(inboxReadApi(id), {
+      method: "PATCH",
+      headers: {
+        origin: "https://oneapp.example",
+        "content-type": "application/json",
+        ...headers,
+      },
+      body: JSON.stringify({ unread }),
+    });
+  const approved = { cookie: session, "x-effect-auth-csrf": "1" };
+  expect((await mark(latest.key, false)).status).toBe(401);
+  expect((await mark(latest.key, false, { cookie: session })).status).toBe(403);
+  expect((await mark(sentId, true, approved)).status).toBe(404);
+  expect((await mark(latest.key, false, approved)).status).toBe(204);
+  expect((await mark(latest.key, false, approved)).status).toBe(204);
+  expect(publish).toHaveBeenCalledOnce();
+  expect(await get(inboxUnreadPath)).toEqual({ unreadCount: 1 });
+  const readThread = await get(conversationApi(root.key));
+  expect(
+    readThread.messages.every(({ unread }: { unread: boolean }) => !unread),
+  ).toBe(true);
+  expect((await mark(latest.key, true, approved)).status).toBe(204);
+  expect(await get(inboxUnreadPath)).toEqual({ unreadCount: 2 });
   const removed = await request(inboxMessageApi(latest.key), {
     method: "DELETE",
     headers: {
@@ -659,6 +739,9 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
     },
   });
   expect(removed.status).toBe(204);
+  expect(await get(inboxUnreadPath)).toEqual({ unreadCount: 1 });
+  expect((await mark(latest.key, true, approved)).status).toBe(404);
+  expect(publish).toHaveBeenCalledTimes(3);
   expect(await get(conversationsApiPath)).toMatchObject({
     messages: [
       { id: separate.key, messageCount: 1 },

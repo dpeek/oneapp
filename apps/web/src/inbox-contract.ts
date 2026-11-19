@@ -7,6 +7,7 @@ export const inboxEventsPath = `${inboxApiPath}/events`;
 export const conversationsApiPath = `${inboxApiPath}/conversations`;
 export const conversationApi = (id: string) => `${conversationsApiPath}/${id}`;
 export const inboxSendPath = `${inboxApiPath}/send`;
+export const inboxUnreadPath = `${inboxApiPath}/unread`;
 export const sentCopyHeader = "x-oneapp-sent-copy";
 export const sentPath = `${inboxPath}/sent`;
 export const sentApiPath = `${inboxApiPath}/sent`;
@@ -24,6 +25,9 @@ export const mailMessageApi = (folder: MailFolder, id: string) =>
 export const inboxMessageApi = (id: string) => `${inboxApiPath}/${id}`;
 export const inboxOriginalApi = (id: string) =>
   `${inboxMessageApi(id)}/original`;
+export const inboxReadApi = (id: string) => `${inboxMessageApi(id)}/read`;
+export const InboxUnread = Schema.Struct({ unreadCount: Schema.Number });
+export const InboxReadUpdate = Schema.Struct({ unread: Schema.Boolean });
 
 // Accept both the current reverse-timestamp keys and the original ISO keys.
 export const InboxMessageId = Schema.String.check(
@@ -47,6 +51,7 @@ export const InboxSummary = Schema.Struct({
   id: InboxMessageId,
   receivedAt: Schema.Number,
   messageCount: Schema.optionalKey(Schema.Number),
+  unreadCount: Schema.optionalKey(Schema.Number),
 });
 
 export const SentSummary = Schema.Struct({
@@ -103,8 +108,20 @@ export const InboxSend = Schema.Struct({
   replyToId: Schema.optionalKey(InboxMessageId),
 });
 
+export const MailPerson = Schema.Struct({
+  address: Schema.String,
+  name: Schema.String,
+});
+export type MailPerson = typeof MailPerson.Type;
+export const MailPeople = Schema.Struct({
+  sender: Schema.NullOr(MailPerson),
+  members: Schema.Array(MailPerson),
+});
+export type MailPeople = typeof MailPeople.Type;
+
 const previewFields = {
   text: Schema.String,
+  people: Schema.optionalKey(MailPeople),
   preview: Schema.Literals(["complete", "truncated", "tooLarge", "unreadable"]),
 };
 
@@ -112,6 +129,7 @@ export const InboxEntry = Schema.Struct({
   ...InboxSummary.fields,
   ...previewFields,
   to: Schema.String,
+  unread: Schema.optionalKey(Schema.Boolean),
   reply: Schema.optionalKey(
     Schema.Struct({
       to: Schema.String,
@@ -132,6 +150,8 @@ export const ConversationMessage = Schema.Struct({
   folder: MailFolder,
   to: Schema.String,
   timestamp: Schema.Number,
+  unread: Schema.optionalKey(Schema.Boolean),
+  people: Schema.optionalKey(MailPeople),
 });
 export type ConversationMessage = typeof ConversationMessage.Type;
 export const Conversation = Schema.Struct({

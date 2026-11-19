@@ -2,9 +2,11 @@ import type { D1Database, R2Bucket, R2Object } from "@cloudflare/workers-types";
 import { Schema } from "effect";
 import {
   InboxMessageId,
+  MailPeople,
   type ConversationMessage,
   type MailFolder,
 } from "../inbox-contract.ts";
+import { mailPeople } from "./mail-people.ts";
 
 export type IndexedMail = ConversationMessage & {
   messageIds: readonly string[];
@@ -26,8 +28,18 @@ const threadsToMerge = `WITH matched AS MATERIALIZED (${matchingThreads}),
   target AS (SELECT min(thread_id) FROM matched)`;
 
 const indexStatements = async (db: D1Database, mail: IndexedMail) => {
-  const { id, folder, from, to, subject, timestamp, messageIds, originalId } =
-    mail;
+  const {
+    id,
+    folder,
+    from,
+    to,
+    subject,
+    timestamp,
+    messageIds,
+    originalId,
+    unread,
+    people,
+  } = mail;
   const aliases = JSON.stringify([
     localIdentity(id),
     ...(originalId ? [localIdentity(originalId)] : []),
@@ -65,11 +77,23 @@ const indexStatements = async (db: D1Database, mail: IndexedMail) => {
     db
       .prepare(
         `
-      INSERT OR IGNORE INTO mail_index_messages (id, thread_id, folder, sender, recipient, subject, timestamp)
-      VALUES (?1, (SELECT thread_id FROM mail_index_keys WHERE identity = ?2), ?3, ?4, ?5, ?6, ?7)
+      INSERT INTO mail_index_messages (id, thread_id, folder, sender, recipient, subject, timestamp, unread, people)
+      VALUES (?1, (SELECT thread_id FROM mail_index_keys WHERE identity = ?2), ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+      ON CONFLICT(id) DO UPDATE SET people = excluded.people
+      WHERE mail_index_messages.people IS NULL AND mail_index_messages.deleted = 0
     `,
       )
-      .bind(id, localIdentity(id), folder, from, to, subject, timestamp),
+      .bind(
+        id,
+        localIdentity(id),
+        folder,
+        from,
+        to,
+        subject,
+        timestamp,
+        folder === "inbox" && unread ? 1 : 0,
+        people ? JSON.stringify(people) : null,
+      ),
   ];
 };
 
@@ -88,7 +112,7 @@ export const removeIndexedMail = async (
       `
     INSERT INTO mail_index_messages (id, thread_id, folder, sender, recipient, subject, timestamp, deleted)
     VALUES (?1, ?1, ?2, '', '', '', 0, 1)
-    ON CONFLICT(id) DO UPDATE SET sender = '', recipient = '', subject = '', timestamp = 0, deleted = 1
+    ON CONFLICT(id) DO UPDATE SET sender = '', recipient = '', subject = '', timestamp = 0, deleted = 1, unread = 0, people = NULL
   `,
     )
     .bind(id, folder)
@@ -98,6 +122,50 @@ export const removeIndexedMail = async (
 const isInboxId = Schema.is(InboxMessageId);
 const pageSize = 20;
 const scanSize = 12;
+
+export const inboxUnread = async (db: D1Database) => {
+  const row = await db
+    .prepare(
+      `
+    SELECT count(*) AS unreadCount FROM mail_index_messages
+    WHERE folder = 'inbox' AND deleted = 0 AND unread = 1
+  `,
+    )
+    .first<{ unreadCount: number }>();
+  return { unreadCount: row?.unreadCount ?? 0 };
+};
+
+export const inboxMessageUnread = async (db: D1Database, id: string) => {
+  const row = await db
+    .prepare(
+      `
+    SELECT unread FROM mail_index_messages
+    WHERE id = ? AND folder = 'inbox' AND deleted = 0
+  `,
+    )
+    .bind(id)
+    .first<{ unread: number }>();
+  return row ? row.unread === 1 : null;
+};
+
+export const setInboxUnread = async (
+  db: D1Database,
+  id: string,
+  unread: boolean,
+) => {
+  const updated = await db
+    .prepare(
+      `
+    UPDATE mail_index_messages SET unread = ?2
+    WHERE id = ?1 AND folder = 'inbox' AND deleted = 0 AND unread <> ?2
+    RETURNING id
+  `,
+    )
+    .bind(id, unread ? 1 : 0)
+    .first<{ id: string }>();
+  if (updated) return "changed";
+  return (await inboxMessageUnread(db, id)) === null ? "missing" : "unchanged";
+};
 
 export const inboxThreadCursor = (cursor: string | undefined) => {
   if (cursor === undefined) return { timestamp: null, id: "" };
@@ -120,7 +188,10 @@ export const listInboxThreads = async (
       `
     SELECT m.id, m.sender AS "from", m.subject, m.timestamp AS receivedAt,
            (SELECT count(*) FROM mail_index_messages member
-            WHERE member.thread_id = m.thread_id AND member.deleted = 0) AS messageCount
+            WHERE member.thread_id = m.thread_id AND member.deleted = 0) AS messageCount,
+           (SELECT count(*) FROM mail_index_messages member
+            WHERE member.thread_id = m.thread_id AND member.folder = 'inbox'
+              AND member.deleted = 0 AND member.unread = 1) AS unreadCount
     FROM mail_index_messages m
     WHERE m.folder = 'inbox' AND m.deleted = 0
       AND (?1 IS NULL OR (m.timestamp, m.id) < (?1, ?2))
@@ -139,6 +210,7 @@ export const listInboxThreads = async (
       subject: string;
       receivedAt: number;
       messageCount: number;
+      unreadCount: number;
     }>();
   const messages = results.slice(0, pageSize);
   const last = messages.at(-1);
@@ -151,11 +223,15 @@ export const listInboxThreads = async (
   };
 };
 
+const decodePeople = Schema.decodeUnknownOption(
+  Schema.fromJsonString(MailPeople),
+);
+
 export const readThread = async (db: D1Database, id: string) => {
   const { results } = await db
     .prepare(
       `
-    SELECT id, folder, sender AS "from", recipient AS "to", subject, timestamp
+    SELECT id, folder, sender AS "from", recipient AS "to", subject, timestamp, unread, people
     FROM mail_index_messages
     WHERE thread_id = (SELECT thread_id FROM mail_index_keys WHERE identity = ?)
       AND deleted = 0
@@ -163,8 +239,25 @@ export const readThread = async (db: D1Database, id: string) => {
   `,
     )
     .bind(localIdentity(id))
-    .all<ConversationMessage>();
-  return { messages: results };
+    .all<
+      Omit<ConversationMessage, "unread" | "people"> & {
+        unread: number;
+        people: string | null;
+      }
+    >();
+  return {
+    messages: results.map(({ unread, people, ...message }) => {
+      const decoded = decodePeople(people);
+      return {
+        ...message,
+        unread: unread === 1,
+        people:
+          decoded._tag === "Some"
+            ? decoded.value
+            : mailPeople(() => undefined, message.from, message.to),
+      };
+    }),
+  };
 };
 
 export const scanMail = async (
@@ -174,11 +267,13 @@ export const scanMail = async (
   describe: (object: R2Object) => Promise<IndexedMail | null>,
   reconcile: boolean,
 ) => {
+  // This scan also enriches rows created before message participants were indexed.
+  const scanId = `${folder}:people`;
   const state = await db
     .prepare(
       "SELECT cursor, scanned_at AS scannedAt, ready FROM mail_index_scans WHERE folder = ?",
     )
-    .bind(folder)
+    .bind(scanId)
     .first<{ cursor: string | null; scannedAt: number; ready: number }>();
   if (state?.ready && !reconcile) return false;
   const page = await bucket.list({
@@ -189,7 +284,7 @@ export const scanMail = async (
   if (page.objects.length) {
     const { results } = await db
       .prepare(
-        "SELECT id FROM mail_index_messages WHERE id IN (SELECT value FROM json_each(?))",
+        "SELECT id FROM mail_index_messages WHERE (deleted = 1 OR people IS NOT NULL) AND id IN (SELECT value FROM json_each(?))",
       )
       .bind(JSON.stringify(page.objects.map(({ key }) => key)))
       .all<{ id: string }>();
@@ -218,7 +313,7 @@ export const scanMail = async (
   `,
     )
     .bind(
-      folder,
+      scanId,
       page.truncated ? page.cursor : null,
       Date.now(),
       state?.ready || !page.truncated ? 1 : 0,

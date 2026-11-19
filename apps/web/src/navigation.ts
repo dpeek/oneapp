@@ -35,18 +35,28 @@ const destinations = [
   },
 ] as const;
 
+export const unreadBadge = <Message>(h: HtmlBuilder<Message>, count: number) =>
+  h.span(
+    [h.Class("inbox-unread-badge"), h.AriaHidden(true)],
+    [count > 99 ? "99+" : String(count)],
+  );
+
 export const navigationView = <Message>(
   page: (typeof destinations)[number]["page"],
+  unreadCount: number,
   h: HtmlBuilder<Message>,
 ) =>
   h.nav(
     [h.Class("app-nav"), h.AriaLabel("Main navigation")],
-    destinations.map((destination) =>
-      h.a(
+    destinations.map((destination) => {
+      const count = destination.page === "inbox" ? unreadCount : 0;
+      return h.a(
         [
           h.Class("app-nav-link"),
           h.Href(`/${destination.page}`),
-          h.AriaLabel(destination.label),
+          h.AriaLabel(
+            count ? `${destination.label}, ${count} unread` : destination.label,
+          ),
           ...(page === destination.page ? [h.AriaCurrent("page")] : []),
         ],
         [
@@ -62,11 +72,12 @@ export const navigationView = <Message>(
             ],
             destination.paths.map((path) => h.path([h.D(path)], [])),
           ),
+          ...(count ? [unreadBadge(h, count)] : []),
           h.span(
             [h.Class("app-nav-tooltip"), h.AriaHidden(true)],
             [destination.label],
           ),
         ],
-      ),
-    ),
+      );
+    }),
   );

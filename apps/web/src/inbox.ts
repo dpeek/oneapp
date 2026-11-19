@@ -5,7 +5,14 @@ import { defineMessageUnion } from "foldkit/message";
 import * as Mount from "foldkit/mount";
 import * as Compose from "./inbox-compose.ts";
 import {
+  compactMailTime,
+  conversationPeople,
+  conversationSubject,
+  splitMailQuote,
+} from "./inbox-display.ts";
+import {
   Conversation,
+  type ConversationMessage,
   conversationApi,
   conversationsApiPath,
   folderApiPath,
@@ -17,10 +24,14 @@ import {
   InboxMessageId,
   InboxPage,
   inboxPath,
+  inboxReadApi,
+  InboxUnread,
+  inboxUnreadPath,
   MailEntry,
   MailFolder,
   MailMessageId,
   MailPage,
+  type MailPerson,
   mailMessageApi,
   mailMessagePage,
   SentEntry,
@@ -28,6 +39,7 @@ import {
   SentPage,
   sentPath,
 } from "./inbox-contract.ts";
+import { unreadBadge } from "./navigation.ts";
 
 const MessageLocation = Schema.Struct({
   folder: MailFolder,
@@ -62,6 +74,11 @@ export const Model = Schema.Struct({
   listRequest: Schema.NullOr(Schema.String),
   listRefreshQueued: Schema.Boolean,
   listError: Schema.NullOr(Schema.String),
+  unreadCount: Schema.Number,
+  unreadRequest: Schema.NullOr(Schema.String),
+  unreadRefreshQueued: Schema.Boolean,
+  readRequests: Schema.Record(Schema.String, Schema.String),
+  readFailed: Schema.NullOr(InboxMessageId),
   selected: Schema.NullOr(MailMessageId),
   active: Schema.NullOr(MessageLocation),
   thread: Schema.NullOr(Conversation),
@@ -90,6 +107,11 @@ export const initial: Model = {
   listRequest: null,
   listRefreshQueued: false,
   listError: null,
+  unreadCount: 0,
+  unreadRequest: null,
+  unreadRefreshQueued: false,
+  readRequests: {},
+  readFailed: null,
   selected: null,
   active: null,
   thread: null,
@@ -108,11 +130,13 @@ export const initial: Model = {
 export const Message = defineMessageUnion({
   Opened: MailRoute.fields,
   Refreshed: {},
+  RefreshedUnread: {},
   GotComposeMessage: { message: Compose.Message },
   LiveChanged: {},
   RequestedMore: {},
   RetriedEntry: {},
   RetriedThread: {},
+  ToggledUnread: {},
   ToggledMessage: MessageLocation.fields,
   RequestedBack: {},
   RequestedReply: {},
@@ -127,6 +151,14 @@ export const Message = defineMessageUnion({
     append: Schema.Boolean,
   },
   ListFailed: { request: Schema.String },
+  LoadedUnread: { request: Schema.String, ...InboxUnread.fields },
+  UnreadFailed: { request: Schema.String },
+  UpdatedReadStatus: {
+    request: Schema.String,
+    id: InboxMessageId,
+    unread: Schema.Boolean,
+  },
+  ReadStatusFailed: { request: Schema.String, id: InboxMessageId },
   LoadedThread: { request: Schema.String, thread: Conversation },
   ThreadFailed: { request: Schema.String },
   LoadedEntry: { request: Schema.String, entry: MailEntry },
@@ -215,28 +247,92 @@ const LoadList = Command.define("LoadInboxList", {
     request: Schema.String,
     cursor: Schema.NullOr(Schema.String),
     folder: MailFolder,
+    minimum: Schema.Number,
   },
   messages: [Message.LoadedList, Message.ListFailed, Message.SessionExpired],
-  execute: ({ request, cursor, folder }) =>
+  execute: ({ request, cursor, folder, minimum }) =>
     Effect.tryPromise(async (signal) => {
-      const query =
-        cursor === null ? "" : `?${new URLSearchParams({ cursor })}`;
       const path =
         folder === "inbox" ? conversationsApiPath : folderApiPath(folder);
-      const response = await fetch(path + query, {
+      let nextCursor = cursor;
+      let page: typeof MailPage.Type | null = null;
+      do {
+        const query =
+          nextCursor === null
+            ? ""
+            : "?" + new URLSearchParams({ cursor: nextCursor });
+        const response = await fetch(path + query, {
+          cache: "no-store",
+          signal,
+        });
+        if (response.status === 401) return Message.SessionExpired({ request });
+        if (!response.ok) return Message.ListFailed({ request });
+        const payload = await response.json();
+        const next =
+          folder === "sent"
+            ? Schema.decodeUnknownSync(SentPage)(payload)
+            : Schema.decodeUnknownSync(InboxPage)(payload);
+        page = page
+          ? { ...next, messages: [...page.messages, ...next.messages] }
+          : next;
+        nextCursor = page.cursor;
+      } while (nextCursor && !page.indexing && page.messages.length < minimum);
+      return Message.LoadedList({ request, page, append: cursor !== null });
+    }).pipe(
+      Effect.catch(() => Effect.succeed(Message.ListFailed({ request }))),
+    ),
+});
+
+const LoadUnread = Command.define("LoadInboxUnread", {
+  args: { request: Schema.String },
+  messages: [
+    Message.LoadedUnread,
+    Message.UnreadFailed,
+    Message.SessionExpired,
+  ],
+  execute: ({ request }) =>
+    Effect.tryPromise(async (signal) => {
+      const response = await fetch(inboxUnreadPath, {
         cache: "no-store",
         signal,
       });
       if (response.status === 401) return Message.SessionExpired({ request });
-      if (!response.ok) return Message.ListFailed({ request });
-      const payload = await response.json();
-      const page =
-        folder === "sent"
-          ? Schema.decodeUnknownSync(SentPage)(payload)
-          : Schema.decodeUnknownSync(InboxPage)(payload);
-      return Message.LoadedList({ request, page, append: cursor !== null });
+      if (!response.ok) return Message.UnreadFailed({ request });
+      const status = Schema.decodeUnknownSync(InboxUnread)(
+        await response.json(),
+      );
+      return Message.LoadedUnread({ request, ...status });
     }).pipe(
-      Effect.catch(() => Effect.succeed(Message.ListFailed({ request }))),
+      Effect.catch(() => Effect.succeed(Message.UnreadFailed({ request }))),
+    ),
+});
+
+const SetUnread = Command.define("SetInboxUnread", {
+  args: { request: Schema.String, id: InboxMessageId, unread: Schema.Boolean },
+  messages: [
+    Message.UpdatedReadStatus,
+    Message.ReadStatusFailed,
+    Message.SessionExpired,
+  ],
+  execute: ({ request, id, unread }) =>
+    Effect.tryPromise(async (signal) => {
+      const response = await fetch(inboxReadApi(id), {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          "x-effect-auth-csrf": "1",
+        },
+        body: JSON.stringify({ unread }),
+        signal,
+      });
+      if (response.status === 401) return Message.SessionExpired({ request });
+      return response.status === 204
+        ? Message.UpdatedReadStatus({ request, id, unread })
+        : Message.ReadStatusFailed({ request, id });
+    }).pipe(
+      Effect.catch(() =>
+        Effect.succeed(Message.ReadStatusFailed({ request, id })),
+      ),
     ),
 });
 
@@ -330,7 +426,17 @@ const loadList = (
       listRefreshQueued: false,
       listError: null,
     },
-    commands: [LoadList({ request, cursor, folder: model.folder })],
+    commands: [
+      LoadList({
+        request,
+        cursor,
+        folder: model.folder,
+        minimum:
+          cursor === null && model.folder === "inbox"
+            ? (model.list?.messages.length ?? 0)
+            : 0,
+      }),
+    ],
   };
 };
 
@@ -372,6 +478,66 @@ const withThread = (result: Update.Return<Model, Message>) => {
   };
 };
 
+const refreshUnread = (model: Model): Update.Return<Model, Message> => {
+  if (model.unreadRequest)
+    return { model: { ...model, unreadRefreshQueued: true } };
+  const request = crypto.randomUUID();
+  return {
+    model: { ...model, unreadRequest: request, unreadRefreshQueued: false },
+    commands: [LoadUnread({ request })],
+  };
+};
+
+const withUnread = (result: Update.Return<Model, Message>) => {
+  const unread = refreshUnread(result.model);
+  return {
+    model: unread.model,
+    commands: [...(result.commands ?? []), ...(unread.commands ?? [])],
+  };
+};
+
+const entryUnread = (model: Model) => {
+  const entry = model.entry;
+  if (!entry || !("receivedAt" in entry)) return false;
+  return (
+    model.thread?.messages.find(({ id }) => id === entry.id)?.unread ??
+    entry.unread ??
+    false
+  );
+};
+
+const setUnread = (
+  model: Model,
+  id: string,
+  unread: boolean,
+): Update.Return<Model, Message> => {
+  if (model.readRequests[id]) return { model };
+  const request = crypto.randomUUID();
+  return {
+    model: {
+      ...model,
+      readFailed: null,
+      readRequests: { ...model.readRequests, [id]: request },
+    },
+    commands: [SetUnread({ id, unread, request })],
+  };
+};
+
+const finishUnread = (
+  model: Model,
+  request: string,
+  unreadCount = model.unreadCount,
+) => {
+  if (request !== model.unreadRequest) return { model };
+  const next = { ...model, unreadCount, unreadRequest: null };
+  return next.unreadRefreshQueued ? refreshUnread(next) : { model: next };
+};
+
+const finishReadStatus = (model: Model, id: string): Model => {
+  const { [id]: _completed, ...readRequests } = model.readRequests;
+  return { ...model, readRequests };
+};
+
 const replySubject = (original: string) => {
   const subject = original.replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, " ").trim();
   const reply = /^re:/iu.test(subject) ? subject : `Re: ${subject}`;
@@ -411,6 +577,10 @@ export const update = (
               folder,
               compose: model.compose,
               deleteRequest: model.deleteRequest,
+              unreadCount: model.unreadCount,
+              unreadRequest: model.unreadRequest,
+              unreadRefreshQueued: model.unreadRefreshQueued,
+              readRequests: model.readRequests,
             };
       const next =
         base.selected === id
@@ -429,10 +599,11 @@ export const update = (
               confirmingDelete: false,
               deleteFailed: false,
             };
-      const list = next.list ? { model: next } : loadList(next, null);
+      const list = id && next.list ? { model: next } : loadList(next, null);
       return next.thread ? list : withThread(list);
     },
-    Refreshed: () => withThread(loadList(model, null)),
+    Refreshed: () => withUnread(withThread(loadList(model, null))),
+    RefreshedUnread: () => refreshUnread(model),
     GotComposeMessage: ({ message }) => {
       const result = foldCompose(model, message);
       if (
@@ -444,13 +615,21 @@ export const update = (
       return withThread(refreshList(result.model));
     },
     LiveChanged: () =>
-      withThread(model.folder === "inbox" ? refreshList(model) : { model }),
+      withUnread(
+        withThread(model.folder === "inbox" ? refreshList(model) : { model }),
+      ),
     RequestedMore: () =>
       model.list?.cursor && !model.list.indexing
         ? loadList(model, model.list.cursor)
         : { model },
     RetriedEntry: () => loadEntry(model),
     RetriedThread: () => refreshThread(model),
+    ToggledUnread: () => {
+      const entry = model.entry;
+      return entry && "receivedAt" in entry
+        ? setUnread(model, entry.id, !entryUnread(model))
+        : { model };
+    },
     ToggledMessage: ({ id, folder }) =>
       loadEntry({
         ...model,
@@ -537,7 +716,7 @@ export const update = (
         commands: [...(entry.commands ?? []), ...(updatedList.commands ?? [])],
       };
       // Overlapping reads may have received a snapshot from before the deletion.
-      return model.selected === id ? command : withThread(command);
+      return withUnread(model.selected === id ? command : withThread(command));
     },
     DeleteFailed: ({ request }) =>
       request !== model.deleteRequest?.request
@@ -576,6 +755,34 @@ export const update = (
       };
       return next.listRefreshQueued ? loadList(next, null) : { model: next };
     },
+    LoadedUnread: ({ request, unreadCount }) =>
+      finishUnread(model, request, unreadCount),
+    UnreadFailed: ({ request }) => finishUnread(model, request),
+    UpdatedReadStatus: ({ request, id, unread }) => {
+      if (model.readRequests[id] !== request) return { model };
+      const next = finishReadStatus(model, id);
+      const entry =
+        next.entry?.id === id && "receivedAt" in next.entry
+          ? { ...next.entry, unread }
+          : next.entry;
+      const thread = next.thread && {
+        messages: next.thread.messages.map((message) =>
+          message.id === id ? { ...message, unread } : message,
+        ),
+      };
+      const updated = { ...next, entry, thread };
+      return withUnread(
+        withThread(
+          updated.folder === "inbox"
+            ? refreshList(updated)
+            : { model: updated },
+        ),
+      );
+    },
+    ReadStatusFailed: ({ request, id }) =>
+      model.readRequests[id] === request
+        ? { model: { ...finishReadStatus(model, id), readFailed: id } }
+        : { model },
     LoadedThread: ({ request, thread }) => {
       if (request !== model.threadRequest) return { model };
       const newestIncoming = thread.messages.findLast(
@@ -606,10 +813,13 @@ export const update = (
         next.entry || next.entryError ? { model: next } : loadEntry(next);
       return next.threadRefreshQueued ? withThread(entry) : entry;
     },
-    LoadedEntry: ({ request, entry }) =>
-      request !== model.entryRequest
-        ? { model }
-        : { model: { ...model, entry, entryRequest: null } },
+    LoadedEntry: ({ request, entry }) => {
+      if (request !== model.entryRequest) return { model };
+      const next = { ...model, entry, entryRequest: null };
+      return "receivedAt" in entry && entry.unread
+        ? setUnread(next, entry.id, false)
+        : { model: next };
+    },
     EntryFailed: ({ request, missing }) =>
       request !== model.entryRequest
         ? { model }
@@ -635,6 +845,18 @@ const messageTime = (h: HtmlBuilder<Message>, time: number) =>
     [h.Datetime(new Date(time).toISOString())],
     [messageDateFormat.format(time)],
   );
+
+const conversationCounts = (
+  message: (typeof MailPage.Type.messages)[number],
+) =>
+  "receivedAt" in message
+    ? [
+        ...((message.messageCount ?? 0) > 1
+          ? [`${message.messageCount} messages`]
+          : []),
+        ...(message.unreadCount ? [`${message.unreadCount} unread`] : []),
+      ].join(" · ")
+    : "";
 
 const listView = (model: Model, h: HtmlBuilder<Message>) =>
   h.section(
@@ -691,12 +913,21 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
                   ? h.p([h.Class("inbox-status")], ["No messages yet."])
                   : h.ul(
                       [h.Class("inbox-messages")],
-                      model.list.messages.map((message) =>
-                        h.li(
+                      model.list.messages.map((message) => {
+                        const counts = conversationCounts(message);
+                        const unread =
+                          "receivedAt" in message &&
+                          Boolean(message.unreadCount);
+                        return h.li(
                           [h.Key(message.id)],
                           [
                             h.a(
                               [
+                                h.Class(
+                                  unread
+                                    ? "inbox-message-row is-unread"
+                                    : "inbox-message-row",
+                                ),
                                 h.Href(
                                   mailMessagePage(model.folder, message.id),
                                 ),
@@ -722,12 +953,11 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
                                       [],
                                       [message.from || "Unknown sender"],
                                     ),
-                                ...("messageCount" in message &&
-                                (message.messageCount ?? 0) > 1
+                                ...(counts
                                   ? [
                                       h.span(
-                                        [],
-                                        [`${message.messageCount} messages`],
+                                        [h.Class("inbox-message-counts")],
+                                        [counts],
                                       ),
                                     ]
                                   : []),
@@ -740,8 +970,8 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
                               ],
                             ),
                           ],
-                        ),
-                      ),
+                        );
+                      }),
                     ),
                 ...(model.list.cursor === null || model.list.indexing
                   ? []
@@ -811,13 +1041,12 @@ const deleteDialog = (h: HtmlBuilder<Message>) =>
     ],
   );
 
-const entryContent = (
-  model: Model,
-  h: HtmlBuilder<Message>,
-  showSubject = true,
-) => {
+const entryContent = (model: Model, h: HtmlBuilder<Message>) => {
   const { entry } = model;
   return [
+    ...(entry && model.readFailed === entry.id
+      ? [h.p([h.Role("alert")], ["Could not update read status. Try again."])]
+      : []),
     ...(model.deleteFailed
       ? [h.p([h.Role("alert")], ["Could not confirm the deletion. Try again."])]
       : []),
@@ -835,32 +1064,51 @@ const entryContent = (
       : []),
     ...(entry
       ? [
-          h.header(
-            [h.Class("inbox-entry-header")],
-            [
-              ...(showSubject
-                ? [h.h2([], [entry.subject || "(No subject)"])]
-                : []),
-              h.dl(
-                [],
-                [
-                  h.dt([], ["From"]),
-                  h.dd([], [entry.from || "Unknown sender"]),
-                  ...(entry.to ? [h.dt([], ["To"]), h.dd([], [entry.to])] : []),
-                  h.dt([], ["sentAt" in entry ? "Sent" : "Received"]),
-                  h.dd(
-                    [],
-                    [
-                      messageTime(
-                        h,
-                        "sentAt" in entry ? entry.sentAt : entry.receivedAt,
-                      ),
-                    ],
+          ...(entry.text
+            ? [
+                h.div(
+                  [h.Class("inbox-body")],
+                  splitMailQuote(entry.text).map(({ text, quoted }, index) =>
+                    quoted
+                      ? h.details(
+                          [h.Key(String(index)), h.Class("inbox-quote")],
+                          [
+                            h.summary(
+                              [],
+                              [
+                                h.span(
+                                  [h.Class("inbox-quote-closed")],
+                                  ["Show quoted text"],
+                                ),
+                                h.span(
+                                  [h.Class("inbox-quote-open")],
+                                  ["Hide quoted text"],
+                                ),
+                              ],
+                            ),
+                            h.blockquote([], [text]),
+                          ],
+                        )
+                      : h.div(
+                          [h.Key(String(index)), h.Class("inbox-body-part")],
+                          [text],
+                        ),
                   ),
-                ],
-              ),
-            ],
-          ),
+                ),
+              ]
+            : []),
+          ...(entry.preview !== "complete" || !entry.text
+            ? [
+                h.p(
+                  [h.Class("inbox-preview")],
+                  [
+                    entry.preview === "complete"
+                      ? "This message has no text body."
+                      : previewNotice[entry.preview],
+                  ],
+                ),
+              ]
+            : []),
           h.div(
             [h.Class("inbox-toolbar-actions")],
             [
@@ -869,6 +1117,18 @@ const entryContent = (
                     h.button(
                       [h.Type("button"), h.OnClick(Message.RequestedReply())],
                       ["Reply"],
+                    ),
+                  ]
+                : []),
+              ...("receivedAt" in entry
+                ? [
+                    h.button(
+                      [
+                        h.Type("button"),
+                        h.Disabled(Boolean(model.readRequests[entry.id])),
+                        h.OnClick(Message.ToggledUnread()),
+                      ],
+                      [entryUnread(model) ? "Mark read" : "Mark unread"],
                     ),
                   ]
                 : []),
@@ -883,29 +1143,54 @@ const entryContent = (
               ),
             ],
           ),
-          ...(entry.text ? [h.div([h.Class("inbox-body")], [entry.text])] : []),
-          ...(entry.preview !== "complete" || !entry.text
-            ? [
-                h.p(
-                  [h.Class("inbox-preview")],
-                  [
-                    entry.preview === "complete"
-                      ? "This message has no text body."
-                      : previewNotice[entry.preview],
-                  ],
-                ),
-              ]
-            : []),
         ]
       : []),
   ];
 };
 
+const readerMessages = (model: Model): readonly ConversationMessage[] => {
+  const messages = model.thread?.messages ?? [];
+  const { entry, active } = model;
+  if (!entry || !active) return messages;
+  if (messages.some(({ id }) => id === entry.id))
+    return messages.map((message) =>
+      message.id === entry.id && entry.people
+        ? { ...message, people: entry.people }
+        : message,
+    );
+  return [
+    ...messages,
+    {
+      id: entry.id,
+      folder: active.folder,
+      from: entry.from,
+      to: entry.to,
+      subject: entry.subject,
+      timestamp: "sentAt" in entry ? entry.sentAt : entry.receivedAt,
+      ...("receivedAt" in entry && entry.unread !== undefined
+        ? { unread: entry.unread }
+        : {}),
+      ...(entry.people ? { people: entry.people } : {}),
+    },
+  ].sort((a, b) => a.timestamp - b.timestamp);
+};
+
+const contactLabel = (person: MailPerson, mailbox: string) =>
+  person.address.toLowerCase() === mailbox
+    ? "You"
+    : person.name || person.address;
+
 const entryView = (model: Model, h: HtmlBuilder<Message>) => {
   const { selected, active } = model;
   if (!selected)
     return h.div([h.Class("workspace-detail")], ["Select a message to read."]);
-  const messages = model.thread?.messages ?? [];
+  const messages = readerMessages(model);
+  const participants = conversationPeople(messages);
+  const mailbox = (
+    model.list?.address ??
+    model.list?.sender ??
+    ""
+  ).toLowerCase();
   const grouped = messages.length > 1;
   return h.article(
     [
@@ -941,37 +1226,75 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
             ),
           ]
         : []),
-      ...(grouped
+      ...(messages.length
         ? [
+            h.header(
+              [h.Class("inbox-conversation-heading")],
+              [
+                h.h2([], [conversationSubject(messages)]),
+                ...(participants.length
+                  ? [
+                      h.p(
+                        [h.Class("inbox-conversation-people")],
+                        participants.flatMap((person, index) => [
+                          ...(index ? [", "] : []),
+                          h.span(
+                            [h.Title(person.address)],
+                            [contactLabel(person, mailbox)],
+                          ),
+                        ]),
+                      ),
+                    ]
+                  : []),
+              ],
+            ),
             h.ol(
               [h.Class("inbox-thread"), h.AriaLabel("Conversation messages")],
-              messages.map(({ id, folder, from, to, timestamp, subject }) => {
+              messages.map((message) => {
+                const { id, folder, from, timestamp, unread } = message;
+                const sender = message.people?.sender;
                 const expanded = active?.id === id;
                 const panel = `mail-content-${id}`;
-                const participant =
-                  folder === "sent" ? `To ${to}` : from || "Unknown sender";
+                const summaryClass = unread
+                  ? "inbox-thread-summary is-unread"
+                  : "inbox-thread-summary";
+                const header = [
+                  h.strong(sender ? [h.Title(sender.address)] : [], [
+                    sender
+                      ? contactLabel(sender, mailbox)
+                      : from || "Unknown sender",
+                  ]),
+                  ...(unread
+                    ? [h.span([h.Class("inbox-thread-unread")], ["Unread"])]
+                    : []),
+                  h.time(
+                    [
+                      h.Datetime(new Date(timestamp).toISOString()),
+                      h.Title(messageDateFormat.format(timestamp)),
+                    ],
+                    [compactMailTime(timestamp)],
+                  ),
+                ];
                 return h.li(
                   [h.Key(id)],
                   [
-                    h.button(
-                      [
-                        h.Type("button"),
-                        h.Class("inbox-thread-summary"),
-                        h.AriaExpanded(expanded),
-                        ...(expanded ? [h.AriaControls(panel)] : []),
-                        h.OnClick(Message.ToggledMessage({ id, folder })),
-                      ],
-                      [
-                        h.strong([], [subject || "(No subject)"]),
-                        h.span([], [participant]),
-                        messageTime(h, timestamp),
-                      ],
-                    ),
+                    grouped
+                      ? h.button(
+                          [
+                            h.Type("button"),
+                            h.Class(summaryClass),
+                            h.AriaExpanded(expanded),
+                            ...(expanded ? [h.AriaControls(panel)] : []),
+                            h.OnClick(Message.ToggledMessage({ id, folder })),
+                          ],
+                          header,
+                        )
+                      : h.header([h.Class(summaryClass)], header),
                     ...(expanded
                       ? [
                           h.section(
                             [h.Id(panel), h.Class("inbox-thread-content")],
-                            entryContent(model, h, false),
+                            entryContent(model, h),
                           ),
                         ]
                       : []),
@@ -979,11 +1302,11 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
                 );
               }),
             ),
-            ...(active && !messages.some(({ id }) => id === active.id)
-              ? entryContent(model, h)
-              : []),
           ]
-        : entryContent(model, h)),
+        : []),
+      ...(active && !messages.some(({ id }) => id === active.id)
+        ? entryContent(model, h)
+        : []),
     ],
   );
 };
@@ -1017,22 +1340,26 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
                 { folder: "inbox", label: "Inbox" },
                 { folder: "sent", label: "Sent" },
               ] as const
-            ).map(({ folder, label }) =>
-              h.li(
+            ).map(({ folder, label }) => {
+              const count = folder === "inbox" ? model.unreadCount : 0;
+              return h.li(
                 [h.Key(folder)],
                 [
                   h.a(
                     [
                       h.Href(folderPath(folder)),
+                      ...(count
+                        ? [h.AriaLabel(`${label}, ${count} unread`)]
+                        : []),
                       ...(model.folder === folder
                         ? [h.AriaCurrent("true")]
                         : []),
                     ],
-                    [label],
+                    [label, ...(count ? [unreadBadge(h, count)] : [])],
                   ),
                 ],
-              ),
-            ),
+              );
+            }),
           ),
         ],
       ),

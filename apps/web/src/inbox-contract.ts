@@ -15,6 +15,9 @@ export const conversationArchiveApi = (id: string) =>
 export const inboxSendPath = `${inboxApiPath}/send`;
 export const inboxUnreadPath = `${inboxApiPath}/unread`;
 export const sentCopyHeader = "x-oneapp-sent-copy";
+export const sentMessageHeader = "x-oneapp-sent-message";
+export const replyCompletionHeader = "x-oneapp-reply-completion";
+export const ReplyCompletion = Schema.Literals(["done", "new-mail", "failed"]);
 export const sentPath = `${inboxPath}/sent`;
 export const archivePath = `${inboxPath}/archive`;
 export const allMailPath = `${inboxPath}/all`;
@@ -159,7 +162,10 @@ export const InboxSend = Schema.Struct({
   replyToId: Schema.optionalKey(InboxMessageId),
 });
 
-export const InlineReply = Schema.Struct({ text: InboxDraft.fields.text });
+export const InlineReply = Schema.Struct({
+  text: InboxDraft.fields.text,
+  completeThrough: Schema.optionalKey(InboxMessageId),
+});
 
 export const replySubject = (original: string) => {
   const subject = original.replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, " ").trim();

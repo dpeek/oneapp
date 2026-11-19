@@ -3,15 +3,21 @@ import { Command, Submodel, Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";
 import {
   inboxComposeLimits,
+  InboxMessageId,
   inboxReplyApi,
   InlineReply,
   MailMessageId,
 } from "./inbox-contract.ts";
-import { sendInboxRequest, sentNotice } from "./inbox-send.ts";
+import {
+  sendInboxRequest,
+  SentConfirmation,
+  sentNotice,
+} from "./inbox-send.ts";
 
 export const Model = Schema.Struct({
   anchor: Schema.NullOr(MailMessageId),
   target: Schema.NullOr(MailMessageId),
+  completeThrough: Schema.NullOr(InboxMessageId),
   text: Schema.String,
   request: Schema.NullOr(Schema.String),
   error: Schema.NullOr(Schema.String),
@@ -22,6 +28,7 @@ type Model = typeof Model.Type;
 export const initial: Model = {
   anchor: null,
   target: null,
+  completeThrough: null,
   text: "",
   request: null,
   error: null,
@@ -29,9 +36,14 @@ export const initial: Model = {
 };
 
 export const Message = defineMessageUnion({
-  Edited: { anchor: MailMessageId, latest: MailMessageId, text: Schema.String },
+  Edited: {
+    anchor: MailMessageId,
+    latest: MailMessageId,
+    latestIncoming: Schema.NullOr(InboxMessageId),
+    text: Schema.String,
+  },
   Submitted: { anchor: MailMessageId },
-  Sent: { request: Schema.String, saved: Schema.Boolean },
+  Sent: { request: Schema.String, ...SentConfirmation },
   Failed: { request: Schema.String, error: Schema.String },
   SessionExpired: { request: Schema.String },
 });
@@ -51,7 +63,12 @@ const Send = Command.define("SendInlineReply", {
         case "SessionExpired":
           return Message.SessionExpired({ request });
         case "Sent":
-          return Message.Sent({ request, saved: result.saved });
+          return Message.Sent({
+            request,
+            saved: result.saved,
+            sentId: result.sentId,
+            completion: result.completion,
+          });
         case "Failed":
           return Message.Failed({ request, error: result.error });
       }
@@ -63,15 +80,21 @@ export const update = (
   message: Message,
 ): Update.Return<Model, Message> =>
   Message.match<Update.Return<Model, Message>>(message, {
-    Edited: ({ anchor, latest, text }) => {
+    Edited: ({ anchor, latest, latestIncoming, text }) => {
       const draft = model.anchor === anchor ? model : initial;
       if (draft.request) return { model };
+      const target = text.trim() ? (draft.target ?? latest) : null;
       return {
         model: {
           ...draft,
           anchor,
           text,
-          target: text.trim() ? (draft.target ?? latest) : null,
+          target,
+          completeThrough: target
+            ? draft.target
+              ? draft.completeThrough
+              : latestIncoming
+            : null,
           error: null,
           notice: null,
         },
@@ -82,6 +105,9 @@ export const update = (
         return { model };
       const reply = Schema.decodeUnknownOption(InlineReply)({
         text: model.text,
+        ...(model.completeThrough
+          ? { completeThrough: model.completeThrough }
+          : {}),
       });
       if (reply._tag === "None") return { model };
       const request = crypto.randomUUID();
@@ -90,10 +116,14 @@ export const update = (
         commands: [Send({ request, target: model.target, reply: reply.value })],
       };
     },
-    Sent: ({ request, saved }) => ({
+    Sent: ({ request, saved, completion }) => ({
       model:
         model.request === request
-          ? { ...initial, anchor: model.anchor, notice: sentNotice(saved) }
+          ? {
+              ...initial,
+              anchor: model.anchor,
+              notice: sentNotice(saved, completion),
+            }
           : model,
     }),
     Failed: ({ request, error }) => ({
@@ -104,9 +134,14 @@ export const update = (
   });
 
 export const view = Submodel.defineView<
-  { state: Model; anchor: string; latest: string },
+  {
+    state: Model;
+    anchor: string;
+    latest: string;
+    latestIncoming: string | null;
+  },
   Message
->(({ state, anchor, latest }, h) => {
+>(({ state, anchor, latest, latestIncoming }, h) => {
   const draft = state.anchor === anchor ? state : initial;
   const sending = draft.request !== null;
   return h.form(
@@ -130,7 +165,9 @@ export const view = Submodel.defineView<
             h.Readonly(sending),
             h.Maxlength(inboxComposeLimits.text),
             h.Value(draft.text),
-            h.OnInput((text) => Message.Edited({ anchor, latest, text })),
+            h.OnInput((text) =>
+              Message.Edited({ anchor, latest, latestIncoming, text }),
+            ),
           ]),
           ...(draft.text.trim()
             ? [

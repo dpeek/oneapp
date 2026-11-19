@@ -8,7 +8,11 @@ import {
   InboxMessageId,
   inboxSendPath,
 } from "./inbox-contract.ts";
-import { sendInboxRequest, sentNotice } from "./inbox-send.ts";
+import {
+  sendInboxRequest,
+  SentConfirmation,
+  sentNotice,
+} from "./inbox-send.ts";
 
 const ReplyDraft = Schema.Struct({
   ...InboxDraft.fields,
@@ -40,7 +44,7 @@ export const Message = defineMessageUnion({
   Closed: {},
   Shown: {},
   Submitted: {},
-  Sent: { request: Schema.String, saved: Schema.Boolean },
+  Sent: { request: Schema.String, ...SentConfirmation },
   Failed: { request: Schema.String, error: Schema.String },
   SessionExpired: { request: Schema.String },
 });
@@ -103,7 +107,12 @@ const Send = Command.define("SendInboxEmail", {
         case "SessionExpired":
           return Message.SessionExpired({ request });
         case "Sent":
-          return Message.Sent({ request, saved: result.saved });
+          return Message.Sent({
+            request,
+            saved: result.saved,
+            sentId: result.sentId,
+            completion: result.completion,
+          });
         case "Failed":
           return Message.Failed({ request, error: result.error });
       }
@@ -133,12 +142,12 @@ export const update = (
         ],
       };
     },
-    Sent: ({ request, saved }) => ({
+    Sent: ({ request, saved, completion }) => ({
       model:
         model.request === request
           ? {
               ...initial,
-              notice: sentNotice(saved),
+              notice: sentNotice(saved, completion),
             }
           : model,
     }),

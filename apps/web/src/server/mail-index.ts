@@ -208,6 +208,7 @@ export const setThreadArchived = async (
   db: D1Database,
   id: string,
   archived: boolean,
+  anchorId = id,
 ) => {
   const newestIncoming = `
     SELECT id, archived FROM mail_index_messages
@@ -215,7 +216,7 @@ export const setThreadArchived = async (
       AND folder = 'inbox' AND deleted = 0
     ORDER BY timestamp DESC, id DESC LIMIT 1
   `;
-  const identity = localIdentity(id);
+  const identity = localIdentity(anchorId);
   const changed = await db
     .prepare(
       `

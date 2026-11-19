@@ -39,8 +39,10 @@ import {
   inboxSendPath,
   inboxUnreadPath,
   mailMessageApi,
+  replyCompletionHeader,
   sentApiPath,
   sentCopyHeader,
+  sentMessageHeader,
 } from "../inbox-contract.ts";
 import {
   codexClientId,
@@ -633,7 +635,7 @@ it("threads replies from the stored message and archives the sent copy", async (
     sentCopies.set(id, json);
     return {};
   });
-  const { call, signIn, cookies } = await setup(sqlite, {
+  const { call, db, signIn, cookies } = await setup(sqlite, {
     INBOX_EMAIL_ADDRESS: from,
     INBOX_EMAIL_FROM: from,
     INBOX_SEND: { send } as SendEmail,
@@ -647,6 +649,17 @@ it("threads replies from the stored message and archives the sent copy", async (
       },
     } as unknown as WorkerEnv["SENT_MESSAGES"],
   });
+  const incoming = {
+    id: originalId,
+    folder: "inbox" as const,
+    from: "sender@example.net",
+    to: from,
+    subject: "Checking in",
+    timestamp: 1000,
+    messageIds: [messageId, root, ancestor],
+    unread: true,
+  };
+  await indexMail(db, incoming);
   const session = cookies(await signIn(password));
   const opened = await call(inboxMessageApi(originalId), undefined, session);
   expect(await opened.json()).toMatchObject({
@@ -681,6 +694,10 @@ it("threads replies from the stored message and archives the sent copy", async (
 
   const accepted = await call(inboxSendPath, reply, session);
   expect(accepted.status).toBe(204);
+  expect(accepted.headers.get(replyCompletionHeader)).toBe("done");
+  expect(
+    await (await call(conversationApi(originalId), undefined, session)).json(),
+  ).toMatchObject({ archived: true });
   const headers = {
     "In-Reply-To": messageId,
     References: `${root} ${ancestor} ${messageId}`,
@@ -691,6 +708,7 @@ it("threads replies from the stored message and archives the sent copy", async (
   });
   const [key, record] = put.mock.lastCall ?? [];
   if (!key || !record) throw new Error("Expected a Sent copy");
+  expect(accepted.headers.get(sentMessageHeader)).toBe(key);
   expect(JSON.parse(record)).toMatchObject({
     ...draft,
     id: key,
@@ -734,7 +752,9 @@ it("threads replies from the stored message and archives the sent copy", async (
 
   const sentMessageId = "<quick-sent@example.net>";
   send.mockResolvedValueOnce({ messageId: sentMessageId });
-  expect((await call(inlinePath, quick, session)).status).toBe(204);
+  const quickSend = await call(inlinePath, quick, session);
+  expect(quickSend.status).toBe(204);
+  expect(quickSend.headers.get(replyCompletionHeader)).toBe("done");
   expect(send).toHaveBeenLastCalledWith({
     from,
     to: draft.to,
@@ -744,10 +764,29 @@ it("threads replies from the stored message and archives the sent copy", async (
   });
   const [sentId] = put.mock.lastCall ?? [];
   if (!sentId) throw new Error("Expected a quick reply in Sent");
-  expect(
-    (await call(inboxReplyApi(sentId), { text: "One more thing" }, session))
-      .status,
-  ).toBe(204);
+  const newIncoming = originalId.replace("8199999999990", "8199999999998");
+  send.mockImplementationOnce(async () => {
+    await indexMail(
+      db,
+      {
+        ...incoming,
+        id: newIncoming,
+        timestamp: 2000,
+      },
+      { reopensArchive: true },
+    );
+    return { messageId: "<followup@example.net>" };
+  });
+  const followUp = await call(
+    inboxReplyApi(sentId),
+    {
+      text: "One more thing",
+      completeThrough: originalId,
+    },
+    session,
+  );
+  expect(followUp.status).toBe(204);
+  expect(followUp.headers.get(replyCompletionHeader)).toBe("new-mail");
   expect(send).toHaveBeenLastCalledWith({
     from,
     to: draft.to,
@@ -763,6 +802,23 @@ it("threads replies from the stored message and archives the sent copy", async (
     text: "One more thing",
     reply: { originalId: sentId },
   });
+  const latestReply = { text: "Following up", completeThrough: newIncoming };
+  send.mockRejectedValueOnce({ code: "E_DELIVERY_FAILED" });
+  expect((await call(inboxReplyApi(sentId), latestReply, session)).status).toBe(
+    422,
+  );
+  expect(
+    await (await call(conversationApi(originalId), undefined, session)).json(),
+  ).toMatchObject({ archived: false });
+  put.mockRejectedValue(new Error("Sent storage unavailable"));
+  const sentWithoutCopy = await call(
+    inboxReplyApi(sentId),
+    latestReply,
+    session,
+  );
+  expect(sentWithoutCopy.status).toBe(204);
+  expect(sentWithoutCopy.headers.get(sentCopyHeader)).toBe("failed");
+  expect(sentWithoutCopy.headers.get(replyCompletionHeader)).toBe("done");
 });
 
 it("groups existing mail across Inbox and Sent as its threads are discovered", async () => {

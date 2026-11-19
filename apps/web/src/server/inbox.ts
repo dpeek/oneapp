@@ -30,10 +30,13 @@ import {
   InlineReply,
   type MailFolder,
   MailMessageId,
+  type ReplyCompletion,
+  replyCompletionHeader,
   replySubject,
   SentEntry,
   SentPage,
   sentCopyHeader,
+  sentMessageHeader,
 } from "../inbox-contract.ts";
 import { jsonError, privateHeaders } from "./api-response.ts";
 import { AppAuth, ownerId, type authHttp } from "./auth.ts";
@@ -408,8 +411,10 @@ const isJsonRequest = Effect.map(
 const sendDraft = Effect.fnUntraced(function* (
   binding: SendEmail,
   env: InboxEnv,
+  defer: (work: Promise<unknown>) => void,
   message: typeof InboxDraft.Type & { from: string },
   reply: SentReply | undefined,
+  completeThrough: string | undefined,
 ) {
   const sent = yield* Effect.tryPromise({
     try: () =>
@@ -438,11 +443,36 @@ const sendDraft = Effect.fnUntraced(function* (
           console.warn("Could not index sent email");
         }),
       );
+    let completion: typeof ReplyCompletion.Type | undefined;
+    if (reply && completeThrough) {
+      const result = yield* Effect.promise(() =>
+        setThreadArchived(
+          env.DB,
+          completeThrough,
+          true,
+          reply.originalId,
+        ).catch(() => {
+          console.warn("Could not mark replied conversation done");
+          return "missing" as const;
+        }),
+      );
+      completion =
+        result === "stale"
+          ? "new-mail"
+          : result === "missing"
+            ? "failed"
+            : "done";
+    }
+    if (saved || completion === "done") defer(notifyInbox(env));
     return HttpServerResponse.empty({
       status: 204,
-      headers: saved
-        ? privateHeaders
-        : { ...privateHeaders, [sentCopyHeader]: "failed" },
+      headers: {
+        ...privateHeaders,
+        ...(saved
+          ? { [sentMessageHeader]: record.id }
+          : { [sentCopyHeader]: "failed" }),
+        ...(completion ? { [replyCompletionHeader]: completion } : {}),
+      },
     });
   }
   switch (sent.failure) {
@@ -478,9 +508,17 @@ const deliverMail = Effect.fnUntraced(function* (
   sender: NonNullable<ReturnType<typeof inboxSender>>,
   message: typeof InboxDraft.Type,
   reply: SentReply | undefined,
+  completeThrough?: string,
 ) {
   const work = Effect.runPromiseExit(
-    sendDraft(sender.binding, env, { ...message, from: sender.from }, reply),
+    sendDraft(
+      sender.binding,
+      env,
+      defer,
+      { ...message, from: sender.from },
+      reply,
+      completeThrough,
+    ),
   );
   // Keep the send and its archive write together if the client disconnects.
   defer(work);
@@ -530,7 +568,7 @@ const sendEmail = (env: InboxEnv, defer: (work: Promise<unknown>) => void) =>
       const headers = original.email ? replyHeaders(original.email) : undefined;
       reply = { originalId: replyToId, ...(headers ? { headers } : {}) };
     }
-    return yield* deliverMail(env, defer, sender, message, reply);
+    return yield* deliverMail(env, defer, sender, message, reply, replyToId);
   });
 
 const readReplyTarget = async (env: InboxEnv, id: string) => {
@@ -589,10 +627,17 @@ const sendInlineReply = (
     });
     if (draft._tag === "None")
       return yield* jsonError(422, "This email has no usable reply address.");
-    return yield* deliverMail(env, defer, sender, draft.value, {
-      originalId: id,
-      ...(target.headers ? { headers: target.headers } : {}),
-    });
+    return yield* deliverMail(
+      env,
+      defer,
+      sender,
+      draft.value,
+      {
+        originalId: id,
+        ...(target.headers ? { headers: target.headers } : {}),
+      },
+      isInboxMessageId(id) ? id : body.value.completeThrough,
+    );
   });
 
 export const inboxRoutes = (

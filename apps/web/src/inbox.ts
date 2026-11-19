@@ -625,6 +625,17 @@ const loadEntry = (model: Model): Update.Return<Model, Message> => {
   };
 };
 
+const selectMessage = (model: Model, active: Model["active"]) =>
+  loadEntry({
+    ...model,
+    active,
+    entry: null,
+    entryRequest: null,
+    entryError: null,
+    attachmentPreview: null,
+    deleteFailed: false,
+  });
+
 const refreshThread = (model: Model): Update.Return<Model, Message> => {
   if (!model.selected) return { model };
   if (model.threadRequest)
@@ -665,6 +676,25 @@ const withUnread = (result: Update.Return<Model, Message>) => {
     model: unread.model,
     commands: [...(result.commands ?? []), ...(unread.commands ?? [])],
   };
+};
+
+const afterSend = (
+  result: Update.Return<Model, Message>,
+  message: Extract<typeof Compose.Message.Type, { _tag: "Sent" }>,
+  showReply: boolean,
+): Update.Return<Model, Message> => {
+  if (!message.saved && !message.completion) return result;
+  const selected =
+    showReply && message.sentId
+      ? selectMessage(result.model, { id: message.sentId, folder: "sent" })
+      : result;
+  const list = refreshList(selected.model);
+  return withUnread(
+    withThread({
+      model: list.model,
+      commands: [...(selected.commands ?? []), ...(list.commands ?? [])],
+    }),
+  );
 };
 
 const entryUnread = (model: Model) => {
@@ -788,20 +818,21 @@ export const update = (
     RefreshedUnread: () => refreshUnread(model),
     GotComposeMessage: ({ message }) => {
       const result = foldCompose(model, message);
-      if (
-        message._tag !== "Sent" ||
-        model.compose.request !== message.request ||
-        !message.saved
-      )
+      if (message._tag !== "Sent" || model.compose.request !== message.request)
         return result;
-      return withThread(refreshList(result.model));
+      const original = model.compose.reply?.originalId;
+      const showReply = Boolean(
+        original &&
+        (original === model.selected ||
+          model.thread?.messages.some(({ id }) => id === original)),
+      );
+      return afterSend(result, message, showReply);
     },
     GotQuickReplyMessage: ({ message }) => {
       const result = foldQuickReply(model, message);
       return message._tag === "Sent" &&
-        message.request === model.quickReply.request &&
-        message.saved
-        ? withThread(refreshList(result.model))
+        message.request === model.quickReply.request
+        ? afterSend(result, message, model.quickReply.anchor === model.selected)
         : result;
     },
     LiveChanged: () =>
@@ -887,15 +918,7 @@ export const update = (
         : { model };
     },
     ToggledMessage: ({ id, folder }) =>
-      loadEntry({
-        ...model,
-        active: model.active?.id === id ? null : { id, folder },
-        entry: null,
-        entryRequest: null,
-        entryError: null,
-        attachmentPreview: null,
-        deleteFailed: false,
-      }),
+      selectMessage(model, model.active?.id === id ? null : { id, folder }),
     RequestedBack: () => ({ model }),
     RequestedPerson: () => ({ model }),
     RequestedReply: () => {
@@ -1813,6 +1836,9 @@ const entryView = (
                 state: model.quickReply,
                 anchor: selected,
                 latest: latest.id,
+                latestIncoming:
+                  messages.findLast(({ folder }) => folder === "inbox")?.id ??
+                  null,
               },
               toParentMessage: toQuickReplyMessage,
             }),

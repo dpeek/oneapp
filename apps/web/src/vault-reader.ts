@@ -544,12 +544,15 @@ class VaultReader extends HTMLElement {
     newItem.className = "vault-primary";
     listHeader.append(search, newItem);
     const status = create("div");
-    const bulk = create("div");
+    status.className = "vault-list-status";
+    const bulk = create("footer");
     bulk.className = "vault-bulk";
+    bulk.setAttribute("role", "group");
+    bulk.setAttribute("aria-label", "Selected item actions");
     bulk.hidden = true;
     const results = create("div");
     results.className = "vault-results";
-    listPane.append(listHeader, status, bulk, results);
+    listPane.append(listHeader, status, results, bulk);
 
     const detail = create("section");
     detail.className = "vault-detail";
@@ -703,14 +706,17 @@ class VaultReader extends HTMLElement {
         operation("Restore selected", "restore"),
         operation("Permanently delete selected", "purge"),
       );
-    else
+    else {
+      const remove = operation("Delete", "trash");
+      remove.title = "Move to Trash";
       bulk.append(
-        operation("Move selected to folder", "move"),
+        operation("Add to folder", "move"),
         view === "active"
-          ? operation("Archive selected", "archive")
-          : operation("Unarchive selected", "unarchive"),
-        operation("Move selected to Trash", "trash"),
+          ? operation("Archive", "archive")
+          : operation("Unarchive", "unarchive"),
+        remove,
       );
+    }
     for (const entry of entries) {
       const row = create("li");
       const select = create("input");
@@ -733,7 +739,7 @@ class VaultReader extends HTMLElement {
         create("span", entry.title ?? "Unreadable item"),
         create("small", itemTypes[entry.item.type].label),
       );
-      row.append(open, select);
+      row.append(select, open);
       list.append(row);
     }
     const filtered =

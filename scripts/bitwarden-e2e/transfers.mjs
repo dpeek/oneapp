@@ -203,15 +203,18 @@ export const checkTransfers = async ({
   await unlockWeb(web, password);
   await button(web, "Archive").press("Enter");
   await button(web, archivedNote).waitFor();
+  const selectionActions = web.getByRole("group", {
+    name: "Selected item actions",
+  });
   await web.getByRole("checkbox", { name: `Select ${archivedNote}` }).check();
-  await button(web, "Unarchive selected").press("Enter");
+  await button(selectionActions, "Unarchive").press("Enter");
   await web.getByRole("status").filter({ hasText: "Items updated." }).waitFor();
   await button(web, "Back to items").press("Enter");
 
   const titles = ["Imported fixture login", "Edited fixture card"];
   for (const title of titles)
     await web.getByRole("checkbox", { name: `Select ${title}` }).check();
-  await button(web, "Move selected to folder").press("Enter");
+  await button(selectionActions, "Add to folder").press("Enter");
   await web
     .getByLabel("Destination folder")
     .selectOption({ label: "No folder" });
@@ -219,7 +222,7 @@ export const checkTransfers = async ({
   await web.getByRole("status").filter({ hasText: "Items updated." }).waitFor();
   for (const title of titles)
     await web.getByRole("checkbox", { name: `Select ${title}` }).check();
-  await button(web, "Move selected to Trash").press("Enter");
+  await button(selectionActions, "Delete").press("Enter");
   await web.getByRole("status").filter({ hasText: "Items updated." }).waitFor();
   const trash = await syncNow(second, secondClient);
   const trashed = trash.ciphers.filter((item) => item.deletedDate != null);

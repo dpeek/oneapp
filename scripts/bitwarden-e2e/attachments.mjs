@@ -281,7 +281,10 @@ export const checkAttachmentCleanup = async ({
   await webVault.getByLabel("Vault master password").fill(password);
   await button(webVault, "Unlock vault").press("Enter");
   await webVault.getByRole("checkbox", { name: `Select ${itemName}` }).check();
-  await button(webVault, "Move selected to Trash").press("Enter");
+  await button(
+    webVault.getByRole("group", { name: "Selected item actions" }),
+    "Delete",
+  ).press("Enter");
   await webVault
     .getByRole("status")
     .filter({ hasText: "Items updated." })

@@ -48,8 +48,14 @@ const mailboxPaths = {
 export const folderPath = (folder: MailboxView) => mailboxPaths[folder];
 export const folderApiPath = (folder: MailFolder) =>
   folder === "sent" ? sentApiPath : inboxApiPath;
-export const mailMessagePage = (folder: MailboxView, id: string) =>
-  `${folderPath(folder)}/${id}`;
+const inboxFileSuffix = ".eml";
+const receivedRoutePrefix = "received/";
+export const mailMessagePage = (folder: MailboxView, id: string) => {
+  const received = id.endsWith(inboxFileSuffix);
+  const prefix = folder === "all" && received ? receivedRoutePrefix : "";
+  const segment = received ? id.slice(0, -inboxFileSuffix.length) : id;
+  return `${folderPath(folder)}/${prefix}${segment}`;
+};
 export const mailMessageApi = (folder: MailFolder, id: string) =>
   `${folderApiPath(folder)}/${id}`;
 export const inboxMessageApi = (id: string) => `${inboxApiPath}/${id}`;
@@ -84,6 +90,39 @@ export const SentMessageId = Schema.String.check(
   Schema.isPattern(/^0-\d{13}-[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/u),
 );
 export const MailMessageId = Schema.Union([InboxMessageId, SentMessageId]);
+
+const isInboxMessageId = Schema.is(InboxMessageId);
+const isSentMessageId = Schema.is(SentMessageId);
+export const MailRoute = Schema.Struct({
+  folder: MailboxView,
+  id: Schema.NullOr(MailMessageId),
+});
+
+export const mailRouteFor = (
+  pathname: string,
+): typeof MailRoute.Type | null => {
+  for (const folder of MailboxView.literals) {
+    const root = folderPath(folder);
+    if (pathname === root || pathname === `${root}/`)
+      return { folder, id: null };
+    if (!pathname.startsWith(`${root}/`)) continue;
+    const segment = pathname.slice(root.length + 1);
+    if ((folder === "sent" || folder === "all") && isSentMessageId(segment))
+      return { folder, id: segment };
+    if (folder === "sent") continue;
+
+    let id = segment;
+    if (folder === "all") {
+      // Bare reverse-timestamp IDs in All mail already identify sent copies.
+      if (segment.startsWith(receivedRoutePrefix))
+        id = segment.slice(receivedRoutePrefix.length);
+      else if (!segment.endsWith(inboxFileSuffix)) continue;
+    }
+    if (!id.endsWith(inboxFileSuffix)) id += inboxFileSuffix;
+    if (isInboxMessageId(id)) return { folder, id };
+  }
+  return null;
+};
 
 const messageFields = {
   from: Schema.String,

@@ -22,7 +22,12 @@ import * as CliLogin from "./cli-login.ts";
 import * as ConnectedClients from "./connected-clients.ts";
 import * as ExtensionAccess from "./extension-access.ts";
 import * as Inbox from "./inbox.ts";
-import { folderPath, mailMessagePage } from "./inbox-contract.ts";
+import {
+  folderPath,
+  mailMessagePage,
+  MailRoute,
+  mailRouteFor,
+} from "./inbox-contract.ts";
 import { deleteLink, readLinks, saveLink } from "./links-client.ts";
 import { mcpAuthorizePath, mcpLoginQuery } from "./mcp-access-contract.ts";
 import { navigationView } from "./navigation.ts";
@@ -37,7 +42,7 @@ import * as VaultSetup from "./vault-setup.ts";
 const Page = Schema.Literals(["links", "inbox", "vault", "people", "settings"]);
 type Page = typeof Page.Type;
 const pageFor = (url: Url.Url): Page => {
-  if (Inbox.routeFor(url.pathname)) return "inbox";
+  if (mailRouteFor(url.pathname)) return "inbox";
   if (peopleRouteFor(url.pathname)) return "people";
   if (url.pathname === vaultPath || url.pathname === `${vaultPath}/`)
     return "vault";
@@ -56,7 +61,7 @@ const Model = Schema.Struct({
   vaultSetup: VaultSetup.Model,
   inbox: Inbox.Model,
   people: People.Model,
-  mailRoute: Schema.NullOr(Inbox.MailRoute),
+  mailRoute: Schema.NullOr(MailRoute),
   peopleRoute: Schema.NullOr(PeopleRoute),
   signInNotice: Schema.NullOr(Schema.String),
   links: Schema.NullOr(LinkList),
@@ -184,6 +189,17 @@ const Navigate = Command.define("Navigate", {
     return navigate(href).pipe(Effect.as(Message.NavigationFinished()));
   },
 });
+
+const canonicalMailNavigation = (url: Url.Url, route: Model["mailRoute"]) => {
+  if (!route?.id) return;
+  const pathname = mailMessagePage(route.folder, route.id);
+  if (url.pathname !== pathname) {
+    return Navigate({
+      href: Url.toString({ ...url, pathname }),
+      mode: "replace",
+    });
+  }
+};
 
 const readAccount = Effect.tryPromise(async () => {
   const response = await fetch("/api/me", { cache: "no-store" });
@@ -390,7 +406,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     vaultSetup: VaultSetup.initial,
     inbox: Inbox.initial,
     people: People.initial,
-    mailRoute: Inbox.routeFor(url.pathname),
+    mailRoute: mailRouteFor(url.pathname),
     peopleRoute: peopleRouteFor(url.pathname),
     signInNotice: null,
     links: null,
@@ -405,6 +421,8 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
   const commands: NonNullable<
     Update.Return<Model, Message>["commands"]
   >[number][] = [LoadAccount({})];
+  const mailNavigation = canonicalMailNavigation(url, model.mailRoute);
+  if (mailNavigation) commands.push(mailNavigation);
   if (url.pathname === "/" && !connectingBitwarden && !isApproval(model)) {
     const hash = Option.getOrUndefined(url.hash);
     commands.push(
@@ -426,7 +444,7 @@ const update = (
         (request.url.pathname === "/links" ||
           request.url.pathname === "/settings" ||
           request.url.pathname === vaultPath ||
-          Inbox.routeFor(request.url.pathname) ||
+          mailRouteFor(request.url.pathname) ||
           peopleRouteFor(request.url.pathname))
       ) {
         if (request.url.pathname === window.location.pathname) return { model };
@@ -443,17 +461,22 @@ const update = (
     },
     ChangedUrl: ({ url }) => {
       const page = pageFor(url);
-      const mailRoute = Inbox.routeFor(url.pathname);
+      const mailRoute = mailRouteFor(url.pathname);
       const peopleRoute = peopleRouteFor(url.pathname);
-      return page === model.page &&
+      const result =
+        page === model.page &&
         mailRoute?.folder === model.mailRoute?.folder &&
         mailRoute?.id === model.mailRoute?.id &&
         peopleRoute?.id === model.peopleRoute?.id
-        ? { model }
-        : loadPage(
-            { ...model, page, mailRoute, peopleRoute, error: null },
-            model.page,
-          );
+          ? { model }
+          : loadPage(
+              { ...model, page, mailRoute, peopleRoute, error: null },
+              model.page,
+            );
+      const mailNavigation = canonicalMailNavigation(url, mailRoute);
+      return mailNavigation
+        ? { ...result, commands: [...(result.commands ?? []), mailNavigation] }
+        : result;
     },
     NavigationFinished: () => ({ model }),
     RetriedSessionCheck: () =>

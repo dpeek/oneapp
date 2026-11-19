@@ -39,6 +39,7 @@ import {
   MailboxView,
   MailMessageId,
   MailPage,
+  MailRoute,
   type MailPerson,
   mailMessageApi,
   mailMessagePage,
@@ -66,10 +67,8 @@ const MessageLocation = Schema.Struct({
   id: MailMessageId,
 });
 
-const isInboxMessageId = Schema.is(InboxMessageId);
 const isSentMessageId = Schema.is(SentMessageId);
 const isPersonEmail = Schema.is(PersonEmail);
-const isMailMessageId = Schema.is(MailMessageId);
 const isSenderPriority = Schema.is(SenderPriority);
 const mailboxLabels = {
   inbox: "Inbox",
@@ -84,28 +83,6 @@ const mailboxApiPaths = {
   sent: sentApiPath,
   all: allMailApiPath,
   archive: archiveApiPath,
-};
-const mailboxFolders = ["inbox", "noise", "sent", "all", "archive"] as const;
-export const MailRoute = Schema.Struct({
-  folder: MailboxView,
-  id: Schema.NullOr(MailMessageId),
-});
-export const routeFor = (pathname: string): typeof MailRoute.Type | null => {
-  for (const folder of mailboxFolders) {
-    const root = folderPath(folder);
-    if (pathname === root || pathname === `${root}/`)
-      return { folder, id: null };
-    if (!pathname.startsWith(`${root}/`)) continue;
-    const id = pathname.slice(root.length + 1);
-    const valid =
-      folder === "all"
-        ? isMailMessageId
-        : folder === "sent"
-          ? isSentMessageId
-          : isInboxMessageId;
-    if (valid(id)) return { folder, id };
-  }
-  return null;
 };
 
 const ArchiveChange = Schema.Struct({

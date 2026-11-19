@@ -10,9 +10,11 @@ import { compile } from "html-to-text";
 import PostalMime, { decodeWords, type Email } from "postal-mime";
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import {
+  allMailApiPath,
   archiveApiPath,
   Conversation,
   ConversationArchiveUpdate,
+  ConversationPage,
   conversationsApiPath,
   folderApiPath,
   inboxApiPath,
@@ -38,9 +40,9 @@ import { AppAuth, ownerId, type authHttp } from "./auth.ts";
 import {
   indexMail,
   inboxMessageUnread,
-  inboxThreadCursor,
+  conversationCursor,
   inboxUnread,
-  listInboxThreads,
+  listConversations,
   readThread,
   removeIndexedMail,
   scanMail,
@@ -794,17 +796,19 @@ export const inboxRoutes = (
       ),
     );
 
-  const listThreads = (archived: boolean) =>
+  const listThreads = (view: Parameters<typeof listConversations>[2]) =>
     Effect.gen(function* () {
       if (!(yield* requireInboxOwner))
         return yield* jsonError(403, "Access denied");
       const query = yield* listQuery.pipe(Effect.option);
       const cursor =
-        query._tag === "Some" ? inboxThreadCursor(query.value.cursor) : null;
+        query._tag === "Some"
+          ? conversationCursor(query.value.cursor, view)
+          : null;
       if (!cursor) return yield* jsonError(400, "Invalid page cursor");
       const indexing = yield* Effect.tryPromise(() => syncMailIndex(env));
       const page = yield* Effect.tryPromise(async () => {
-        const page = await listInboxThreads(env.DB, cursor, archived);
+        const page = await listConversations(env.DB, cursor, view);
         const matches = await profilesFor(
           env,
           page.messages.flatMap(({ participants }) =>
@@ -824,7 +828,7 @@ export const inboxRoutes = (
         };
       });
       const sender = inboxSender(env);
-      return yield* HttpServerResponse.schemaJson(InboxPage)(
+      return yield* HttpServerResponse.schemaJson(ConversationPage)(
         {
           ...page,
           address: env.INBOX_EMAIL_ADDRESS ?? null,
@@ -866,8 +870,9 @@ export const inboxRoutes = (
         }),
       ),
     ),
-    HttpRouter.add("GET", conversationsApiPath, listThreads(false)),
-    HttpRouter.add("GET", archiveApiPath, listThreads(true)),
+    HttpRouter.add("GET", conversationsApiPath, listThreads("inbox")),
+    HttpRouter.add("GET", archiveApiPath, listThreads("archive")),
+    HttpRouter.add("GET", allMailApiPath, listThreads("all")),
     HttpRouter.add(
       "PATCH",
       `${conversationsApiPath}/:id/archive`,

@@ -1282,7 +1282,14 @@ button {
 }
 
 .inbox-messages li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   border-block-end: 1px solid var(--border);
+}
+
+.inbox-row-done {
+  margin-inline-end: 0.875rem;
 }
 
 .inbox-messages a {
@@ -1340,6 +1347,10 @@ button {
 
 .inbox-conversation-summary strong {
   min-inline-size: 0;
+}
+
+.inbox-conversation-summary .inbox-conversation-done {
+  font-size: 0.75rem;
 }
 
 .inbox-conversation-summary time {

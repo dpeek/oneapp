@@ -23,6 +23,7 @@ import {
 } from "../account-contract.ts";
 import { bitwardenDevicesPath } from "../bitwarden-device-contract.ts";
 import {
+  allMailApiPath,
   archiveApiPath,
   conversationApi,
   conversationArchiveApi,
@@ -867,6 +868,7 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
     } as unknown as WorkerEnv["SENT_MESSAGES"],
   });
   expect((await call(conversationsApiPath)).status).toBe(401);
+  expect((await call(allMailApiPath)).status).toBe(401);
   expect((await call(conversationApi(root.key))).status).toBe(401);
   expect((await call(inboxUnreadPath)).status).toBe(401);
   const session = cookies(await signIn(password));
@@ -922,6 +924,27 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
     ],
   });
   const expected = [root.key, branch.key, bridge.key, latest.key, sentId];
+  const sentOnlyId = "0-8199999999991-00000000-0000-4000-8000-000000000000";
+  await indexMail(db, {
+    id: sentOnlyId,
+    folder: "sent",
+    from: address,
+    to: sent.to,
+    subject: "Sent only",
+    timestamp: 6000,
+    messageIds: [],
+  });
+  expect(await get(allMailApiPath)).toMatchObject({
+    messages: [
+      { id: sentOnlyId, latestIncomingId: null, archived: false },
+      { id: separate.key, latestIncomingId: separate.key, archived: false },
+      { id: sentId, latestIncomingId: latest.key, messageCount: 5 },
+    ],
+  });
+  const allCursor = new URLSearchParams({ cursor: `6000/${sentOnlyId}` });
+  expect(await get(`${allMailApiPath}?${allCursor}`)).toMatchObject({
+    messages: [{ id: separate.key }, { id: sentId }],
+  });
   for (const anchor of [root.key, branch.key, sentId, latest.key]) {
     const thread = await get(conversationApi(anchor));
     expect(thread.messages.map(({ id }: { id: string }) => id)).toEqual(
@@ -1026,6 +1049,13 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
   });
   expect(await get(archiveApiPath)).toMatchObject({
     messages: [{ id: bridge.key, messageCount: 4, unreadCount: 1 }],
+  });
+  expect(await get(allMailApiPath)).toMatchObject({
+    messages: [
+      { id: sentOnlyId },
+      { id: separate.key, archived: false },
+      { id: sentId, latestIncomingId: bridge.key, archived: true },
+    ],
   });
   expect(await get(conversationApi(root.key))).toMatchObject({
     archived: true,

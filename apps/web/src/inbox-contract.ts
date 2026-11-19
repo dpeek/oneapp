@@ -8,6 +8,7 @@ export const inboxApiPath = "/api/inbox";
 export const inboxEventsPath = `${inboxApiPath}/events`;
 export const conversationsApiPath = `${inboxApiPath}/conversations`;
 export const archiveApiPath = `${inboxApiPath}/archive`;
+export const allMailApiPath = `${inboxApiPath}/all`;
 export const conversationApi = (id: string) => `${conversationsApiPath}/${id}`;
 export const conversationArchiveApi = (id: string) =>
   `${conversationApi(id)}/archive`;
@@ -16,14 +17,20 @@ export const inboxUnreadPath = `${inboxApiPath}/unread`;
 export const sentCopyHeader = "x-oneapp-sent-copy";
 export const sentPath = `${inboxPath}/sent`;
 export const archivePath = `${inboxPath}/archive`;
+export const allMailPath = `${inboxPath}/all`;
 export const sentApiPath = `${inboxApiPath}/sent`;
 export const inboxChanged = "inbox.changed";
 export const MailFolder = Schema.Literals(["inbox", "sent"]);
 export type MailFolder = typeof MailFolder.Type;
-export const MailboxView = Schema.Literals(["inbox", "sent", "archive"]);
+export const MailboxView = Schema.Literals(["inbox", "sent", "archive", "all"]);
 export type MailboxView = typeof MailboxView.Type;
-export const folderPath = (folder: MailboxView) =>
-  folder === "archive" ? archivePath : folder === "sent" ? sentPath : inboxPath;
+const mailboxPaths = {
+  inbox: inboxPath,
+  sent: sentPath,
+  archive: archivePath,
+  all: allMailPath,
+};
+export const folderPath = (folder: MailboxView) => mailboxPaths[folder];
 export const folderApiPath = (folder: MailFolder) =>
   folder === "sent" ? sentApiPath : inboxApiPath;
 export const mailMessagePage = (folder: MailboxView, id: string) =>
@@ -104,9 +111,27 @@ export const SentPage = Schema.Struct({
   messages: Schema.Array(SentSummary),
 });
 
+export const ConversationSummary = Schema.Struct({
+  ...messageFields,
+  id: MailMessageId,
+  latestIncomingId: Schema.NullOr(InboxMessageId),
+  archived: Schema.Boolean,
+  receivedAt: Schema.optionalKey(Schema.Number),
+  lastMessageAt: Schema.Number,
+  messageCount: Schema.Number,
+  unreadCount: Schema.Number,
+  participants: Schema.Array(MailPerson),
+  profiles: Schema.Array(PersonMatch),
+});
+
+export const ConversationPage = Schema.Struct({
+  ...pageFields,
+  messages: Schema.Array(ConversationSummary),
+});
+
 export const MailPage = Schema.Struct({
   ...pageFields,
-  messages: Schema.Array(Schema.Union([InboxSummary, SentSummary])),
+  messages: Schema.Array(Schema.Union([ConversationSummary, SentSummary])),
 });
 
 export const inboxComposeLimits = { to: 254, subject: 200, text: 32_768 };

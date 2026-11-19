@@ -14,21 +14,23 @@ import {
   splitMailQuote,
 } from "./inbox-display.ts";
 import {
+  allMailApiPath,
+  allMailPath,
   archiveApiPath,
   archivePath,
   Conversation,
   type ConversationMessage,
   conversationApi,
   conversationArchiveApi,
+  ConversationPage,
+  type ConversationSummary,
   conversationsApiPath,
-  folderApiPath,
   folderPath,
   inboxChanged,
   inboxComposeLimits,
   InboxEntry,
   inboxEventsPath,
   InboxMessageId,
-  InboxPage,
   inboxPath,
   inboxReadApi,
   InboxUnread,
@@ -43,6 +45,7 @@ import {
   mailMessagePage,
   replySubject,
   SentEntry,
+  sentApiPath,
   SentMessageId,
   SentPage,
   sentPath,
@@ -64,6 +67,19 @@ const MessageLocation = Schema.Struct({
 const isInboxMessageId = Schema.is(InboxMessageId);
 const isSentMessageId = Schema.is(SentMessageId);
 const isPersonEmail = Schema.is(PersonEmail);
+const isMailMessageId = Schema.is(MailMessageId);
+const mailboxLabels = {
+  inbox: "Inbox",
+  sent: "Sent",
+  all: "All mail",
+  archive: "Archive",
+} satisfies Record<MailboxView, string>;
+const mailboxApiPaths = {
+  inbox: conversationsApiPath,
+  sent: sentApiPath,
+  all: allMailApiPath,
+  archive: archiveApiPath,
+};
 export const MailRoute = Schema.Struct({
   folder: MailboxView,
   id: Schema.NullOr(MailMessageId),
@@ -75,6 +91,12 @@ export const routeFor = (pathname: string): typeof MailRoute.Type | null => {
     return { folder: "sent", id: null };
   if (pathname === archivePath || pathname === `${archivePath}/`)
     return { folder: "archive", id: null };
+  if (pathname === allMailPath || pathname === `${allMailPath}/`)
+    return { folder: "all", id: null };
+  if (pathname.startsWith(`${allMailPath}/`)) {
+    const id = pathname.slice(allMailPath.length + 1);
+    return isMailMessageId(id) ? { folder: "all", id } : null;
+  }
   if (pathname.startsWith(`${sentPath}/`)) {
     const id = pathname.slice(sentPath.length + 1);
     return isSentMessageId(id) ? { folder: "sent", id } : null;
@@ -102,8 +124,8 @@ const ArchiveRequest = Schema.Struct({
   selected: Schema.NullOr(MailMessageId),
 });
 
-const messageFolder = (view: MailboxView): MailFolder =>
-  view === "sent" ? "sent" : "inbox";
+const messageFolder = (id: string): MailFolder =>
+  isSentMessageId(id) ? "sent" : "inbox";
 
 export const Model = Schema.Struct({
   folder: MailboxView,
@@ -197,6 +219,7 @@ export const Message = defineMessageUnion({
   DeletedEntry: { id: MailMessageId, request: Schema.String },
   DeleteFailed: { request: Schema.String },
   RequestedArchiveChange: {},
+  MarkedRowDone: { id: InboxMessageId },
   UndidArchive: {},
   ArchiveChanged: { request: Schema.String },
   ArchiveFailed: { request: Schema.String, error: Schema.String },
@@ -346,12 +369,7 @@ const LoadList = Command.define("LoadInboxList", {
   messages: [Message.LoadedList, Message.ListFailed, Message.SessionExpired],
   execute: ({ request, cursor, folder, minimum }) =>
     Effect.tryPromise(async (signal) => {
-      const path =
-        folder === "archive"
-          ? archiveApiPath
-          : folder === "inbox"
-            ? conversationsApiPath
-            : folderApiPath(folder);
+      const path = mailboxApiPaths[folder];
       let nextCursor = cursor;
       let page: typeof MailPage.Type | null = null;
       do {
@@ -369,7 +387,7 @@ const LoadList = Command.define("LoadInboxList", {
         const next =
           folder === "sent"
             ? Schema.decodeUnknownSync(SentPage)(payload)
-            : Schema.decodeUnknownSync(InboxPage)(payload);
+            : Schema.decodeUnknownSync(ConversationPage)(payload);
         page = page
           ? { ...next, messages: [...page.messages, ...next.messages] }
           : next;
@@ -735,7 +753,7 @@ export const update = (
           : {
               ...base,
               selected: id,
-              active: id ? { id, folder: messageFolder(folder) } : null,
+              active: id ? { id, folder: messageFolder(id) } : null,
               thread: null,
               threadRequest: null,
               threadRefreshQueued: false,
@@ -811,6 +829,10 @@ export const update = (
         model.selected,
       );
     },
+    MarkedRowDone: ({ id }) =>
+      model.archiveRequest
+        ? { model }
+        : changeArchive(model, { id, archived: true }, null),
     UndidArchive: () =>
       model.archiveNotice?.archived && !model.archiveRequest
         ? changeArchive(
@@ -938,7 +960,10 @@ export const update = (
           ? {
               active:
                 model.selected && model.selected !== id
-                  ? { id: model.selected, folder: messageFolder(model.folder) }
+                  ? {
+                      id: model.selected,
+                      folder: messageFolder(model.selected),
+                    }
                   : null,
               entry: null,
               entryRequest: null,
@@ -1121,16 +1146,15 @@ const groupParticipants = (
 };
 
 const conversationRow = (
-  message: (typeof InboxPage.Type.messages)[number],
+  message: typeof ConversationSummary.Type,
   h: HtmlBuilder<Message>,
 ) => {
   const participants = groupParticipants(
-    message.participants ??
-      (message.from ? [{ address: message.from, name: "" }] : []),
+    message.participants,
     findProfiles(message.profiles),
   );
-  const timestamp = message.lastMessageAt ?? message.receivedAt;
-  const count = message.messageCount ?? 1;
+  const timestamp = message.lastMessageAt;
+  const count = message.messageCount;
   const countLabel = `${count} ${count === 1 ? "message" : "messages"}${message.unreadCount ? `, ${message.unreadCount} unread` : ""}`;
   return [
     h.div(
@@ -1146,6 +1170,9 @@ const conversationRow = (
           ],
           [String(count)],
         ),
+        ...(message.archived
+          ? [h.span([h.Class("inbox-conversation-done")], ["Done"])]
+          : []),
         h.time(
           [
             h.Datetime(new Date(timestamp).toISOString()),
@@ -1204,7 +1231,7 @@ const archiveFeedback = (model: Model, h: HtmlBuilder<Message>) => [
               [h.Role("status")],
               [
                 model.archiveNotice.archived
-                  ? "Conversation archived."
+                  ? "Conversation marked done."
                   : "Conversation moved to Inbox.",
               ],
             ),
@@ -1288,8 +1315,12 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
                       [h.Class("inbox-messages")],
                       model.list.messages.map((message) => {
                         const unread =
-                          "receivedAt" in message &&
-                          Boolean(message.unreadCount);
+                          "unreadCount" in message && message.unreadCount > 0;
+                        const markDoneId =
+                          model.folder === "inbox" &&
+                          "latestIncomingId" in message
+                            ? message.latestIncomingId
+                            : null;
                         return h.li(
                           [h.Key(message.id)],
                           [
@@ -1326,6 +1357,26 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
                                   ]
                                 : conversationRow(message, h),
                             ),
+                            ...(markDoneId
+                              ? [
+                                  h.button(
+                                    [
+                                      h.Type("button"),
+                                      h.Class("inbox-row-done"),
+                                      h.AriaLabel(
+                                        `Mark ${conversationSubject([message])} done`,
+                                      ),
+                                      h.Disabled(model.archiveRequest !== null),
+                                      h.OnClick(
+                                        Message.MarkedRowDone({
+                                          id: markDoneId,
+                                        }),
+                                      ),
+                                    ],
+                                    ["Mark done"],
+                                  ),
+                                ]
+                              : []),
                           ],
                         );
                       }),
@@ -1620,7 +1671,7 @@ const entryView = (
                     h.Disabled(model.archiveRequest !== null),
                     h.OnClick(Message.RequestedArchiveChange()),
                   ],
-                  [model.thread?.archived ? "Move to Inbox" : "Archive"],
+                  [model.thread?.archived ? "Move to Inbox" : "Mark done"],
                 ),
               ]
             : []),
@@ -1781,16 +1832,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
       h.header(
         [h.Class("workspace-header")],
         [
-          h.h1(
-            [],
-            [
-              model.folder === "archive"
-                ? "Archive"
-                : model.folder === "sent"
-                  ? "Sent"
-                  : "Inbox",
-            ],
-          ),
+          h.h1([], [mailboxLabels[model.folder]]),
           h.submodel({
             slotId: "inbox-compose",
             view: Compose.view,
@@ -1804,13 +1846,8 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
         [
           h.ul(
             [h.Class("workspace-nav-list")],
-            (
-              [
-                { folder: "inbox", label: "Inbox" },
-                { folder: "sent", label: "Sent" },
-                { folder: "archive", label: "Archive" },
-              ] as const
-            ).map(({ folder, label }) => {
+            (["inbox", "sent", "all", "archive"] as const).map((folder) => {
+              const label = mailboxLabels[folder];
               const count = folder === "inbox" ? model.unreadCount : 0;
               return h.li(
                 [h.Key(folder)],

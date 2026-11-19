@@ -36,6 +36,12 @@ export const mailIndexMessages = sqliteTable(
     index("mail_index_inbox_archive_date")
       .on(table.archived, table.timestamp, table.id)
       .where(sql`folder = 'inbox' AND deleted = 0`),
+    index("mail_index_all_date")
+      .on(table.timestamp, table.id)
+      .where(sql`deleted = 0`),
+    index("mail_index_all_thread_date")
+      .on(table.threadId, table.timestamp, table.id)
+      .where(sql`deleted = 0`),
   ],
 );
 

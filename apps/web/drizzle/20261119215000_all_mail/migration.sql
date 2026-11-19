@@ -1,0 +1,2 @@
+CREATE INDEX `mail_index_all_date` ON `mail_index_messages` (`timestamp`,`id`) WHERE deleted = 0;--> statement-breakpoint
+CREATE INDEX `mail_index_all_thread_date` ON `mail_index_messages` (`thread_id`,`timestamp`,`id`) WHERE deleted = 0;

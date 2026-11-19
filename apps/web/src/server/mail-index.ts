@@ -2,9 +2,11 @@ import type { D1Database, R2Bucket, R2Object } from "@cloudflare/workers-types";
 import { Schema } from "effect";
 import {
   InboxMessageId,
+  MailMessageId,
   MailPeople,
   type ConversationMessage,
   type MailFolder,
+  type MailboxView,
 } from "../inbox-contract.ts";
 import { conversationPeople, conversationSubject } from "../inbox-display.ts";
 import { mailPeople } from "./mail-people.ts";
@@ -154,6 +156,7 @@ export const removeIndexedMail = async (
 };
 
 const isInboxId = Schema.is(InboxMessageId);
+const isMailId = Schema.is(MailMessageId);
 const pageSize = 20;
 const scanSize = 12;
 
@@ -234,12 +237,17 @@ export const setThreadArchived = async (
   return current.archived === (archived ? 1 : 0) ? "unchanged" : "stale";
 };
 
-export const inboxThreadCursor = (cursor: string | undefined) => {
+type ConversationView = Exclude<MailboxView, "sent">;
+
+export const conversationCursor = (
+  cursor: string | undefined,
+  view: ConversationView,
+) => {
   if (cursor === undefined) return { timestamp: null, id: "" };
   const [time, id, extra] = cursor.split("/");
   const timestamp = Number(time);
   return extra === undefined &&
-    isInboxId(id) &&
+    (view === "all" ? isMailId(id) : isInboxId(id)) &&
     /^\d+$/u.test(time ?? "") &&
     Number.isSafeInteger(timestamp)
     ? { timestamp, id }
@@ -273,15 +281,18 @@ const withPeople = <
   };
 };
 
-export const listInboxThreads = async (
+export const listConversations = async (
   db: D1Database,
-  cursor: NonNullable<ReturnType<typeof inboxThreadCursor>>,
-  archived: boolean,
+  cursor: NonNullable<ReturnType<typeof conversationCursor>>,
+  view: ConversationView,
 ) => {
+  const all = view === "all";
   const { results } = await db
     .prepare(
       `
-    SELECT m.id, m.sender AS "from", m.subject, m.timestamp AS receivedAt,
+    SELECT m.id, m.sender AS "from", m.timestamp AS sortAt,
+           ${all ? "incoming.id" : "m.id"} AS latestIncomingId,
+           ${all ? "coalesce(incoming.archived, 0)" : "m.archived"} AS archived,
            (SELECT json_group_array(json_object(
               'from', member.sender, 'to', member.recipient, 'subject', member.subject,
               'timestamp', member.timestamp, 'people', member.people
@@ -292,44 +303,63 @@ export const listInboxThreads = async (
             WHERE member.thread_id = m.thread_id AND member.folder = 'inbox'
               AND member.deleted = 0 AND member.unread = 1) AS unreadCount
     FROM mail_index_messages m
-    WHERE m.folder = 'inbox' AND m.deleted = 0 AND m.archived = ?4
+    ${
+      all
+        ? `LEFT JOIN mail_index_messages incoming ON incoming.id = (
+      SELECT member.id FROM mail_index_messages member
+      WHERE member.thread_id = m.thread_id AND member.folder = 'inbox' AND member.deleted = 0
+      ORDER BY member.timestamp DESC, member.id DESC LIMIT 1
+    )`
+        : ""
+    }
+    WHERE m.deleted = 0 ${all ? "" : "AND m.folder = 'inbox' AND m.archived = ?4"}
       AND (?1 IS NULL OR (m.timestamp, m.id) < (?1, ?2))
       AND NOT EXISTS (
         SELECT 1 FROM mail_index_messages newer
-        WHERE newer.thread_id = m.thread_id AND newer.folder = 'inbox' AND newer.deleted = 0
+        WHERE newer.thread_id = m.thread_id AND newer.deleted = 0
+          ${all ? "" : "AND newer.folder = 'inbox'"}
           AND (newer.timestamp, newer.id) > (m.timestamp, m.id)
       )
     ORDER BY m.timestamp DESC, m.id DESC LIMIT ?3
   `,
     )
-    .bind(cursor.timestamp, cursor.id, pageSize + 1, archived ? 1 : 0)
+    .bind(
+      cursor.timestamp,
+      cursor.id,
+      pageSize + 1,
+      ...(all ? [] : [view === "archive" ? 1 : 0]),
+    )
     .all<{
       id: string;
       from: string;
       subject: string;
-      receivedAt: number;
+      sortAt: number;
+      latestIncomingId: string | null;
+      archived: number;
       metadata: string;
       unreadCount: number;
     }>();
-  const messages = results.slice(0, pageSize).map(({ metadata, ...row }) => {
-    const members = (JSON.parse(metadata) as IndexedThreadMember[]).map(
-      withPeople,
-    );
-    return {
-      ...row,
-      subject: conversationSubject(members),
-      lastMessageAt: members.at(-1)?.timestamp ?? row.receivedAt,
-      messageCount: members.length,
-      participants: conversationPeople(members),
-    };
-  });
-  const last = messages.at(-1);
+  const messages = results
+    .slice(0, pageSize)
+    .map(({ metadata, sortAt, archived, ...row }) => {
+      const members = (JSON.parse(metadata) as IndexedThreadMember[]).map(
+        withPeople,
+      );
+      return {
+        ...row,
+        archived: archived === 1,
+        ...(all ? {} : { receivedAt: sortAt }),
+        subject: conversationSubject(members),
+        lastMessageAt: members.at(-1)?.timestamp ?? sortAt,
+        messageCount: members.length,
+        participants: conversationPeople(members),
+      };
+    });
+  const last = results[pageSize - 1];
   return {
     messages,
     cursor:
-      last && results.length > pageSize
-        ? `${last.receivedAt}/${last.id}`
-        : null,
+      last && results.length > pageSize ? `${last.sortAt}/${last.id}` : null,
   };
 };
 

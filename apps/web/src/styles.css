@@ -1025,15 +1025,12 @@ oneapp-vault-reader {
   gap: 0.5rem;
 }
 
-.people-list-header {
-  justify-content: flex-end;
-}
-
 .people-detail-header h2 {
   margin: 0;
 }
 
 .people-list-status {
+  margin-block: 1rem;
   padding-inline: 0.875rem;
 }
 

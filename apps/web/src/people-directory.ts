@@ -35,19 +35,6 @@ const listView = (directory: Directory, h: HtmlBuilder<DirectoryMessage>) => {
   return h.section(
     [h.Class("workspace-list"), h.AriaLabel("People records")],
     [
-      h.header(
-        [h.Class("workspace-list-header people-list-header")],
-        [
-          h.button(
-            [
-              h.Type("button"),
-              h.Disabled(pending || directory.edit !== null),
-              h.OnClick(Message.RetriedDirectory()),
-            ],
-            [directory.listFailed ? "Retry" : "Refresh"],
-          ),
-        ],
-      ),
       h.div(
         [h.Class("workspace-results")],
         [
@@ -61,9 +48,15 @@ const listView = (directory: Directory, h: HtmlBuilder<DirectoryMessage>) => {
             : []),
           ...(directory.listFailed
             ? [
-                h.p(
-                  [h.Class("people-list-status"), h.Role("alert")],
-                  ["Could not load people."],
+                h.div(
+                  [h.Class("people-list-status")],
+                  [
+                    h.p([h.Role("alert")], ["Could not load people."]),
+                    h.button(
+                      [h.Type("button"), h.OnClick(Message.RetriedDirectory())],
+                      ["Retry"],
+                    ),
+                  ],
                 ),
               ]
             : []),

@@ -134,7 +134,7 @@ export const initial: Model = {
 
 export const Message = defineMessageUnion({
   Opened: MailRoute.fields,
-  Refreshed: {},
+  RetriedList: {},
   RefreshedUnread: {},
   GotComposeMessage: { message: Compose.Message },
   GotQuickReplyMessage: { message: QuickReply.Message },
@@ -613,7 +613,7 @@ export const update = (
       const list = id && next.list ? { model: next } : loadList(next, null);
       return next.thread ? list : withThread(list);
     },
-    Refreshed: () => withUnread(withThread(loadList(model, null))),
+    RetriedList: () => withUnread(withThread(loadList(model, null))),
     RefreshedUnread: () => refreshUnread(model),
     GotComposeMessage: ({ message }) => {
       const result = foldCompose(model, message);
@@ -887,14 +887,14 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
         [h.Class("workspace-list-header inbox-list-header")],
         [
           h.p([], [model.list?.address ?? "Messages"]),
-          h.button(
-            [
-              h.Type("button"),
-              h.Disabled(model.listRequest !== null),
-              h.OnClick(Message.Refreshed()),
-            ],
-            [model.list === null && model.listError ? "Retry" : "Refresh"],
-          ),
+          ...(model.listError
+            ? [
+                h.button(
+                  [h.Type("button"), h.OnClick(Message.RetriedList())],
+                  ["Retry"],
+                ),
+              ]
+            : []),
         ],
       ),
       h.div(

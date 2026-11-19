@@ -1093,6 +1093,57 @@ button {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 0.5rem;
+  margin-block-start: 0.75rem;
+}
+
+.inbox-thread {
+  display: grid;
+  gap: 0.625rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.inbox-thread > li {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+
+.inbox-reader button.inbox-thread-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.25rem 0.75rem;
+  inline-size: 100%;
+  border: 0;
+  border-radius: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  background: var(--canvas);
+  text-align: start;
+}
+
+.inbox-thread-summary strong {
+  grid-column: 1 / -1;
+}
+
+.inbox-thread-summary :is(strong, span) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inbox-thread-summary :is(span, time) {
+  color: var(--muted);
+}
+
+.inbox-thread-summary[aria-expanded="true"] {
+  border-end-start-radius: 0;
+  border-end-end-radius: 0;
+}
+
+.inbox-thread-content {
+  padding: 0.875rem;
+  border-block-start: 1px solid var(--border);
 }
 
 .inbox-reader button.inbox-delete-button {
@@ -1206,11 +1257,6 @@ button {
   margin-block: 1.5rem;
   white-space: pre-wrap;
   line-height: 1.6;
-}
-
-.inbox-entry-footer {
-  margin-block-start: 1.5rem;
-  font-size: 0.875rem;
 }
 
 .connected-clients {

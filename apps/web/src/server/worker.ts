@@ -34,7 +34,10 @@ import {
   inboxRoutes,
   inboxSessionHeaders,
   inboxSubject,
+  syncMailIndex,
 } from "./inbox.ts";
+import { indexMail } from "./mail-index.ts";
+import { conversationMessageIds } from "./mail-reply.ts";
 import { linksRoutes } from "./links.ts";
 import { mcpRoutes } from "./mcp.ts";
 import {
@@ -71,7 +74,7 @@ export default {
     >,
     env: Pick<
       WorkerEnv,
-      "INBOX_EMAIL_ADDRESS" | "INBOX_MESSAGES" | "INBOX_UPDATES"
+      "DB" | "INBOX_EMAIL_ADDRESS" | "INBOX_MESSAGES" | "INBOX_UPDATES"
     >,
     context?: { waitUntil(promise: Promise<unknown>): void },
   ) {
@@ -81,14 +84,25 @@ export default {
     }
 
     const raw = message.raw.pipeThrough(new FixedLengthStream(message.rawSize));
-    await env.INBOX_MESSAGES.put(inboxMessageKey(), raw, {
+    const id = inboxMessageKey();
+    const subject = inboxSubject(message.headers.get("subject"));
+    const stored = await env.INBOX_MESSAGES.put(id, raw, {
       httpMetadata: { contentType: "message/rfc822" },
       customMetadata: {
         envelopeFrom: message.from,
         envelopeTo: message.to,
-        subject: inboxSubject(message.headers.get("subject")),
+        subject,
       },
     });
+    await indexMail(env.DB, {
+      id,
+      folder: "inbox",
+      timestamp: stored.uploaded.getTime(),
+      subject,
+      from: message.from,
+      to: message.to,
+      messageIds: conversationMessageIds((name) => message.headers.get(name)),
+    }).catch(() => console.warn("Could not index incoming email"));
     if (env.INBOX_UPDATES) {
       const notify = Promise.resolve()
         .then(() => env.INBOX_UPDATES.getByName(ownerId).publish())
@@ -100,7 +114,12 @@ export default {
     }
   },
   async scheduled(_event: unknown, env: WorkerEnv) {
-    await collectAttachments(env.DB, env.VAULT_FILES);
+    await Promise.all([
+      collectAttachments(env.DB, env.VAULT_FILES),
+      syncMailIndex(env, true).catch(() =>
+        console.warn("Could not update the mail index"),
+      ),
+    ]);
   },
   async fetch(
     request: Request,

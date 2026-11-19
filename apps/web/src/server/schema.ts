@@ -1,4 +1,9 @@
 import { authTables } from "./database.ts";
+export {
+  mailIndexKeys,
+  mailIndexMessages,
+  mailIndexScans,
+} from "./mail-tables.ts";
 
 export {
   accountEmailChanges,

@@ -4,6 +4,8 @@ import { Schema } from "effect";
 export const inboxPath = "/inbox";
 export const inboxApiPath = "/api/inbox";
 export const inboxEventsPath = `${inboxApiPath}/events`;
+export const conversationsApiPath = `${inboxApiPath}/conversations`;
+export const conversationApi = (id: string) => `${conversationsApiPath}/${id}`;
 export const inboxSendPath = `${inboxApiPath}/send`;
 export const sentCopyHeader = "x-oneapp-sent-copy";
 export const sentPath = `${inboxPath}/sent`;
@@ -44,6 +46,7 @@ export const InboxSummary = Schema.Struct({
   ...messageFields,
   id: InboxMessageId,
   receivedAt: Schema.Number,
+  messageCount: Schema.optionalKey(Schema.Number),
 });
 
 export const SentSummary = Schema.Struct({
@@ -57,6 +60,7 @@ const pageFields = {
   cursor: Schema.NullOr(Schema.String),
   address: Schema.NullOr(Schema.String),
   sender: Schema.optionalKey(Schema.String),
+  indexing: Schema.optionalKey(Schema.Boolean),
 };
 
 export const InboxPage = Schema.Struct({
@@ -121,3 +125,15 @@ export const SentEntry = Schema.Struct({
   ...previewFields,
 });
 export const MailEntry = Schema.Union([InboxEntry, SentEntry]);
+
+export const ConversationMessage = Schema.Struct({
+  ...messageFields,
+  id: MailMessageId,
+  folder: MailFolder,
+  to: Schema.String,
+  timestamp: Schema.Number,
+});
+export type ConversationMessage = typeof ConversationMessage.Type;
+export const Conversation = Schema.Struct({
+  messages: Schema.Array(ConversationMessage),
+});

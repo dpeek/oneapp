@@ -10,6 +10,8 @@ import { compile } from "html-to-text";
 import PostalMime, { decodeWords, type Email } from "postal-mime";
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import {
+  Conversation,
+  conversationsApiPath,
   folderApiPath,
   inboxApiPath,
   InboxDraft,
@@ -19,14 +21,30 @@ import {
   InboxSend,
   inboxSendPath,
   type MailFolder,
+  MailMessageId,
   SentEntry,
   SentPage,
   sentCopyHeader,
 } from "../inbox-contract.ts";
 import { jsonError, privateHeaders } from "./api-response.ts";
 import { AppAuth, ownerId, type authHttp } from "./auth.ts";
-import { parentMessageId, replyHeaders, replyRecipient } from "./mail-reply.ts";
 import {
+  indexMail,
+  inboxThreadCursor,
+  listInboxThreads,
+  readThread,
+  removeIndexedMail,
+  scanMail,
+} from "./mail-index.ts";
+import {
+  conversationMessageIds,
+  parentMessageId,
+  replyHeaders,
+  replyRecipient,
+} from "./mail-reply.ts";
+import {
+  describeSent,
+  describeStoredSent,
   isSentMessageId,
   listSent,
   readSent,
@@ -36,6 +54,7 @@ import {
 
 type InboxEnv = Pick<
   WorkerEnv,
+  | "DB"
   | "INBOX_EMAIL_ADDRESS"
   | "INBOX_MESSAGES"
   | "INBOX_EMAIL_FROM"
@@ -54,6 +73,7 @@ export type InboxSocketSession = {
 };
 
 const isInboxMessageId = Schema.is(InboxMessageId);
+const isMailMessageId = Schema.is(MailMessageId);
 const headerLimit = 64 * 1024;
 const messageLimit = 8 * 1024 * 1024;
 const textLimit = 256 * 1024;
@@ -123,6 +143,64 @@ const readSubject = async (bucket: InboxBucket, object: R2Object) => {
     Math.min(object.size, headerLimit),
   );
   return headers?.email?.subject?.trim().slice(0, 200) ?? "";
+};
+
+const describeStoredInbox = async (bucket: InboxBucket, object: R2Object) => {
+  if (!isInboxMessageId(object.key) || !object.size) return null;
+  const headers = await readHeaders(
+    bucket,
+    object.key,
+    Math.min(object.size, mimeOptions.maxHeadersSize),
+  );
+  if (!headers) return null;
+  const { email } = headers;
+  return {
+    id: object.key,
+    folder: "inbox" as const,
+    timestamp: object.uploaded.getTime(),
+    from: object.customMetadata?.envelopeFrom ?? email?.from?.address ?? "",
+    to: object.customMetadata?.envelopeTo ?? "",
+    subject:
+      object.customMetadata?.subject ??
+      email?.subject?.trim().slice(0, 200) ??
+      "",
+    messageIds: conversationMessageIds(
+      (name) => email?.headers.find(({ key }) => key === name)?.value,
+    ),
+  };
+};
+
+export const syncMailIndex = async (env: InboxEnv, reconcile = false) => {
+  const inbox = await scanMail(
+    env.DB,
+    "inbox",
+    env.INBOX_MESSAGES,
+    (object) => describeStoredInbox(env.INBOX_MESSAGES, object),
+    reconcile,
+  );
+  const sent = await scanMail(
+    env.DB,
+    "sent",
+    env.SENT_MESSAGES,
+    (object) => describeStoredSent(env.SENT_MESSAGES, object),
+    reconcile,
+  );
+  return inbox || sent;
+};
+
+const loadConversation = async (env: InboxEnv, id: string) => {
+  const thread = await readThread(env.DB, id);
+  if (thread.messages.some((message) => message.id === id)) return thread;
+  const inbox = isInboxMessageId(id);
+  const bucket = inbox ? env.INBOX_MESSAGES : env.SENT_MESSAGES;
+  const object = await bucket.head(id);
+  if (!object) return thread;
+  const mail = inbox
+    ? await describeStoredInbox(bucket, object)
+    : await describeStoredSent(bucket, object);
+  if (!mail) return thread;
+  await indexMail(env.DB, mail);
+  return readThread(env.DB, id);
 };
 
 const replyInfo = (email: Email | null, envelopeFrom: string) => {
@@ -258,7 +336,7 @@ const sendRateLimit = () =>
 
 const sendDraft = Effect.fnUntraced(function* (
   binding: SendEmail,
-  bucket: InboxEnv["SENT_MESSAGES"],
+  env: InboxEnv,
   message: typeof InboxDraft.Type & { from: string },
   reply: SentReply | undefined,
 ) {
@@ -275,13 +353,20 @@ const sendDraft = Effect.fnUntraced(function* (
   if (sent._tag === "Success") {
     if (!sent.success?.messageId) return yield* unknownSend();
     const sentAt = Date.now();
-    const saved = yield* saveSent(bucket, {
+    const record = {
       ...message,
       id: newestFirstKey(sentAt),
       sentAt,
       providerMessageId: sent.success.messageId,
       ...(reply ? { reply } : {}),
-    });
+    };
+    const saved = yield* saveSent(env.SENT_MESSAGES, record);
+    if (saved)
+      yield* Effect.promise(() =>
+        indexMail(env.DB, describeSent(record)).catch(() => {
+          console.warn("Could not index sent email");
+        }),
+      );
     return HttpServerResponse.empty({
       status: 204,
       headers: saved
@@ -364,12 +449,7 @@ const sendEmail = (env: InboxEnv, defer: (work: Promise<unknown>) => void) =>
       reply = { originalId: replyToId, ...(headers ? { headers } : {}) };
     }
     const work = Effect.runPromiseExit(
-      sendDraft(
-        sender.binding,
-        env.SENT_MESSAGES,
-        { ...message, from: sender.from },
-        reply,
-      ),
+      sendDraft(sender.binding, env, { ...message, from: sender.from }, reply),
     );
     // Keep the send and its archive write together if the client disconnects.
     defer(work);
@@ -395,11 +475,12 @@ export const inboxRoutes = (
         ...(sender ? { sender: sender.from } : {}),
       };
       if (folder === "sent") {
+        const indexing = yield* Effect.tryPromise(() => syncMailIndex(env));
         const page = yield* Effect.tryPromise(() =>
           listSent(env.SENT_MESSAGES, query.value.cursor),
         );
         return yield* HttpServerResponse.schemaJson(SentPage)(
-          { ...page, ...mailbox },
+          { ...page, ...mailbox, ...(indexing ? { indexing } : {}) },
           { headers: privateHeaders },
         );
       }
@@ -450,6 +531,7 @@ export const inboxRoutes = (
       const { id } = yield* HttpRouter.params;
       if (!validId(id)) return yield* notFound();
       yield* Effect.tryPromise(() => bucket.delete(id));
+      yield* Effect.tryPromise(() => removeIndexedMail(env.DB, folder, id));
       return HttpServerResponse.empty({ status: 204, headers: privateHeaders });
     });
     return Effect.gen(function* () {
@@ -478,6 +560,50 @@ export const inboxRoutes = (
   return Layer.mergeAll(
     folderRoutes("inbox"),
     folderRoutes("sent"),
+    HttpRouter.add(
+      "GET",
+      conversationsApiPath,
+      Effect.gen(function* () {
+        if (!(yield* requireInboxOwner))
+          return yield* jsonError(403, "Access denied");
+        const query = yield* listQuery.pipe(Effect.option);
+        const cursor =
+          query._tag === "Some" ? inboxThreadCursor(query.value.cursor) : null;
+        if (!cursor) return yield* jsonError(400, "Invalid page cursor");
+        const indexing = yield* Effect.tryPromise(() => syncMailIndex(env));
+        const page = yield* Effect.tryPromise(() =>
+          listInboxThreads(env.DB, cursor),
+        );
+        const sender = inboxSender(env);
+        return yield* HttpServerResponse.schemaJson(InboxPage)(
+          {
+            ...page,
+            address: env.INBOX_EMAIL_ADDRESS ?? null,
+            ...(sender ? { sender: sender.from } : {}),
+            ...(indexing ? { indexing } : {}),
+          },
+          { headers: privateHeaders },
+        );
+      }).pipe(Effect.catchTags(inboxErrors)),
+    ),
+    HttpRouter.add(
+      "GET",
+      `${conversationsApiPath}/:id`,
+      Effect.gen(function* () {
+        if (!(yield* requireInboxOwner))
+          return yield* jsonError(403, "Access denied");
+        const { id } = yield* HttpRouter.params;
+        if (!isMailMessageId(id)) return yield* notFound();
+        const thread = yield* Effect.tryPromise(() =>
+          loadConversation(env, id),
+        );
+        return thread.messages.length
+          ? yield* HttpServerResponse.schemaJson(Conversation)(thread, {
+              headers: privateHeaders,
+            })
+          : yield* notFound();
+      }).pipe(Effect.catchTags(inboxErrors)),
+    ),
     HttpRouter.add("GET", `${inboxApiPath}/:id/original`, read("inbox", true)),
     HttpRouter.add(
       "POST",

@@ -5,6 +5,9 @@ import { defineMessageUnion } from "foldkit/message";
 import * as Mount from "foldkit/mount";
 import * as Compose from "./inbox-compose.ts";
 import {
+  Conversation,
+  conversationApi,
+  conversationsApiPath,
   folderApiPath,
   folderPath,
   inboxChanged,
@@ -12,7 +15,6 @@ import {
   InboxEntry,
   inboxEventsPath,
   InboxMessageId,
-  inboxOriginalApi,
   InboxPage,
   inboxPath,
   MailEntry,
@@ -26,6 +28,11 @@ import {
   SentPage,
   sentPath,
 } from "./inbox-contract.ts";
+
+const MessageLocation = Schema.Struct({
+  folder: MailFolder,
+  id: MailMessageId,
+});
 
 const isInboxMessageId = Schema.is(InboxMessageId);
 const isSentMessageId = Schema.is(SentMessageId);
@@ -56,6 +63,11 @@ export const Model = Schema.Struct({
   listRefreshQueued: Schema.Boolean,
   listError: Schema.NullOr(Schema.String),
   selected: Schema.NullOr(MailMessageId),
+  active: Schema.NullOr(MessageLocation),
+  thread: Schema.NullOr(Conversation),
+  threadRequest: Schema.NullOr(Schema.String),
+  threadRefreshQueued: Schema.Boolean,
+  threadFailed: Schema.Boolean,
   entry: Schema.NullOr(MailEntry),
   entryRequest: Schema.NullOr(Schema.String),
   entryError: Schema.NullOr(Schema.String),
@@ -79,6 +91,11 @@ export const initial: Model = {
   listRefreshQueued: false,
   listError: null,
   selected: null,
+  active: null,
+  thread: null,
+  threadRequest: null,
+  threadRefreshQueued: false,
+  threadFailed: false,
   entry: null,
   entryRequest: null,
   entryError: null,
@@ -95,6 +112,9 @@ export const Message = defineMessageUnion({
   LiveChanged: {},
   RequestedMore: {},
   RetriedEntry: {},
+  RetriedThread: {},
+  ToggledMessage: MessageLocation.fields,
+  RequestedBack: {},
   RequestedReply: {},
   RequestedDelete: {},
   CanceledDelete: {},
@@ -107,6 +127,8 @@ export const Message = defineMessageUnion({
     append: Schema.Boolean,
   },
   ListFailed: { request: Schema.String },
+  LoadedThread: { request: Schema.String, thread: Conversation },
+  ThreadFailed: { request: Schema.String },
   LoadedEntry: { request: Schema.String, entry: MailEntry },
   EntryFailed: { request: Schema.String, missing: Schema.Boolean },
   SessionExpired: { request: Schema.String },
@@ -199,7 +221,9 @@ const LoadList = Command.define("LoadInboxList", {
     Effect.tryPromise(async (signal) => {
       const query =
         cursor === null ? "" : `?${new URLSearchParams({ cursor })}`;
-      const response = await fetch(folderApiPath(folder) + query, {
+      const path =
+        folder === "inbox" ? conversationsApiPath : folderApiPath(folder);
+      const response = await fetch(path + query, {
         cache: "no-store",
         signal,
       });
@@ -213,6 +237,32 @@ const LoadList = Command.define("LoadInboxList", {
       return Message.LoadedList({ request, page, append: cursor !== null });
     }).pipe(
       Effect.catch(() => Effect.succeed(Message.ListFailed({ request }))),
+    ),
+});
+
+const LoadThread = Command.define("LoadMailConversation", {
+  args: { request: Schema.String, id: MailMessageId },
+  messages: [
+    Message.LoadedThread,
+    Message.ThreadFailed,
+    Message.SessionExpired,
+  ],
+  execute: ({ request, id }) =>
+    Effect.tryPromise(async (signal) => {
+      const response = await fetch(conversationApi(id), {
+        cache: "no-store",
+        signal,
+      });
+      if (response.status === 401) return Message.SessionExpired({ request });
+      if (response.status === 404)
+        return Message.LoadedThread({ request, thread: { messages: [] } });
+      if (!response.ok) return Message.ThreadFailed({ request });
+      const thread = Schema.decodeUnknownSync(Conversation)(
+        await response.json(),
+      );
+      return Message.LoadedThread({ request, thread });
+    }).pipe(
+      Effect.catch(() => Effect.succeed(Message.ThreadFailed({ request }))),
     ),
 });
 
@@ -290,13 +340,35 @@ const refreshList = (model: Model): Update.Return<Model, Message> =>
     : loadList(model, null);
 
 const loadEntry = (model: Model): Update.Return<Model, Message> => {
-  if (!model.selected || model.entryRequest !== null) return { model };
+  if (!model.active || model.entryRequest !== null) return { model };
   const request = crypto.randomUUID();
   return {
     model: { ...model, entryRequest: request, entryError: null },
-    commands: [
-      LoadEntry({ request, id: model.selected, folder: model.folder }),
-    ],
+    commands: [LoadEntry({ request, ...model.active })],
+  };
+};
+
+const refreshThread = (model: Model): Update.Return<Model, Message> => {
+  if (!model.selected) return { model };
+  if (model.threadRequest)
+    return { model: { ...model, threadRefreshQueued: true } };
+  const request = crypto.randomUUID();
+  return {
+    model: {
+      ...model,
+      threadRequest: request,
+      threadRefreshQueued: false,
+      threadFailed: false,
+    },
+    commands: [LoadThread({ id: model.selected, request })],
+  };
+};
+
+const withThread = (result: Update.Return<Model, Message>) => {
+  const thread = refreshThread(result.model);
+  return {
+    model: thread.model,
+    commands: [...(result.commands ?? []), ...(thread.commands ?? [])],
   };
 };
 
@@ -346,6 +418,11 @@ export const update = (
           : {
               ...base,
               selected: id,
+              active: id ? { id, folder } : null,
+              thread: null,
+              threadRequest: null,
+              threadRefreshQueued: false,
+              threadFailed: false,
               entry: null,
               entryRequest: null,
               entryError: null,
@@ -353,26 +430,37 @@ export const update = (
               deleteFailed: false,
             };
       const list = next.list ? { model: next } : loadList(next, null);
-      const entry = next.entry ? { model: list.model } : loadEntry(list.model);
-      return {
-        model: entry.model,
-        commands: [...(list.commands ?? []), ...(entry.commands ?? [])],
-      };
+      return next.thread ? list : withThread(list);
     },
-    Refreshed: () => loadList(model, null),
+    Refreshed: () => withThread(loadList(model, null)),
     GotComposeMessage: ({ message }) => {
       const result = foldCompose(model, message);
-      return message._tag === "Sent" &&
-        model.compose.request === message.request &&
-        model.folder === "sent"
-        ? refreshList(result.model)
-        : result;
+      if (
+        message._tag !== "Sent" ||
+        model.compose.request !== message.request ||
+        !message.saved
+      )
+        return result;
+      return withThread(refreshList(result.model));
     },
     LiveChanged: () =>
-      model.folder === "inbox" ? refreshList(model) : { model },
+      withThread(model.folder === "inbox" ? refreshList(model) : { model }),
     RequestedMore: () =>
-      model.list?.cursor ? loadList(model, model.list.cursor) : { model },
+      model.list?.cursor && !model.list.indexing
+        ? loadList(model, model.list.cursor)
+        : { model },
     RetriedEntry: () => loadEntry(model),
+    RetriedThread: () => refreshThread(model),
+    ToggledMessage: ({ id, folder }) =>
+      loadEntry({
+        ...model,
+        active: model.active?.id === id ? null : { id, folder },
+        entry: null,
+        entryRequest: null,
+        entryError: null,
+        deleteFailed: false,
+      }),
+    RequestedBack: () => ({ model }),
     RequestedReply: () => {
       const from = model.list?.sender;
       const entry = model.entry;
@@ -397,12 +485,17 @@ export const update = (
         : { model },
     CanceledDelete: () => ({ model: { ...model, confirmingDelete: false } }),
     ConfirmedDelete: () => {
-      if (!model.confirmingDelete || !model.entry || model.deleteRequest)
+      if (
+        !model.confirmingDelete ||
+        !model.entry ||
+        !model.active ||
+        model.deleteRequest
+      )
         return { model };
       const deletion = {
         id: model.entry.id,
         request: crypto.randomUUID(),
-        folder: model.folder,
+        folder: model.active.folder,
       };
       return {
         model: { ...model, confirmingDelete: false, deleteRequest: deletion },
@@ -411,25 +504,40 @@ export const update = (
     },
     DeletedEntry: ({ id, request }) => {
       if (request !== model.deleteRequest?.request) return { model };
-      if (model.deleteRequest.folder !== model.folder)
-        return { model: { ...model, deleteRequest: null } };
       const list = model.list && {
         ...model.list,
         messages: model.list.messages.filter((message) => message.id !== id),
       };
-      const next = {
+      const thread = model.thread && {
+        messages: model.thread.messages.filter((message) => message.id !== id),
+      };
+      const next: Model = {
         ...model,
         list,
+        thread,
+        threadRequest: null,
         listRequest: null,
         deleteRequest: null,
-        ...(model.selected === id
-          ? { entry: null, entryRequest: null, entryError: null }
+        ...(model.active?.id === id
+          ? {
+              active:
+                model.selected && model.selected !== id
+                  ? { id: model.selected, folder: model.folder }
+                  : null,
+              entry: null,
+              entryRequest: null,
+              entryError: null,
+            }
           : {}),
       };
-      // An overlapping list request may contain a snapshot from before deletion.
-      return model.listRequest || !list
-        ? loadList(next, null)
-        : { model: next };
+      const entry = next.entry ? { model: next } : loadEntry(next);
+      const updatedList = loadList(entry.model, null);
+      const command = {
+        model: updatedList.model,
+        commands: [...(entry.commands ?? []), ...(updatedList.commands ?? [])],
+      };
+      // Overlapping reads may have received a snapshot from before the deletion.
+      return model.selected === id ? command : withThread(command);
     },
     DeleteFailed: ({ request }) =>
       request !== model.deleteRequest?.request
@@ -438,9 +546,7 @@ export const update = (
             model: {
               ...model,
               deleteRequest: null,
-              deleteFailed:
-                model.folder === model.deleteRequest.folder &&
-                model.selected === model.deleteRequest.id,
+              deleteFailed: model.active?.id === model.deleteRequest.id,
             },
           },
     LoadedList: ({ request, page, append }) => {
@@ -453,7 +559,13 @@ export const update = (
             ? { ...page, messages: [...model.list.messages, ...page.messages] }
             : page,
       };
-      return next.listRefreshQueued ? loadList(next, null) : { model: next };
+      const result =
+        next.listRefreshQueued || page.indexing
+          ? loadList(next, null)
+          : { model: next };
+      return page.indexing || model.list?.indexing
+        ? withThread(result)
+        : result;
     },
     ListFailed: ({ request }) => {
       if (request !== model.listRequest) return { model };
@@ -463,6 +575,36 @@ export const update = (
         listError: "Could not load messages. Try again.",
       };
       return next.listRefreshQueued ? loadList(next, null) : { model: next };
+    },
+    LoadedThread: ({ request, thread }) => {
+      if (request !== model.threadRequest) return { model };
+      const newestIncoming = thread.messages.findLast(
+        ({ folder }) => folder === "inbox",
+      );
+      const latest =
+        !model.thread &&
+        !model.entry &&
+        !model.entryRequest &&
+        model.folder === "inbox" &&
+        model.selected === newestIncoming?.id
+          ? thread.messages.at(-1)
+          : undefined;
+      const next = {
+        ...model,
+        thread,
+        threadRequest: null,
+        ...(latest ? { active: { id: latest.id, folder: latest.folder } } : {}),
+      };
+      const entry =
+        next.entry || next.entryError ? { model: next } : loadEntry(next);
+      return next.threadRefreshQueued ? withThread(entry) : entry;
+    },
+    ThreadFailed: ({ request }) => {
+      if (request !== model.threadRequest) return { model };
+      const next = { ...model, threadRequest: null, threadFailed: true };
+      const entry =
+        next.entry || next.entryError ? { model: next } : loadEntry(next);
+      return next.threadRefreshQueued ? withThread(entry) : entry;
     },
     LoadedEntry: ({ request, entry }) =>
       request !== model.entryRequest
@@ -531,11 +673,20 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
                   [model.listError],
                 ),
               ]),
+          ...(model.list?.indexing
+            ? [
+                h.p(
+                  [h.Class("inbox-status"), h.Role("status")],
+                  ["Organizing existing mail…"],
+                ),
+              ]
+            : []),
           ...(model.list === null
             ? []
             : [
                 model.list.messages.length === 0 &&
                 model.list.cursor === null &&
+                !model.list.indexing &&
                 model.listRequest === null
                   ? h.p([h.Class("inbox-status")], ["No messages yet."])
                   : h.ul(
@@ -549,7 +700,11 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
                                 h.Href(
                                   mailMessagePage(model.folder, message.id),
                                 ),
-                                ...(model.selected === message.id
+                                ...(model.selected === message.id ||
+                                (model.folder === "inbox" &&
+                                  model.thread?.messages.some(
+                                    ({ id }) => id === message.id,
+                                  ))
                                   ? [h.AriaCurrent("page")]
                                   : []),
                               ],
@@ -567,6 +722,15 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
                                       [],
                                       [message.from || "Unknown sender"],
                                     ),
+                                ...("messageCount" in message &&
+                                (message.messageCount ?? 0) > 1
+                                  ? [
+                                      h.span(
+                                        [],
+                                        [`${message.messageCount} messages`],
+                                      ),
+                                    ]
+                                  : []),
                                 messageTime(
                                   h,
                                   "sentAt" in message
@@ -579,7 +743,7 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
                         ),
                       ),
                     ),
-                ...(model.list.cursor === null
+                ...(model.list.cursor === null || model.list.indexing
                   ? []
                   : [
                       h.div(
@@ -603,12 +767,9 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
   );
 
 const previewNotice = {
-  truncated:
-    "This preview is shortened. Download the original to read the full message.",
-  tooLarge:
-    "This message is too large to preview. You can download the original.",
-  unreadable:
-    "This message could not be previewed. You can download the original.",
+  truncated: "This preview is shortened.",
+  tooLarge: "This message is too large to preview.",
+  unreadable: "This message could not be previewed.",
 };
 
 const deleteDialog = (h: HtmlBuilder<Message>) =>
@@ -650,10 +811,102 @@ const deleteDialog = (h: HtmlBuilder<Message>) =>
     ],
   );
 
+const entryContent = (
+  model: Model,
+  h: HtmlBuilder<Message>,
+  showSubject = true,
+) => {
+  const { entry } = model;
+  return [
+    ...(model.deleteFailed
+      ? [h.p([h.Role("alert")], ["Could not confirm the deletion. Try again."])]
+      : []),
+    ...(model.entryRequest
+      ? [h.p([h.Role("status")], ["Opening message…"])]
+      : []),
+    ...(model.entryError
+      ? [
+          h.p([h.Role("alert")], [model.entryError]),
+          h.button(
+            [h.Type("button"), h.OnClick(Message.RetriedEntry())],
+            ["Retry"],
+          ),
+        ]
+      : []),
+    ...(entry
+      ? [
+          h.header(
+            [h.Class("inbox-entry-header")],
+            [
+              ...(showSubject
+                ? [h.h2([], [entry.subject || "(No subject)"])]
+                : []),
+              h.dl(
+                [],
+                [
+                  h.dt([], ["From"]),
+                  h.dd([], [entry.from || "Unknown sender"]),
+                  ...(entry.to ? [h.dt([], ["To"]), h.dd([], [entry.to])] : []),
+                  h.dt([], ["sentAt" in entry ? "Sent" : "Received"]),
+                  h.dd(
+                    [],
+                    [
+                      messageTime(
+                        h,
+                        "sentAt" in entry ? entry.sentAt : entry.receivedAt,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ],
+          ),
+          h.div(
+            [h.Class("inbox-toolbar-actions")],
+            [
+              ...("receivedAt" in entry && entry.reply && model.list?.sender
+                ? [
+                    h.button(
+                      [h.Type("button"), h.OnClick(Message.RequestedReply())],
+                      ["Reply"],
+                    ),
+                  ]
+                : []),
+              h.button(
+                [
+                  h.Type("button"),
+                  h.Class("inbox-delete-button"),
+                  h.Disabled(model.deleteRequest !== null),
+                  h.OnClick(Message.RequestedDelete()),
+                ],
+                [model.deleteRequest?.id === entry.id ? "Deleting…" : "Delete"],
+              ),
+            ],
+          ),
+          ...(entry.text ? [h.div([h.Class("inbox-body")], [entry.text])] : []),
+          ...(entry.preview !== "complete" || !entry.text
+            ? [
+                h.p(
+                  [h.Class("inbox-preview")],
+                  [
+                    entry.preview === "complete"
+                      ? "This message has no text body."
+                      : previewNotice[entry.preview],
+                  ],
+                ),
+              ]
+            : []),
+        ]
+      : []),
+  ];
+};
+
 const entryView = (model: Model, h: HtmlBuilder<Message>) => {
-  const { entry, selected } = model;
+  const { selected, active } = model;
   if (!selected)
     return h.div([h.Class("workspace-detail")], ["Select a message to read."]);
+  const messages = model.thread?.messages ?? [];
+  const grouped = messages.length > 1;
   return h.article(
     [
       h.Key(selected),
@@ -666,129 +919,71 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
       h.div(
         [h.Class("inbox-toolbar")],
         [
-          h.a([h.Href(folderPath(model.folder))], ["Back to messages"]),
-          ...(entry === null
-            ? []
-            : [
-                h.div(
-                  [h.Class("inbox-toolbar-actions")],
-                  [
-                    ...("receivedAt" in entry &&
-                    entry.reply &&
-                    model.list?.sender
-                      ? [
-                          h.button(
-                            [
-                              h.Type("button"),
-                              h.OnClick(Message.RequestedReply()),
-                            ],
-                            ["Reply"],
-                          ),
-                        ]
-                      : []),
-                    h.button(
-                      [
-                        h.Type("button"),
-                        h.Class("inbox-delete-button"),
-                        h.Disabled(model.deleteRequest !== null),
-                        h.OnClick(Message.RequestedDelete()),
-                      ],
-                      [
-                        model.deleteRequest?.id === selected
-                          ? "Deleting…"
-                          : "Delete",
-                      ],
-                    ),
-                  ],
-                ),
-              ]),
+          h.button(
+            [h.Type("button"), h.OnClick(Message.RequestedBack())],
+            ["Back"],
+          ),
         ],
       ),
       ...(model.confirmingDelete ? [deleteDialog(h)] : []),
-      ...(model.deleteFailed
+      ...(!model.thread &&
+      model.threadRequest &&
+      !model.entryRequest &&
+      !model.entry
+        ? [h.p([h.Role("status")], ["Opening conversation…"])]
+        : []),
+      ...(model.threadFailed
         ? [
-            h.p(
-              [h.Role("alert")],
-              ["Could not confirm the deletion. Try again."],
+            h.p([h.Role("alert")], ["Could not load the conversation."]),
+            h.button(
+              [h.Type("button"), h.OnClick(Message.RetriedThread())],
+              ["Retry conversation"],
             ),
           ]
         : []),
-      ...(model.entryRequest === null
-        ? []
-        : [h.p([h.Role("status")], ["Opening message…"])]),
-      ...(model.entryError === null
-        ? []
-        : [
-            h.p([h.Role("alert")], [model.entryError]),
-            h.button(
-              [h.Type("button"), h.OnClick(Message.RetriedEntry())],
-              ["Retry"],
-            ),
-          ]),
-      ...(entry === null
-        ? []
-        : [
-            h.header(
-              [h.Class("inbox-entry-header")],
-              [
-                h.h2([], [entry.subject || "(No subject)"]),
-                h.dl(
-                  [],
+      ...(grouped
+        ? [
+            h.ol(
+              [h.Class("inbox-thread"), h.AriaLabel("Conversation messages")],
+              messages.map(({ id, folder, from, to, timestamp, subject }) => {
+                const expanded = active?.id === id;
+                const panel = `mail-content-${id}`;
+                const participant =
+                  folder === "sent" ? `To ${to}` : from || "Unknown sender";
+                return h.li(
+                  [h.Key(id)],
                   [
-                    h.dt([], ["From"]),
-                    h.dd([], [entry.from || "Unknown sender"]),
-                    ...(entry.to
-                      ? [h.dt([], ["To"]), h.dd([], [entry.to])]
-                      : []),
-                    h.dt([], ["sentAt" in entry ? "Sent" : "Received"]),
-                    h.dd(
-                      [],
+                    h.button(
                       [
-                        messageTime(
-                          h,
-                          "sentAt" in entry ? entry.sentAt : entry.receivedAt,
-                        ),
+                        h.Type("button"),
+                        h.Class("inbox-thread-summary"),
+                        h.AriaExpanded(expanded),
+                        ...(expanded ? [h.AriaControls(panel)] : []),
+                        h.OnClick(Message.ToggledMessage({ id, folder })),
+                      ],
+                      [
+                        h.strong([], [subject || "(No subject)"]),
+                        h.span([], [participant]),
+                        messageTime(h, timestamp),
                       ],
                     ),
+                    ...(expanded
+                      ? [
+                          h.section(
+                            [h.Id(panel), h.Class("inbox-thread-content")],
+                            entryContent(model, h, false),
+                          ),
+                        ]
+                      : []),
                   ],
-                ),
-              ],
+                );
+              }),
             ),
-            ...(entry.text
-              ? [h.div([h.Class("inbox-body")], [entry.text])]
+            ...(active && !messages.some(({ id }) => id === active.id)
+              ? entryContent(model, h)
               : []),
-            ...(entry.preview === "complete"
-              ? entry.text
-                ? []
-                : [
-                    h.p(
-                      [h.Class("inbox-preview")],
-                      ["This message has no text body."],
-                    ),
-                  ]
-              : [
-                  h.p(
-                    [h.Class("inbox-preview")],
-                    [previewNotice[entry.preview]],
-                  ),
-                ]),
-            ...("receivedAt" in entry
-              ? [
-                  h.footer(
-                    [h.Class("inbox-entry-footer")],
-                    [
-                      h.a(
-                        [
-                          h.Href(inboxOriginalApi(selected)),
-                          h.Download(selected),
-                        ],
-                        ["Download original (.eml)"],
-                      ),
-                    ],
-                  ),
-                ]
-              : []),
-          ]),
+          ]
+        : entryContent(model, h)),
     ],
   );
 };

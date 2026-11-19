@@ -24,14 +24,39 @@ export const replyRecipient = (email: Email, envelopeFrom: string) => {
 
 // Extract only bracketed IDs from unfolded headers. ASCII keeps the Cloudflare
 // byte limit equivalent to the string length and excludes header delimiters.
-const messageIds = (email: Email, name: string) =>
+const parseMessageIds = (value: string | null | undefined) =>
   (
-    email.headers
-      .find(({ key }) => key === name)
-      ?.value.match(
-        /<[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@(?:[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+|\[[A-Za-z0-9:.%-]+\])>/gu,
-      ) ?? []
+    value?.match(
+      /<[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@(?:[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+|\[[A-Za-z0-9:.%-]+\])>/gu,
+    ) ?? []
   ).filter((id) => id.length <= 998);
+
+const messageIds = (email: Email, name: string) =>
+  parseMessageIds(email.headers.find(({ key }) => key === name)?.value);
+
+type ThreadHeader = "message-id" | "references" | "in-reply-to";
+
+export const conversationMessageIds = (
+  header: (name: ThreadHeader) => string | null | undefined,
+) => {
+  const ancestors = [
+    ...parseMessageIds(header("references")),
+    ...parseMessageIds(header("in-reply-to")),
+  ];
+  const [root] = ancestors;
+  return [
+    ...new Set([
+      ...(root ? [root] : []),
+      ...ancestors.slice(-63),
+      ...parseMessageIds(header("message-id")).slice(0, 1),
+    ]),
+  ];
+};
+
+export const outboundMessageId = (id: string) => {
+  const candidate = id.startsWith("<") ? id : `<${id}>`;
+  return parseMessageIds(candidate).find((match) => match === candidate);
+};
 
 export const parentMessageId = (email: Email) =>
   messageIds(email, "message-id")[0];

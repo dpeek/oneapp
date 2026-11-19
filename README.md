@@ -42,7 +42,7 @@ Set `ACCOUNT_EMAIL_ZONE_ID` to the Cloudflare DNS zone ID that owns `APP_DOMAIN`
 
 Set `INBOX_EMAIL_ZONE_ID` to the Cloudflare DNS zone ID that owns the `APP_DOMAIN` subdomain to receive mail at `mail@APP_DOMAIN`. Alchemy configures Email Routing for the subdomain and creates a rule for that address. After deploying, send a test email and verify that a `.eml` object appears in the stage's private `InboxMessages` R2 bucket. Each object contains the raw email, including attachments, and stores the SMTP envelope sender and recipient as object metadata.
 
-Sign in and open **Inbox** (`/inbox`) to list and read stored mail. The reader displays message text, including text extracted from HTML-only messages. **Download original (.eml)** keeps the original formatting and attachments available, including for messages too large to preview.
+Sign in and open **Inbox** (`/inbox`) to browse conversations by their latest incoming message. Open a conversation to read the selected message and expand earlier emails and sent replies. Select **Back** to return to the folder’s list.
 
 The OneApp vault and Bitwarden clients request website icons from OneApp at `/icons/<hostname>/icon.png`. On a cache miss, the Worker tries the site’s HTTPS favicon and checks its homepage for icon links. It serves raster icons and caches successful lookups for seven days and misses for one hour. IP literals and private DNS addresses are blocked. The web vault shows a generic icon for protected logins and when no website icon is available. Icon requests contain the login hostname, which can appear in Cloudflare’s Worker request logs.
 

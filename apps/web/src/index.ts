@@ -700,11 +700,27 @@ const update = (
     GotInboxMessage: ({ message }) => {
       if (message._tag === "LiveChanged" && model.page !== "inbox")
         return { model };
+      if (
+        message._tag === "RequestedBack" &&
+        model.account &&
+        model.mailRoute?.id
+      ) {
+        return {
+          model,
+          commands: [
+            Navigate({
+              href: folderPath(model.mailRoute.folder),
+              mode: "push",
+            }),
+          ],
+        };
+      }
       const deleting = model.inbox.deleteRequest;
       if (
         message._tag === "SessionExpired" &&
         (message.request === model.inbox.listRequest ||
           message.request === model.inbox.entryRequest ||
+          message.request === model.inbox.threadRequest ||
           message.request === model.inbox.compose.request ||
           message.request === deleting?.request)
       ) {

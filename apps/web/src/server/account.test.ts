@@ -23,6 +23,8 @@ import {
 } from "../account-contract.ts";
 import { bitwardenDevicesPath } from "../bitwarden-device-contract.ts";
 import {
+  conversationApi,
+  conversationsApiPath,
   inboxApiPath,
   inboxEventsPath,
   inboxMessageApi,
@@ -546,6 +548,127 @@ it("threads replies from the stored message and archives the sent copy", async (
     from,
     headers: { References: root },
   });
+});
+
+it("groups existing mail across Inbox and Sent as its threads are discovered", async () => {
+  using sqlite = new Database(":memory:");
+  const address = "mail@app.example.net";
+  const subject = "Status update";
+  const makeInbox = (number: number, timestamp: number, headers: string[]) => {
+    const key = `0-819999999999${number}-00000000-0000-4000-8000-000000000000.eml`;
+    const raw = [
+      "From: sender@example.net",
+      `Subject: ${subject}`,
+      ...headers,
+      "",
+      "Hello.",
+    ].join("\r\n");
+    return {
+      key,
+      size: raw.length,
+      uploaded: new Date(timestamp),
+      raw,
+      customMetadata: {
+        envelopeFrom: "sender@example.net",
+        envelopeTo: address,
+        subject,
+      },
+    };
+  };
+  const root = makeInbox(0, 1000, ["Message-ID: <a@example.net>"]);
+  const branch = makeInbox(1, 2000, ["Message-ID: <b@example.net>"]);
+  const latest = makeInbox(2, 4000, ["In-Reply-To: <b@example.net>"]);
+  const bridge = makeInbox(3, 3000, [
+    "References: <a@example.net> <b@example.net>",
+  ]);
+  const separate = makeInbox(4, 5000, ["Message-ID: <separate@example.net>"]);
+  const objects = new Map(
+    [root, branch, latest, bridge, separate].map((item) => [item.key, item]),
+  );
+  const sentId = "0-8199999999990-00000000-0000-4000-8000-000000000000";
+  const sent = {
+    id: sentId,
+    from: address,
+    to: "sender@example.net",
+    subject: `Re: ${subject}`,
+    sentAt: 2500,
+    text: "A saved reply.",
+    providerMessageId: "<sent@example.net>",
+    reply: { originalId: root.key },
+  };
+  const { call, request, signIn, cookies } = await setup(sqlite, {
+    INBOX_EMAIL_ADDRESS: address,
+    INBOX_MESSAGES: {
+      list: async ({ cursor }: { cursor?: string }) =>
+        cursor
+          ? { objects: [bridge, separate], truncated: false }
+          : {
+              objects: [root, branch, latest],
+              truncated: true,
+              cursor: "older",
+            },
+      get: async (id: string) => {
+        const item = objects.get(id);
+        return item ? { ...item, text: async () => item.raw } : null;
+      },
+      delete: async (id: string) => void objects.delete(id),
+    } as unknown as WorkerEnv["INBOX_MESSAGES"],
+    SENT_MESSAGES: {
+      list: async () => ({ objects: [{ key: sentId }], truncated: false }),
+      get: async () => ({ json: async () => sent }),
+    } as unknown as WorkerEnv["SENT_MESSAGES"],
+  });
+  expect((await call(conversationsApiPath)).status).toBe(401);
+  expect((await call(conversationApi(root.key))).status).toBe(401);
+  const session = cookies(await signIn(password));
+  const get = async (path: string) => {
+    const result = await call(path, undefined, session);
+    expect(result.status).toBe(200);
+    return result.json();
+  };
+  expect(await get(conversationsApiPath)).toMatchObject({
+    indexing: true,
+    messages: [
+      { id: latest.key, messageCount: 2 },
+      { id: root.key, messageCount: 2 },
+    ],
+  });
+  expect(await get(conversationsApiPath)).toMatchObject({
+    messages: [
+      { id: separate.key, messageCount: 1 },
+      { id: latest.key, messageCount: 5 },
+    ],
+  });
+  const expected = [root.key, branch.key, sentId, bridge.key, latest.key];
+  for (const anchor of [root.key, branch.key, sentId, latest.key]) {
+    const thread = await get(conversationApi(anchor));
+    expect(thread.messages.map(({ id }: { id: string }) => id)).toEqual(
+      expected,
+    );
+  }
+  const qs = new URLSearchParams({ cursor: `5000/${separate.key}` });
+  expect(await get(`${conversationsApiPath}?${qs}`)).toMatchObject({
+    messages: [{ id: latest.key, messageCount: 5 }],
+  });
+  const removed = await request(inboxMessageApi(latest.key), {
+    method: "DELETE",
+    headers: {
+      cookie: session,
+      origin: "https://oneapp.example",
+      "x-effect-auth-csrf": "1",
+    },
+  });
+  expect(removed.status).toBe(204);
+  expect(await get(conversationsApiPath)).toMatchObject({
+    messages: [
+      { id: separate.key, messageCount: 1 },
+      { id: bridge.key, messageCount: 4 },
+    ],
+  });
+  const updated = await get(conversationApi(root.key));
+  expect(updated.messages.map(({ id }: { id: string }) => id)).toEqual(
+    expected.slice(0, -1),
+  );
 });
 
 it("only upgrades Inbox sockets for a same-origin owner session", async () => {

@@ -1,5 +1,7 @@
 import type { R2Bucket, R2Object, R2Objects } from "@cloudflare/workers-types";
 import { Effect, Schedule, Schema } from "effect";
+import { conversationMessageIds, outboundMessageId } from "./mail-reply.ts";
+import type { IndexedMail } from "./mail-index.ts";
 import {
   InboxMessageId,
   SentMessageId,
@@ -29,6 +31,29 @@ type SentRecord = typeof SentRecord.Type;
 const decodeSummary = Schema.decodeUnknownOption(SentSummary);
 const decodeRecord = Schema.decodeUnknownOption(SentRecord);
 export const isSentMessageId = Schema.is(SentMessageId);
+
+export const describeSent = (record: SentRecord): IndexedMail => {
+  const { id, from, to, subject, sentAt, providerMessageId, reply } = record;
+  const headers = reply?.headers;
+  const ownId = outboundMessageId(providerMessageId);
+  return {
+    id,
+    from,
+    to,
+    subject,
+    folder: "sent",
+    timestamp: sentAt,
+    ...(reply ? { originalId: reply.originalId } : {}),
+    messageIds: conversationMessageIds(
+      (name) =>
+        ({
+          "message-id": ownId,
+          references: headers?.References,
+          "in-reply-to": headers?.["In-Reply-To"],
+        })[name],
+    ),
+  };
+};
 
 const summaryFor = ({ key, customMetadata }: R2Object) =>
   decodeSummary({
@@ -69,12 +94,33 @@ export const listSent = async (
   };
 };
 
-export const readSent = async (bucket: R2Bucket, id: string) => {
+const readSentRecord = async (bucket: R2Bucket, id: string) => {
   const object = await bucket.get(id);
   if (!object) return null;
-  const record = decodeRecord(await object.json());
-  if (record._tag === "None" || record.value.id !== id)
+  const raw = await object.json().catch((error: unknown) => {
+    if (error instanceof SyntaxError) return undefined;
+    throw error;
+  });
+  const record = decodeRecord(raw);
+  return record._tag === "Some" && record.value.id === id
+    ? record.value
+    : undefined;
+};
+
+export const describeStoredSent = async (
+  bucket: R2Bucket,
+  object: R2Object,
+) => {
+  if (!isSentMessageId(object.key)) return null;
+  const record = await readSentRecord(bucket, object.key);
+  return record ? describeSent(record) : null;
+};
+
+export const readSent = async (bucket: R2Bucket, id: string) => {
+  const record = await readSentRecord(bucket, id);
+  if (record === undefined)
     throw new Error("Could not read stored sent message");
-  const { from, to, subject, sentAt, text } = record.value;
+  if (!record) return null;
+  const { from, to, subject, sentAt, text } = record;
   return { id, from, to, subject, sentAt, text, preview: "complete" as const };
 };

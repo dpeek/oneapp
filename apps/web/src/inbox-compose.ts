@@ -7,8 +7,8 @@ import {
   InboxDraft,
   InboxMessageId,
   inboxSendPath,
-  sentCopyHeader,
 } from "./inbox-contract.ts";
+import { sendInboxRequest, sentNotice } from "./inbox-send.ts";
 
 const ReplyDraft = Schema.Struct({
   ...InboxDraft.fields,
@@ -47,10 +47,6 @@ export const Message = defineMessageUnion({
 type Message = typeof Message.Type;
 
 const formId = "inbox-compose-form";
-const uncertainSend = "Could not confirm whether the email was sent.";
-const decodeError = Schema.decodeUnknownOption(
-  Schema.Struct({ error: Schema.String }),
-);
 
 const Show = Mount.define("ShowInboxCompose", {
   args: { reply: Schema.NullOr(ReplyDraft) },
@@ -82,7 +78,7 @@ const Send = Command.define("SendInboxEmail", {
   args: { request: Schema.String, replyToId: Schema.NullOr(InboxMessageId) },
   messages: [Message.Sent, Message.Failed, Message.SessionExpired],
   execute: ({ request, replyToId }) =>
-    Effect.tryPromise(async (signal) => {
+    Effect.promise(async (signal) => {
       const form = document.getElementById(formId);
       const input =
         form instanceof HTMLFormElement
@@ -95,34 +91,23 @@ const Send = Command.define("SendInboxEmail", {
           error: "Enter one valid recipient, a subject, and a message.",
         });
       }
-      const response = await fetch(inboxSendPath, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-effect-auth-csrf": "1",
-        },
-        body: JSON.stringify({
+      const result = await sendInboxRequest(
+        inboxSendPath,
+        {
           ...draft.value,
           ...(replyToId ? { replyToId } : {}),
-        }),
+        },
         signal,
-      });
-      if (response.status === 401) return Message.SessionExpired({ request });
-      if (response.status === 204)
-        return Message.Sent({
-          request,
-          saved: response.headers.get(sentCopyHeader) !== "failed",
-        });
-      const result = decodeError(await response.json());
-      return Message.Failed({
-        request,
-        error: result._tag === "Some" ? result.value.error : uncertainSend,
-      });
-    }).pipe(
-      Effect.catch(() =>
-        Effect.succeed(Message.Failed({ request, error: uncertainSend })),
-      ),
-    ),
+      );
+      switch (result._tag) {
+        case "SessionExpired":
+          return Message.SessionExpired({ request });
+        case "Sent":
+          return Message.Sent({ request, saved: result.saved });
+        case "Failed":
+          return Message.Failed({ request, error: result.error });
+      }
+    }),
 });
 
 export const update = (
@@ -153,9 +138,7 @@ export const update = (
         model.request === request
           ? {
               ...initial,
-              notice: saved
-                ? "Email sent."
-                : "Email sent. Could not save a copy in Sent.",
+              notice: sentNotice(saved),
             }
           : model,
     }),

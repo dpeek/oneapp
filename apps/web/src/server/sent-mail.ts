@@ -1,16 +1,20 @@
 import type { R2Bucket, R2Object, R2Objects } from "@cloudflare/workers-types";
 import { Effect, Schedule, Schema } from "effect";
-import { conversationMessageIds, outboundMessageId } from "./mail-reply.ts";
+import {
+  buildReplyHeaders,
+  conversationMessageIds,
+  outboundMessageId,
+} from "./mail-reply.ts";
 import type { IndexedMail } from "./mail-index.ts";
 import { mailPeople } from "./mail-people.ts";
 import {
-  InboxMessageId,
+  MailMessageId,
   SentMessageId,
   SentSummary,
 } from "../inbox-contract.ts";
 
 const SentReply = Schema.Struct({
-  originalId: InboxMessageId,
+  originalId: MailMessageId,
   headers: Schema.optionalKey(
     Schema.Struct({
       "In-Reply-To": Schema.optionalKey(Schema.String),
@@ -33,10 +37,15 @@ const decodeSummary = Schema.decodeUnknownOption(SentSummary);
 const decodeRecord = Schema.decodeUnknownOption(SentRecord);
 export const isSentMessageId = Schema.is(SentMessageId);
 
+const sentThreadHeaders = ({ providerMessageId, reply }: SentRecord) => ({
+  "message-id": outboundMessageId(providerMessageId),
+  references: reply?.headers?.References,
+  "in-reply-to": reply?.headers?.["In-Reply-To"],
+});
+
 export const describeSent = (record: SentRecord): IndexedMail => {
-  const { id, from, to, subject, sentAt, providerMessageId, reply } = record;
-  const headers = reply?.headers;
-  const ownId = outboundMessageId(providerMessageId);
+  const { id, from, to, subject, sentAt, reply } = record;
+  const headers = sentThreadHeaders(record);
   return {
     id,
     from,
@@ -46,14 +55,7 @@ export const describeSent = (record: SentRecord): IndexedMail => {
     timestamp: sentAt,
     people: mailPeople(() => undefined, from, to),
     ...(reply ? { originalId: reply.originalId } : {}),
-    messageIds: conversationMessageIds(
-      (name) =>
-        ({
-          "message-id": ownId,
-          references: headers?.References,
-          "in-reply-to": headers?.["In-Reply-To"],
-        })[name],
-    ),
+    messageIds: conversationMessageIds((name) => headers[name]),
   };
 };
 
@@ -133,5 +135,16 @@ export const readSent = async (bucket: R2Bucket, id: string) => {
     text,
     preview: "complete" as const,
     people: mailPeople(() => undefined, from, to),
+  };
+};
+
+export const readSentReplyTarget = async (bucket: R2Bucket, id: string) => {
+  const record = await readSentRecord(bucket, id);
+  if (!record) return null;
+  const headers = sentThreadHeaders(record);
+  return {
+    to: record.to,
+    subject: record.subject,
+    headers: buildReplyHeaders((name) => headers[name]),
   };
 };

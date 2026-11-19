@@ -30,6 +30,7 @@ import {
   inboxMessageApi,
   inboxOriginalApi,
   inboxReadApi,
+  inboxReplyApi,
   inboxSendPath,
   inboxUnreadPath,
   mailMessageApi,
@@ -482,14 +483,24 @@ it("threads replies from the stored message and archives the sent copy", async (
   const send = vi.fn(async (_message: EmailMessageBuilder) => ({
     messageId: "reply-fixture",
   }));
-  const put = vi.fn(async (_id: string, _json: string) => ({}));
+  const sentCopies = new Map<string, string>();
+  const put = vi.fn(async (id: string, json: string) => {
+    sentCopies.set(id, json);
+    return {};
+  });
   const { call, signIn, cookies } = await setup(sqlite, {
     INBOX_EMAIL_ADDRESS: from,
     INBOX_EMAIL_FROM: from,
     INBOX_SEND: { send } as SendEmail,
     INBOX_SEND_LIMIT: { limit: async () => ({ success: true }) },
     INBOX_MESSAGES: { get } as unknown as WorkerEnv["INBOX_MESSAGES"],
-    SENT_MESSAGES: { put } as unknown as WorkerEnv["SENT_MESSAGES"],
+    SENT_MESSAGES: {
+      put,
+      get: async (id: string) => {
+        const json = sentCopies.get(id);
+        return json ? { json: async () => JSON.parse(json) } : null;
+      },
+    } as unknown as WorkerEnv["SENT_MESSAGES"],
   });
   const session = cookies(await signIn(password));
   const opened = await call(inboxMessageApi(originalId), undefined, session);
@@ -557,6 +568,55 @@ it("threads replies from the stored message and archives the sent copy", async (
     ...legacyDraft,
     from,
     headers: { References: root },
+  });
+
+  const quick = { text: "Quick follow-up" };
+  const inlinePath = inboxReplyApi(originalId);
+  expect((await call(inlinePath, quick)).status).toBe(401);
+  expect(
+    (await call(inlinePath, quick, session, "https://untrusted.example"))
+      .status,
+  ).toBe(403);
+  expect((await call(inlinePath, { text: " " }, session)).status).toBe(400);
+  expect(
+    (await call(inlinePath, { ...quick, to: "forged@example.net" }, session))
+      .status,
+  ).toBe(400);
+  expect((await call(inboxReplyApi(missingId), quick, session)).status).toBe(
+    404,
+  );
+  expect(send).toHaveBeenCalledTimes(2);
+
+  const sentMessageId = "<quick-sent@example.net>";
+  send.mockResolvedValueOnce({ messageId: sentMessageId });
+  expect((await call(inlinePath, quick, session)).status).toBe(204);
+  expect(send).toHaveBeenLastCalledWith({
+    from,
+    to: draft.to,
+    subject: draft.subject,
+    text: quick.text,
+    headers,
+  });
+  const [sentId] = put.mock.lastCall ?? [];
+  if (!sentId) throw new Error("Expected a quick reply in Sent");
+  expect(
+    (await call(inboxReplyApi(sentId), { text: "One more thing" }, session))
+      .status,
+  ).toBe(204);
+  expect(send).toHaveBeenLastCalledWith({
+    from,
+    to: draft.to,
+    subject: draft.subject,
+    text: "One more thing",
+    headers: {
+      "In-Reply-To": sentMessageId,
+      References: headers.References + " " + sentMessageId,
+    },
+  });
+  const [, sentReply] = put.mock.lastCall ?? [];
+  expect(JSON.parse(sentReply ?? "{}")).toMatchObject({
+    text: "One more thing",
+    reply: { originalId: sentId },
   });
 });
 

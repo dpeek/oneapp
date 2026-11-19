@@ -5,14 +5,14 @@ import type { SentReply } from "./sent-mail.ts";
 
 const readRecipient = Schema.decodeUnknownOption(ComposeRecipient);
 
-export const replyRecipient = (email: Email, envelopeFrom: string) => {
+export const replyRecipient = (email: Email | null, envelopeFrom: string) => {
   const addresses = [
-    ...(email.replyTo ?? []).flatMap((address) =>
+    ...(email?.replyTo ?? []).flatMap((address) =>
       address.group
         ? address.group.map((member) => member.address)
         : [address.address],
     ),
-    email.from?.address,
+    email?.from?.address,
     envelopeFrom,
   ];
   for (const address of addresses) {
@@ -34,7 +34,7 @@ const parseMessageIds = (value: string | null | undefined) =>
 const messageIds = (email: Email, name: string) =>
   parseMessageIds(email.headers.find(({ key }) => key === name)?.value);
 
-type ThreadHeader = "message-id" | "references" | "in-reply-to";
+export type ThreadHeader = "message-id" | "references" | "in-reply-to";
 
 export const conversationMessageIds = (
   header: (name: ThreadHeader) => string | null | undefined,
@@ -61,10 +61,12 @@ export const outboundMessageId = (id: string) => {
 export const parentMessageId = (email: Email) =>
   messageIds(email, "message-id")[0];
 
-export const replyHeaders = (email: Email): SentReply["headers"] => {
-  const parent = parentMessageId(email);
-  const references = messageIds(email, "references");
-  const previousParent = messageIds(email, "in-reply-to");
+export const buildReplyHeaders = (
+  header: (name: ThreadHeader) => string | undefined,
+): SentReply["headers"] => {
+  const parent = parseMessageIds(header("message-id"))[0];
+  const references = parseMessageIds(header("references"));
+  const previousParent = parseMessageIds(header("in-reply-to"));
   const ancestors = new Set(
     references.length
       ? references
@@ -93,3 +95,8 @@ export const replyHeaders = (email: Email): SentReply["headers"] => {
     ].join(" "),
   };
 };
+
+export const replyHeaders = (email: Email) =>
+  buildReplyHeaders(
+    (name) => email.headers.find(({ key }) => key === name)?.value,
+  );

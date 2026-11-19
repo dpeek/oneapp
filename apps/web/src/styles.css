@@ -1148,6 +1148,33 @@ button {
   color: var(--accent);
 }
 
+.inbox-inline-reply {
+  margin-block-start: 0.875rem;
+}
+
+.inbox-inline-reply-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.inbox-inline-reply-row input {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  inline-size: 100%;
+  box-sizing: border-box;
+}
+
+.inbox-inline-reply p {
+  margin: 0.375rem 0 0;
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+
+.inbox-inline-reply p:empty {
+  margin: 0;
+}
+
 .inbox-conversation-heading {
   margin-block-end: 1rem;
   overflow-wrap: anywhere;

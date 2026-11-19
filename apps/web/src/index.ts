@@ -727,6 +727,7 @@ const update = (
           message.request === model.inbox.unreadRequest ||
           Object.values(model.inbox.readRequests).includes(message.request) ||
           message.request === model.inbox.compose.request ||
+          message.request === model.inbox.quickReply.request ||
           message.request === deleting?.request)
       ) {
         return update(model, Message.LoadedAccount({ account: null }));

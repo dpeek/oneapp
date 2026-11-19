@@ -26,6 +26,7 @@ export const inboxMessageApi = (id: string) => `${inboxApiPath}/${id}`;
 export const inboxOriginalApi = (id: string) =>
   `${inboxMessageApi(id)}/original`;
 export const inboxReadApi = (id: string) => `${inboxMessageApi(id)}/read`;
+export const inboxReplyApi = (id: string) => `${inboxMessageApi(id)}/reply`;
 export const InboxUnread = Schema.Struct({ unreadCount: Schema.Number });
 export const InboxReadUpdate = Schema.Struct({ unread: Schema.Boolean });
 
@@ -107,6 +108,17 @@ export const InboxSend = Schema.Struct({
   ...InboxDraft.fields,
   replyToId: Schema.optionalKey(InboxMessageId),
 });
+
+export const InlineReply = Schema.Struct({ text: InboxDraft.fields.text });
+
+export const replySubject = (original: string) => {
+  const subject = original.replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, " ").trim();
+  const reply = /^re:/iu.test(subject) ? subject : `Re: ${subject}`;
+  return reply
+    .slice(0, inboxComposeLimits.subject)
+    .replace(/[\uD800-\uDBFF]$/u, "")
+    .trimEnd();
+};
 
 export const MailPerson = Schema.Struct({
   address: Schema.String,

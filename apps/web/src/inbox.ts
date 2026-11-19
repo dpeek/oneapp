@@ -4,6 +4,7 @@ import type { HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import * as Mount from "foldkit/mount";
 import * as Compose from "./inbox-compose.ts";
+import * as QuickReply from "./inbox-inline-reply.ts";
 import {
   compactMailTime,
   conversationPeople,
@@ -31,9 +32,9 @@ import {
   MailFolder,
   MailMessageId,
   MailPage,
-  type MailPerson,
   mailMessageApi,
   mailMessagePage,
+  replySubject,
   SentEntry,
   SentMessageId,
   SentPage,
@@ -98,6 +99,7 @@ export const Model = Schema.Struct({
   ),
   deleteFailed: Schema.Boolean,
   compose: Compose.Model,
+  quickReply: QuickReply.Model,
 });
 type Model = typeof Model.Type;
 
@@ -125,6 +127,7 @@ export const initial: Model = {
   deleteRequest: null,
   deleteFailed: false,
   compose: Compose.initial,
+  quickReply: QuickReply.initial,
 };
 
 export const Message = defineMessageUnion({
@@ -132,6 +135,7 @@ export const Message = defineMessageUnion({
   Refreshed: {},
   RefreshedUnread: {},
   GotComposeMessage: { message: Compose.Message },
+  GotQuickReplyMessage: { message: QuickReply.Message },
   LiveChanged: {},
   RequestedMore: {},
   RetriedEntry: {},
@@ -178,6 +182,18 @@ const foldCompose = Update.foldChild({
   read: (model: Model) => Option.some(model.compose),
   write: (model, compose) => ({ ...model, compose }),
   toParentMessage: toComposeMessage,
+});
+
+const toQuickReplyMessage = (message: typeof QuickReply.Message.Type) =>
+  message._tag === "SessionExpired"
+    ? Message.SessionExpired({ request: message.request })
+    : Message.GotQuickReplyMessage({ message });
+
+const foldQuickReply = Update.foldChild({
+  update: QuickReply.update,
+  read: (model: Model) => Option.some(model.quickReply),
+  write: (model, quickReply) => ({ ...model, quickReply }),
+  toParentMessage: toQuickReplyMessage,
 });
 
 export const changes = Stream.callback<Message>(
@@ -538,15 +554,6 @@ const finishReadStatus = (model: Model, id: string): Model => {
   return { ...model, readRequests };
 };
 
-const replySubject = (original: string) => {
-  const subject = original.replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, " ").trim();
-  const reply = /^re:/iu.test(subject) ? subject : `Re: ${subject}`;
-  return reply
-    .slice(0, inboxComposeLimits.subject)
-    .replace(/[\uD800-\uDBFF]$/u, "")
-    .trimEnd();
-};
-
 const quoteMessage = (entry: typeof InboxEntry.Type) => {
   const body = entry.text.trimEnd();
   if (!body) return "";
@@ -554,7 +561,7 @@ const quoteMessage = (entry: typeof InboxEntry.Type) => {
   const limit = Math.floor(inboxComposeLimits.text / 2);
   const clipped = quote.slice(0, limit).replace(/[\uD800-\uDBFF]$/u, "");
   const from =
-    entry.from
+    (entry.people?.sender?.address || entry.from)
       .replace(/\s+/gu, " ")
       .trim()
       .slice(0, 300)
@@ -576,6 +583,7 @@ export const update = (
               ...initial,
               folder,
               compose: model.compose,
+              quickReply: model.quickReply,
               deleteRequest: model.deleteRequest,
               unreadCount: model.unreadCount,
               unreadRequest: model.unreadRequest,
@@ -613,6 +621,14 @@ export const update = (
       )
         return result;
       return withThread(refreshList(result.model));
+    },
+    GotQuickReplyMessage: ({ message }) => {
+      const result = foldQuickReply(model, message);
+      return message._tag === "Sent" &&
+        message.request === model.quickReply.request &&
+        message.saved
+        ? withThread(refreshList(result.model))
+        : result;
     },
     LiveChanged: () =>
       withUnread(
@@ -1175,22 +1191,13 @@ const readerMessages = (model: Model): readonly ConversationMessage[] => {
   ].sort((a, b) => a.timestamp - b.timestamp);
 };
 
-const contactLabel = (person: MailPerson, mailbox: string) =>
-  person.address.toLowerCase() === mailbox
-    ? "You"
-    : person.name || person.address;
-
 const entryView = (model: Model, h: HtmlBuilder<Message>) => {
   const { selected, active } = model;
   if (!selected)
     return h.div([h.Class("workspace-detail")], ["Select a message to read."]);
   const messages = readerMessages(model);
   const participants = conversationPeople(messages);
-  const mailbox = (
-    model.list?.address ??
-    model.list?.sender ??
-    ""
-  ).toLowerCase();
+  const latest = messages.at(-1);
   const grouped = messages.length > 1;
   return h.article(
     [
@@ -1238,10 +1245,7 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
                         [h.Class("inbox-conversation-people")],
                         participants.flatMap((person, index) => [
                           ...(index ? [", "] : []),
-                          h.span(
-                            [h.Title(person.address)],
-                            [contactLabel(person, mailbox)],
-                          ),
+                          h.span([h.Title(person.address)], [person.address]),
                         ]),
                       ),
                     ]
@@ -1260,9 +1264,7 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
                   : "inbox-thread-summary";
                 const header = [
                   h.strong(sender ? [h.Title(sender.address)] : [], [
-                    sender
-                      ? contactLabel(sender, mailbox)
-                      : from || "Unknown sender",
+                    sender?.address || from || "Unknown sender",
                   ]),
                   ...(unread
                     ? [h.span([h.Class("inbox-thread-unread")], ["Unread"])]
@@ -1306,6 +1308,20 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
         : []),
       ...(active && !messages.some(({ id }) => id === active.id)
         ? entryContent(model, h)
+        : []),
+      ...(latest && model.list?.sender && !model.list.indexing
+        ? [
+            h.submodel({
+              slotId: "inbox-inline-reply",
+              view: QuickReply.view,
+              model: {
+                state: model.quickReply,
+                anchor: selected,
+                latest: latest.id,
+              },
+              toParentMessage: toQuickReplyMessage,
+            }),
+          ]
         : []),
     ],
   );

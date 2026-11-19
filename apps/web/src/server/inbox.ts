@@ -23,8 +23,10 @@ import {
   inboxSendPath,
   InboxUnread,
   inboxUnreadPath,
+  InlineReply,
   type MailFolder,
   MailMessageId,
+  replySubject,
   SentEntry,
   SentPage,
   sentCopyHeader,
@@ -55,6 +57,7 @@ import {
   isSentMessageId,
   listSent,
   readSent,
+  readSentReplyTarget,
   saveSent,
   type SentReply,
 } from "./sent-mail.ts";
@@ -147,9 +150,9 @@ const readHeaders = async (bucket: InboxBucket, id: string, length: number) => {
       (boundary < 0 ? raw : raw.slice(0, boundary)) + "\r\n\r\n",
       mimeOptions,
     );
-    return { email };
+    return { email, metadata: object.customMetadata };
   } catch {
-    return { email: null };
+    return { email: null, metadata: object.customMetadata };
   }
 };
 
@@ -378,6 +381,13 @@ const unknownSend = () =>
 const sendRateLimit = () =>
   jsonError(429, "Sending limit reached. Try again later.");
 
+const isJsonRequest = Effect.map(
+  HttpServerRequest.HttpServerRequest,
+  (request) =>
+    request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase() ===
+    "application/json",
+);
+
 const sendDraft = Effect.fnUntraced(function* (
   binding: SendEmail,
   env: InboxEnv,
@@ -445,17 +455,28 @@ const sendDraft = Effect.fnUntraced(function* (
   }
 }, Effect.withTracerEnabled(false));
 
+const deliverMail = Effect.fnUntraced(function* (
+  env: InboxEnv,
+  defer: (work: Promise<unknown>) => void,
+  sender: NonNullable<ReturnType<typeof inboxSender>>,
+  message: typeof InboxDraft.Type,
+  reply: SentReply | undefined,
+) {
+  const work = Effect.runPromiseExit(
+    sendDraft(sender.binding, env, { ...message, from: sender.from }, reply),
+  );
+  // Keep the send and its archive write together if the client disconnects.
+  defer(work);
+  const result = yield* Effect.promise(() => work);
+  return yield* result;
+});
+
 const sendEmail = (env: InboxEnv, defer: (work: Promise<unknown>) => void) =>
   Effect.gen(function* () {
     const sender = inboxSender(env);
     if (!sender)
       return yield* jsonError(503, "Sending is unavailable for this mailbox.");
-    const request = yield* HttpServerRequest.HttpServerRequest;
-    const contentType = request.headers["content-type"]
-      ?.split(";", 1)[0]
-      ?.trim()
-      .toLowerCase();
-    if (contentType !== "application/json")
+    if (!(yield* isJsonRequest))
       return yield* jsonError(415, "Expected a JSON request");
 
     const draft = yield* HttpServerRequest.schemaBodyJson(InboxSend, {
@@ -492,13 +513,69 @@ const sendEmail = (env: InboxEnv, defer: (work: Promise<unknown>) => void) =>
       const headers = original.email ? replyHeaders(original.email) : undefined;
       reply = { originalId: replyToId, ...(headers ? { headers } : {}) };
     }
-    const work = Effect.runPromiseExit(
-      sendDraft(sender.binding, env, { ...message, from: sender.from }, reply),
+    return yield* deliverMail(env, defer, sender, message, reply);
+  });
+
+const readReplyTarget = async (env: InboxEnv, id: string) => {
+  if (isSentMessageId(id)) return readSentReplyTarget(env.SENT_MESSAGES, id);
+  const original = await readHeaders(
+    env.INBOX_MESSAGES,
+    id,
+    mimeOptions.maxHeadersSize,
+  );
+  if (!original) return null;
+  return {
+    to: replyRecipient(original.email, original.metadata?.envelopeFrom ?? ""),
+    subject: original.email?.subject ?? original.metadata?.subject ?? "",
+    headers: original.email ? replyHeaders(original.email) : undefined,
+  };
+};
+
+const sendInlineReply = (
+  env: InboxEnv,
+  defer: (work: Promise<unknown>) => void,
+) =>
+  Effect.gen(function* () {
+    const sender = inboxSender(env);
+    if (!sender)
+      return yield* jsonError(503, "Sending is unavailable for this mailbox.");
+    const { id } = yield* HttpRouter.params;
+    if (!isMailMessageId(id)) return yield* notFound();
+    if (!(yield* isJsonRequest))
+      return yield* jsonError(415, "Expected a JSON request");
+    const body = yield* HttpServerRequest.schemaBodyJson(InlineReply, {
+      onExcessProperty: "error",
+    }).pipe(
+      Effect.provideService(
+        HttpServerRequest.MaxBodySize,
+        ByteSize.kibibytes(256),
+      ),
+      Effect.option,
     );
-    // Keep the send and its archive write together if the client disconnects.
-    defer(work);
-    const result = yield* Effect.promise(() => work);
-    return yield* result;
+    if (body._tag === "None")
+      return yield* jsonError(
+        400,
+        "Enter a plain-text reply within the form limits.",
+      );
+    if (
+      !(yield* Effect.tryPromise(() => sender.limit.limit({ key: ownerId })))
+        .success
+    )
+      return yield* sendRateLimit();
+
+    const target = yield* Effect.tryPromise(() => readReplyTarget(env, id));
+    if (!target) return yield* notFound();
+    const draft = Schema.decodeUnknownOption(InboxDraft)({
+      to: target.to,
+      subject: replySubject(target.subject),
+      text: body.value.text,
+    });
+    if (draft._tag === "None")
+      return yield* jsonError(422, "This email has no usable reply address.");
+    return yield* deliverMail(env, defer, sender, draft.value, {
+      originalId: id,
+      ...(target.headers ? { headers: target.headers } : {}),
+    });
   });
 
 export const inboxRoutes = (
@@ -630,6 +707,27 @@ export const inboxRoutes = (
     );
   };
 
+  const send = (
+    path: HttpRouter.PathInput,
+    action: ReturnType<typeof sendEmail> | ReturnType<typeof sendInlineReply>,
+  ) =>
+    HttpRouter.add(
+      "POST",
+      path,
+      Effect.gen(function* () {
+        if (!(yield* requireInboxOwner))
+          return yield* jsonError(403, "Access denied");
+        return yield* http.protect(action);
+      }).pipe(
+        Effect.catchTags({
+          ...inboxErrors,
+          HookDenied: () => jsonError(403, "Request not allowed"),
+          UnknownError: () =>
+            jsonError(503, "Sending is temporarily unavailable."),
+        }),
+      ),
+    );
+
   return Layer.mergeAll(
     folderRoutes("inbox"),
     folderRoutes("sent"),
@@ -706,21 +804,7 @@ export const inboxRoutes = (
       }).pipe(Effect.catchTags(inboxErrors)),
     ),
     HttpRouter.add("GET", `${inboxApiPath}/:id/original`, read("inbox", true)),
-    HttpRouter.add(
-      "POST",
-      inboxSendPath,
-      Effect.gen(function* () {
-        if (!(yield* requireInboxOwner))
-          return yield* jsonError(403, "Access denied");
-        return yield* http.protect(sendEmail(env, defer));
-      }).pipe(
-        Effect.catchTags({
-          ...inboxErrors,
-          HookDenied: () => jsonError(403, "Request not allowed"),
-          UnknownError: () =>
-            jsonError(503, "Sending is temporarily unavailable."),
-        }),
-      ),
-    ),
+    send(inboxSendPath, sendEmail(env, defer)),
+    send(`${inboxApiPath}/:id/reply`, sendInlineReply(env, defer)),
   );
 };

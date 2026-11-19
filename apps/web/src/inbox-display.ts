@@ -21,6 +21,16 @@ export const conversationPeople = (
   return [...people.values()];
 };
 
+export const collapsibleMiddleCount = (
+  messages: readonly Pick<ConversationMessage, "id" | "unread">[],
+  protectedIds: readonly (string | null | undefined)[],
+) => {
+  const middle = messages.slice(1, -2);
+  return middle.some(({ id, unread }) => unread || protectedIds.includes(id))
+    ? 0
+    : middle.length;
+};
+
 const timeOnly = new Intl.DateTimeFormat(undefined, {
   hour: "numeric",
   minute: "2-digit",

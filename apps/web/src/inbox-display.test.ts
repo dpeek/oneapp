@@ -1,5 +1,21 @@
 import { expect, it } from "@effect/vitest";
-import { splitMailQuote } from "./inbox-display.ts";
+import { collapsibleMiddleCount, splitMailQuote } from "./inbox-display.ts";
+
+it("keeps the oldest and newest two messages visible and skips hiding unread or targeted mail", () => {
+  const messages = ["first", "second", "third", "fourth", "last"].map((id) => ({
+    id,
+  }));
+  expect(collapsibleMiddleCount(messages.slice(0, 3), [])).toBe(0);
+  expect(collapsibleMiddleCount(messages.slice(0, 4), [])).toBe(1);
+  expect(collapsibleMiddleCount(messages, ["first", "last"])).toBe(2);
+  expect(collapsibleMiddleCount(messages, ["third"])).toBe(0);
+  expect(
+    collapsibleMiddleCount(
+      [messages[0]!, { id: "unread", unread: true }, ...messages.slice(2)],
+      [],
+    ),
+  ).toBe(0);
+});
 
 it("folds reply quotes with their attribution and preserves interleaved answers", () => {
   const text = [

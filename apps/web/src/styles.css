@@ -1470,10 +1470,34 @@ button {
   list-style: none;
 }
 
-.inbox-thread > li {
+.inbox-thread > li:not(.inbox-thread-middle) {
   min-width: 0;
   border: 1px solid var(--border);
   border-radius: 0.5rem;
+}
+
+.inbox-thread-middle {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.inbox-thread-middle::before,
+.inbox-thread-middle::after {
+  flex: 1;
+  border-block-start: 1px solid var(--border);
+  content: "";
+}
+
+.inbox-reader .inbox-thread-middle button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.inbox-reader .inbox-thread-middle button:hover {
+  color: var(--text);
 }
 
 .inbox-message-heading {

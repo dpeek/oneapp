@@ -8,6 +8,7 @@ import * as Attachments from "./inbox-attachments.ts";
 import * as Compose from "./inbox-compose.ts";
 import * as QuickReply from "./inbox-inline-reply.ts";
 import {
+  collapsibleMiddleCount,
   compactMailTime,
   conversationPeople,
   conversationSubject,
@@ -139,6 +140,7 @@ export const Model = Schema.Struct({
   readRequests: Schema.Record(Schema.String, Schema.String),
   readFailed: Schema.NullOr(InboxMessageId),
   selected: Schema.NullOr(MailMessageId),
+  middleRevealed: Schema.Boolean,
   active: Schema.NullOr(MessageLocation),
   thread: Schema.NullOr(Conversation),
   threadRequest: Schema.NullOr(Schema.String),
@@ -177,6 +179,7 @@ export const initial: Model = {
   readRequests: {},
   readFailed: null,
   selected: null,
+  middleRevealed: false,
   active: null,
   thread: null,
   threadRequest: null,
@@ -210,6 +213,7 @@ export const Message = defineMessageUnion({
   UpdatedProfiles: {},
   ToggledUnread: {},
   ToggledMessage: MessageLocation.fields,
+  ToggledMiddle: {},
   RequestedBack: {},
   RequestedPerson: { address: Schema.String },
   RequestedReply: {},
@@ -783,6 +787,7 @@ export const update = (
           : {
               ...base,
               selected: id,
+              middleRevealed: false,
               active: id ? { id, folder: messageFolder(id) } : null,
               thread: null,
               threadRequest: null,
@@ -919,6 +924,9 @@ export const update = (
     },
     ToggledMessage: ({ id, folder }) =>
       selectMessage(model, model.active?.id === id ? null : { id, folder }),
+    ToggledMiddle: () => ({
+      model: { ...model, middleRevealed: !model.middleRevealed },
+    }),
     RequestedBack: () => ({ model }),
     RequestedPerson: () => ({ model }),
     RequestedReply: () => {
@@ -1667,6 +1675,12 @@ const entryView = (
   const participantAvatars = groupParticipants(participants, profiles);
   const latest = messages.at(-1);
   const grouped = messages.length > 1;
+  const middleCount = collapsibleMiddleCount(messages, [
+    selected,
+    active?.id,
+    model.quickReply.target,
+    model.compose.reply?.originalId,
+  ]);
   const canArchive =
     model.folder !== "sent" &&
     model.thread?.messages.some(({ folder }) => folder === "inbox");
@@ -1759,7 +1773,9 @@ const entryView = (
             ),
             h.ol(
               [h.Class("inbox-thread"), h.AriaLabel("Conversation messages")],
-              messages.map((message) => {
+              messages.flatMap((message, index) => {
+                if (!model.middleRevealed && index > 0 && index <= middleCount)
+                  return [];
                 const { id, folder, from, timestamp, unread } = message;
                 const sender = message.people?.sender;
                 const address = sender?.address || from;
@@ -1779,7 +1795,7 @@ const entryView = (
                     [compactMailTime(timestamp)],
                   ),
                 ];
-                return h.li(
+                const row = h.li(
                   [h.Key(id)],
                   [
                     h.div(
@@ -1820,6 +1836,31 @@ const entryView = (
                       : []),
                   ],
                 );
+                return index === 0 && middleCount > 0
+                  ? [
+                      row,
+                      h.li(
+                        [
+                          h.Key("thread-middle"),
+                          h.Class("inbox-thread-middle"),
+                        ],
+                        [
+                          h.button(
+                            [
+                              h.Type("button"),
+                              h.AriaExpanded(model.middleRevealed),
+                              h.OnClick(Message.ToggledMiddle()),
+                            ],
+                            [
+                              model.middleRevealed
+                                ? "Hide earlier messages"
+                                : `Show ${middleCount} hidden ${middleCount === 1 ? "message" : "messages"}`,
+                            ],
+                          ),
+                        ],
+                      ),
+                    ]
+                  : [row];
               }),
             ),
           ]

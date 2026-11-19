@@ -792,6 +792,7 @@ export const update = (
           ? { ...next.entry, unread }
           : next.entry;
       const thread = next.thread && {
+        ...next.thread,
         messages: next.thread.messages.map((message) =>
           message.id === id ? { ...message, unread } : message,
         ),
@@ -1193,6 +1194,42 @@ const readerMessages = (model: Model): readonly ConversationMessage[] => {
   ].sort((a, b) => a.timestamp - b.timestamp);
 };
 
+const profileAvatar = (
+  h: HtmlBuilder<Message>,
+  {
+    address,
+    person,
+    name,
+    aliases = [],
+    editLabel,
+  }: {
+    address: string;
+    person: PersonSummary | undefined;
+    name: string;
+    aliases?: readonly string[];
+    editLabel: string;
+  },
+) => {
+  const tooltip =
+    [name, address, ...aliases].filter(Boolean).join("\n") || "Unknown sender";
+  const picture = avatar(h, person, address, name);
+  return isPersonEmail(address)
+    ? h.button(
+        [
+          h.Type("button"),
+          h.Class("inbox-profile-button"),
+          h.Title(tooltip),
+          h.AriaLabel(editLabel),
+          h.OnClick(Message.RequestedPerson({ address })),
+        ],
+        [picture],
+      )
+    : h.span(
+        [h.Title(tooltip), h.Role("img"), h.AriaLabel(tooltip)],
+        [picture],
+      );
+};
+
 const entryView = (model: Model, h: HtmlBuilder<Message>) => {
   const { selected, active } = model;
   if (!selected)
@@ -1280,40 +1317,19 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
                               name,
                               person,
                             },
-                          ]) => {
-                            const tooltip = [name, address, ...aliases]
-                              .filter(Boolean)
-                              .join("\n");
-                            const picture = avatar(h, person, address, name);
-                            return h.li(
+                          ]) =>
+                            h.li(
                               [h.Key(key)],
                               [
-                                isPersonEmail(address)
-                                  ? h.button(
-                                      [
-                                        h.Type("button"),
-                                        h.Class("inbox-profile-button"),
-                                        h.Title(tooltip),
-                                        h.AriaLabel(
-                                          `Edit participant profile for ${address}`,
-                                        ),
-                                        h.OnClick(
-                                          Message.RequestedPerson({ address }),
-                                        ),
-                                      ],
-                                      [picture],
-                                    )
-                                  : h.span(
-                                      [
-                                        h.Title(tooltip),
-                                        h.Role("img"),
-                                        h.AriaLabel(tooltip),
-                                      ],
-                                      [picture],
-                                    ),
+                                profileAvatar(h, {
+                                  address,
+                                  person,
+                                  name,
+                                  aliases,
+                                  editLabel: `Edit participant profile for ${address}`,
+                                }),
                               ],
-                            );
-                          },
+                            ),
                         ),
                       ),
                     ]
@@ -1326,29 +1342,18 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
                 const { id, folder, from, timestamp, unread } = message;
                 const sender = message.people?.sender;
                 const address = sender?.address || from;
-                const knownPerson = profiles.get(normalizePersonEmail(address));
-                const senderAvatar = avatar(
-                  h,
-                  knownPerson,
-                  address,
-                  sender?.name,
-                );
+                const person = profiles.get(normalizePersonEmail(address));
+                const date = messageDateFormat.format(timestamp);
                 const expanded = active?.id === id;
                 const panel = `mail-content-${id}`;
-                const summaryClass = unread
-                  ? "inbox-thread-summary is-unread"
-                  : "inbox-thread-summary";
                 const header = [
-                  h.strong(sender ? [h.Title(sender.address)] : [], [
-                    address || "Unknown sender",
-                  ]),
                   ...(unread
                     ? [h.span([h.Class("inbox-thread-unread")], ["Unread"])]
                     : []),
                   h.time(
                     [
                       h.Datetime(new Date(timestamp).toISOString()),
-                      h.Title(messageDateFormat.format(timestamp)),
+                      h.Title(date),
                     ],
                     [compactMailTime(timestamp)],
                   ),
@@ -1359,22 +1364,20 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
                     h.div(
                       [h.Class("inbox-message-heading")],
                       [
-                        isPersonEmail(address)
-                          ? h.button(
-                              [
-                                h.Type("button"),
-                                h.Class("inbox-profile-button"),
-                                h.AriaLabel(`Edit profile for ${address}`),
-                                h.OnClick(Message.RequestedPerson({ address })),
-                              ],
-                              [senderAvatar],
-                            )
-                          : senderAvatar,
+                        profileAvatar(h, {
+                          address,
+                          person,
+                          name: person?.name || sender?.name || "",
+                          editLabel: `Edit profile for ${address}`,
+                        }),
                         grouped
                           ? h.button(
                               [
                                 h.Type("button"),
-                                h.Class(summaryClass),
+                                h.Class("inbox-thread-summary"),
+                                h.AriaLabel(
+                                  `Message from ${address || "unknown sender"}, ${date}${unread ? ", unread" : ""}`,
+                                ),
                                 h.AriaExpanded(expanded),
                                 ...(expanded ? [h.AriaControls(panel)] : []),
                                 h.OnClick(
@@ -1383,7 +1386,7 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
                               ],
                               header,
                             )
-                          : h.header([h.Class(summaryClass)], header),
+                          : h.header([h.Class("inbox-thread-summary")], header),
                       ],
                     ),
                     ...(expanded

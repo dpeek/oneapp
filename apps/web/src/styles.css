@@ -1275,8 +1275,7 @@ button {
   font-weight: 500;
 }
 
-.inbox-message-row.is-unread strong,
-.inbox-thread-summary.is-unread strong {
+.inbox-message-row.is-unread strong {
   font-weight: 700;
 }
 
@@ -1399,7 +1398,8 @@ button {
 
 .inbox-reader .inbox-thread-summary {
   display: flex;
-  align-items: baseline;
+  align-items: center;
+  justify-content: flex-end;
   gap: 0.625rem;
   flex: 1;
   min-inline-size: 0;
@@ -1409,19 +1409,6 @@ button {
   padding: 0.625rem 0.75rem 0.625rem 0.25rem;
   background: transparent;
   text-align: start;
-}
-
-.inbox-thread-summary strong {
-  flex: 1 1 auto;
-  min-inline-size: 0;
-  font-size: 0.9375rem;
-  font-weight: 650;
-}
-
-.inbox-thread-summary :is(strong, span) {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .inbox-thread-summary :is(span, time) {

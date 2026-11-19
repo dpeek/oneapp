@@ -318,7 +318,7 @@ export default {
           ),
           passwordRecoveryRoutes(http, emailTransport !== disabledEmail),
           linksRoutes(http),
-          inboxRoutes(http, env),
+          inboxRoutes(http, env, defer),
           vaultSetupRoutes(http, env.DB),
           vaultItemRoutes(http, env.DB),
           vaultManagementRoutes(http, env, defer),

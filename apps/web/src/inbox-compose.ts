@@ -6,13 +6,14 @@ import {
   inboxComposeLimits,
   InboxDraft,
   inboxSendPath,
+  sentCopyHeader,
 } from "./inbox-contract.ts";
 
 export const Model = Schema.Struct({
   from: Schema.NullOr(Schema.String),
   request: Schema.NullOr(Schema.String),
   error: Schema.NullOr(Schema.String),
-  sent: Schema.Boolean,
+  notice: Schema.NullOr(Schema.String),
 });
 type Model = typeof Model.Type;
 
@@ -20,7 +21,7 @@ export const initial: Model = {
   from: null,
   request: null,
   error: null,
-  sent: false,
+  notice: null,
 };
 
 export const Message = defineMessageUnion({
@@ -28,7 +29,7 @@ export const Message = defineMessageUnion({
   Closed: {},
   Shown: {},
   Submitted: {},
-  Sent: { request: Schema.String },
+  Sent: { request: Schema.String, saved: Schema.Boolean },
   Failed: { request: Schema.String, error: Schema.String },
   SessionExpired: { request: Schema.String },
 });
@@ -77,7 +78,11 @@ const Send = Command.define("SendInboxEmail", {
         signal,
       });
       if (response.status === 401) return Message.SessionExpired({ request });
-      if (response.status === 204) return Message.Sent({ request });
+      if (response.status === 204)
+        return Message.Sent({
+          request,
+          saved: response.headers.get(sentCopyHeader) !== "failed",
+        });
       const result = decodeError(await response.json());
       return Message.Failed({
         request,
@@ -108,8 +113,16 @@ export const update = (
         commands: [Send({ request })],
       };
     },
-    Sent: ({ request }) => ({
-      model: model.request === request ? { ...initial, sent: true } : model,
+    Sent: ({ request, saved }) => ({
+      model:
+        model.request === request
+          ? {
+              ...initial,
+              notice: saved
+                ? "Email sent."
+                : "Email sent. Could not save a copy in Sent.",
+            }
+          : model,
     }),
     Failed: ({ request, error }) => ({
       model:
@@ -138,7 +151,7 @@ export const view = Submodel.defineView<
             ),
           ]
         : []),
-      h.p([h.Role("status")], [model.sent ? "Email sent." : ""]),
+      h.p([h.Role("status")], [model.notice ?? ""]),
       ...(model.from
         ? [
             h.dialog(

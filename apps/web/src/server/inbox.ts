@@ -10,19 +10,28 @@ import { compile } from "html-to-text";
 import PostalMime, { decodeWords } from "postal-mime";
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import {
+  folderApiPath,
   inboxApiPath,
   InboxDraft,
   InboxEntry,
   InboxMessageId,
   InboxPage,
   inboxSendPath,
+  type MailFolder,
+  SentEntry,
+  SentPage,
+  sentCopyHeader,
 } from "../inbox-contract.ts";
 import { jsonError, privateHeaders } from "./api-response.ts";
 import { AppAuth, ownerId, type authHttp } from "./auth.ts";
+import { isSentMessageId, listSent, readSent, saveSent } from "./sent-mail.ts";
 
 type InboxEnv = Pick<
   WorkerEnv,
-  "INBOX_EMAIL_ADDRESS" | "INBOX_MESSAGES" | "INBOX_EMAIL_FROM"
+  | "INBOX_EMAIL_ADDRESS"
+  | "INBOX_MESSAGES"
+  | "INBOX_EMAIL_FROM"
+  | "SENT_MESSAGES"
 > & { INBOX_SEND?: SendEmail; INBOX_SEND_LIMIT?: RateLimit };
 type InboxBucket = InboxEnv["INBOX_MESSAGES"];
 
@@ -36,7 +45,7 @@ export type InboxSocketSession = {
   securityRevision: string;
 };
 
-const isMessageId = Schema.is(InboxMessageId);
+const isInboxMessageId = Schema.is(InboxMessageId);
 const headerLimit = 64 * 1024;
 const messageLimit = 8 * 1024 * 1024;
 const textLimit = 256 * 1024;
@@ -60,10 +69,12 @@ const htmlToText = compile({
 });
 
 // R2 lists keys in ascending order, so new messages sort newest first.
-export const inboxMessageKey = () => {
-  const time = String(9_999_999_999_999 - Date.now()).padStart(13, "0");
-  return `0-${time}-${crypto.randomUUID()}.eml`;
+const newestFirstKey = (date: number) => {
+  const time = String(9_999_999_999_999 - date).padStart(13, "0");
+  return `0-${time}-${crypto.randomUUID()}`;
 };
+
+export const inboxMessageKey = () => `${newestFirstKey(Date.now())}.eml`;
 
 export const inboxSubject = (header: string | null) =>
   decodeWords(header?.slice(0, 4096) ?? "")
@@ -118,14 +129,12 @@ const listMessages = async (env: InboxEnv, cursor: string | undefined) => {
   return {
     messages: await Promise.all(
       page.objects
-        .filter(({ key }) => isMessageId(key))
+        .filter(({ key }) => isInboxMessageId(key))
         .map(async (object) =>
           summary(object, await readSubject(bucket, object)),
         ),
     ),
     cursor: page.truncated ? page.cursor : null,
-    address: env.INBOX_EMAIL_ADDRESS ?? null,
-    sender: inboxSender(env)?.from,
   };
 };
 
@@ -214,7 +223,62 @@ const unknownSend = () =>
 const sendRateLimit = () =>
   jsonError(429, "Sending limit reached. Try again later.");
 
-const sendEmail = (env: InboxEnv) =>
+const sendDraft = Effect.fnUntraced(function* (
+  binding: SendEmail,
+  bucket: InboxEnv["SENT_MESSAGES"],
+  message: typeof InboxDraft.Type & { from: string },
+) {
+  const sent = yield* Effect.tryPromise({
+    try: () => binding.send(message),
+    catch: (error) =>
+      typeof error === "object" && error !== null && "code" in error
+        ? error.code
+        : undefined,
+  }).pipe(Effect.result);
+  if (sent._tag === "Success") {
+    if (!sent.success?.messageId) return yield* unknownSend();
+    const sentAt = Date.now();
+    const saved = yield* saveSent(bucket, {
+      ...message,
+      id: newestFirstKey(sentAt),
+      sentAt,
+      providerMessageId: sent.success.messageId,
+    });
+    return HttpServerResponse.empty({
+      status: 204,
+      headers: saved
+        ? privateHeaders
+        : { ...privateHeaders, [sentCopyHeader]: "failed" },
+    });
+  }
+  switch (sent.failure) {
+    case "E_VALIDATION_ERROR":
+      return yield* jsonError(400, "Cloudflare rejected the email format.");
+    case "E_RECIPIENT_SUPPRESSED":
+      return yield* jsonError(
+        422,
+        "Cloudflare has suppressed this recipient address.",
+      );
+    case "E_RECIPIENT_NOT_ALLOWED":
+    case "E_RECIPIENT_PLAN_RESTRICTED":
+      return yield* jsonError(
+        422,
+        "Cloudflare does not allow sending to this address.",
+      );
+    case "E_DELIVERY_FAILED":
+      return yield* jsonError(
+        422,
+        "Cloudflare could not deliver the email to this address.",
+      );
+    case "E_RATE_LIMIT_EXCEEDED":
+    case "E_DAILY_LIMIT_EXCEEDED":
+      return yield* sendRateLimit();
+    default:
+      return yield* unknownSend();
+  }
+}, Effect.withTracerEnabled(false));
+
+const sendEmail = (env: InboxEnv, defer: (work: Promise<unknown>) => void) =>
   Effect.gen(function* () {
     const sender = inboxSender(env);
     if (!sender)
@@ -247,62 +311,70 @@ const sendEmail = (env: InboxEnv) =>
     )
       return yield* sendRateLimit();
 
-    const sent = yield* Effect.tryPromise({
-      try: () => sender.binding.send({ ...draft.value, from: sender.from }),
-      catch: (error) =>
-        typeof error === "object" && error !== null && "code" in error
-          ? error.code
-          : undefined,
-    }).pipe(Effect.withTracerEnabled(false), Effect.result);
-    if (sent._tag === "Success") {
-      return sent.success?.messageId
-        ? HttpServerResponse.empty({ status: 204, headers: privateHeaders })
-        : yield* unknownSend();
-    }
-    switch (sent.failure) {
-      case "E_VALIDATION_ERROR":
-        return yield* jsonError(400, "Cloudflare rejected the email format.");
-      case "E_RECIPIENT_SUPPRESSED":
-        return yield* jsonError(
-          422,
-          "Cloudflare has suppressed this recipient address.",
-        );
-      case "E_RECIPIENT_NOT_ALLOWED":
-      case "E_RECIPIENT_PLAN_RESTRICTED":
-        return yield* jsonError(
-          422,
-          "Cloudflare does not allow sending to this address.",
-        );
-      case "E_DELIVERY_FAILED":
-        return yield* jsonError(
-          422,
-          "Cloudflare could not deliver the email to this address.",
-        );
-      case "E_RATE_LIMIT_EXCEEDED":
-      case "E_DAILY_LIMIT_EXCEEDED":
-        return yield* sendRateLimit();
-      default:
-        return yield* unknownSend();
-    }
+    const work = Effect.runPromiseExit(
+      sendDraft(sender.binding, env.SENT_MESSAGES, {
+        ...draft.value,
+        from: sender.from,
+      }),
+    );
+    // Keep the send and its archive write together if the client disconnects.
+    defer(work);
+    const result = yield* Effect.promise(() => work);
+    return yield* result;
   });
 
 export const inboxRoutes = (
   http: ReturnType<typeof authHttp>,
   env: InboxEnv,
+  defer: (work: Promise<unknown>) => void,
 ) => {
-  const remove = Effect.gen(function* () {
-    const { id } = yield* HttpRouter.params;
-    if (!isMessageId(id)) return yield* notFound();
-    yield* Effect.tryPromise(() => env.INBOX_MESSAGES.delete(id));
-    return HttpServerResponse.empty({ status: 204, headers: privateHeaders });
-  });
+  const list = (folder: MailFolder) =>
+    Effect.gen(function* () {
+      if (!(yield* requireInboxOwner))
+        return yield* jsonError(403, "Access denied");
+      const query = yield* listQuery.pipe(Effect.option);
+      if (query._tag === "None")
+        return yield* jsonError(400, "Invalid page cursor");
+      const sender = inboxSender(env);
+      const mailbox = {
+        address: env.INBOX_EMAIL_ADDRESS ?? null,
+        ...(sender ? { sender: sender.from } : {}),
+      };
+      if (folder === "sent") {
+        const page = yield* Effect.tryPromise(() =>
+          listSent(env.SENT_MESSAGES, query.value.cursor),
+        );
+        return yield* HttpServerResponse.schemaJson(SentPage)(
+          { ...page, ...mailbox },
+          { headers: privateHeaders },
+        );
+      }
+      const page = yield* Effect.tryPromise(() =>
+        listMessages(env, query.value.cursor),
+      );
+      return yield* HttpServerResponse.schemaJson(InboxPage)(
+        { ...page, ...mailbox },
+        { headers: privateHeaders },
+      );
+    }).pipe(Effect.catchTags(inboxErrors));
 
-  const read = (original: boolean) =>
+  const read = (folder: MailFolder, original = false) =>
     Effect.gen(function* () {
       if (!(yield* requireInboxOwner))
         return yield* jsonError(403, "Access denied");
       const { id } = yield* HttpRouter.params;
-      if (!isMessageId(id)) return yield* notFound();
+      if (folder === "sent") {
+        if (!isSentMessageId(id)) return yield* notFound();
+        const message = yield* Effect.tryPromise(() =>
+          readSent(env.SENT_MESSAGES, id),
+        );
+        return message
+          ? yield* HttpServerResponse.schemaJson(SentEntry)(message, {
+              headers: privateHeaders,
+            })
+          : yield* notFound();
+      }
+      if (!isInboxMessageId(id)) return yield* notFound();
       if (original) {
         const file = yield* Effect.tryPromise(() =>
           downloadOriginal(env.INBOX_MESSAGES, id),
@@ -317,55 +389,55 @@ export const inboxRoutes = (
         : yield* notFound();
     }).pipe(Effect.catchTags(inboxErrors));
 
+  const remove = (folder: MailFolder) => {
+    const bucket = folder === "sent" ? env.SENT_MESSAGES : env.INBOX_MESSAGES;
+    const validId = folder === "sent" ? isSentMessageId : isInboxMessageId;
+    const deleteMessage = Effect.gen(function* () {
+      const { id } = yield* HttpRouter.params;
+      if (!validId(id)) return yield* notFound();
+      yield* Effect.tryPromise(() => bucket.delete(id));
+      return HttpServerResponse.empty({ status: 204, headers: privateHeaders });
+    });
+    return Effect.gen(function* () {
+      if (!(yield* requireInboxOwner))
+        return yield* jsonError(403, "Access denied");
+      return yield* http.protect(deleteMessage);
+    }).pipe(
+      Effect.catchTags({
+        ...inboxErrors,
+        HookDenied: () => jsonError(403, "Request not allowed"),
+        UnknownError: () =>
+          jsonError(503, "Could not delete this email. Try again."),
+      }),
+    );
+  };
+
+  const folderRoutes = (folder: MailFolder) => {
+    const path = folderApiPath(folder);
+    return Layer.mergeAll(
+      HttpRouter.add("GET", path, list(folder)),
+      HttpRouter.add("GET", `${path}/:id`, read(folder)),
+      HttpRouter.add("DELETE", `${path}/:id`, remove(folder)),
+    );
+  };
+
   return Layer.mergeAll(
-    HttpRouter.add(
-      "GET",
-      inboxApiPath,
-      Effect.gen(function* () {
-        if (!(yield* requireInboxOwner))
-          return yield* jsonError(403, "Access denied");
-        const query = yield* listQuery.pipe(Effect.option);
-        if (query._tag === "None")
-          return yield* jsonError(400, "Invalid page cursor");
-        const page = yield* Effect.tryPromise(() =>
-          listMessages(env, query.value.cursor),
-        );
-        return yield* HttpServerResponse.schemaJson(InboxPage)(page, {
-          headers: privateHeaders,
-        });
-      }).pipe(Effect.catchTags(inboxErrors)),
-    ),
-    HttpRouter.add("GET", `${inboxApiPath}/:id`, read(false)),
-    HttpRouter.add("GET", `${inboxApiPath}/:id/original`, read(true)),
+    folderRoutes("inbox"),
+    folderRoutes("sent"),
+    HttpRouter.add("GET", `${inboxApiPath}/:id/original`, read("inbox", true)),
     HttpRouter.add(
       "POST",
       inboxSendPath,
       Effect.gen(function* () {
         if (!(yield* requireInboxOwner))
           return yield* jsonError(403, "Access denied");
-        return yield* http.protect(sendEmail(env));
+        return yield* http.protect(sendEmail(env, defer));
       }).pipe(
         Effect.catchTags({
           ...inboxErrors,
           HookDenied: () => jsonError(403, "Request not allowed"),
           UnknownError: () =>
             jsonError(503, "Sending is temporarily unavailable."),
-        }),
-      ),
-    ),
-    HttpRouter.add(
-      "DELETE",
-      `${inboxApiPath}/:id`,
-      Effect.gen(function* () {
-        if (!(yield* requireInboxOwner))
-          return yield* jsonError(403, "Access denied");
-        return yield* http.protect(remove);
-      }).pipe(
-        Effect.catchTags({
-          ...inboxErrors,
-          HookDenied: () => jsonError(403, "Request not allowed"),
-          UnknownError: () =>
-            jsonError(503, "Could not delete this email. Try again."),
         }),
       ),
     ),

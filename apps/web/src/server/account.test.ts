@@ -28,6 +28,9 @@ import {
   inboxMessageApi,
   inboxOriginalApi,
   inboxSendPath,
+  mailMessageApi,
+  sentApiPath,
+  sentCopyHeader,
 } from "../inbox-contract.ts";
 import {
   codexClientId,
@@ -77,6 +80,7 @@ const setup = async (
       | "INBOX_EMAIL_ADDRESS"
       | "INBOX_UPDATES"
       | "INBOX_EMAIL_FROM"
+      | "SENT_MESSAGES"
     >
   > & { INBOX_SEND?: SendEmail; INBOX_SEND_LIMIT?: RateLimit },
 ) => {
@@ -232,6 +236,20 @@ it("lets only the owner send plain-text mail from the configured Inbox address",
   const send = vi.fn(async (_message: EmailMessageBuilder) => ({
     messageId: "fixture-mail",
   }));
+  const stored = new Map<
+    string,
+    { key: string; value: string; customMetadata: Record<string, string> }
+  >();
+  const save = async (
+    key: string,
+    value: string,
+    options: { customMetadata: Record<string, string> },
+  ) => {
+    const object = { key, value, customMetadata: options.customMetadata };
+    stored.set(key, object);
+    return object;
+  };
+  const put = vi.fn(save);
   const limit = vi.fn(async (_input: { key: string }) => ({ success: true }));
   const { call, request, signIn, cookies } = await setup(sqlite, {
     INBOX_EMAIL_ADDRESS: from,
@@ -241,6 +259,15 @@ it("lets only the owner send plain-text mail from the configured Inbox address",
     INBOX_MESSAGES: {
       list: async () => ({ objects: [], truncated: false }),
     } as WorkerEnv["INBOX_MESSAGES"],
+    SENT_MESSAGES: {
+      put,
+      list: async () => ({ objects: [...stored.values()], truncated: false }),
+      get: async (id: string) => {
+        const object = stored.get(id);
+        return object ? { json: async () => JSON.parse(object.value) } : null;
+      },
+      delete: async (id: string) => void stored.delete(id),
+    } as unknown as WorkerEnv["SENT_MESSAGES"],
   });
   const session = cookies(await signIn(password));
   const draft = {
@@ -254,6 +281,7 @@ it("lets only the owner send plain-text mail from the configured Inbox address",
     await (await call(inboxApiPath, undefined, session)).json(),
   ).toMatchObject({ address: from, sender: from });
   expect((await call(inboxSendPath, draft)).status).toBe(401);
+  expect((await call(sentApiPath)).status).toBe(401);
   expect(
     (await call(inboxSendPath, draft, session, "https://other.example")).status,
   ).toBe(403);
@@ -286,15 +314,57 @@ it("lets only the owner send plain-text mail from the configured Inbox address",
   limit.mockResolvedValueOnce({ success: false });
   expect((await approved()).status).toBe(429);
   expect(send).not.toHaveBeenCalled();
+  expect(put).not.toHaveBeenCalled();
 
+  put.mockImplementationOnce(async (...args) => {
+    await save(...args);
+    throw new Error("Fixture lost the response to a successful write");
+  });
   const accepted = await approved();
   expect(accepted.status).toBe(204);
   expect(accepted.headers.get("cache-control")).toBe("no-store");
+  expect(accepted.headers.get(sentCopyHeader)).toBeNull();
   expect(send).toHaveBeenCalledExactlyOnceWith({
     from,
     to: "Alice+Details@Example.NET",
     subject: "Meeting notes",
     text: draft.text,
+  });
+  expect(put).toHaveBeenCalledTimes(2);
+  expect(put.mock.calls[0]).toEqual(put.mock.calls[1]);
+  expect(stored.size).toBe(1);
+  const [copy] = stored.values();
+  if (!copy) throw new Error("Expected an archived copy");
+  expect(JSON.parse(copy.value)).toMatchObject({
+    id: copy.key,
+    text: draft.text,
+    providerMessageId: "fixture-mail",
+  });
+  const sentList = await call(sentApiPath, undefined, session);
+  expect(sentList.status).toBe(200);
+  expect(sentList.headers.get("cache-control")).toBe("no-store");
+  const entrySummary = {
+    id: copy.key,
+    from,
+    to: "Alice+Details@Example.NET",
+    subject: "Meeting notes",
+    sentAt: expect.any(Number),
+  };
+  expect(await sentList.json()).toEqual({
+    messages: [entrySummary],
+    cursor: null,
+    address: from,
+    sender: from,
+  });
+  const detail = mailMessageApi("sent", copy.key);
+  expect((await call(detail)).status).toBe(401);
+  expect(
+    (await call(inboxMessageApi(copy.key), undefined, session)).status,
+  ).toBe(404);
+  expect(await (await call(detail, undefined, session)).json()).toEqual({
+    ...entrySummary,
+    text: draft.text,
+    preview: "complete",
   });
   send.mockRejectedValueOnce(
     Object.assign(new Error("Provider details"), {
@@ -313,6 +383,33 @@ it("lets only the owner send plain-text mail from the configured Inbox address",
     error: "Could not confirm whether the email was sent.",
   });
   expect(send).toHaveBeenCalledTimes(3);
+  expect(put).toHaveBeenCalledTimes(2);
+
+  const failure = new Error("Storage unavailable");
+  put
+    .mockRejectedValueOnce(failure)
+    .mockRejectedValueOnce(failure)
+    .mockRejectedValueOnce(failure);
+  const unsaved = await approved();
+  expect(unsaved.status).toBe(204);
+  expect(unsaved.headers.get(sentCopyHeader)).toBe("failed");
+  expect(send).toHaveBeenCalledTimes(4);
+  expect(put).toHaveBeenCalledTimes(5);
+  expect(stored.size).toBe(1);
+
+  const remove = (cookie?: string, csrf = false) =>
+    request(detail, {
+      method: "DELETE",
+      headers: {
+        origin: "https://oneapp.example",
+        ...(cookie ? { cookie } : {}),
+        ...(csrf ? { "x-effect-auth-csrf": "1" } : {}),
+      },
+    });
+  expect((await remove()).status).toBe(401);
+  expect((await remove(session)).status).toBe(403);
+  expect((await remove(session, true)).status).toBe(204);
+  expect((await call(detail, undefined, session)).status).toBe(404);
 });
 
 it("only upgrades Inbox sockets for a same-origin owner session", async () => {
@@ -441,7 +538,9 @@ it("allows the owner to list, read, download, and permanently delete stored mail
   const session = cookies(await signIn(password));
   const first = await call(inboxApiPath, undefined, session);
   expect(first.headers.get("cache-control")).toBe("no-store");
-  expect(await first.json()).toMatchObject({
+  const firstPage = await first.json();
+  expect(firstPage).not.toHaveProperty("sender");
+  expect(firstPage).toMatchObject({
     address,
     cursor: "next-page",
     messages: [{ id: newest, from: sender, subject: "Coffee ☕" }],

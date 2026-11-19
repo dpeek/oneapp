@@ -5,37 +5,66 @@ import { defineMessageUnion } from "foldkit/message";
 import * as Mount from "foldkit/mount";
 import * as Compose from "./inbox-compose.ts";
 import {
-  inboxApiPath,
+  folderApiPath,
+  folderPath,
   inboxChanged,
   InboxEntry,
   inboxEventsPath,
-  inboxMessageApi,
   InboxMessageId,
-  inboxMessagePage,
   inboxOriginalApi,
   InboxPage,
   inboxPath,
+  MailEntry,
+  MailFolder,
+  MailMessageId,
+  MailPage,
+  mailMessageApi,
+  mailMessagePage,
+  SentEntry,
+  SentMessageId,
+  SentPage,
+  sentPath,
 } from "./inbox-contract.ts";
 
-const isMessageId = Schema.is(InboxMessageId);
-export const messageIdFor = (pathname: string) => {
-  if (!pathname.startsWith(`${inboxPath}/`)) return null;
-  const id = pathname.slice(inboxPath.length + 1);
-  return isMessageId(id) ? id : null;
+const isInboxMessageId = Schema.is(InboxMessageId);
+const isSentMessageId = Schema.is(SentMessageId);
+export const MailRoute = Schema.Struct({
+  folder: MailFolder,
+  id: Schema.NullOr(MailMessageId),
+});
+export const routeFor = (pathname: string): typeof MailRoute.Type | null => {
+  if (pathname === inboxPath || pathname === `${inboxPath}/`)
+    return { folder: "inbox", id: null };
+  if (pathname === sentPath || pathname === `${sentPath}/`)
+    return { folder: "sent", id: null };
+  if (pathname.startsWith(`${sentPath}/`)) {
+    const id = pathname.slice(sentPath.length + 1);
+    return isSentMessageId(id) ? { folder: "sent", id } : null;
+  }
+  if (pathname.startsWith(`${inboxPath}/`)) {
+    const id = pathname.slice(inboxPath.length + 1);
+    return isInboxMessageId(id) ? { folder: "inbox", id } : null;
+  }
+  return null;
 };
 
 export const Model = Schema.Struct({
-  list: Schema.NullOr(InboxPage),
+  folder: MailFolder,
+  list: Schema.NullOr(MailPage),
   listRequest: Schema.NullOr(Schema.String),
   listRefreshQueued: Schema.Boolean,
   listError: Schema.NullOr(Schema.String),
-  selected: Schema.NullOr(InboxMessageId),
-  entry: Schema.NullOr(InboxEntry),
+  selected: Schema.NullOr(MailMessageId),
+  entry: Schema.NullOr(MailEntry),
   entryRequest: Schema.NullOr(Schema.String),
   entryError: Schema.NullOr(Schema.String),
   confirmingDelete: Schema.Boolean,
   deleteRequest: Schema.NullOr(
-    Schema.Struct({ id: InboxMessageId, request: Schema.String }),
+    Schema.Struct({
+      id: MailMessageId,
+      request: Schema.String,
+      folder: MailFolder,
+    }),
   ),
   deleteFailed: Schema.Boolean,
   compose: Compose.Model,
@@ -43,6 +72,7 @@ export const Model = Schema.Struct({
 type Model = typeof Model.Type;
 
 export const initial: Model = {
+  folder: "inbox",
   list: null,
   listRequest: null,
   listRefreshQueued: false,
@@ -58,7 +88,7 @@ export const initial: Model = {
 };
 
 export const Message = defineMessageUnion({
-  Opened: { id: Schema.NullOr(InboxMessageId) },
+  Opened: MailRoute.fields,
   Refreshed: {},
   GotComposeMessage: { message: Compose.Message },
   LiveChanged: {},
@@ -67,15 +97,15 @@ export const Message = defineMessageUnion({
   RequestedDelete: {},
   CanceledDelete: {},
   ConfirmedDelete: {},
-  DeletedEntry: { id: InboxMessageId, request: Schema.String },
+  DeletedEntry: { id: MailMessageId, request: Schema.String },
   DeleteFailed: { request: Schema.String },
   LoadedList: {
     request: Schema.String,
-    page: InboxPage,
+    page: MailPage,
     append: Schema.Boolean,
   },
   ListFailed: { request: Schema.String },
-  LoadedEntry: { request: Schema.String, entry: InboxEntry },
+  LoadedEntry: { request: Schema.String, entry: MailEntry },
   EntryFailed: { request: Schema.String, missing: Schema.Boolean },
   SessionExpired: { request: Schema.String },
   FocusUpdated: {},
@@ -157,19 +187,27 @@ const ShowDeleteDialog = Mount.define("ShowInboxDeleteDialog", {
 });
 
 const LoadList = Command.define("LoadInboxList", {
-  args: { request: Schema.String, cursor: Schema.NullOr(Schema.String) },
+  args: {
+    request: Schema.String,
+    cursor: Schema.NullOr(Schema.String),
+    folder: MailFolder,
+  },
   messages: [Message.LoadedList, Message.ListFailed, Message.SessionExpired],
-  execute: ({ request, cursor }) =>
+  execute: ({ request, cursor, folder }) =>
     Effect.tryPromise(async (signal) => {
       const query =
         cursor === null ? "" : `?${new URLSearchParams({ cursor })}`;
-      const response = await fetch(inboxApiPath + query, {
+      const response = await fetch(folderApiPath(folder) + query, {
         cache: "no-store",
         signal,
       });
       if (response.status === 401) return Message.SessionExpired({ request });
       if (!response.ok) return Message.ListFailed({ request });
-      const page = Schema.decodeUnknownSync(InboxPage)(await response.json());
+      const payload = await response.json();
+      const page =
+        folder === "sent"
+          ? Schema.decodeUnknownSync(SentPage)(payload)
+          : Schema.decodeUnknownSync(InboxPage)(payload);
       return Message.LoadedList({ request, page, append: cursor !== null });
     }).pipe(
       Effect.catch(() => Effect.succeed(Message.ListFailed({ request }))),
@@ -177,11 +215,11 @@ const LoadList = Command.define("LoadInboxList", {
 });
 
 const LoadEntry = Command.define("LoadInboxEntry", {
-  args: { request: Schema.String, id: InboxMessageId },
+  args: { request: Schema.String, id: MailMessageId, folder: MailFolder },
   messages: [Message.LoadedEntry, Message.EntryFailed, Message.SessionExpired],
-  execute: ({ request, id }) =>
+  execute: ({ request, id, folder }) =>
     Effect.tryPromise(async (signal) => {
-      const response = await fetch(inboxMessageApi(id), {
+      const response = await fetch(mailMessageApi(folder, id), {
         cache: "no-store",
         signal,
       });
@@ -191,7 +229,11 @@ const LoadEntry = Command.define("LoadInboxEntry", {
           request,
           missing: response.status === 404,
         });
-      const entry = Schema.decodeUnknownSync(InboxEntry)(await response.json());
+      const payload = await response.json();
+      const entry =
+        folder === "sent"
+          ? Schema.decodeUnknownSync(SentEntry)(payload)
+          : Schema.decodeUnknownSync(InboxEntry)(payload);
       return Message.LoadedEntry({ request, entry });
     }).pipe(
       Effect.catch(() =>
@@ -201,15 +243,15 @@ const LoadEntry = Command.define("LoadInboxEntry", {
 });
 
 const DeleteEntry = Command.define("DeleteInboxEntry", {
-  args: { request: Schema.String, id: InboxMessageId },
+  args: { request: Schema.String, id: MailMessageId, folder: MailFolder },
   messages: [
     Message.DeletedEntry,
     Message.DeleteFailed,
     Message.SessionExpired,
   ],
-  execute: ({ request, id }) =>
+  execute: ({ request, id, folder }) =>
     Effect.tryPromise(async (signal) => {
-      const response = await fetch(inboxMessageApi(id), {
+      const response = await fetch(mailMessageApi(folder, id), {
         method: "DELETE",
         headers: { "x-effect-auth-csrf": "1" },
         signal,
@@ -236,16 +278,23 @@ const loadList = (
       listRefreshQueued: false,
       listError: null,
     },
-    commands: [LoadList({ request, cursor })],
+    commands: [LoadList({ request, cursor, folder: model.folder })],
   };
 };
+
+const refreshList = (model: Model): Update.Return<Model, Message> =>
+  model.listRequest
+    ? { model: { ...model, listRefreshQueued: true } }
+    : loadList(model, null);
 
 const loadEntry = (model: Model): Update.Return<Model, Message> => {
   if (!model.selected || model.entryRequest !== null) return { model };
   const request = crypto.randomUUID();
   return {
     model: { ...model, entryRequest: request, entryError: null },
-    commands: [LoadEntry({ request, id: model.selected })],
+    commands: [
+      LoadEntry({ request, id: model.selected, folder: model.folder }),
+    ],
   };
 };
 
@@ -254,12 +303,21 @@ export const update = (
   message: Message,
 ): Update.Return<Model, Message> =>
   Message.match<Update.Return<Model, Message>>(message, {
-    Opened: ({ id }) => {
-      const next =
-        model.selected === id
-          ? { ...model, confirmingDelete: false }
+    Opened: ({ id, folder }) => {
+      const base =
+        folder === model.folder
+          ? model
           : {
-              ...model,
+              ...initial,
+              folder,
+              compose: model.compose,
+              deleteRequest: model.deleteRequest,
+            };
+      const next =
+        base.selected === id
+          ? { ...base, confirmingDelete: false }
+          : {
+              ...base,
               selected: id,
               entry: null,
               entryRequest: null,
@@ -275,11 +333,16 @@ export const update = (
       };
     },
     Refreshed: () => loadList(model, null),
-    GotComposeMessage: ({ message }) => foldCompose(model, message),
+    GotComposeMessage: ({ message }) => {
+      const result = foldCompose(model, message);
+      return message._tag === "Sent" &&
+        model.compose.request === message.request &&
+        model.folder === "sent"
+        ? refreshList(result.model)
+        : result;
+    },
     LiveChanged: () =>
-      model.listRequest
-        ? { model: { ...model, listRefreshQueued: true } }
-        : loadList(model, null),
+      model.folder === "inbox" ? refreshList(model) : { model },
     RequestedMore: () =>
       model.list?.cursor ? loadList(model, model.list.cursor) : { model },
     RetriedEntry: () => loadEntry(model),
@@ -291,7 +354,11 @@ export const update = (
     ConfirmedDelete: () => {
       if (!model.confirmingDelete || !model.entry || model.deleteRequest)
         return { model };
-      const deletion = { id: model.entry.id, request: crypto.randomUUID() };
+      const deletion = {
+        id: model.entry.id,
+        request: crypto.randomUUID(),
+        folder: model.folder,
+      };
       return {
         model: { ...model, confirmingDelete: false, deleteRequest: deletion },
         commands: [DeleteEntry(deletion)],
@@ -299,6 +366,8 @@ export const update = (
     },
     DeletedEntry: ({ id, request }) => {
       if (request !== model.deleteRequest?.request) return { model };
+      if (model.deleteRequest.folder !== model.folder)
+        return { model: { ...model, deleteRequest: null } };
       const list = model.list && {
         ...model.list,
         messages: model.list.messages.filter((message) => message.id !== id),
@@ -324,7 +393,9 @@ export const update = (
             model: {
               ...model,
               deleteRequest: null,
-              deleteFailed: model.selected === model.deleteRequest.id,
+              deleteFailed:
+                model.folder === model.deleteRequest.folder &&
+                model.selected === model.deleteRequest.id,
             },
           },
     LoadedList: ({ request, page, append }) => {
@@ -368,14 +439,14 @@ export const update = (
     FocusUpdated: () => ({ model }),
   });
 
-const receivedFormat = new Intl.DateTimeFormat(undefined, {
+const messageDateFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeStyle: "short",
 });
-const receivedTime = (h: HtmlBuilder<Message>, receivedAt: number) =>
+const messageTime = (h: HtmlBuilder<Message>, time: number) =>
   h.time(
-    [h.Datetime(new Date(receivedAt).toISOString())],
-    [receivedFormat.format(receivedAt)],
+    [h.Datetime(new Date(time).toISOString())],
+    [messageDateFormat.format(time)],
   );
 
 const listView = (model: Model, h: HtmlBuilder<Message>) =>
@@ -397,7 +468,7 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
         ],
       ),
       h.div(
-        [h.Class("workspace-results")],
+        [h.Key(model.folder), h.Class("workspace-results")],
         [
           ...(model.listRequest === null
             ? []
@@ -430,7 +501,9 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
                           [
                             h.a(
                               [
-                                h.Href(inboxMessagePage(message.id)),
+                                h.Href(
+                                  mailMessagePage(model.folder, message.id),
+                                ),
                                 ...(model.selected === message.id
                                   ? [h.AriaCurrent("page")]
                                   : []),
@@ -440,8 +513,21 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
                                   [],
                                   [message.subject || "(No subject)"],
                                 ),
-                                h.span([], [message.from || "Unknown sender"]),
-                                receivedTime(h, message.receivedAt),
+                                "sentAt" in message
+                                  ? h.span(
+                                      [],
+                                      [message.to || "Unknown recipient"],
+                                    )
+                                  : h.span(
+                                      [],
+                                      [message.from || "Unknown sender"],
+                                    ),
+                                messageTime(
+                                  h,
+                                  "sentAt" in message
+                                    ? message.sentAt
+                                    : message.receivedAt,
+                                ),
                               ],
                             ),
                           ],
@@ -535,7 +621,7 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
       h.div(
         [h.Class("inbox-toolbar")],
         [
-          h.a([h.Href(inboxPath)], ["Back to messages"]),
+          h.a([h.Href(folderPath(model.folder))], ["Back to messages"]),
           ...(entry === null
             ? []
             : [
@@ -591,8 +677,16 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
                     ...(entry.to
                       ? [h.dt([], ["To"]), h.dd([], [entry.to])]
                       : []),
-                    h.dt([], ["Received"]),
-                    h.dd([], [receivedTime(h, entry.receivedAt)]),
+                    h.dt([], ["sentAt" in entry ? "Sent" : "Received"]),
+                    h.dd(
+                      [],
+                      [
+                        messageTime(
+                          h,
+                          "sentAt" in entry ? entry.sentAt : entry.receivedAt,
+                        ),
+                      ],
+                    ),
                   ],
                 ),
               ],
@@ -615,15 +709,22 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
                     [previewNotice[entry.preview]],
                   ),
                 ]),
-            h.footer(
-              [h.Class("inbox-entry-footer")],
-              [
-                h.a(
-                  [h.Href(inboxOriginalApi(selected)), h.Download(selected)],
-                  ["Download original (.eml)"],
-                ),
-              ],
-            ),
+            ...("receivedAt" in entry
+              ? [
+                  h.footer(
+                    [h.Class("inbox-entry-footer")],
+                    [
+                      h.a(
+                        [
+                          h.Href(inboxOriginalApi(selected)),
+                          h.Download(selected),
+                        ],
+                        ["Download original (.eml)"],
+                      ),
+                    ],
+                  ),
+                ]
+              : []),
           ]),
     ],
   );
@@ -639,7 +740,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
       h.header(
         [h.Class("workspace-header")],
         [
-          h.h1([], ["Inbox"]),
+          h.h1([], [model.folder === "sent" ? "Sent" : "Inbox"]),
           h.submodel({
             slotId: "inbox-compose",
             view: Compose.view,
@@ -653,12 +754,27 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
         [
           h.ul(
             [h.Class("workspace-nav-list")],
-            [
+            (
+              [
+                { folder: "inbox", label: "Inbox" },
+                { folder: "sent", label: "Sent" },
+              ] as const
+            ).map(({ folder, label }) =>
               h.li(
-                [],
-                [h.a([h.Href(inboxPath), h.AriaCurrent("true")], ["Inbox"])],
+                [h.Key(folder)],
+                [
+                  h.a(
+                    [
+                      h.Href(folderPath(folder)),
+                      ...(model.folder === folder
+                        ? [h.AriaCurrent("true")]
+                        : []),
+                    ],
+                    [label],
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
         ],
       ),

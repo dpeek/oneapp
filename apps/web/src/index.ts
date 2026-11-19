@@ -22,7 +22,7 @@ import * as CliLogin from "./cli-login.ts";
 import * as ConnectedClients from "./connected-clients.ts";
 import * as ExtensionAccess from "./extension-access.ts";
 import * as Inbox from "./inbox.ts";
-import { inboxPath, InboxMessageId } from "./inbox-contract.ts";
+import { folderPath } from "./inbox-contract.ts";
 import { deleteLink, readLinks, saveLink } from "./links-client.ts";
 import { mcpAuthorizePath, mcpLoginQuery } from "./mcp-access-contract.ts";
 import { navigationView } from "./navigation.ts";
@@ -34,12 +34,7 @@ import * as VaultSetup from "./vault-setup.ts";
 const Page = Schema.Literals(["links", "inbox", "vault", "settings"]);
 type Page = typeof Page.Type;
 const pageFor = (url: Url.Url): Page => {
-  if (
-    url.pathname === inboxPath ||
-    url.pathname === `${inboxPath}/` ||
-    Inbox.messageIdFor(url.pathname)
-  )
-    return "inbox";
+  if (Inbox.routeFor(url.pathname)) return "inbox";
   if (url.pathname === vaultPath || url.pathname === `${vaultPath}/`)
     return "vault";
   return url.pathname === "/settings" ||
@@ -56,7 +51,7 @@ const Model = Schema.Struct({
   accountSettings: AccountSettings.Model,
   vaultSetup: VaultSetup.Model,
   inbox: Inbox.Model,
-  inboxId: Schema.NullOr(InboxMessageId),
+  mailRoute: Schema.NullOr(Inbox.MailRoute),
   signInNotice: Schema.NullOr(Schema.String),
   links: Schema.NullOr(LinkList),
   linkUrl: Schema.String,
@@ -348,8 +343,8 @@ const loadPage = (model: Model): Update.Return<Model, Message> => {
   }
   if (model.page === "vault")
     return foldVaultSetup(model, VaultSetup.Message.Requested());
-  if (model.page === "inbox")
-    return foldInbox(model, Inbox.Message.Opened({ id: model.inboxId }));
+  if (model.mailRoute)
+    return foldInbox(model, Inbox.Message.Opened(model.mailRoute));
   return foldConnectedClients(model, ConnectedClients.Message.Requested());
 };
 
@@ -362,7 +357,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     accountSettings: AccountSettings.initial,
     vaultSetup: VaultSetup.initial,
     inbox: Inbox.initial,
-    inboxId: Inbox.messageIdFor(url.pathname),
+    mailRoute: Inbox.routeFor(url.pathname),
     signInNotice: null,
     links: null,
     linkUrl: "",
@@ -413,10 +408,12 @@ const update = (
     },
     ChangedUrl: ({ url }) => {
       const page = pageFor(url);
-      const inboxId = Inbox.messageIdFor(url.pathname);
-      return page === model.page && inboxId === model.inboxId
+      const mailRoute = Inbox.routeFor(url.pathname);
+      return page === model.page &&
+        mailRoute?.folder === model.mailRoute?.folder &&
+        mailRoute?.id === model.mailRoute?.id
         ? { model }
-        : loadPage({ ...model, page, inboxId, error: null });
+        : loadPage({ ...model, page, mailRoute, error: null });
     },
     NavigationFinished: () => ({ model }),
     RetriedSessionCheck: () =>
@@ -450,7 +447,7 @@ const update = (
         accountSettings: AccountSettings.initial,
         vaultSetup: VaultSetup.initial,
         inbox: Inbox.initial,
-        inboxId: model.inboxId,
+        mailRoute: model.mailRoute,
         signInNotice: null,
         links: null,
         linkUrl: "",
@@ -716,15 +713,15 @@ const update = (
       const result = foldInbox(model, message);
       if (
         message._tag === "DeletedEntry" &&
-        message.request === deleting?.request &&
-        model.page === "inbox" &&
-        model.inboxId === message.id
+        deleting?.request === message.request &&
+        model.mailRoute?.folder === deleting.folder &&
+        model.mailRoute.id === message.id
       ) {
         return {
           ...result,
           commands: [
             ...(result.commands ?? []),
-            Navigate({ href: inboxPath, mode: "replace" }),
+            Navigate({ href: folderPath(deleting.folder), mode: "replace" }),
           ],
         };
       }

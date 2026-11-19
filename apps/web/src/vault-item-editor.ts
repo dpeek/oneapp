@@ -3,6 +3,7 @@ import type {
   ItemDetails,
   ItemType,
 } from "./vault-item-content.ts";
+import { vaultField } from "./vault-field.ts";
 import { hostUriMatch } from "./vault-items-contract.ts";
 import { identityEditGroups } from "./vault-identity-layout.ts";
 import {
@@ -147,25 +148,6 @@ export const vaultItemFieldset = (
   return element;
 };
 
-const revealField = (label: string, control: HTMLInputElement) => {
-  const element = document.createElement("div");
-  element.className = "vault-reveal-field";
-  const toggle = document.createElement("button");
-  toggle.type = "button";
-  const setMasked = (masked: boolean) => {
-    control.type = masked ? "password" : "text";
-    const verb = masked ? "Show" : "Hide";
-    toggle.textContent = verb;
-    toggle.setAttribute("aria-label", `${verb} ${label}`);
-  };
-  toggle.addEventListener("click", () =>
-    setMasked(control.type !== "password"),
-  );
-  element.append(field(label, control), toggle);
-  setMasked(true);
-  return { element, toggle, setMasked };
-};
-
 const builtInInputs = (
   element: HTMLElement,
   type: ItemType,
@@ -185,27 +167,18 @@ const builtInInputs = (
         multiline,
         date,
       }: VaultFieldPresentation & { name: string; label: string }) => {
-        if (multiline) {
-          const value = document.createElement("textarea");
-          value.value = data?.[name] ?? "";
-          value.rows = 4;
-          const labelled = field(label, value);
-          if (visibility === "masked") {
-            const disclosure = document.createElement("details");
-            const summary = document.createElement("summary");
-            summary.textContent = `Show or edit ${label.toLowerCase()}`;
-            disclosure.append(summary, labelled);
-            section.append(disclosure);
-          } else section.append(labelled);
-          return [name, value] as const;
+        const control = multiline
+          ? document.createElement("textarea")
+          : input(data?.[name], visibility === "masked" ? "password" : "text");
+        if (control instanceof HTMLTextAreaElement) {
+          control.value = data?.[name] ?? "";
+          control.rows = 4;
         }
-        const control = input(data?.[name]);
         if (inputMode) control.inputMode = inputMode;
         if (date) control.placeholder = "YYYY-MM-DD";
         section.append(
-          visibility === "masked"
-            ? revealField(label, control).element
-            : field(label, control),
+          vaultField({ label, value: control, masked: visibility === "masked" })
+            .element,
         );
         return [name, control] as const;
       },
@@ -312,16 +285,19 @@ export const vaultItemEditor = (
         );
       uri.addEventListener("input", validate);
       match.addEventListener("change", validate);
-      element.append(field("Website", uri), field("URI match", match));
+      element.append(
+        vaultField({ label: "Website", value: uri }).element,
+        field("URI match", match),
+      );
       return { element, uri, match, previous: value };
     },
   );
   if (type === 1) {
     const credentials = vaultItemFieldset(
       "Login credentials",
-      field("Username", username),
-      revealField("Password", password).element,
-      revealField("TOTP seed", totp).element,
+      vaultField({ label: "Username", value: username }).element,
+      vaultField({ label: "Password", value: password, masked: true }).element,
+      vaultField({ label: "TOTP seed", value: totp, masked: true }).element,
     );
     if (hasPasskey) {
       const passkey = document.createElement("p");
@@ -354,20 +330,19 @@ export const vaultItemEditor = (
       boolean.checked = previous?.value === "true";
       const kind = choice(customFieldLabels, previous?.type);
       if (!supported && previous?.type !== 3) kind.options[3]!.disabled = true;
-      const valueField = revealField("Field value", value);
+      const valueField = vaultField({ label: "Field value", value });
       const booleanField = field("True", boolean);
       const linkedField = field("Linked field", linked);
       const showValue = () => {
         valueField.element.hidden = kind.value === "2" || kind.value === "3";
         booleanField.hidden = kind.value !== "2";
         linkedField.hidden = kind.value !== "3";
-        valueField.toggle.hidden = kind.value !== "1";
-        valueField.setMasked(kind.value === "1");
+        valueField.setMaskable(kind.value === "1");
       };
       kind.addEventListener("change", showValue);
       showValue();
       element.append(
-        field("Field name", name),
+        vaultField({ label: "Field name", value: name }).element,
         field("Field type", kind),
         valueField.element,
         booleanField,
@@ -380,9 +355,15 @@ export const vaultItemEditor = (
   const repromptField = field("Require master password", reprompt);
   favoriteField.classList.add("vault-item-checkbox");
   repromptField.classList.add("vault-item-checkbox");
-  notes.setAttribute("aria-label", type === 2 ? "Note" : "Notes");
   element.append(
-    vaultItemFieldset("Notes", notes),
+    vaultItemFieldset(
+      "Notes",
+      vaultField({
+        label: type === 2 ? "Note" : "Notes",
+        value: notes,
+        showLabel: false,
+      }).element,
+    ),
     vaultItemFieldset("Item options", favoriteField, repromptField),
     fields.element,
   );

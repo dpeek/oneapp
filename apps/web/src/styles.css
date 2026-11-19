@@ -347,7 +347,8 @@ oneapp-vault-reader {
 .vault-items button.vault-row {
   justify-self: stretch;
   display: grid;
-  gap: 0.25rem;
+  grid-template-columns: 2rem minmax(0, 1fr);
+  gap: 0.25rem 0.625rem;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -367,6 +368,29 @@ oneapp-vault-reader {
 
 .vault-items button.vault-row[aria-current="true"] {
   color: var(--accent);
+}
+
+.vault-row-icon {
+  grid-area: 1 / 1 / span 2;
+  align-self: center;
+  display: grid;
+  place-items: center;
+  inline-size: 2rem;
+  block-size: 2rem;
+  border-radius: 0.5rem;
+  background: var(--canvas);
+  color: var(--muted);
+}
+
+.vault-row-icon > :is(svg, img) {
+  grid-area: 1 / 1;
+  inline-size: 1.125rem;
+  block-size: 1.125rem;
+  object-fit: contain;
+}
+
+.vault-row-icon > img:not(:only-child) {
+  opacity: 0;
 }
 
 .vault-row small {
@@ -568,10 +592,6 @@ oneapp-vault-reader {
   white-space: pre-wrap;
 }
 
-.vault-item-fields button {
-  margin-inline-start: 0.65rem;
-}
-
 .vault-item-card,
 .vault-item-edit-card {
   min-inline-size: 0;
@@ -596,12 +616,6 @@ oneapp-vault-reader {
   margin: 0;
 }
 
-.vault-item-card .vault-item-note {
-  margin: 0;
-  max-width: none;
-  white-space: pre-wrap;
-}
-
 .vault-item-edit-card {
   display: grid;
   gap: 0.75rem;
@@ -617,19 +631,93 @@ oneapp-vault-reader {
   color: var(--text);
 }
 
-.vault-reveal-field {
+.vault-field {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  gap: 0.5rem;
+  align-items: start;
+  gap: 0.375rem 0.5rem;
 }
 
-.vault-reveal-field[hidden] {
+.vault-field-label,
+.vault-field-feedback {
+  grid-column: 1 / -1;
+}
+
+.vault-field-body {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.vault-field-body > :is(input, textarea) {
+  box-sizing: border-box;
+  inline-size: 100%;
+}
+
+.vault-field-placeholder:not([hidden]) {
+  display: block;
+  padding: 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+
+.vault-field-actions:not([hidden]) {
+  display: flex;
+  gap: 0.125rem;
+}
+
+.vault-workspace button.vault-field-button:not([hidden]) {
+  display: grid;
+  place-items: center;
+  inline-size: 2rem;
+  block-size: 2rem;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+}
+
+.vault-workspace button.vault-field-button[aria-disabled="true"] {
+  opacity: 0.45;
+}
+
+.vault-workspace button.vault-field-button:hover:not([aria-disabled="true"]) {
+  background: var(--selected);
+}
+
+.vault-field-button svg {
+  inline-size: 1.0625rem;
+  block-size: 1.0625rem;
+}
+
+.vault-field[hidden] {
   display: none;
 }
 
-.vault-reveal-field:has(> button[hidden]) {
-  grid-template-columns: minmax(0, 1fr);
+.vault-field-feedback {
+  color: light-dark(#a42020, #ff9797);
+  font-size: 0.8125rem;
+}
+
+.vault-field-feedback:not([data-error]) {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.vault-password-history {
+  display: grid;
+  padding: 0;
+  margin-block-end: 0;
+  gap: 0.5rem;
+  list-style: none;
+}
+
+.vault-password-history time {
+  color: var(--muted);
+  font-size: 0.875rem;
 }
 
 .vault-item-repeat-row {

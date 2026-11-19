@@ -2,36 +2,7 @@ import { resolve4, resolve6 } from "node:dns/promises";
 import { decodeHTMLAttribute } from "entities";
 import ipaddr from "ipaddr.js";
 
-const dnsLabel = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
-const dnsSuffix = /^[a-z][a-z0-9-]+$/u;
-const reservedSuffixes = new Set([
-  "alt",
-  "arpa",
-  "corp",
-  "example",
-  "home",
-  "i2p",
-  "internal",
-  "invalid",
-  "lan",
-  "local",
-  "localhost",
-  "onion",
-  "test",
-]);
-
-export const iconHostname = (value: string) => {
-  const host = value.toLowerCase().replace(/\.$/u, "");
-  const labels = host.split(".");
-  const suffix = labels.at(-1)!;
-  return host.length <= 253 &&
-    labels.length >= 2 &&
-    dnsSuffix.test(suffix) &&
-    !reservedSuffixes.has(suffix) &&
-    labels.every((label) => dnsLabel.test(label))
-    ? host
-    : null;
-};
+import { iconHostname } from "../../website-icon-host.ts";
 
 const isPublicAddress = (value: string) => {
   if (!ipaddr.isValid(value)) return false;

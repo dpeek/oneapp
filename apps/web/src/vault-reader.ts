@@ -33,6 +33,9 @@ import {
   vaultItemEditor,
   vaultItemFieldset,
 } from "./vault-item-editor.ts";
+import { vaultField } from "./vault-field.ts";
+import { vaultItemIcon } from "./vault-item-icon.ts";
+import { websiteIconHostname } from "./website-icon-host.ts";
 import { identityDisplayGroups } from "./vault-identity-layout.ts";
 import { structuredDisplayGroup } from "./vault-item-layout.ts";
 import {
@@ -65,7 +68,12 @@ export const vaultReader = CustomElement.define({
 
 type Snapshot = typeof VaultSnapshot.Type;
 type Item = Snapshot["items"][number];
-type ListedItem = { item: Item; title: string | null; trashed: boolean };
+type ListedItem = {
+  item: Item;
+  title: string | null;
+  trashed: boolean;
+  iconHost?: string;
+};
 type VaultView = "active" | "archive" | "trash";
 const vaultViews = { active: "All items", archive: "Archive", trash: "Trash" };
 const allItemTypes = [1, 2, ...extraItemTypes] as const;
@@ -146,25 +154,29 @@ type DetailRow = {
   suffix?: string;
   visibility?: "visible" | "masked";
   revealLabel?: string;
-};
-const mask = (label: string, value: string, content: HTMLElement) => {
-  const rendered = create("span", "••••••••");
-  let visible = false;
-  const toggle = action(`Show ${label}`, () => {
-    visible = !visible;
-    rendered.textContent = visible ? value : "••••••••";
-    toggle.textContent = `${visible ? "Hide" : "Show"} ${label}`;
-  });
-  content.append(rendered, toggle);
+  copyable?: boolean;
 };
 const detailFields = (rows: readonly DetailRow[]) => {
   const fields = create("dl");
   fields.className = "vault-item-fields";
-  for (const { label, value, suffix, visibility, revealLabel } of rows) {
+  for (const {
+    label,
+    value,
+    suffix,
+    visibility,
+    revealLabel,
+    copyable,
+  } of rows) {
     const content = create("dd");
-    if (visibility === "masked") mask(revealLabel ?? label, value, content);
-    else if (suffix) content.append(create("span", value), suffix);
-    else content.textContent = value;
+    content.append(
+      vaultField({
+        label: revealLabel ?? label,
+        value,
+        suffix,
+        masked: visibility === "masked",
+        copyable,
+      }).element,
+    );
     fields.append(create("dt", label), content);
   }
   return fields;
@@ -233,8 +245,27 @@ const readText = (ciphertext: string | null, key: VaultKey) =>
     ? Promise.resolve(null)
     : decryptVaultText(ciphertext, key);
 
-const readTitle = async (item: Item, userKey: VaultKey) =>
-  decryptVaultText(item.name, await unwrapVaultKey(item.wrappedKey, userKey));
+const readLoginIconHost = async (item: Item, key: VaultKey) => {
+  if (item.type !== 1 || item.requiresMasterPassword) return undefined;
+  for (const { uri, match } of item.details.credentials?.uris ?? []) {
+    if (uri === null || match === 4) continue;
+    const website = await decryptVaultText(uri, key).catch(() => "");
+    const hostname = websiteIconHostname(website);
+    if (hostname) return hostname;
+  }
+  return undefined;
+};
+
+const readListedItem = async (
+  item: Item,
+  userKey: VaultKey,
+  trashed = false,
+): Promise<ListedItem> => {
+  const key = await unwrapVaultKey(item.wrappedKey, userKey);
+  const title = await decryptVaultText(item.name, key);
+  const iconHost = await readLoginIconHost(item, key);
+  return { item, title, trashed, iconHost };
+};
 
 const readItemDetails = async (item: Item, userKey: VaultKey) => {
   const key = await unwrapVaultKey(item.wrappedKey, userKey);
@@ -252,10 +283,13 @@ const openSnapshot = async (
       [
         ...items.map((item) => ({ item, trashed: false })),
         ...trash.map((item) => ({ item, trashed: true })),
-      ].map(async (entry) => ({
-        ...entry,
-        title: await readTitle(entry.item, key).catch(() => null),
-      })),
+      ].map(({ item, trashed }) =>
+        readListedItem(item, key, trashed).catch(() => ({
+          item,
+          title: null,
+          trashed,
+        })),
+      ),
     ),
     Promise.all(
       folders.map(async (folder) => ({
@@ -705,6 +739,7 @@ class VaultReader extends HTMLElement {
       open.className = "vault-row";
       open.value = entry.item.id;
       open.append(
+        vaultItemIcon(entry.item.type, entry.iconHost),
         create("span", entry.title ?? "Unreadable item"),
         create("small", itemTypes[entry.item.type].label),
       );
@@ -1402,13 +1437,12 @@ class VaultReader extends HTMLElement {
             "This item changed. Lock and unlock your vault to reload it.";
         if (!response.ok) throw new Error("Vault item lifecycle change failed");
         const item = decodeItem(await response.json());
-        // The request may already have succeeded in another client.
-        const title =
-          item.name === entry.item.name &&
-          item.wrappedKey === entry.item.wrappedKey
-            ? entry.title
-            : await readTitle(item, vault.key).catch(() => null);
-        return { item, title, trashed: !restoring };
+        const trashed = !restoring;
+        return readListedItem(item, vault.key, trashed).catch(() => ({
+          item,
+          title: null,
+          trashed,
+        }));
       },
       (saved) => {
         this.#rememberItem(vault, saved);
@@ -1537,11 +1571,7 @@ class VaultReader extends HTMLElement {
             const latest =
               active ?? snapshot.trash.find(({ id }) => id === edit.item.id);
             return latest?.type === edit.item.type
-              ? {
-                  item: latest,
-                  title: await readTitle(latest, vault.key),
-                  trashed: active === undefined,
-                }
+              ? readListedItem(latest, vault.key, active === undefined)
               : null;
           },
           (latest) => {
@@ -1565,7 +1595,10 @@ class VaultReader extends HTMLElement {
         );
       });
     form.append(
-      vaultItemFieldset("Item details", itemField(["Title", title])),
+      vaultItemFieldset(
+        "Item details",
+        vaultField({ label: "Title", value: title }).element,
+      ),
       properties,
       save,
       error,
@@ -1624,12 +1657,7 @@ class VaultReader extends HTMLElement {
             failure =
               "Your vault changed. Lock and unlock it before saving again.";
           if (!response.ok) throw new Error("Vault item save failed");
-          const saved = decodeItem(await response.json());
-          return {
-            item: saved,
-            title: await readTitle(saved, vault.key),
-            trashed: false,
-          };
+          return readListedItem(decodeItem(await response.json()), vault.key);
         },
         (entry) => {
           form.reset();
@@ -1710,9 +1738,13 @@ class VaultReader extends HTMLElement {
     const metadata: DetailRow[] = [];
     if (folder) metadata.push({ label: "Folder", value: folder.title });
     if (properties.favorite)
-      metadata.push({ label: "Favourite", value: "Yes" });
+      metadata.push({ label: "Favourite", value: "Yes", copyable: false });
     if (properties.reprompt === 1)
-      metadata.push({ label: "Master password reprompt", value: "Required" });
+      metadata.push({
+        label: "Master password reprompt",
+        value: "Required",
+        copyable: false,
+      });
     addFields("Item details", metadata);
 
     if (item.type === 1) {
@@ -1728,7 +1760,11 @@ class VaultReader extends HTMLElement {
           revealLabel: "password",
         });
       if (item.details.credentials?.fido2Credentials?.length)
-        rows.push({ label: "Passkey", value: "Saved in this login" });
+        rows.push({
+          label: "Passkey",
+          value: "Saved in this login",
+          copyable: false,
+        });
       if (credentials?.totp)
         rows.push({
           label: "TOTP seed",
@@ -1762,11 +1798,13 @@ class VaultReader extends HTMLElement {
       addFields(label, rows);
     }
 
-    if (properties.notes) {
-      const notes = create("p", properties.notes);
-      notes.className = "vault-item-note";
-      content.push(detailCard("Notes", notes));
-    }
+    if (properties.notes)
+      content.push(
+        detailCard(
+          "Notes",
+          vaultField({ label: "Notes", value: properties.notes }).element,
+        ),
+      );
     const history = item.details.passwordHistory;
     if (history?.length) {
       const output = create("div");
@@ -1781,15 +1819,25 @@ class VaultReader extends HTMLElement {
             ),
           (entries) => {
             const list = create("ul");
+            list.className = "vault-password-history";
             for (const { password, lastUsedDate } of entries) {
               if (password === null) continue;
-              const row = create(
-                "li",
-                lastUsedDate
-                  ? new Date(lastUsedDate).toLocaleDateString() + " "
-                  : "",
+              const row = create("li");
+              if (lastUsedDate) {
+                const date = create(
+                  "time",
+                  new Date(lastUsedDate).toLocaleDateString(),
+                );
+                date.dateTime = lastUsedDate;
+                row.append(date);
+              }
+              row.append(
+                vaultField({
+                  label: "previous password",
+                  value: password,
+                  masked: true,
+                }).element,
               );
-              mask("previous password", password, row);
               list.append(row);
             }
             output.replaceChildren(
@@ -1817,6 +1865,7 @@ class VaultReader extends HTMLElement {
                 : linkedFieldLabel(item.type, linkedId)
               : (value ?? ""),
           visibility: type === 1 && value != null ? "masked" : "visible",
+          copyable: type !== 3,
         }),
       ),
     );

@@ -1,5 +1,6 @@
 import type { WorkerEnv } from "../../../../../alchemy.run.ts";
-import { downloadWebsiteIcon, iconHostname } from "./website-icon.ts";
+import { iconHostname, websiteIconPath } from "../../website-icon-host.ts";
+import { downloadWebsiteIcon } from "./website-icon.ts";
 
 const iconPath = /^\/icons\/([a-z0-9.-]+)\/icon\.png$/iu;
 const iconTtl = 7 * 24 * 60 * 60;
@@ -39,7 +40,7 @@ export const bitwardenIcon = async (
   ]);
   if (!host || blockedHosts.has(host)) return missing();
 
-  const key = new URL(`/icons/${host}/icon.png`, url.origin).href;
+  const key = new URL(websiteIconPath(host), url.origin).href;
   const cache = await globalThis.caches
     ?.open("oneapp-website-icons")
     .catch(() => undefined);

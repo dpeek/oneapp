@@ -1203,12 +1203,14 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
   );
   const participantProfiles = new Map<
     string,
-    { address: string; person: PersonSummary }
+    { addresses: [string, ...string[]]; person: PersonSummary }
   >();
   for (const { address } of participants) {
     const person = profiles.get(normalizePersonEmail(address));
-    if (person && !participantProfiles.has(person.id))
-      participantProfiles.set(person.id, { address, person });
+    if (!person) continue;
+    const profile = participantProfiles.get(person.id);
+    if (profile) profile.addresses.push(address);
+    else participantProfiles.set(person.id, { addresses: [address], person });
   }
   const latest = messages.at(-1);
   const grouped = messages.length > 1;
@@ -1260,7 +1262,7 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
                           h.AriaLabel("Participant profiles"),
                         ],
                         [...participantProfiles.values()].map(
-                          ({ address, person }) =>
+                          ({ addresses: [address, ...aliases], person }) =>
                             h.li(
                               [h.Key(person.id)],
                               [
@@ -1268,7 +1270,11 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
                                   [
                                     h.Type("button"),
                                     h.Class("inbox-profile-button"),
-                                    h.Title(person.name || address),
+                                    h.Title(
+                                      [person.name, address, ...aliases]
+                                        .filter(Boolean)
+                                        .join("\n"),
+                                    ),
                                     h.AriaLabel(
                                       `Edit participant profile for ${address}`,
                                     ),

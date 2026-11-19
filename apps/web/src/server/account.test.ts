@@ -27,6 +27,7 @@ import {
   inboxEventsPath,
   inboxMessageApi,
   inboxOriginalApi,
+  inboxSendPath,
 } from "../inbox-contract.ts";
 import {
   codexClientId,
@@ -70,8 +71,14 @@ const password = "p".repeat(43);
 const setup = async (
   sqlite: Database,
   inbox?: Partial<
-    Pick<WorkerEnv, "INBOX_MESSAGES" | "INBOX_EMAIL_ADDRESS" | "INBOX_UPDATES">
-  >,
+    Pick<
+      WorkerEnv,
+      | "INBOX_MESSAGES"
+      | "INBOX_EMAIL_ADDRESS"
+      | "INBOX_UPDATES"
+      | "INBOX_EMAIL_FROM"
+    >
+  > & { INBOX_SEND?: SendEmail; INBOX_SEND_LIMIT?: RateLimit },
 ) => {
   const migrationRoot = new URL("../../drizzle/", import.meta.url).pathname;
   for (const entry of Array.from(
@@ -218,6 +225,95 @@ const setup = async (
     },
   };
 };
+
+it("lets only the owner send plain-text mail from the configured Inbox address", async () => {
+  using sqlite = new Database(":memory:");
+  const from = "mail@app.example.net";
+  const send = vi.fn(async (_message: EmailMessageBuilder) => ({
+    messageId: "fixture-mail",
+  }));
+  const limit = vi.fn(async (_input: { key: string }) => ({ success: true }));
+  const { call, request, signIn, cookies } = await setup(sqlite, {
+    INBOX_EMAIL_ADDRESS: from,
+    INBOX_EMAIL_FROM: from,
+    INBOX_SEND: { send } as SendEmail,
+    INBOX_SEND_LIMIT: { limit },
+    INBOX_MESSAGES: {
+      list: async () => ({ objects: [], truncated: false }),
+    } as WorkerEnv["INBOX_MESSAGES"],
+  });
+  const session = cookies(await signIn(password));
+  const draft = {
+    to: " Alice+Details@Example.NET ",
+    subject: " Meeting notes ",
+    text: "Hi Alice,\n\nThanks!\n",
+  };
+  const approved = (input: object = draft) =>
+    call(inboxSendPath, input, session);
+  expect(
+    await (await call(inboxApiPath, undefined, session)).json(),
+  ).toMatchObject({ address: from, sender: from });
+  expect((await call(inboxSendPath, draft)).status).toBe(401);
+  expect(
+    (await call(inboxSendPath, draft, session, "https://other.example")).status,
+  ).toBe(403);
+  expect(
+    (
+      await request(inboxSendPath, {
+        method: "POST",
+        headers: {
+          cookie: session,
+          origin: "https://oneapp.example",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(draft),
+      })
+    ).status,
+  ).toBe(403);
+  expect((await approved({ ...draft, from: "other@example.net" })).status).toBe(
+    400,
+  );
+  expect(
+    (await approved({ ...draft, to: "bob@example.net,alice@example.net" }))
+      .status,
+  ).toBe(400);
+  expect(
+    (await approved({ ...draft, subject: "Hello\r\nBcc: other@example.net" }))
+      .status,
+  ).toBe(400);
+  expect((await approved({ ...draft, text: "  \n" })).status).toBe(400);
+  expect(limit).not.toHaveBeenCalled();
+  limit.mockResolvedValueOnce({ success: false });
+  expect((await approved()).status).toBe(429);
+  expect(send).not.toHaveBeenCalled();
+
+  const accepted = await approved();
+  expect(accepted.status).toBe(204);
+  expect(accepted.headers.get("cache-control")).toBe("no-store");
+  expect(send).toHaveBeenCalledExactlyOnceWith({
+    from,
+    to: "Alice+Details@Example.NET",
+    subject: "Meeting notes",
+    text: draft.text,
+  });
+  send.mockRejectedValueOnce(
+    Object.assign(new Error("Provider details"), {
+      code: "E_RECIPIENT_SUPPRESSED",
+    }),
+  );
+  const suppressed = await approved();
+  expect(suppressed.status).toBe(422);
+  expect(await suppressed.json()).toEqual({
+    error: "Cloudflare has suppressed this recipient address.",
+  });
+  send.mockRejectedValueOnce(new Error("Provider details"));
+  const uncertain = await approved();
+  expect(uncertain.status).toBe(502);
+  expect(await uncertain.json()).toEqual({
+    error: "Could not confirm whether the email was sent.",
+  });
+  expect(send).toHaveBeenCalledTimes(3);
+});
 
 it("only upgrades Inbox sockets for a same-origin owner session", async () => {
   using sqlite = new Database(":memory:");
@@ -2966,3 +3062,8 @@ it("initializes a personal vault once and preserves its keys on retries and conc
     [],
   );
 });
+import type {
+  EmailMessageBuilder,
+  RateLimit,
+  SendEmail,
+} from "@cloudflare/workers-types";

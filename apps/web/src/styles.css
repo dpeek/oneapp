@@ -875,7 +875,8 @@ oneapp-vault-reader {
 }
 
 .account-dialog,
-.inbox-delete-dialog {
+.inbox-delete-dialog,
+.inbox-compose-dialog {
   box-sizing: border-box;
   width: min(30rem, calc(100% - 2rem));
   max-height: calc(100dvh - 2rem);
@@ -887,11 +888,13 @@ oneapp-vault-reader {
   color: var(--text);
 }
 
-:is(.account-dialog, .inbox-delete-dialog)::backdrop {
+:is(.account-dialog, .inbox-delete-dialog, .inbox-compose-dialog)::backdrop {
   background: rgb(10 11 18 / 65%);
 }
 
-:root:has(:is(.account-dialog, .inbox-delete-dialog)[open]) {
+:root:has(
+  :is(.account-dialog, .inbox-delete-dialog, .inbox-compose-dialog)[open]
+) {
   overflow: hidden;
 }
 
@@ -1096,6 +1099,71 @@ button {
 .inbox-delete-actions {
   display: flex;
   flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.inbox-compose {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.inbox-compose > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.workspace-header button.inbox-compose-button {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: light-dark(#fff, #1d1844);
+}
+
+.workspace-header button.inbox-compose-button:hover {
+  background: light-dark(#3d3693, #d8d3ff);
+}
+
+.inbox-compose-dialog {
+  width: min(36rem, calc(100% - 2rem));
+}
+
+.inbox-compose-dialog h2 {
+  margin: 0;
+}
+
+.inbox-compose-from {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  overflow-wrap: anywhere;
+}
+
+.inbox-compose-dialog label {
+  display: grid;
+  gap: 0.375rem;
+}
+
+.inbox-compose-dialog textarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
+.inbox-compose-dialog form p {
+  margin: 0;
+}
+
+.inbox-compose-actions {
+  display: flex;
   justify-content: flex-end;
   gap: 0.5rem;
 }

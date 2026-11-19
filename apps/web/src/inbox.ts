@@ -1,8 +1,9 @@
-import { Effect, Queue, Schema, Stream } from "effect";
+import { Effect, Option, Queue, Schema, Stream } from "effect";
 import { Command, Submodel, Update } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import * as Mount from "foldkit/mount";
+import * as Compose from "./inbox-compose.ts";
 import {
   inboxApiPath,
   inboxChanged,
@@ -37,6 +38,7 @@ export const Model = Schema.Struct({
     Schema.Struct({ id: InboxMessageId, request: Schema.String }),
   ),
   deleteFailed: Schema.Boolean,
+  compose: Compose.Model,
 });
 type Model = typeof Model.Type;
 
@@ -52,11 +54,13 @@ export const initial: Model = {
   confirmingDelete: false,
   deleteRequest: null,
   deleteFailed: false,
+  compose: Compose.initial,
 };
 
 export const Message = defineMessageUnion({
   Opened: { id: Schema.NullOr(InboxMessageId) },
   Refreshed: {},
+  GotComposeMessage: { message: Compose.Message },
   LiveChanged: {},
   RequestedMore: {},
   RetriedEntry: {},
@@ -77,6 +81,18 @@ export const Message = defineMessageUnion({
   FocusUpdated: {},
 });
 type Message = typeof Message.Type;
+
+const toComposeMessage = (message: typeof Compose.Message.Type) =>
+  message._tag === "SessionExpired"
+    ? Message.SessionExpired({ request: message.request })
+    : Message.GotComposeMessage({ message });
+
+const foldCompose = Update.foldChild({
+  update: Compose.update,
+  read: (model: Model) => Option.some(model.compose),
+  write: (model, compose) => ({ ...model, compose }),
+  toParentMessage: toComposeMessage,
+});
 
 export const changes = Stream.callback<Message>(
   (queue) =>
@@ -259,6 +275,7 @@ export const update = (
       };
     },
     Refreshed: () => loadList(model, null),
+    GotComposeMessage: ({ message }) => foldCompose(model, message),
     LiveChanged: () =>
       model.listRequest
         ? { model: { ...model, listRefreshQueued: true } }
@@ -619,7 +636,18 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
       ...(model.selected === null ? [] : [h.DataAttribute("panel", "")]),
     ],
     [
-      h.header([h.Class("workspace-header")], [h.h1([], ["Inbox"])]),
+      h.header(
+        [h.Class("workspace-header")],
+        [
+          h.h1([], ["Inbox"]),
+          h.submodel({
+            slotId: "inbox-compose",
+            view: Compose.view,
+            model: { ...model.compose, sender: model.list?.sender },
+            toParentMessage: toComposeMessage,
+          }),
+        ],
+      ),
       h.nav(
         [h.Class("workspace-sidebar"), h.AriaLabel("Mailbox navigation")],
         [

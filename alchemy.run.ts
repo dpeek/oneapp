@@ -117,6 +117,22 @@ export const Web = Cloudflare.Worker(
               }),
             }
           : {}),
+        ...(sending && inbox
+          ? {
+              INBOX_EMAIL_FROM: sending.enabled.pipe(
+                Output.map((enabled) =>
+                  enabled ? inboxAddress(inbox.name) : "",
+                ),
+              ),
+              INBOX_SEND: Cloudflare.Email.SendEmail("InboxSend", {
+                allowedSenderAddresses: [inboxAddress(inbox.name)],
+              }),
+              INBOX_SEND_LIMIT: Cloudflare.RateLimit("InboxSendLimit", {
+                namespaceId: 1005,
+                simple: { limit: 10, period: 60 },
+              }),
+            }
+          : {}),
         CLI_LOGIN_LIMIT: Cloudflare.RateLimit("CliLoginLimit", {
           namespaceId: 1002,
           simple: { limit: 30, period: 60 },

@@ -1,19 +1,29 @@
-import type { R2Object, R2Objects } from "@cloudflare/workers-types";
-import { Effect, Layer, Schema } from "effect";
+import type {
+  R2Object,
+  R2Objects,
+  RateLimit,
+  SendEmail,
+} from "@cloudflare/workers-types";
+import { ByteSize, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { compile } from "html-to-text";
 import PostalMime, { decodeWords } from "postal-mime";
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import {
   inboxApiPath,
+  InboxDraft,
   InboxEntry,
   InboxMessageId,
   InboxPage,
+  inboxSendPath,
 } from "../inbox-contract.ts";
 import { jsonError, privateHeaders } from "./api-response.ts";
 import { AppAuth, ownerId, type authHttp } from "./auth.ts";
 
-type InboxEnv = Pick<WorkerEnv, "INBOX_EMAIL_ADDRESS" | "INBOX_MESSAGES">;
+type InboxEnv = Pick<
+  WorkerEnv,
+  "INBOX_EMAIL_ADDRESS" | "INBOX_MESSAGES" | "INBOX_EMAIL_FROM"
+> & { INBOX_SEND?: SendEmail; INBOX_SEND_LIMIT?: RateLimit };
 type InboxBucket = InboxEnv["INBOX_MESSAGES"];
 
 export const inboxSessionHeaders = {
@@ -89,6 +99,15 @@ const readSubject = async (bucket: InboxBucket, object: R2Object) => {
   }
 };
 
+const inboxSender = (env: InboxEnv) => {
+  const {
+    INBOX_EMAIL_FROM: from,
+    INBOX_SEND: binding,
+    INBOX_SEND_LIMIT: limit,
+  } = env;
+  return from && binding && limit ? { from, binding, limit } : null;
+};
+
 const listMessages = async (env: InboxEnv, cursor: string | undefined) => {
   const bucket = env.INBOX_MESSAGES;
   const page: R2Objects = await bucket.list({
@@ -106,6 +125,7 @@ const listMessages = async (env: InboxEnv, cursor: string | undefined) => {
     ),
     cursor: page.truncated ? page.cursor : null,
     address: env.INBOX_EMAIL_ADDRESS ?? null,
+    sender: inboxSender(env)?.from,
   };
 };
 
@@ -189,6 +209,83 @@ const listQuery = HttpServerRequest.schemaSearchParams(
   }),
 );
 
+const unknownSend = () =>
+  jsonError(502, "Could not confirm whether the email was sent.");
+const sendRateLimit = () =>
+  jsonError(429, "Sending limit reached. Try again later.");
+
+const sendEmail = (env: InboxEnv) =>
+  Effect.gen(function* () {
+    const sender = inboxSender(env);
+    if (!sender)
+      return yield* jsonError(503, "Sending is unavailable for this mailbox.");
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const contentType = request.headers["content-type"]
+      ?.split(";", 1)[0]
+      ?.trim()
+      .toLowerCase();
+    if (contentType !== "application/json")
+      return yield* jsonError(415, "Expected a JSON request");
+
+    const draft = yield* HttpServerRequest.schemaBodyJson(InboxDraft, {
+      onExcessProperty: "error",
+    }).pipe(
+      Effect.provideService(
+        HttpServerRequest.MaxBodySize,
+        ByteSize.kibibytes(256),
+      ),
+      Effect.option,
+    );
+    if (draft._tag === "None")
+      return yield* jsonError(
+        400,
+        "Enter one valid recipient, a subject, and a plain-text message within the form limits.",
+      );
+    if (
+      !(yield* Effect.tryPromise(() => sender.limit.limit({ key: ownerId })))
+        .success
+    )
+      return yield* sendRateLimit();
+
+    const sent = yield* Effect.tryPromise({
+      try: () => sender.binding.send({ ...draft.value, from: sender.from }),
+      catch: (error) =>
+        typeof error === "object" && error !== null && "code" in error
+          ? error.code
+          : undefined,
+    }).pipe(Effect.withTracerEnabled(false), Effect.result);
+    if (sent._tag === "Success") {
+      return sent.success?.messageId
+        ? HttpServerResponse.empty({ status: 204, headers: privateHeaders })
+        : yield* unknownSend();
+    }
+    switch (sent.failure) {
+      case "E_VALIDATION_ERROR":
+        return yield* jsonError(400, "Cloudflare rejected the email format.");
+      case "E_RECIPIENT_SUPPRESSED":
+        return yield* jsonError(
+          422,
+          "Cloudflare has suppressed this recipient address.",
+        );
+      case "E_RECIPIENT_NOT_ALLOWED":
+      case "E_RECIPIENT_PLAN_RESTRICTED":
+        return yield* jsonError(
+          422,
+          "Cloudflare does not allow sending to this address.",
+        );
+      case "E_DELIVERY_FAILED":
+        return yield* jsonError(
+          422,
+          "Cloudflare could not deliver the email to this address.",
+        );
+      case "E_RATE_LIMIT_EXCEEDED":
+      case "E_DAILY_LIMIT_EXCEEDED":
+        return yield* sendRateLimit();
+      default:
+        return yield* unknownSend();
+    }
+  });
+
 export const inboxRoutes = (
   http: ReturnType<typeof authHttp>,
   env: InboxEnv,
@@ -240,6 +337,22 @@ export const inboxRoutes = (
     ),
     HttpRouter.add("GET", `${inboxApiPath}/:id`, read(false)),
     HttpRouter.add("GET", `${inboxApiPath}/:id/original`, read(true)),
+    HttpRouter.add(
+      "POST",
+      inboxSendPath,
+      Effect.gen(function* () {
+        if (!(yield* requireInboxOwner))
+          return yield* jsonError(403, "Access denied");
+        return yield* http.protect(sendEmail(env));
+      }).pipe(
+        Effect.catchTags({
+          ...inboxErrors,
+          HookDenied: () => jsonError(403, "Request not allowed"),
+          UnknownError: () =>
+            jsonError(503, "Sending is temporarily unavailable."),
+        }),
+      ),
+    ),
     HttpRouter.add(
       "DELETE",
       `${inboxApiPath}/:id`,

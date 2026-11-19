@@ -708,6 +708,7 @@ const update = (
         message._tag === "SessionExpired" &&
         (message.request === model.inbox.listRequest ||
           message.request === model.inbox.entryRequest ||
+          message.request === model.inbox.compose.request ||
           message.request === deleting?.request)
       ) {
         return update(model, Message.LoadedAccount({ account: null }));

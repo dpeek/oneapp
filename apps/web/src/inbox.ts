@@ -217,7 +217,7 @@ export const Message = defineMessageUnion({
   UpdatedProfiles: {},
   ToggledUnread: {},
   ToggledMessage: MessageLocation.fields,
-  ToggledMiddle: {},
+  RevealedMiddle: { firstMessageId: MailMessageId },
   RequestedBack: {},
   RequestedPerson: { address: Schema.String },
   RequestedReply: {},
@@ -358,6 +358,15 @@ const FocusList = Command.define("FocusInboxConversationList", {
       Effect.as(Message.FocusUpdated()),
     );
   },
+});
+
+const FocusMessageSummary = Command.define("FocusInboxMessageSummary", {
+  args: { id: MailMessageId },
+  messages: [Message.FocusUpdated],
+  execute: ({ id }) =>
+    focus(`.inbox-reader [data-thread-message-id="${CSS.escape(id)}"]`, {
+      preventScroll: true,
+    }).pipe(Effect.ignore, Effect.as(Message.FocusUpdated())),
 });
 
 const ShowDeleteDialog = Mount.define("ShowInboxDeleteDialog", {
@@ -1007,8 +1016,9 @@ export const update = (
     },
     ToggledMessage: ({ id, folder }) =>
       selectMessage(model, model.active?.id === id ? null : { id, folder }),
-    ToggledMiddle: () => ({
-      model: { ...model, middleRevealed: !model.middleRevealed },
+    RevealedMiddle: ({ firstMessageId }) => ({
+      model: { ...model, middleRevealed: true },
+      commands: [FocusMessageSummary({ id: firstMessageId })],
     }),
     RequestedBack: () => ({ model }),
     RequestedPerson: () => ({ model }),
@@ -1812,12 +1822,15 @@ const entryView = (
   const participantAvatars = groupParticipants(participants, profiles);
   const latest = messages.at(-1);
   const grouped = messages.length > 1;
-  const middleCount = collapsibleMiddleCount(messages, [
-    selected,
-    active?.id,
-    model.quickReply.target,
-    model.compose.reply?.originalId,
-  ]);
+  const middleCount = model.middleRevealed
+    ? 0
+    : collapsibleMiddleCount(messages, [
+        selected,
+        active?.id,
+        model.quickReply.target,
+        model.compose.reply?.originalId,
+      ]);
+  const firstHidden = middleCount > 0 ? messages[1]?.id : undefined;
   const canArchive =
     model.folder !== "sent" &&
     model.thread?.messages.some(({ folder }) => folder === "inbox");
@@ -1928,8 +1941,7 @@ const entryView = (
             h.ol(
               [h.Class("inbox-thread"), h.AriaLabel("Conversation messages")],
               messages.flatMap((message, index) => {
-                if (!model.middleRevealed && index > 0 && index <= middleCount)
-                  return [];
+                if (index > 0 && index <= middleCount) return [];
                 const { id, folder, from, timestamp, unread } = message;
                 const sender = message.people?.sender;
                 const address = sender?.address || from;
@@ -1966,6 +1978,7 @@ const entryView = (
                               [
                                 h.Type("button"),
                                 h.Class("inbox-thread-summary"),
+                                h.DataAttribute("thread-message-id", id),
                                 h.AriaLabel(
                                   `Message from ${address || "unknown sender"}, ${date}${unread ? ", unread" : ""}`,
                                 ),
@@ -1990,7 +2003,7 @@ const entryView = (
                       : []),
                   ],
                 );
-                return index === 0 && middleCount > 0
+                return index === 0 && firstHidden
                   ? [
                       row,
                       h.li(
@@ -2002,13 +2015,14 @@ const entryView = (
                           h.button(
                             [
                               h.Type("button"),
-                              h.AriaExpanded(model.middleRevealed),
-                              h.OnClick(Message.ToggledMiddle()),
+                              h.OnClick(
+                                Message.RevealedMiddle({
+                                  firstMessageId: firstHidden,
+                                }),
+                              ),
                             ],
                             [
-                              model.middleRevealed
-                                ? "Hide earlier messages"
-                                : `Show ${middleCount} hidden ${middleCount === 1 ? "message" : "messages"}`,
+                              `Show ${middleCount} hidden ${middleCount === 1 ? "message" : "messages"}`,
                             ],
                           ),
                         ],

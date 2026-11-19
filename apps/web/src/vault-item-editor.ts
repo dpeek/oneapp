@@ -141,7 +141,7 @@ export const vaultItemFieldset = (
   ...children: HTMLElement[]
 ) => {
   const element = document.createElement("fieldset");
-  element.className = "vault-item-edit-card";
+  element.className = "vault-item-fieldset";
   const legend = document.createElement("legend");
   legend.textContent = caption;
   element.append(legend, ...children);

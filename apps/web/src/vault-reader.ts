@@ -180,12 +180,6 @@ const detailFields = (rows: readonly DetailRow[]) => {
   }
   return fields;
 };
-const detailCard = (label: string, body: HTMLElement) => {
-  const section = create("section");
-  section.className = "vault-item-card";
-  section.append(create("h3", label), body);
-  return section;
-};
 const alert = (message: string) => {
   const status = create("p", message);
   status.setAttribute("role", "alert");
@@ -1544,6 +1538,7 @@ class VaultReader extends HTMLElement {
     if (!vault) return;
     this.#stopWork();
     const form = create("form");
+    form.className = "vault-item-form";
     form.method = "post";
     form.autocomplete = "off";
     const title = create("input");
@@ -1806,10 +1801,11 @@ class VaultReader extends HTMLElement {
     }
   }
 
-  #itemDetailCards(item: Item, { properties, key }: ItemDetails) {
+  #itemDetailFieldsets(item: Item, { properties, key }: ItemDetails) {
     const content: HTMLElement[] = [];
     const addFields = (label: string, rows: readonly DetailRow[]) => {
-      if (rows.length) content.push(detailCard(label, detailFields(rows)));
+      if (rows.length)
+        content.push(vaultItemFieldset(label, detailFields(rows)));
     };
     const folder = this.#vault?.folders.find(
       ({ folder }) => folder.id === item.folderId,
@@ -1879,7 +1875,7 @@ class VaultReader extends HTMLElement {
 
     if (properties.notes)
       content.push(
-        detailCard(
+        vaultItemFieldset(
           "Notes",
           vaultField({ label: "Notes", value: properties.notes }).element,
         ),
@@ -1930,7 +1926,7 @@ class VaultReader extends HTMLElement {
         );
       });
       output.append(show);
-      content.push(detailCard("Password history", output));
+      content.push(vaultItemFieldset("Password history", output));
     }
     addFields(
       "Custom fields",
@@ -1959,7 +1955,7 @@ class VaultReader extends HTMLElement {
         }),
         error,
       );
-      content.push(detailCard("Attachments", body));
+      content.push(vaultItemFieldset("Attachments", body));
     }
     return content.length
       ? content
@@ -1998,7 +1994,7 @@ class VaultReader extends HTMLElement {
       this.#toolbar(this.#showBrowse, edit, remove, archiveOrPurge),
       titleNode,
       ...(error ? [alert(error)] : []),
-      ...(details ? this.#itemDetailCards(item, details) : []),
+      ...(details ? this.#itemDetailFieldsets(item, details) : []),
     ]);
     if (this.#workspace?.detail === document.activeElement) titleNode.focus();
   }

@@ -2,7 +2,7 @@
 
 Target release is stock Bitwarden Chrome [2026.10.2](https://github.com/bitwarden/clients/releases/tag/browser-v2026.10.2). Paths below are relative to the self-hosted server. The source trace uses the pinned tag, with Vaultwarden local revision `4051a4d3` as a reference for server behavior.
 
-Desktop SSO was verified with stock Bitwarden Desktop 2026.10.0 on macOS. OneApp approves the browser session and returns the code through `bitwarden://sso-callback`. The authorization code and refresh grant stay bound to the originating client. The D1 migration treats existing grants as browser grants. The macOS test delivered the callback to an isolated Desktop process, redeemed the code, synced, and decrypted a seeded login.
+Desktop SSO was verified with stock Bitwarden Desktop 2026.10.0 on macOS. After approval, the browser shows an **Open Bitwarden** link that carries the code through `bitwarden://sso-callback`. A direct click lets the browser hand off to the app. The authorization code and refresh grant stay bound to the originating client. The D1 migration treats existing grants as browser grants. The macOS test delivered the callback to an isolated Desktop process, redeemed the code, synced, and decrypted a seeded login.
 
 | Workflow | Pinned wire contract | OneApp workflow and evidence |
 | --- | --- | --- |

@@ -250,11 +250,20 @@ const authorize = async (
     await digest(consent),
     await digest(code),
   );
-  if (!approval) return error("invalid_request");
+  if (!approval)
+    return html(
+      "<h1>Start a new Bitwarden sign-in</h1><p>This approval has expired or already been used. Open Bitwarden and select Use single sign-on again.</p>",
+      400,
+    );
   const callback = callbackFor(env.APP_ORIGIN, approval.clientId);
   callback.searchParams.set("code", code);
   callback.searchParams.set("state", approval.state);
-  return redirect(callback);
+  if (approval.clientId === "browser") return redirect(callback);
+  // A direct click lets the browser hand off the external URL after the POST.
+  const href = callback.href.replaceAll("&", "&amp;");
+  return html(
+    `<h1>Finish signing in to Bitwarden</h1><p><a href="${href}">Open Bitwarden</a></p>`,
+  );
 };
 
 const token = async (request: Request, env: WorkerEnv) => {

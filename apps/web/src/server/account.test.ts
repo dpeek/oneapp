@@ -860,10 +860,25 @@ it("authorizes Bitwarden Desktop and binds its code and refresh token to the des
     { approval: approval! },
     { cookie, origin },
   );
-  expect(approved.status).toBe(303);
-  const target = new URL(approved.headers.get("location")!);
+  expect(approved.status).toBe(200);
+  expect(approved.headers.get("cache-control")).toBe("no-store");
+  expect(approved.headers.get("referrer-policy")).toBe("no-referrer");
+  const handoff = await approved.text();
+  const href = handoff.match(/<a href="([^"]+)">Open Bitwarden<\/a>/u)?.[1];
+  expect(href).toBeDefined();
+  expect(handoff).not.toContain("Connect vault");
+  const target = new URL(href!.replaceAll("&amp;", "&"));
   expect(`${target.protocol}//${target.host}${target.pathname}`).toBe(callback);
   expect(target.searchParams.get("state")).toBe(state);
+  const repeatedApproval = await form(
+    authorize,
+    { approval: approval! },
+    { cookie, origin },
+  );
+  expect(repeatedApproval.status).toBe(400);
+  expect(await repeatedApproval.text()).toContain(
+    "Start a new Bitwarden sign-in",
+  );
   const code = target.searchParams.get("code")!;
   const token = (body: Record<string, string>) =>
     form("/identity/connect/token", { client_id: "desktop", ...body });

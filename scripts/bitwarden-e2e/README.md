@@ -8,7 +8,7 @@ bun scripts/bitwarden-e2e/run.ts
 
 The runner needs Bun, Node, OpenSSL, and a graphical desktop. It checks the SHA-256 of the stock [Bitwarden Chrome 2026.10.2 release](https://github.com/bitwarden/clients/releases/tag/browser-v2026.10.2) and loads the archive unchanged into temporary Chrome for Testing profiles. Set `ONEAPP_BITWARDEN_E2E_CHROME` to an existing Chrome for Testing executable to reuse a browser download.
 
-The runner builds the Worker and web assets, starts local workerd through Miniflare, and applies the repository migrations to a temporary on-disk D1 database, with a private local R2 bucket persisted to disk. It provisions a disposable OneApp account, opens **Password vault**, and completes setup through the real web form. It checks that the request contains the wrapped keys, public key, key ID, and KDF salt, and that the vault is ready after reloading.
+The runner builds the Worker and web assets, starts local workerd through Miniflare, and applies the repository migrations to a temporary on-disk D1 database, with a private local R2 bucket persisted to disk. It provisions a disposable OneApp account, opens **Vault**, and completes setup through the real web form. It checks that the request contains the wrapped keys, public key, key ID, and KDF salt, and that the vault is ready after reloading.
 
 The pinned extension reuses the OneApp session to authorize with PKCE, syncs the empty vault, and unlocks it with the same master password while Chrome is offline. In the first Chrome profile, the runner saves a login through the Bitwarden form and checks that the request carries encrypted values.
 

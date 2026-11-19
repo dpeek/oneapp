@@ -345,7 +345,7 @@ export const restoreIntoFreshVault = async ({
   stockProtected,
 }) => {
   const web = app.locator("oneapp-vault-reader");
-  await app.getByRole("link", { name: "Password vault", exact: true }).click();
+  await app.getByRole("link", { name: "Vault", exact: true }).click();
   await app.getByLabel("Vault master password", { exact: true }).fill(password);
   await app
     .getByLabel("Confirm vault master password", { exact: true })

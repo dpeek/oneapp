@@ -224,9 +224,7 @@ try {
 
   if (!seeded) {
     step = "creating a vault in OneApp";
-    await app
-      .getByRole("link", { name: "Password vault", exact: true })
-      .click();
+    await app.getByRole("link", { name: "Vault", exact: true }).click();
     const status = await localResponse((response) =>
       endpoint(response, "/api/vault/setup"),
     );
@@ -267,13 +265,9 @@ try {
       "wrappedKey",
       "wrappedPrivateKey",
     ]);
-    await app
-      .getByRole("heading", { name: "Your password vault is ready" })
-      .waitFor();
+    await app.getByRole("heading", { name: "Your vault is ready" }).waitFor();
     await app.reload();
-    await app
-      .getByRole("heading", { name: "Your password vault is ready" })
-      .waitFor();
+    await app.getByRole("heading", { name: "Your vault is ready" }).waitFor();
     console.log(
       "PASS A fresh OneApp account created a vault with browser-generated keys.",
     );
@@ -804,9 +798,7 @@ try {
     await noteText.waitFor();
     await app.getByRole("link", { name: "Links", exact: true }).press("Enter");
     await webVault.waitFor({ state: "detached" });
-    await app
-      .getByRole("link", { name: "Password vault", exact: true })
-      .press("Enter");
+    await app.getByRole("link", { name: "Vault", exact: true }).press("Enter");
     await button(webVault, "Unlock vault").waitFor();
     assert.equal(await noteText.count(), 0);
     assert.equal(await button(webVault, noteName).count(), 0);

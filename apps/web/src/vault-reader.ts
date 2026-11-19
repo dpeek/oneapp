@@ -500,7 +500,7 @@ class VaultReader extends HTMLElement {
       ),
     );
     header.append(
-      create("h1", "Password vault"),
+      create("h1", "Vault"),
       tools,
       action("Lock vault", this.#lock),
     );

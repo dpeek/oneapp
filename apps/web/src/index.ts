@@ -880,7 +880,7 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
   }
   const title = {
     links: "Links",
-    vault: "Password vault",
+    vault: "Vault",
     settings: "Settings",
   }[model.page];
   return {

@@ -165,31 +165,9 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
               ),
             ]
         : model.status.initialized
-          ? [
-              h.h2([], ["Your password vault is ready"]),
-              vaultReader.withMessage(h)(),
-              h.details(
-                [h.Class("vault-connect")],
-                [
-                  h.summary([], ["Connect Bitwarden"]),
-                  h.p(
-                    [],
-                    [
-                      "In Bitwarden, choose Self-hosted and enter this server URL.",
-                    ],
-                  ),
-                  h.code([], [window.location.origin]),
-                  h.p(
-                    [],
-                    [
-                      "Choose Use single sign-on, then unlock with your vault master password.",
-                    ],
-                  ),
-                ],
-              ),
-            ]
+          ? [h.h2([], ["Your vault is ready"]), vaultReader.withMessage(h)()]
           : [
-              h.h2([], ["Set up your password vault"]),
+              h.h2([], ["Set up your vault"]),
               h.p(
                 [h.Id(helpId)],
                 [

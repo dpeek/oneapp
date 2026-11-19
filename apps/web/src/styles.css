@@ -18,6 +18,7 @@
 
 .app-shell {
   --nav-size: 4.5rem;
+  --bottom-nav-size: 0px;
   min-height: 100svh;
   background: var(--canvas);
   color: var(--text);
@@ -167,8 +168,8 @@ oneapp-vault-reader {
 }
 
 .page:has(.vault-workspace) {
-  width: min(100%, 104rem);
-  padding: clamp(0.75rem, 2.5vw, 2rem);
+  width: 100%;
+  padding: 0;
 }
 
 .page:has(.vault-workspace) > h1,
@@ -185,12 +186,10 @@ oneapp-vault-reader {
 .vault-workspace {
   display: grid;
   grid-template:
-    "header header header" auto
+    "header items detail" auto
     "filters items detail" minmax(0, 1fr)
-    / minmax(10rem, 0.65fr) minmax(16rem, 1fr) minmax(20rem, 1.5fr);
-  block-size: max(28rem, calc(100svh - 5.5rem));
-  border: 1px solid var(--border);
-  border-radius: 0.875rem;
+    / clamp(13.5rem, 17vw, 16rem) clamp(17rem, 29vw, 32rem) minmax(0, 1fr);
+  block-size: calc(100dvh - var(--bottom-nav-size));
   background: var(--surface);
 }
 
@@ -200,14 +199,21 @@ oneapp-vault-reader {
   flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.875rem 1.25rem;
+  padding: 1rem 0.875rem;
+  border-inline-end: 1px solid var(--border);
   border-block-end: 1px solid var(--border);
+  background: var(--canvas);
 }
 
 .vault-workspace-header h1 {
-  margin: 0 auto 0 0;
+  flex-basis: 100%;
+  margin: 0;
   font-size: 1.25rem;
   line-height: 1.3;
+}
+
+.vault-workspace-header :is(button, summary) {
+  padding-inline: 0.5rem;
 }
 
 .vault-workspace :is(button, summary, select) {
@@ -229,7 +235,6 @@ oneapp-vault-reader {
   gap: 1rem;
   padding: 0.875rem;
   border-inline-end: 1px solid var(--border);
-  border-end-start-radius: inherit;
   background: var(--canvas);
 }
 
@@ -432,6 +437,7 @@ oneapp-vault-reader {
 .vault-detail {
   grid-area: detail;
   min-width: 0;
+  min-height: 0;
   overflow: auto;
   padding: 1rem 1.25rem;
   overflow-wrap: anywhere;
@@ -499,10 +505,6 @@ oneapp-vault-reader {
   box-shadow: 0 0.375rem 1.25rem light-dark(#1c20301a, #0006);
 }
 
-.vault-workspace-header .vault-menu > div {
-  inset-inline: auto 0;
-}
-
 .vault-workspace .vault-menu button {
   justify-self: stretch;
   border-color: transparent;
@@ -516,18 +518,27 @@ oneapp-vault-reader {
       "filters" auto
       "items" minmax(0, 1fr)
       / minmax(0, 1fr);
-    block-size: max(24rem, calc(100svh - 3.75rem));
   }
 
   .vault-workspace-header {
     padding: 0.65rem 0.75rem;
+    border-inline-end: 0;
+  }
+
+  .vault-workspace-header h1 {
+    flex: 1 1 auto;
+  }
+
+  .vault-workspace-header .vault-menu > div {
+    inset-inline: auto 0;
   }
 
   .vault-filters {
+    box-sizing: border-box;
     gap: 0.5rem;
+    max-block-size: 42dvh;
     border-inline-end: 0;
     border-block-end: 1px solid var(--border);
-    border-radius: 0;
   }
 
   .vault-views {
@@ -541,7 +552,7 @@ oneapp-vault-reader {
   .vault-item-filters:not([hidden]) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.5rem;
-    max-block-size: min(30svh, 15rem);
+    max-block-size: min(30dvh, 15rem);
   }
 
   .vault-list-pane {
@@ -563,20 +574,12 @@ oneapp-vault-reader {
 }
 
 @media (max-width: 40rem) {
-  .vault-workspace {
-    block-size: max(
-      22rem,
-      calc(100svh - 5.25rem - env(safe-area-inset-bottom))
-    );
-  }
-
   .vault-workspace-header h1 {
     font-size: 1.0625rem;
   }
 
   .vault-workspace-header button,
   .vault-workspace-header summary {
-    padding-inline: 0.5rem;
     font-size: 0.8125rem;
   }
 }
@@ -734,29 +737,6 @@ oneapp-vault-reader {
   justify-content: start;
 }
 
-.vault-connect {
-  margin-block-start: 1.25rem;
-  padding-block-start: 1rem;
-  border-block-start: 1px solid var(--border);
-}
-
-.vault-connect summary {
-  cursor: pointer;
-}
-
-.vault-connect p:first-of-type {
-  margin-block-start: 0.75rem;
-}
-
-.vault-setup code {
-  display: inline-block;
-  margin-block-end: 1rem;
-  padding: 0.4rem 0.6rem;
-  border: 1px solid var(--border);
-  border-radius: 0.4rem;
-  overflow-wrap: anywhere;
-}
-
 .vault-setup [role="alert"] {
   margin-block-start: 1rem;
 }
@@ -876,14 +856,15 @@ oneapp-vault-reader {
 @media (max-width: 40rem) {
   .app-shell {
     --nav-size: 3.75rem;
+    --bottom-nav-size: calc(var(--nav-size) + env(safe-area-inset-bottom));
     padding-inline-start: 0;
-    padding-block-end: calc(var(--nav-size) + env(safe-area-inset-bottom));
+    padding-block-end: var(--bottom-nav-size);
   }
 
   .app-nav {
     inset: auto 0 0;
     width: auto;
-    min-height: calc(var(--nav-size) + env(safe-area-inset-bottom));
+    min-height: var(--bottom-nav-size);
     flex-direction: row;
     justify-content: center;
     padding-block: 0.4375rem calc(0.4375rem + env(safe-area-inset-bottom));

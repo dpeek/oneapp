@@ -383,9 +383,12 @@ oneapp-vault-reader {
   color: var(--accent);
 }
 
-.vault-row-icon {
+.vault-row > .vault-item-icon {
   grid-area: 1 / 1 / span 2;
   align-self: center;
+}
+
+.vault-item-icon {
   display: grid;
   place-items: center;
   inline-size: 2rem;
@@ -395,14 +398,14 @@ oneapp-vault-reader {
   color: var(--muted);
 }
 
-.vault-row-icon > :is(svg, img) {
+.vault-item-icon > :is(svg, img) {
   grid-area: 1 / 1;
   inline-size: 1.125rem;
   block-size: 1.125rem;
   object-fit: contain;
 }
 
-.vault-row-icon > img:not(:only-child) {
+.vault-item-icon > img:not(:only-child) {
   opacity: 0;
 }
 
@@ -583,7 +586,8 @@ oneapp-vault-reader {
   white-space: pre-wrap;
 }
 
-.vault-item-fieldset {
+.vault-item-fieldset,
+.vault-item-summary {
   display: grid;
   gap: 0.75rem;
   min-inline-size: 0;
@@ -591,6 +595,46 @@ oneapp-vault-reader {
   padding: 0.875rem;
   border: 1px solid var(--border);
   border-radius: 0.65rem;
+}
+
+.vault-item-summary {
+  background: var(--canvas);
+}
+
+.vault-item-summary h2 {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.vault-item-summary .vault-item-icon {
+  inline-size: 3rem;
+  block-size: 3rem;
+  background: var(--surface);
+}
+
+.vault-item-summary .vault-item-icon > :is(svg, img) {
+  inline-size: 2rem;
+  block-size: 2rem;
+}
+
+.vault-item-summary-folder {
+  display: grid;
+  grid-template-columns: 1rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.vault-item-summary-folder > svg {
+  inline-size: 100%;
+}
+
+.vault-item-summary-folder .vault-field {
+  align-items: center;
 }
 
 .vault-item-fieldset legend {

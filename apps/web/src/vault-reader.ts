@@ -34,7 +34,7 @@ import {
   vaultItemFieldset,
 } from "./vault-item-editor.ts";
 import { vaultField } from "./vault-field.ts";
-import { vaultItemIcon } from "./vault-item-icon.ts";
+import { vaultFolderIcon, vaultItemIcon } from "./vault-item-icon.ts";
 import { websiteIconHostname } from "./website-icon-host.ts";
 import { identityDisplayGroups } from "./vault-identity-layout.ts";
 import { structuredDisplayGroup } from "./vault-item-layout.ts";
@@ -1807,11 +1807,7 @@ class VaultReader extends HTMLElement {
       if (rows.length)
         content.push(vaultItemFieldset(label, detailFields(rows)));
     };
-    const folder = this.#vault?.folders.find(
-      ({ folder }) => folder.id === item.folderId,
-    );
     const metadata: DetailRow[] = [];
-    if (folder) metadata.push({ label: "Folder", value: folder.title });
     if (properties.favorite)
       metadata.push({ label: "Favourite", value: "Yes", copyable: false });
     if (properties.reprompt === 1)
@@ -1963,9 +1959,30 @@ class VaultReader extends HTMLElement {
   }
 
   #showDetails(entry: ListedItem, details: ItemDetails | null, error?: string) {
-    const { item, title, trashed } = entry;
-    const titleNode = create("h2", title ?? "Unreadable item");
+    const { item, title, trashed, iconHost } = entry;
+    const summary = create("header");
+    summary.className = "vault-item-summary";
+    const titleNode = create("h2");
     titleNode.tabIndex = -1;
+    titleNode.append(
+      vaultItemIcon(item.type, iconHost),
+      create("span", title ?? "Unreadable item"),
+    );
+    summary.append(titleNode);
+    const folder = this.#vault?.folders.find(
+      ({ folder }) => folder.id === item.folderId,
+    );
+    if (folder) {
+      const location = create("div");
+      location.className = "vault-item-summary-folder";
+      location.setAttribute("role", "group");
+      location.setAttribute("aria-label", "Folder");
+      location.append(
+        vaultFolderIcon(),
+        vaultField({ label: "Folder", value: folder.title }).element,
+      );
+      summary.append(location);
+    }
     const edit =
       !trashed && title !== null && details
         ? action("Edit", () =>
@@ -1992,7 +2009,7 @@ class VaultReader extends HTMLElement {
       archiveOrPurge.title = archive ? "Archive item" : "Unarchive item";
     this.#showPanel([
       this.#toolbar(this.#showBrowse, edit, remove, archiveOrPurge),
-      titleNode,
+      summary,
       ...(error ? [alert(error)] : []),
       ...(details ? this.#itemDetailFieldsets(item, details) : []),
     ]);

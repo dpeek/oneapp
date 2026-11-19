@@ -34,22 +34,33 @@ const itemPaths = {
 
 const svgNamespace = "http://www.w3.org/2000/svg";
 
-export const vaultItemIcon = (type: ItemType, hostname?: string) => {
-  const element = document.createElement("span");
-  element.className = "vault-row-icon";
-  element.setAttribute("aria-hidden", "true");
-  const fallback = document.createElementNS(svgNamespace, "svg");
-  fallback.setAttribute("viewBox", "0 0 24 24");
-  fallback.setAttribute("fill", "none");
-  fallback.setAttribute("stroke", "currentColor");
-  fallback.setAttribute("stroke-width", "1.75");
-  fallback.setAttribute("stroke-linecap", "round");
-  fallback.setAttribute("stroke-linejoin", "round");
-  for (const d of itemPaths[type]) {
+const outlineIcon = (paths: readonly string[]) => {
+  const svg = document.createElementNS(svgNamespace, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.75");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  for (const d of paths) {
     const path = document.createElementNS(svgNamespace, "path");
     path.setAttribute("d", d);
-    fallback.append(path);
+    svg.append(path);
   }
+  return svg;
+};
+
+export const vaultFolderIcon = () =>
+  outlineIcon([
+    "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z",
+  ]);
+
+export const vaultItemIcon = (type: ItemType, hostname?: string) => {
+  const element = document.createElement("span");
+  element.className = "vault-item-icon";
+  element.setAttribute("aria-hidden", "true");
+  const fallback = outlineIcon(itemPaths[type]);
   element.append(fallback);
   if (type === 1 && hostname) {
     const icon = document.createElement("img");

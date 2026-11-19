@@ -55,6 +55,7 @@ const MessageLocation = Schema.Struct({
 
 const isInboxMessageId = Schema.is(InboxMessageId);
 const isSentMessageId = Schema.is(SentMessageId);
+const isPersonEmail = Schema.is(PersonEmail);
 export const MailRoute = Schema.Struct({
   folder: MailFolder,
   id: Schema.NullOr(MailMessageId),
@@ -1201,16 +1202,26 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
   const profiles = new Map(
     model.thread?.profiles?.map(({ email, person }) => [email, person]),
   );
-  const participantProfiles = new Map<
+  const participantAvatars = new Map<
     string,
-    { addresses: [string, ...string[]]; person: PersonSummary }
+    {
+      addresses: [string, ...string[]];
+      name: string;
+      person: PersonSummary | undefined;
+    }
   >();
-  for (const { address } of participants) {
-    const person = profiles.get(normalizePersonEmail(address));
-    if (!person) continue;
-    const profile = participantProfiles.get(person.id);
-    if (profile) profile.addresses.push(address);
-    else participantProfiles.set(person.id, { addresses: [address], person });
+  for (const { address, name } of participants) {
+    const email = normalizePersonEmail(address);
+    const person = profiles.get(email);
+    const key = person?.id ?? email;
+    const participant = participantAvatars.get(key);
+    if (participant) participant.addresses.push(address);
+    else
+      participantAvatars.set(key, {
+        addresses: [address],
+        name: person?.name || name,
+        person,
+      });
   }
   const latest = messages.at(-1);
   const grouped = messages.length > 1;
@@ -1254,50 +1265,56 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
               [h.Class("inbox-conversation-heading")],
               [
                 h.h2([], [conversationSubject(messages)]),
-                ...(participantProfiles.size
+                ...(participantAvatars.size
                   ? [
                       h.ul(
                         [
                           h.Class("inbox-participant-avatars"),
                           h.AriaLabel("Participant profiles"),
                         ],
-                        [...participantProfiles.values()].map(
-                          ({ addresses: [address, ...aliases], person }) =>
-                            h.li(
-                              [h.Key(person.id)],
+                        [...participantAvatars].map(
+                          ([
+                            key,
+                            {
+                              addresses: [address, ...aliases],
+                              name,
+                              person,
+                            },
+                          ]) => {
+                            const tooltip = [name, address, ...aliases]
+                              .filter(Boolean)
+                              .join("\n");
+                            const picture = avatar(h, person, address, name);
+                            return h.li(
+                              [h.Key(key)],
                               [
-                                h.button(
-                                  [
-                                    h.Type("button"),
-                                    h.Class("inbox-profile-button"),
-                                    h.Title(
-                                      [person.name, address, ...aliases]
-                                        .filter(Boolean)
-                                        .join("\n"),
+                                isPersonEmail(address)
+                                  ? h.button(
+                                      [
+                                        h.Type("button"),
+                                        h.Class("inbox-profile-button"),
+                                        h.Title(tooltip),
+                                        h.AriaLabel(
+                                          `Edit participant profile for ${address}`,
+                                        ),
+                                        h.OnClick(
+                                          Message.RequestedPerson({ address }),
+                                        ),
+                                      ],
+                                      [picture],
+                                    )
+                                  : h.span(
+                                      [
+                                        h.Title(tooltip),
+                                        h.Role("img"),
+                                        h.AriaLabel(tooltip),
+                                      ],
+                                      [picture],
                                     ),
-                                    h.AriaLabel(
-                                      `Edit participant profile for ${address}`,
-                                    ),
-                                    h.OnClick(
-                                      Message.RequestedPerson({ address }),
-                                    ),
-                                  ],
-                                  [avatar(h, person, address)],
-                                ),
                               ],
-                            ),
+                            );
+                          },
                         ),
-                      ),
-                    ]
-                  : []),
-                ...(participants.length
-                  ? [
-                      h.p(
-                        [h.Class("inbox-conversation-people")],
-                        participants.flatMap((person, index) => [
-                          ...(index ? [", "] : []),
-                          h.span([h.Title(person.address)], [person.address]),
-                        ]),
                       ),
                     ]
                   : []),
@@ -1342,7 +1359,7 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
                     h.div(
                       [h.Class("inbox-message-heading")],
                       [
-                        Schema.is(PersonEmail)(address)
+                        isPersonEmail(address)
                           ? h.button(
                               [
                                 h.Type("button"),

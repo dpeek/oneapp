@@ -6,6 +6,7 @@ import {
   forgotPasswordPage,
   resetPasswordPage,
 } from "./apps/web/src/password-recovery-contract.ts";
+import type { InboxUpdates } from "./apps/web/src/server/cloudflare-worker.ts";
 import { provisionOwner } from "./apps/web/src/server/provision-owner.ts";
 
 const Database = Cloudflare.D1.Database("Database", {
@@ -46,7 +47,7 @@ export const Web = Cloudflare.Worker(
     });
     const from = `accounts@${Option.getOrUndefined(domain)}`;
     return {
-      main: "./apps/web/src/server/worker.ts",
+      main: "./apps/web/src/server/cloudflare-worker.ts",
       assets: {
         directory: "./apps/web/dist",
         notFoundHandling: "single-page-application" as const,
@@ -89,6 +90,7 @@ export const Web = Cloudflare.Worker(
         DB: Database,
         VAULT_FILES: VaultFiles,
         INBOX_MESSAGES: InboxMessages,
+        INBOX_UPDATES: Cloudflare.DurableObject<InboxUpdates>("InboxUpdates"),
         ...(inbox ? { INBOX_EMAIL_ADDRESS: inboxAddress(inbox.name) } : {}),
         APP_ORIGIN: Cloudflare.Worker.URL,
         BITWARDEN_ICON_LIMIT: Cloudflare.RateLimit("BitwardenIconLimit", {

@@ -24,6 +24,7 @@ import {
 import { bitwardenDevicesPath } from "../bitwarden-device-contract.ts";
 import {
   inboxApiPath,
+  inboxEventsPath,
   inboxMessageApi,
   inboxOriginalApi,
 } from "../inbox-contract.ts";
@@ -68,7 +69,9 @@ const password = "p".repeat(43);
 
 const setup = async (
   sqlite: Database,
-  inbox?: Pick<WorkerEnv, "INBOX_MESSAGES" | "INBOX_EMAIL_ADDRESS">,
+  inbox?: Partial<
+    Pick<WorkerEnv, "INBOX_MESSAGES" | "INBOX_EMAIL_ADDRESS" | "INBOX_UPDATES">
+  >,
 ) => {
   const migrationRoot = new URL("../../drizzle/", import.meta.url).pathname;
   for (const entry of Array.from(
@@ -215,6 +218,61 @@ const setup = async (
     },
   };
 };
+
+it("only upgrades Inbox sockets for a same-origin owner session", async () => {
+  using sqlite = new Database(":memory:");
+  const accept = vi.fn(
+    async (_url: string, _init: RequestInit) =>
+      new Response(null, { status: 204 }),
+  );
+  const { request, signIn, cookies } = await setup(sqlite, {
+    INBOX_UPDATES: {
+      getByName: () => ({ fetch: accept }),
+    } as WorkerEnv["INBOX_UPDATES"],
+  });
+  const cookie = cookies(await signIn(password));
+  const headers = {
+    upgrade: "websocket",
+    origin: "https://oneapp.example",
+    "x-oneapp-inbox-session-id": "forged",
+    "x-oneapp-inbox-security-revision": "forged",
+  };
+  expect((await request(inboxEventsPath, { headers })).status).toBe(401);
+  expect(
+    (
+      await request(inboxEventsPath, {
+        headers: { ...headers, cookie, origin: "https://other.example" },
+      })
+    ).status,
+  ).toBe(403);
+  expect(
+    (
+      await request(inboxEventsPath, {
+        headers: { origin: headers.origin, cookie },
+      })
+    ).status,
+  ).toBe(426);
+  expect(accept).not.toHaveBeenCalled();
+
+  const allowed = await request(inboxEventsPath, {
+    headers: { ...headers, cookie },
+  });
+  expect(allowed.status).toBe(204);
+  expect(accept).toHaveBeenCalledOnce();
+  const forwarded = new Headers(accept.mock.calls[0]?.[1].headers);
+  const session = sqlite
+    .query<{ id: string; revision: string }, []>(
+      "SELECT session_id AS id, security_revision AS revision FROM oneapp_auth_sessions",
+    )
+    .get();
+  expect(session).not.toBeNull();
+  expect(forwarded.get("upgrade")).toBe("websocket");
+  expect(forwarded.has("cookie")).toBe(false);
+  expect(forwarded.get("x-oneapp-inbox-session-id")).toBe(session?.id);
+  expect(forwarded.get("x-oneapp-inbox-security-revision")).toBe(
+    session?.revision,
+  );
+});
 
 it("allows the owner to list, read, download, and permanently delete stored mail", async () => {
   using sqlite = new Database(":memory:");

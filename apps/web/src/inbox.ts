@@ -1,11 +1,13 @@
-import { Effect, Schema } from "effect";
+import { Effect, Queue, Schema, Stream } from "effect";
 import { Command, Submodel, Update } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import * as Mount from "foldkit/mount";
 import {
   inboxApiPath,
+  inboxChanged,
   InboxEntry,
+  inboxEventsPath,
   inboxMessageApi,
   InboxMessageId,
   inboxMessagePage,
@@ -24,6 +26,7 @@ export const messageIdFor = (pathname: string) => {
 export const Model = Schema.Struct({
   list: Schema.NullOr(InboxPage),
   listRequest: Schema.NullOr(Schema.String),
+  listRefreshQueued: Schema.Boolean,
   listError: Schema.NullOr(Schema.String),
   selected: Schema.NullOr(InboxMessageId),
   entry: Schema.NullOr(InboxEntry),
@@ -40,6 +43,7 @@ type Model = typeof Model.Type;
 export const initial: Model = {
   list: null,
   listRequest: null,
+  listRefreshQueued: false,
   listError: null,
   selected: null,
   entry: null,
@@ -53,6 +57,7 @@ export const initial: Model = {
 export const Message = defineMessageUnion({
   Opened: { id: Schema.NullOr(InboxMessageId) },
   Refreshed: {},
+  LiveChanged: {},
   RequestedMore: {},
   RetriedEntry: {},
   RequestedDelete: {},
@@ -72,6 +77,48 @@ export const Message = defineMessageUnion({
   FocusUpdated: {},
 });
 type Message = typeof Message.Type;
+
+export const changes = Stream.callback<Message>(
+  (queue) =>
+    Effect.acquireRelease(
+      Effect.sync(() => {
+        const url = new URL(inboxEventsPath, window.location.href);
+        url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+        let stopped = false;
+        let socket: WebSocket | undefined;
+        let retry: number | undefined;
+        let delay = 1000;
+        const changed = () => {
+          if (!stopped) Queue.offerUnsafe(queue, Message.LiveChanged());
+        };
+        const connect = () => {
+          const connection = new WebSocket(url);
+          socket = connection;
+          connection.onopen = () => {
+            delay = 1000;
+            changed();
+          };
+          connection.onmessage = (event) => {
+            if (event.data === inboxChanged) changed();
+          };
+          connection.onclose = (event) => {
+            if (stopped) return;
+            if (event.code === 1008) changed();
+            retry = window.setTimeout(connect, delay);
+            delay = Math.min(delay * 2, 30_000);
+          };
+        };
+        connect();
+        return () => {
+          stopped = true;
+          window.clearTimeout(retry);
+          socket?.close();
+        };
+      }),
+      (stop) => Effect.sync(stop),
+    ).pipe(Effect.andThen(Effect.never)),
+  { bufferSize: 1, strategy: "sliding" },
+);
 
 const FocusEntry = Mount.define("FocusInboxEntry", {
   messages: [Message.FocusUpdated],
@@ -167,7 +214,12 @@ const loadList = (
   if (model.listRequest !== null) return { model };
   const request = crypto.randomUUID();
   return {
-    model: { ...model, listRequest: request, listError: null },
+    model: {
+      ...model,
+      listRequest: request,
+      listRefreshQueued: false,
+      listError: null,
+    },
     commands: [LoadList({ request, cursor })],
   };
 };
@@ -207,6 +259,10 @@ export const update = (
       };
     },
     Refreshed: () => loadList(model, null),
+    LiveChanged: () =>
+      model.listRequest
+        ? { model: { ...model, listRefreshQueued: true } }
+        : loadList(model, null),
     RequestedMore: () =>
       model.list?.cursor ? loadList(model, model.list.cursor) : { model },
     RetriedEntry: () => loadEntry(model),
@@ -254,32 +310,27 @@ export const update = (
               deleteFailed: model.selected === model.deleteRequest.id,
             },
           },
-    LoadedList: ({ request, page, append }) =>
-      request !== model.listRequest
-        ? { model }
-        : {
-            model: {
-              ...model,
-              listRequest: null,
-              list:
-                append && model.list
-                  ? {
-                      ...page,
-                      messages: [...model.list.messages, ...page.messages],
-                    }
-                  : page,
-            },
-          },
-    ListFailed: ({ request }) =>
-      request !== model.listRequest
-        ? { model }
-        : {
-            model: {
-              ...model,
-              listError: "Could not load messages. Try again.",
-              listRequest: null,
-            },
-          },
+    LoadedList: ({ request, page, append }) => {
+      if (request !== model.listRequest) return { model };
+      const next = {
+        ...model,
+        listRequest: null,
+        list:
+          append && model.list
+            ? { ...page, messages: [...model.list.messages, ...page.messages] }
+            : page,
+      };
+      return next.listRefreshQueued ? loadList(next, null) : { model: next };
+    },
+    ListFailed: ({ request }) => {
+      if (request !== model.listRequest) return { model };
+      const next = {
+        ...model,
+        listRequest: null,
+        listError: "Could not load messages. Try again.",
+      };
+      return next.listRefreshQueued ? loadList(next, null) : { model: next };
+    },
     LoadedEntry: ({ request, entry }) =>
       request !== model.entryRequest
         ? { model }

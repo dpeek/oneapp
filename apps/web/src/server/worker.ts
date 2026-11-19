@@ -11,6 +11,7 @@ import {
   HttpServerResponse,
 } from "effect/http";
 import { accountPath } from "../account-contract.ts";
+import { inboxEventsPath } from "../inbox-contract.ts";
 import {
   forgotPasswordPage,
   passwordResetPath,
@@ -18,7 +19,7 @@ import {
 } from "../password-recovery-contract.ts";
 import { cloudflareEmail, disabledEmail } from "./account-email.ts";
 import { accountRoutes } from "./account.ts";
-import { AppAuth, authHttp, sessionCookieName } from "./auth.ts";
+import { AppAuth, authHttp, ownerId, sessionCookieName } from "./auth.ts";
 import { bitwardenDeviceRoutes } from "./bitwarden/devices.ts";
 import { bitwardenIcon } from "./bitwarden/icons.ts";
 import { bitwardenFetch, isBitwardenPath } from "./bitwarden/routes.ts";
@@ -28,7 +29,12 @@ import { cliTokenRoutes } from "./cli-tokens.ts";
 import { authDependencies, databaseLayer } from "./database.ts";
 import { emailChangeRoutes } from "./email-change.ts";
 import { extensionAccessRoutes } from "./extension-access.ts";
-import { inboxMessageKey, inboxRoutes, inboxSubject } from "./inbox.ts";
+import {
+  inboxMessageKey,
+  inboxRoutes,
+  inboxSessionHeaders,
+  inboxSubject,
+} from "./inbox.ts";
 import { linksRoutes } from "./links.ts";
 import { mcpRoutes } from "./mcp.ts";
 import {
@@ -63,7 +69,11 @@ export default {
       ForwardableEmailMessage,
       "from" | "to" | "headers" | "raw" | "rawSize" | "setReject"
     >,
-    env: Pick<WorkerEnv, "INBOX_EMAIL_ADDRESS" | "INBOX_MESSAGES">,
+    env: Pick<
+      WorkerEnv,
+      "INBOX_EMAIL_ADDRESS" | "INBOX_MESSAGES" | "INBOX_UPDATES"
+    >,
+    context?: { waitUntil(promise: Promise<unknown>): void },
   ) {
     if (message.to.toLowerCase() !== env.INBOX_EMAIL_ADDRESS) {
       message.setReject("Unknown recipient");
@@ -79,6 +89,15 @@ export default {
         subject: inboxSubject(message.headers.get("subject")),
       },
     });
+    if (env.INBOX_UPDATES) {
+      const notify = Promise.resolve()
+        .then(() => env.INBOX_UPDATES.getByName(ownerId).publish())
+        .catch(() => {
+          console.warn("Could not notify Inbox subscribers");
+        });
+      if (context) context.waitUntil(notify);
+      else await notify;
+    }
   },
   async scheduled(_event: unknown, env: WorkerEnv) {
     await collectAttachments(env.DB, env.VAULT_FILES);
@@ -89,7 +108,7 @@ export default {
       ASSETS?: { fetch(request: Request): Promise<Response> };
     },
     context?: { waitUntil(promise: Promise<unknown>): void },
-  ) {
+  ): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
     const defer = (work: Promise<unknown>) => {
@@ -213,28 +232,61 @@ export default {
           })
         : undefined,
     );
+    const verifyBrowserSession = () => {
+      const cookie =
+        HttpServerRequest.fromWeb(request).cookies[sessionCookieName];
+      if (cookie === undefined) return Promise.resolve(null);
+      return Effect.runPromise(
+        Effect.flatMap(AppAuth, (auth) =>
+          auth.verifySession(Redacted.make(cookie)),
+        ).pipe(
+          Effect.catchTag("SessionInvalid", () => Effect.succeed(null)),
+          Effect.provide(AppAuth.layer.pipe(Layer.provide(dependencies))),
+        ),
+      );
+    };
+    if (path === inboxEventsPath) {
+      if (request.method !== "GET")
+        return new Response(null, {
+          status: 405,
+          headers: { ...privateHeaders, allow: "GET" },
+        });
+      if (request.headers.get("upgrade")?.toLowerCase() !== "websocket")
+        return new Response(null, { status: 426, headers: privateHeaders });
+      if (request.headers.get("origin") !== new URL(env.APP_ORIGIN).origin)
+        return new Response(null, { status: 403, headers: privateHeaders });
+      try {
+        const session = await verifyBrowserSession();
+        if (!session)
+          return new Response(null, { status: 401, headers: privateHeaders });
+        if (session.subjectId !== ownerId)
+          return new Response(null, { status: 403, headers: privateHeaders });
+        // Return the native response so its WebSocket survives the upgrade.
+        return await env.INBOX_UPDATES.getByName(ownerId).fetch(request.url, {
+          headers: {
+            upgrade: "websocket",
+            [inboxSessionHeaders.id]: session.sessionId,
+            [inboxSessionHeaders.revision]: session.securityRevision,
+          },
+        });
+      } catch {
+        return new Response(null, { status: 503, headers: privateHeaders });
+      }
+    }
     if (isBitwardenPath(path)) {
       try {
         return await bitwardenFetch(
           request,
           url,
           env,
-          () => {
-            const cookie =
-              HttpServerRequest.fromWeb(request).cookies[sessionCookieName];
-            if (cookie === undefined) return Promise.resolve(null);
-            return Effect.runPromise(
-              Effect.flatMap(AppAuth, (auth) =>
-                auth.verifySession(Redacted.make(cookie)),
-              ).pipe(
-                Effect.map((session) => ({
-                  ownerId: session.subjectId,
-                  sessionId: session.sessionId,
-                  securityRevision: session.securityRevision,
-                })),
-                Effect.catchTag("SessionInvalid", () => Effect.succeed(null)),
-                Effect.provide(AppAuth.layer.pipe(Layer.provide(dependencies))),
-              ),
+          async () => {
+            const session = await verifyBrowserSession();
+            return (
+              session && {
+                ownerId: session.subjectId,
+                sessionId: session.sessionId,
+                securityRevision: session.securityRevision,
+              }
             );
           },
           defer,

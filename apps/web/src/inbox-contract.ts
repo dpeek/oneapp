@@ -2,6 +2,8 @@ import { Schema } from "effect";
 
 export const inboxPath = "/inbox";
 export const inboxApiPath = "/api/inbox";
+export const inboxEventsPath = `${inboxApiPath}/events`;
+export const inboxChanged = "inbox.changed";
 export const inboxMessagePage = (id: string) => `${inboxPath}/${id}`;
 export const inboxMessageApi = (id: string) => `${inboxApiPath}/${id}`;
 export const inboxOriginalApi = (id: string) =>

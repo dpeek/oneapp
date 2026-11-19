@@ -16,6 +16,16 @@ import { AppAuth, ownerId, type authHttp } from "./auth.ts";
 type InboxEnv = Pick<WorkerEnv, "INBOX_EMAIL_ADDRESS" | "INBOX_MESSAGES">;
 type InboxBucket = InboxEnv["INBOX_MESSAGES"];
 
+export const inboxSessionHeaders = {
+  id: "x-oneapp-inbox-session-id",
+  revision: "x-oneapp-inbox-security-revision",
+};
+
+export type InboxSocketSession = {
+  sessionId: string;
+  securityRevision: string;
+};
+
 const isMessageId = Schema.is(InboxMessageId);
 const headerLimit = 64 * 1024;
 const messageLimit = 8 * 1024 * 1024;

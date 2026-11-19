@@ -5,8 +5,15 @@ import {
 import { appName } from "@oneapp/core";
 import { Link, LinkList, SaveLink } from "@oneapp/core/links";
 import * as Client from "@yielded/auth/Client";
-import { Effect, Option, Schema } from "effect";
-import { Command, Navigation, Runtime, Update, Url } from "foldkit";
+import { Effect, Option, Schema, Stream } from "effect";
+import {
+  Command,
+  Navigation,
+  Runtime,
+  Subscription,
+  Update,
+  Url,
+} from "foldkit";
 import type { Document, HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import * as AccountSettings from "./account-settings.ts";
@@ -312,6 +319,22 @@ const isApproval = (model: Model) =>
   model.cliLogin !== null ||
   model.extensionAccess.approvalId !== null ||
   model.extensionAccess.approved;
+
+const subscriptions = Subscription.make<Model, Message>()((entry) => ({
+  inbox: entry(
+    { active: Schema.Boolean },
+    {
+      modelToDependencies: (model) => ({
+        active:
+          model.account !== null &&
+          model.page === "inbox" &&
+          !isApproval(model),
+      }),
+      dependenciesToStream: ({ active }) =>
+        active ? Inbox.changes.pipe(Stream.map(toInboxMessage)) : Stream.empty,
+    },
+  ),
+}));
 
 const loadPage = (model: Model): Update.Return<Model, Message> => {
   if (!model.account || isApproval(model)) return { model };
@@ -678,6 +701,8 @@ const update = (
     }),
     GotVaultSetupMessage: ({ message }) => foldVaultSetup(model, message),
     GotInboxMessage: ({ message }) => {
+      if (message._tag === "LiveChanged" && model.page !== "inbox")
+        return { model };
       const deleting = model.inbox.deleteRequest;
       if (
         message._tag === "SessionExpired" &&
@@ -986,6 +1011,7 @@ if (bitwardenAuthorization && !connectingBitwarden) {
       init,
       update,
       view,
+      subscriptions,
       routing: {
         onUrlRequest: (request) => Message.RequestedUrl({ request }),
         onUrlChange: (url) => Message.ChangedUrl({ url }),

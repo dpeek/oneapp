@@ -10,7 +10,9 @@ import { compile } from "html-to-text";
 import PostalMime, { decodeWords, type Email } from "postal-mime";
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import {
+  archiveApiPath,
   Conversation,
+  ConversationArchiveUpdate,
   conversationsApiPath,
   folderApiPath,
   inboxApiPath,
@@ -43,6 +45,7 @@ import {
   removeIndexedMail,
   scanMail,
   setInboxUnread,
+  setThreadArchived,
 } from "./mail-index.ts";
 import {
   conversationMessageIds,
@@ -709,6 +712,36 @@ export const inboxRoutes = (
     return HttpServerResponse.empty({ status: 204, headers: privateHeaders });
   });
 
+  const updateArchive = Effect.gen(function* () {
+    const { id } = yield* HttpRouter.params;
+    if (!isInboxMessageId(id)) return yield* notFound();
+    const body = yield* HttpServerRequest.schemaBodyJson(
+      ConversationArchiveUpdate,
+      {
+        onExcessProperty: "error",
+      },
+    ).pipe(
+      Effect.provideService(
+        HttpServerRequest.MaxBodySize,
+        ByteSize.kibibytes(1),
+      ),
+      Effect.option,
+    );
+    if (body._tag === "None")
+      return yield* jsonError(400, "Invalid archive status");
+    const result = yield* Effect.tryPromise(() =>
+      setThreadArchived(env.DB, id, body.value.archived),
+    );
+    if (result === "missing") return yield* notFound();
+    if (result === "stale")
+      return yield* jsonError(
+        409,
+        "A new reply arrived. Review it before archiving.",
+      );
+    if (result === "changed") yield* Effect.sync(() => defer(notifyInbox(env)));
+    return HttpServerResponse.empty({ status: 204, headers: privateHeaders });
+  });
+
   const folderRoutes = (folder: MailFolder) => {
     const path = folderApiPath(folder);
     return Layer.mergeAll(
@@ -738,6 +771,47 @@ export const inboxRoutes = (
         }),
       ),
     );
+
+  const listThreads = (archived: boolean) =>
+    Effect.gen(function* () {
+      if (!(yield* requireInboxOwner))
+        return yield* jsonError(403, "Access denied");
+      const query = yield* listQuery.pipe(Effect.option);
+      const cursor =
+        query._tag === "Some" ? inboxThreadCursor(query.value.cursor) : null;
+      if (!cursor) return yield* jsonError(400, "Invalid page cursor");
+      const indexing = yield* Effect.tryPromise(() => syncMailIndex(env));
+      const page = yield* Effect.tryPromise(async () => {
+        const page = await listInboxThreads(env.DB, cursor, archived);
+        const matches = await profilesFor(
+          env,
+          page.messages.flatMap(({ participants }) =>
+            participants.map(({ address }) => address),
+          ),
+        );
+        const profiles = new Map(matches.map((match) => [match.email, match]));
+        return {
+          ...page,
+          messages: page.messages.map((message) => ({
+            ...message,
+            profiles: message.participants.flatMap(({ address }) => {
+              const match = profiles.get(normalizePersonEmail(address));
+              return match ? [match] : [];
+            }),
+          })),
+        };
+      });
+      const sender = inboxSender(env);
+      return yield* HttpServerResponse.schemaJson(InboxPage)(
+        {
+          ...page,
+          address: env.INBOX_EMAIL_ADDRESS ?? null,
+          ...(sender ? { sender: sender.from } : {}),
+          ...(indexing ? { indexing } : {}),
+        },
+        { headers: privateHeaders },
+      );
+    }).pipe(Effect.catchTags(inboxErrors));
 
   return Layer.mergeAll(
     folderRoutes("inbox"),
@@ -770,50 +844,23 @@ export const inboxRoutes = (
         }),
       ),
     ),
+    HttpRouter.add("GET", conversationsApiPath, listThreads(false)),
+    HttpRouter.add("GET", archiveApiPath, listThreads(true)),
     HttpRouter.add(
-      "GET",
-      conversationsApiPath,
+      "PATCH",
+      `${conversationsApiPath}/:id/archive`,
       Effect.gen(function* () {
         if (!(yield* requireInboxOwner))
           return yield* jsonError(403, "Access denied");
-        const query = yield* listQuery.pipe(Effect.option);
-        const cursor =
-          query._tag === "Some" ? inboxThreadCursor(query.value.cursor) : null;
-        if (!cursor) return yield* jsonError(400, "Invalid page cursor");
-        const indexing = yield* Effect.tryPromise(() => syncMailIndex(env));
-        const page = yield* Effect.tryPromise(async () => {
-          const page = await listInboxThreads(env.DB, cursor);
-          const matches = await profilesFor(
-            env,
-            page.messages.flatMap(({ participants }) =>
-              participants.map(({ address }) => address),
-            ),
-          );
-          const profiles = new Map(
-            matches.map((match) => [match.email, match]),
-          );
-          return {
-            ...page,
-            messages: page.messages.map((message) => ({
-              ...message,
-              profiles: message.participants.flatMap(({ address }) => {
-                const match = profiles.get(normalizePersonEmail(address));
-                return match ? [match] : [];
-              }),
-            })),
-          };
-        });
-        const sender = inboxSender(env);
-        return yield* HttpServerResponse.schemaJson(InboxPage)(
-          {
-            ...page,
-            address: env.INBOX_EMAIL_ADDRESS ?? null,
-            ...(sender ? { sender: sender.from } : {}),
-            ...(indexing ? { indexing } : {}),
-          },
-          { headers: privateHeaders },
-        );
-      }).pipe(Effect.catchTags(inboxErrors)),
+        return yield* http.protect(updateArchive);
+      }).pipe(
+        Effect.catchTags({
+          ...inboxErrors,
+          HookDenied: () => jsonError(403, "Request not allowed"),
+          UnknownError: () =>
+            jsonError(503, "Could not update Archive. Try again."),
+        }),
+      ),
     ),
     HttpRouter.add(
       "GET",

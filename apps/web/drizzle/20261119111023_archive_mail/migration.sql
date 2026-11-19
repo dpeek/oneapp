@@ -1,0 +1,2 @@
+ALTER TABLE `mail_index_messages` ADD `archived` integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+CREATE INDEX `mail_index_inbox_archive_date` ON `mail_index_messages` (`archived`,`timestamp`,`id`) WHERE folder = 'inbox' AND deleted = 0;

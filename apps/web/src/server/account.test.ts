@@ -23,7 +23,9 @@ import {
 } from "../account-contract.ts";
 import { bitwardenDevicesPath } from "../bitwarden-device-contract.ts";
 import {
+  archiveApiPath,
   conversationApi,
+  conversationArchiveApi,
   conversationsApiPath,
   inboxApiPath,
   inboxEventsPath,
@@ -80,6 +82,7 @@ import { digest } from "./digest.ts";
 import { ensureOwner } from "./provision-owner.ts";
 import { mcpOAuth } from "./mcp-oauth.ts";
 import worker from "./worker.ts";
+import { indexMail } from "./mail-index.ts";
 
 const email = "owner@example.net";
 const password = "p".repeat(43);
@@ -227,6 +230,7 @@ const setup = async (
 
   return {
     call,
+    db: env.DB,
     request,
     objects,
     finishWork: () => Promise.all(deliveries),
@@ -827,7 +831,7 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
     reply: { originalId: root.key },
   };
   const publish = vi.fn(async () => {});
-  const { call, request, signIn, cookies } = await setup(sqlite, {
+  const { call, db, request, signIn, cookies } = await setup(sqlite, {
     INBOX_EMAIL_ADDRESS: address,
     INBOX_UPDATES: {
       getByName: () => ({ publish }),
@@ -990,6 +994,85 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
   expect(updated.messages.map(({ id }: { id: string }) => id)).toEqual(
     expected.filter((id) => id !== latest.key),
   );
+
+  const archive = (
+    id: string,
+    archived: boolean,
+    headers: Record<string, string> = approved,
+  ) =>
+    request(conversationArchiveApi(id), {
+      method: "PATCH",
+      headers: {
+        origin: "https://oneapp.example",
+        "content-type": "application/json",
+        ...headers,
+      },
+      body: JSON.stringify({ archived }),
+    });
+  expect((await call(archiveApiPath)).status).toBe(401);
+  expect((await archive(bridge.key, true, {})).status).toBe(401);
+  expect((await archive(bridge.key, true, { cookie: session })).status).toBe(
+    403,
+  );
+  expect((await archive(root.key, true)).status).toBe(409);
+  expect((await mark(bridge.key, true, approved)).status).toBe(204);
+  expect((await archive(bridge.key, true)).status).toBe(204);
+  expect((await archive(bridge.key, true)).status).toBe(204);
+  expect(await get(inboxUnreadPath)).toEqual({ unreadCount: 1 });
+  expect(await get(conversationsApiPath)).toMatchObject({
+    messages: [{ id: separate.key }],
+  });
+  expect(await get(archiveApiPath)).toMatchObject({
+    messages: [{ id: bridge.key, messageCount: 4, unreadCount: 1 }],
+  });
+  expect(await get(conversationApi(root.key))).toMatchObject({
+    archived: true,
+  });
+  expect(await get(mailMessageApi("sent", sentId))).toMatchObject({
+    id: sentId,
+  });
+  expect((await archive(latest.key, false)).status).toBe(204);
+  expect(await get(archiveApiPath)).toMatchObject({ messages: [] });
+  expect(await get(inboxUnreadPath)).toEqual({ unreadCount: 2 });
+
+  expect((await archive(bridge.key, true)).status).toBe(204);
+  const member = {
+    folder: "inbox" as const,
+    from: "sender@example.net",
+    to: address,
+    subject,
+    messageIds: ["<a@example.net>"],
+  };
+  const older = makeInbox(5, 1500, []);
+  await indexMail(db, { ...member, id: older.key, timestamp: 1500 });
+  expect(await get(archiveApiPath)).toMatchObject({
+    messages: [{ id: bridge.key, messageCount: 5 }],
+  });
+  const reply = makeInbox(6, 3000, [], true);
+  await indexMail(
+    db,
+    { ...member, id: reply.key, timestamp: 3000, unread: true },
+    { reopensArchive: true },
+  );
+  expect(await get(archiveApiPath)).toMatchObject({ messages: [] });
+  expect(await get(conversationsApiPath)).toMatchObject({
+    messages: [
+      { id: separate.key },
+      { id: reply.key, messageCount: 6, unreadCount: 2 },
+    ],
+  });
+  expect((await archive(bridge.key, true)).status).toBe(409);
+  expect(
+    (
+      await request(inboxMessageApi(reply.key), {
+        method: "DELETE",
+        headers: { ...approved, origin: "https://oneapp.example" },
+      })
+    ).status,
+  ).toBe(204);
+  expect(await get(conversationsApiPath)).toMatchObject({
+    messages: [{ id: separate.key }, { id: bridge.key }],
+  });
 });
 
 it("only upgrades Inbox sockets for a same-origin owner session", async () => {

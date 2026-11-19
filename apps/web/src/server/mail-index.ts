@@ -28,7 +28,11 @@ const canonicalThread = `SELECT min(thread_id) FROM (${matchingThreads})`;
 const threadsToMerge = `WITH matched AS MATERIALIZED (${matchingThreads}),
   target AS (SELECT min(thread_id) FROM matched)`;
 
-const indexStatements = async (db: D1Database, mail: IndexedMail) => {
+const indexStatements = async (
+  db: D1Database,
+  mail: IndexedMail,
+  reopensArchive = false,
+) => {
   const {
     id,
     folder,
@@ -78,8 +82,16 @@ const indexStatements = async (db: D1Database, mail: IndexedMail) => {
     db
       .prepare(
         `
-      INSERT INTO mail_index_messages (id, thread_id, folder, sender, recipient, subject, timestamp, unread, people)
-      VALUES (?1, (SELECT thread_id FROM mail_index_keys WHERE identity = ?2), ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+      INSERT INTO mail_index_messages (id, thread_id, folder, sender, recipient, subject, timestamp, unread, people, archived)
+      VALUES (?1, (SELECT thread_id FROM mail_index_keys WHERE identity = ?2), ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+        CASE WHEN ?3 = 'inbox' AND ?10 = 0 THEN coalesce((
+          SELECT CASE WHEN (timestamp, id) > (?7, ?1) THEN archived ELSE 0 END
+          FROM mail_index_messages
+          WHERE thread_id = (SELECT thread_id FROM mail_index_keys WHERE identity = ?2)
+            AND folder = 'inbox' AND deleted = 0
+          ORDER BY timestamp DESC, id DESC LIMIT 1
+        ), 0) ELSE 0 END
+      )
       ON CONFLICT(id) DO UPDATE SET people = excluded.people
       WHERE mail_index_messages.people IS NULL AND mail_index_messages.deleted = 0
     `,
@@ -94,12 +106,33 @@ const indexStatements = async (db: D1Database, mail: IndexedMail) => {
         timestamp,
         folder === "inbox" && unread ? 1 : 0,
         people ? JSON.stringify(people) : null,
+        reopensArchive ? 1 : 0,
       ),
+    // Incoming mail and merges with an active conversation reopen the whole
+    // thread. Keep that state even if the new incoming message is later deleted.
+    db
+      .prepare(
+        `
+      UPDATE mail_index_messages AS member SET archived = 0
+      WHERE thread_id = (SELECT thread_id FROM mail_index_keys WHERE identity = ?)
+        AND folder = 'inbox' AND deleted = 0 AND archived = 1
+        AND EXISTS (
+          SELECT 1 FROM mail_index_messages active
+          WHERE active.thread_id = member.thread_id AND active.folder = 'inbox'
+            AND active.deleted = 0 AND active.archived = 0
+        )
+    `,
+      )
+      .bind(localIdentity(id)),
   ];
 };
 
-export const indexMail = async (db: D1Database, mail: IndexedMail) => {
-  await db.batch(await indexStatements(db, mail));
+export const indexMail = async (
+  db: D1Database,
+  mail: IndexedMail,
+  options?: { reopensArchive: boolean },
+) => {
+  await db.batch(await indexStatements(db, mail, options?.reopensArchive));
 };
 
 export const removeIndexedMail = async (
@@ -129,7 +162,7 @@ export const inboxUnread = async (db: D1Database) => {
     .prepare(
       `
     SELECT count(*) AS unreadCount FROM mail_index_messages
-    WHERE folder = 'inbox' AND deleted = 0 AND unread = 1
+    WHERE folder = 'inbox' AND deleted = 0 AND unread = 1 AND archived = 0
   `,
     )
     .first<{ unreadCount: number }>();
@@ -166,6 +199,39 @@ export const setInboxUnread = async (
     .first<{ id: string }>();
   if (updated) return "changed";
   return (await inboxMessageUnread(db, id)) === null ? "missing" : "unchanged";
+};
+
+export const setThreadArchived = async (
+  db: D1Database,
+  id: string,
+  archived: boolean,
+) => {
+  const newestIncoming = `
+    SELECT id, archived FROM mail_index_messages
+    WHERE thread_id = (SELECT thread_id FROM mail_index_keys WHERE identity = ?1)
+      AND folder = 'inbox' AND deleted = 0
+    ORDER BY timestamp DESC, id DESC LIMIT 1
+  `;
+  const identity = localIdentity(id);
+  const changed = await db
+    .prepare(
+      `
+    UPDATE mail_index_messages SET archived = ?2
+    WHERE thread_id = (SELECT thread_id FROM mail_index_keys WHERE identity = ?1)
+      AND folder = 'inbox' AND deleted = 0 AND archived <> ?2
+      AND (?2 = 0 OR ?3 = (SELECT id FROM (${newestIncoming})))
+    RETURNING id
+  `,
+    )
+    .bind(identity, archived ? 1 : 0, id)
+    .first<{ id: string }>();
+  if (changed) return "changed";
+  const current = await db
+    .prepare(newestIncoming)
+    .bind(identity)
+    .first<{ id: string; archived: number }>();
+  if (!current) return "missing";
+  return current.archived === (archived ? 1 : 0) ? "unchanged" : "stale";
 };
 
 export const inboxThreadCursor = (cursor: string | undefined) => {
@@ -210,6 +276,7 @@ const withPeople = <
 export const listInboxThreads = async (
   db: D1Database,
   cursor: NonNullable<ReturnType<typeof inboxThreadCursor>>,
+  archived: boolean,
 ) => {
   const { results } = await db
     .prepare(
@@ -225,7 +292,7 @@ export const listInboxThreads = async (
             WHERE member.thread_id = m.thread_id AND member.folder = 'inbox'
               AND member.deleted = 0 AND member.unread = 1) AS unreadCount
     FROM mail_index_messages m
-    WHERE m.folder = 'inbox' AND m.deleted = 0
+    WHERE m.folder = 'inbox' AND m.deleted = 0 AND m.archived = ?4
       AND (?1 IS NULL OR (m.timestamp, m.id) < (?1, ?2))
       AND NOT EXISTS (
         SELECT 1 FROM mail_index_messages newer
@@ -235,7 +302,7 @@ export const listInboxThreads = async (
     ORDER BY m.timestamp DESC, m.id DESC LIMIT ?3
   `,
     )
-    .bind(cursor.timestamp, cursor.id, pageSize + 1)
+    .bind(cursor.timestamp, cursor.id, pageSize + 1, archived ? 1 : 0)
     .all<{
       id: string;
       from: string;
@@ -270,7 +337,7 @@ export const readThread = async (db: D1Database, id: string) => {
   const { results } = await db
     .prepare(
       `
-    SELECT id, folder, sender AS "from", recipient AS "to", subject, timestamp, unread, people
+    SELECT id, folder, sender AS "from", recipient AS "to", subject, timestamp, unread, people, archived
     FROM mail_index_messages
     WHERE thread_id = (SELECT thread_id FROM mail_index_keys WHERE identity = ?)
       AND deleted = 0
@@ -281,11 +348,13 @@ export const readThread = async (db: D1Database, id: string) => {
     .all<
       Omit<ConversationMessage, "unread" | "people"> & {
         unread: number;
+        archived: number;
         people: string | null;
       }
     >();
   return {
-    messages: results.map(({ unread, ...message }) => ({
+    archived: results.some(({ archived }) => archived === 1),
+    messages: results.map(({ unread, archived: _archived, ...message }) => ({
       ...withPeople(message),
       unread: unread === 1,
     })),

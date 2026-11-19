@@ -98,21 +98,25 @@ export default {
         initialUnread: "1",
       },
     });
-    await indexMail(env.DB, {
-      id,
-      folder: "inbox",
-      timestamp: stored.uploaded.getTime(),
-      subject,
-      from: message.from,
-      to: message.to,
-      unread: true,
-      people: mailPeople(
-        (name) => message.headers.get(name),
-        message.from,
-        message.to,
-      ),
-      messageIds: conversationMessageIds((name) => message.headers.get(name)),
-    }).catch(() => console.warn("Could not index incoming email"));
+    await indexMail(
+      env.DB,
+      {
+        id,
+        folder: "inbox",
+        timestamp: stored.uploaded.getTime(),
+        subject,
+        from: message.from,
+        to: message.to,
+        unread: true,
+        people: mailPeople(
+          (name) => message.headers.get(name),
+          message.from,
+          message.to,
+        ),
+        messageIds: conversationMessageIds((name) => message.headers.get(name)),
+      },
+      { reopensArchive: true },
+    ).catch(() => console.warn("Could not index incoming email"));
     const notify = notifyInbox(env);
     if (context) context.waitUntil(notify);
     else await notify;

@@ -6,20 +6,26 @@ export const inboxPath = "/inbox";
 export const inboxApiPath = "/api/inbox";
 export const inboxEventsPath = `${inboxApiPath}/events`;
 export const conversationsApiPath = `${inboxApiPath}/conversations`;
+export const archiveApiPath = `${inboxApiPath}/archive`;
 export const conversationApi = (id: string) => `${conversationsApiPath}/${id}`;
+export const conversationArchiveApi = (id: string) =>
+  `${conversationApi(id)}/archive`;
 export const inboxSendPath = `${inboxApiPath}/send`;
 export const inboxUnreadPath = `${inboxApiPath}/unread`;
 export const sentCopyHeader = "x-oneapp-sent-copy";
 export const sentPath = `${inboxPath}/sent`;
+export const archivePath = `${inboxPath}/archive`;
 export const sentApiPath = `${inboxApiPath}/sent`;
 export const inboxChanged = "inbox.changed";
 export const MailFolder = Schema.Literals(["inbox", "sent"]);
 export type MailFolder = typeof MailFolder.Type;
-export const folderPath = (folder: MailFolder) =>
-  folder === "sent" ? sentPath : inboxPath;
+export const MailboxView = Schema.Literals(["inbox", "sent", "archive"]);
+export type MailboxView = typeof MailboxView.Type;
+export const folderPath = (folder: MailboxView) =>
+  folder === "archive" ? archivePath : folder === "sent" ? sentPath : inboxPath;
 export const folderApiPath = (folder: MailFolder) =>
   folder === "sent" ? sentApiPath : inboxApiPath;
-export const mailMessagePage = (folder: MailFolder, id: string) =>
+export const mailMessagePage = (folder: MailboxView, id: string) =>
   `${folderPath(folder)}/${id}`;
 export const mailMessageApi = (folder: MailFolder, id: string) =>
   `${folderApiPath(folder)}/${id}`;
@@ -30,6 +36,9 @@ export const inboxReadApi = (id: string) => `${inboxMessageApi(id)}/read`;
 export const inboxReplyApi = (id: string) => `${inboxMessageApi(id)}/reply`;
 export const InboxUnread = Schema.Struct({ unreadCount: Schema.Number });
 export const InboxReadUpdate = Schema.Struct({ unread: Schema.Boolean });
+export const ConversationArchiveUpdate = Schema.Struct({
+  archived: Schema.Boolean,
+});
 
 // Accept both the current reverse-timestamp keys and the original ISO keys.
 export const InboxMessageId = Schema.String.check(
@@ -174,4 +183,5 @@ export type ConversationMessage = typeof ConversationMessage.Type;
 export const Conversation = Schema.Struct({
   messages: Schema.Array(ConversationMessage),
   profiles: Schema.optionalKey(Schema.Array(PersonMatch)),
+  archived: Schema.optionalKey(Schema.Boolean),
 });

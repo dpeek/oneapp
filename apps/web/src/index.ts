@@ -22,7 +22,7 @@ import * as CliLogin from "./cli-login.ts";
 import * as ConnectedClients from "./connected-clients.ts";
 import * as ExtensionAccess from "./extension-access.ts";
 import * as Inbox from "./inbox.ts";
-import { folderPath } from "./inbox-contract.ts";
+import { folderPath, mailMessagePage } from "./inbox-contract.ts";
 import { deleteLink, readLinks, saveLink } from "./links-client.ts";
 import { mcpAuthorizePath, mcpLoginQuery } from "./mcp-access-contract.ts";
 import { navigationView } from "./navigation.ts";
@@ -796,6 +796,7 @@ const update = (
         };
       }
       const deleting = model.inbox.deleteRequest;
+      const moving = model.inbox.archiveRequest;
       if (
         message._tag === "SessionExpired" &&
         (message.request === model.inbox.listRequest ||
@@ -805,22 +806,53 @@ const update = (
           Object.values(model.inbox.readRequests).includes(message.request) ||
           message.request === model.inbox.compose.request ||
           message.request === model.inbox.quickReply.request ||
-          message.request === deleting?.request)
+          message.request === deleting?.request ||
+          message.request === moving?.request)
       ) {
         return update(model, Message.LoadedAccount({ account: null }));
       }
       const result = foldInbox(model, message);
       if (
+        message._tag === "ArchiveChanged" &&
+        moving?.request === message.request &&
+        moving.selected &&
+        moving.folder === (moving.archived ? "inbox" : "archive") &&
+        model.mailRoute?.folder === moving.folder &&
+        model.mailRoute.id === moving.selected
+      ) {
+        const items = model.inbox.list?.messages ?? [];
+        const index = items.findIndex(
+          ({ id }) => id === moving.id || id === moving.selected,
+        );
+        const next =
+          index === -1 ? undefined : (items[index + 1] ?? items[index - 1]);
+        return {
+          ...result,
+          commands: [
+            ...(result.commands ?? []),
+            Navigate({
+              href: next
+                ? mailMessagePage(moving.folder, next.id)
+                : folderPath(moving.folder),
+              mode: "replace",
+            }),
+          ],
+        };
+      }
+      if (
         message._tag === "DeletedEntry" &&
         deleting?.request === message.request &&
-        model.mailRoute?.folder === deleting.folder &&
+        model.mailRoute &&
         model.mailRoute.id === message.id
       ) {
         return {
           ...result,
           commands: [
             ...(result.commands ?? []),
-            Navigate({ href: folderPath(deleting.folder), mode: "replace" }),
+            Navigate({
+              href: folderPath(model.mailRoute.folder),
+              mode: "replace",
+            }),
           ],
         };
       }

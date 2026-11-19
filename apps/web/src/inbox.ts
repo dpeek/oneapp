@@ -12,9 +12,12 @@ import {
   splitMailQuote,
 } from "./inbox-display.ts";
 import {
+  archiveApiPath,
+  archivePath,
   Conversation,
   type ConversationMessage,
   conversationApi,
+  conversationArchiveApi,
   conversationsApiPath,
   folderApiPath,
   folderPath,
@@ -30,6 +33,7 @@ import {
   inboxUnreadPath,
   MailEntry,
   MailFolder,
+  MailboxView,
   MailMessageId,
   MailPage,
   type MailPerson,
@@ -59,7 +63,7 @@ const isInboxMessageId = Schema.is(InboxMessageId);
 const isSentMessageId = Schema.is(SentMessageId);
 const isPersonEmail = Schema.is(PersonEmail);
 export const MailRoute = Schema.Struct({
-  folder: MailFolder,
+  folder: MailboxView,
   id: Schema.NullOr(MailMessageId),
 });
 export const routeFor = (pathname: string): typeof MailRoute.Type | null => {
@@ -67,9 +71,15 @@ export const routeFor = (pathname: string): typeof MailRoute.Type | null => {
     return { folder: "inbox", id: null };
   if (pathname === sentPath || pathname === `${sentPath}/`)
     return { folder: "sent", id: null };
+  if (pathname === archivePath || pathname === `${archivePath}/`)
+    return { folder: "archive", id: null };
   if (pathname.startsWith(`${sentPath}/`)) {
     const id = pathname.slice(sentPath.length + 1);
     return isSentMessageId(id) ? { folder: "sent", id } : null;
+  }
+  if (pathname.startsWith(`${archivePath}/`)) {
+    const id = pathname.slice(archivePath.length + 1);
+    return isInboxMessageId(id) ? { folder: "archive", id } : null;
   }
   if (pathname.startsWith(`${inboxPath}/`)) {
     const id = pathname.slice(inboxPath.length + 1);
@@ -78,8 +88,23 @@ export const routeFor = (pathname: string): typeof MailRoute.Type | null => {
   return null;
 };
 
+const ArchiveChange = Schema.Struct({
+  id: InboxMessageId,
+  archived: Schema.Boolean,
+});
+
+const ArchiveRequest = Schema.Struct({
+  ...ArchiveChange.fields,
+  request: Schema.String,
+  folder: MailboxView,
+  selected: Schema.NullOr(MailMessageId),
+});
+
+const messageFolder = (view: MailboxView): MailFolder =>
+  view === "sent" ? "sent" : "inbox";
+
 export const Model = Schema.Struct({
-  folder: MailFolder,
+  folder: MailboxView,
   list: Schema.NullOr(MailPage),
   listRequest: Schema.NullOr(Schema.String),
   listRefreshQueued: Schema.Boolean,
@@ -107,6 +132,9 @@ export const Model = Schema.Struct({
     }),
   ),
   deleteFailed: Schema.Boolean,
+  archiveRequest: Schema.NullOr(ArchiveRequest),
+  archiveNotice: Schema.NullOr(ArchiveChange),
+  archiveError: Schema.NullOr(Schema.String),
   compose: Compose.Model,
   quickReply: QuickReply.Model,
 });
@@ -135,6 +163,9 @@ export const initial: Model = {
   confirmingDelete: false,
   deleteRequest: null,
   deleteFailed: false,
+  archiveRequest: null,
+  archiveNotice: null,
+  archiveError: null,
   compose: Compose.initial,
   quickReply: QuickReply.initial,
 };
@@ -160,6 +191,10 @@ export const Message = defineMessageUnion({
   ConfirmedDelete: {},
   DeletedEntry: { id: MailMessageId, request: Schema.String },
   DeleteFailed: { request: Schema.String },
+  RequestedArchiveChange: {},
+  UndidArchive: {},
+  ArchiveChanged: { request: Schema.String },
+  ArchiveFailed: { request: Schema.String, error: Schema.String },
   LoadedList: {
     request: Schema.String,
     page: MailPage,
@@ -273,14 +308,18 @@ const LoadList = Command.define("LoadInboxList", {
   args: {
     request: Schema.String,
     cursor: Schema.NullOr(Schema.String),
-    folder: MailFolder,
+    folder: MailboxView,
     minimum: Schema.Number,
   },
   messages: [Message.LoadedList, Message.ListFailed, Message.SessionExpired],
   execute: ({ request, cursor, folder, minimum }) =>
     Effect.tryPromise(async (signal) => {
       const path =
-        folder === "inbox" ? conversationsApiPath : folderApiPath(folder);
+        folder === "archive"
+          ? archiveApiPath
+          : folder === "inbox"
+            ? conversationsApiPath
+            : folderApiPath(folder);
       let nextCursor = cursor;
       let page: typeof MailPage.Type | null = null;
       do {
@@ -440,6 +479,45 @@ const DeleteEntry = Command.define("DeleteInboxEntry", {
     ),
 });
 
+const SaveArchive = Command.define("SaveConversationArchive", {
+  args: { ...ArchiveChange.fields, request: Schema.String },
+  messages: [
+    Message.ArchiveChanged,
+    Message.ArchiveFailed,
+    Message.SessionExpired,
+  ],
+  execute: ({ id, archived, request }) =>
+    Effect.tryPromise(async (signal) => {
+      const response = await fetch(conversationArchiveApi(id), {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          "x-effect-auth-csrf": "1",
+        },
+        body: JSON.stringify({ archived }),
+        signal,
+      });
+      if (response.status === 401) return Message.SessionExpired({ request });
+      if (response.status === 204) return Message.ArchiveChanged({ request });
+      return Message.ArchiveFailed({
+        request,
+        error:
+          response.status === 409
+            ? "A new reply arrived. Review it before archiving."
+            : "Could not update Archive. Try again.",
+      });
+    }).pipe(
+      Effect.catch(() =>
+        Effect.succeed(
+          Message.ArchiveFailed({
+            request,
+            error: "Could not update Archive. Try again.",
+          }),
+        ),
+      ),
+    ),
+});
+
 const loadList = (
   model: Model,
   cursor: string | null,
@@ -459,7 +537,7 @@ const loadList = (
         cursor,
         folder: model.folder,
         minimum:
-          cursor === null && model.folder === "inbox"
+          cursor === null && model.folder !== "sent"
             ? (model.list?.messages.length ?? 0)
             : 0,
       }),
@@ -471,6 +549,22 @@ const refreshList = (model: Model): Update.Return<Model, Message> =>
   model.listRequest
     ? { model: { ...model, listRefreshQueued: true } }
     : loadList(model, null);
+
+const changeArchive = (
+  model: Model,
+  change: typeof ArchiveChange.Type,
+  selected: Model["selected"],
+): Update.Return<Model, Message> => {
+  const request = crypto.randomUUID();
+  return {
+    model: {
+      ...model,
+      archiveRequest: { ...change, request, folder: model.folder, selected },
+      archiveError: null,
+    },
+    commands: [SaveArchive({ ...change, request })],
+  };
+};
 
 const loadEntry = (model: Model): Update.Return<Model, Message> => {
   if (!model.active || model.entryRequest !== null) return { model };
@@ -596,6 +690,8 @@ export const update = (
               compose: model.compose,
               quickReply: model.quickReply,
               deleteRequest: model.deleteRequest,
+              archiveRequest: model.archiveRequest,
+              archiveNotice: model.archiveNotice,
               unreadCount: model.unreadCount,
               unreadRequest: model.unreadRequest,
               unreadRefreshQueued: model.unreadRefreshQueued,
@@ -607,7 +703,7 @@ export const update = (
           : {
               ...base,
               selected: id,
-              active: id ? { id, folder } : null,
+              active: id ? { id, folder: messageFolder(folder) } : null,
               thread: null,
               threadRequest: null,
               threadRefreshQueued: false,
@@ -643,7 +739,7 @@ export const update = (
     },
     LiveChanged: () =>
       withUnread(
-        withThread(model.folder === "inbox" ? refreshList(model) : { model }),
+        withThread(model.folder !== "sent" ? refreshList(model) : { model }),
       ),
     RequestedMore: () =>
       model.list?.cursor && !model.list.indexing
@@ -652,7 +748,67 @@ export const update = (
     RetriedEntry: () => loadEntry(model),
     RetriedThread: () => refreshThread(model),
     UpdatedProfiles: () =>
-      withThread(model.folder === "inbox" ? refreshList(model) : { model }),
+      withThread(model.folder !== "sent" ? refreshList(model) : { model }),
+    RequestedArchiveChange: () => {
+      if (model.archiveRequest || model.folder === "sent" || !model.thread)
+        return { model };
+      const newest = model.thread.messages.findLast(
+        ({ folder }) => folder === "inbox",
+      );
+      if (!newest) return { model };
+      return changeArchive(
+        model,
+        { id: newest.id, archived: !model.thread.archived },
+        model.selected,
+      );
+    },
+    UndidArchive: () =>
+      model.archiveNotice?.archived && !model.archiveRequest
+        ? changeArchive(
+            model,
+            { id: model.archiveNotice.id, archived: false },
+            null,
+          )
+        : { model },
+    ArchiveChanged: ({ request }) => {
+      const change = model.archiveRequest;
+      if (!change || request !== change.request) return { model };
+      const removesRow =
+        model.folder === (change.archived ? "inbox" : "archive");
+      const list =
+        model.list && removesRow
+          ? {
+              ...model.list,
+              messages: model.list.messages.filter(
+                ({ id }) => id !== change.id,
+              ),
+            }
+          : model.list;
+      const next = {
+        ...model,
+        list,
+        listRequest: null,
+        threadRequest: null,
+        archiveRequest: null,
+        archiveNotice: { id: change.id, archived: change.archived },
+        archiveError: null,
+      };
+      return withUnread(
+        withThread(
+          model.folder !== "sent" ? loadList(next, null) : { model: next },
+        ),
+      );
+    },
+    ArchiveFailed: ({ request, error }) =>
+      request === model.archiveRequest?.request
+        ? withThread(
+            refreshList({
+              ...model,
+              archiveRequest: null,
+              archiveError: error,
+            }),
+          )
+        : { model },
     ToggledUnread: () => {
       const entry = model.entry;
       return entry && "receivedAt" in entry
@@ -732,7 +888,7 @@ export const update = (
           ? {
               active:
                 model.selected && model.selected !== id
-                  ? { id: model.selected, folder: model.folder }
+                  ? { id: model.selected, folder: messageFolder(model.folder) }
                   : null,
               entry: null,
               entryRequest: null,
@@ -805,9 +961,7 @@ export const update = (
       const updated = { ...next, entry, thread };
       return withUnread(
         withThread(
-          updated.folder === "inbox"
-            ? refreshList(updated)
-            : { model: updated },
+          updated.folder !== "sent" ? refreshList(updated) : { model: updated },
         ),
       );
     },
@@ -824,7 +978,7 @@ export const update = (
         !model.thread &&
         !model.entry &&
         !model.entryRequest &&
-        model.folder === "inbox" &&
+        model.folder !== "sent" &&
         model.selected === newestIncoming?.id
           ? thread.messages.at(-1)
           : undefined;
@@ -981,10 +1135,51 @@ const conversationRow = (
   ];
 };
 
+const archiveFeedback = (model: Model, h: HtmlBuilder<Message>) => [
+  ...(model.archiveError
+    ? [
+        h.p(
+          [h.Class("inbox-archive-feedback"), h.Role("alert")],
+          [model.archiveError],
+        ),
+      ]
+    : []),
+  ...(model.archiveNotice
+    ? [
+        h.div(
+          [h.Class("inbox-archive-feedback")],
+          [
+            h.span(
+              [h.Role("status")],
+              [
+                model.archiveNotice.archived
+                  ? "Conversation archived."
+                  : "Conversation moved to Inbox.",
+              ],
+            ),
+            ...(model.archiveNotice.archived
+              ? [
+                  h.button(
+                    [
+                      h.Type("button"),
+                      h.Disabled(model.archiveRequest !== null),
+                      h.OnClick(Message.UndidArchive()),
+                    ],
+                    ["Undo"],
+                  ),
+                ]
+              : []),
+          ],
+        ),
+      ]
+    : []),
+];
+
 const listView = (model: Model, h: HtmlBuilder<Message>) =>
   h.section(
     [h.Class("workspace-list inbox-list"), h.AriaLabel("Messages")],
     [
+      ...(model.selected === null ? archiveFeedback(model, h) : []),
       h.div(
         [h.Key(model.folder), h.Class("workspace-results")],
         [
@@ -1025,7 +1220,14 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
                 model.list.cursor === null &&
                 !model.list.indexing &&
                 model.listRequest === null
-                  ? h.p([h.Class("inbox-status")], ["No messages yet."])
+                  ? h.p(
+                      [h.Class("inbox-status")],
+                      [
+                        model.folder === "archive"
+                          ? "No archived conversations."
+                          : "No messages yet.",
+                      ],
+                    )
                   : h.ul(
                       [h.Class("inbox-messages")],
                       model.list.messages.map((message) => {
@@ -1046,7 +1248,7 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
                                   mailMessagePage(model.folder, message.id),
                                 ),
                                 ...(model.selected === message.id ||
-                                (model.folder === "inbox" &&
+                                (model.folder !== "sent" &&
                                   model.thread?.messages.some(
                                     ({ id }) => id === message.id,
                                   ))
@@ -1318,6 +1520,9 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
   const participantAvatars = groupParticipants(participants, profiles);
   const latest = messages.at(-1);
   const grouped = messages.length > 1;
+  const canArchive =
+    model.folder !== "sent" &&
+    model.thread?.messages.some(({ folder }) => folder === "inbox");
   return h.article(
     [
       h.Key(selected),
@@ -1334,8 +1539,21 @@ const entryView = (model: Model, h: HtmlBuilder<Message>) => {
             [h.Type("button"), h.OnClick(Message.RequestedBack())],
             ["Back"],
           ),
+          ...(canArchive
+            ? [
+                h.button(
+                  [
+                    h.Type("button"),
+                    h.Disabled(model.archiveRequest !== null),
+                    h.OnClick(Message.RequestedArchiveChange()),
+                  ],
+                  [model.thread?.archived ? "Move to Inbox" : "Archive"],
+                ),
+              ]
+            : []),
         ],
       ),
+      ...archiveFeedback(model, h),
       ...(model.confirmingDelete ? [deleteDialog(h)] : []),
       ...(!model.thread &&
       model.threadRequest &&
@@ -1490,7 +1708,16 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
       h.header(
         [h.Class("workspace-header")],
         [
-          h.h1([], [model.folder === "sent" ? "Sent" : "Inbox"]),
+          h.h1(
+            [],
+            [
+              model.folder === "archive"
+                ? "Archive"
+                : model.folder === "sent"
+                  ? "Sent"
+                  : "Inbox",
+            ],
+          ),
           h.submodel({
             slotId: "inbox-compose",
             view: Compose.view,
@@ -1508,6 +1735,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
               [
                 { folder: "inbox", label: "Inbox" },
                 { folder: "sent", label: "Sent" },
+                { folder: "archive", label: "Archive" },
               ] as const
             ).map(({ folder, label }) => {
               const count = folder === "inbox" ? model.unreadCount : 0;

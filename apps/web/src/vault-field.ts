@@ -1,11 +1,20 @@
+import {
+  buttonClassName,
+  createField,
+  createInputGroup,
+  inputGroupControlClassName,
+} from "@oneapp/ui";
+import { vaultIcon } from "./vault-item-icon.ts";
+
 type FieldControl = HTMLInputElement | HTMLTextAreaElement;
 type FieldOptions = {
   label: string;
   value: string | FieldControl;
   masked?: boolean;
   copyable?: boolean;
-  suffix?: string;
+  href?: string;
   showLabel?: boolean;
+  actionLabel?: string;
 };
 
 const iconPaths = {
@@ -22,40 +31,27 @@ const iconPaths = {
     "M10 6.2c.6-.1 1.3-.2 2-.2 6.4 0 10 6 10 6a15 15 0 0 1-2.4 2.9M6.3 7.7C3.6 9.4 2 12 2 12s3.6 6 10 6c1.5 0 2.9-.3 4.1-.8",
   ],
   check: ["m5 12 4 4L19 6"],
+  open: ["M13 5h6v6m0-6-8 8", "M19 13v6H5V5h6"],
 } as const;
 
-const svgNamespace = "http://www.w3.org/2000/svg";
 const iconButton = (
-  button: HTMLButtonElement,
+  button: HTMLButtonElement | HTMLAnchorElement,
   icon: keyof typeof iconPaths,
   label: string,
 ) => {
-  const svg = document.createElementNS(svgNamespace, "svg");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("fill", "none");
-  svg.setAttribute("stroke", "currentColor");
-  svg.setAttribute("stroke-width", "1.75");
-  svg.setAttribute("stroke-linecap", "round");
-  svg.setAttribute("stroke-linejoin", "round");
-  svg.setAttribute("aria-hidden", "true");
-  for (const d of iconPaths[icon]) {
-    const path = document.createElementNS(svgNamespace, "path");
-    path.setAttribute("d", d);
-    svg.append(path);
-  }
-  button.replaceChildren(svg);
+  button.replaceChildren(vaultIcon(iconPaths[icon]));
   button.setAttribute("aria-label", label);
   button.title = label;
 };
 
-const fieldButton = () => {
-  const button = document.createElement("button");
-  button.className = "vault-field-button";
-  button.type = "button";
+const fieldAction = <Tag extends "a" | "button">(tag: Tag) => {
+  const button = document.createElement(tag);
+  button.className = `vault-field-button ${buttonClassName({ variant: "ghost", size: "icon-sm" })}`;
+  button.dataset.slot = "button";
+  if (button instanceof HTMLButtonElement) button.type = "button";
   return button;
 };
 
-let fieldId = 0;
 const placeholderText = "••••••••";
 
 export const vaultField = ({
@@ -63,15 +59,13 @@ export const vaultField = ({
   value,
   masked = false,
   copyable = true,
-  suffix,
+  href,
   showLabel = true,
+  actionLabel = label,
 }: FieldOptions) => {
-  const element = document.createElement("div");
-  element.className = "vault-field";
   const body = document.createElement("div");
   body.className = "vault-field-body";
   const actions = document.createElement("div");
-  actions.className = "vault-field-actions";
   const preview = document.createElement("span");
   preview.className = "vault-field-value";
   const control = typeof value === "string" ? undefined : value;
@@ -80,28 +74,23 @@ export const vaultField = ({
       ? control.type
       : "text";
   const text = () => (typeof value === "string" ? value : value.value);
-  const toggle = fieldButton();
+  const toggle = fieldAction("button");
   let concealed = masked;
 
   if (control) {
-    if (showLabel) {
-      const caption = document.createElement("label");
-      caption.className = "vault-field-label";
-      control.id ||= `vault-field-${++fieldId}`;
-      caption.htmlFor = control.id;
-      caption.textContent = label;
-      element.append(caption);
-    } else control.setAttribute("aria-label", label);
+    control.dataset.slot =
+      control instanceof HTMLTextAreaElement ? "textarea" : "input";
+    control.className += ` ${inputGroupControlClassName(control instanceof HTMLTextAreaElement)}`;
     body.append(control);
     if (control instanceof HTMLTextAreaElement) {
-      preview.classList.add("vault-field-placeholder");
+      preview.className += ` vault-field-placeholder ${inputGroupControlClassName(false)}`;
       preview.textContent = placeholderText;
       preview.setAttribute("aria-hidden", "true");
       body.append(preview);
     }
   } else {
+    body.className += ` ${inputGroupControlClassName(false)}`;
     body.append(preview);
-    if (suffix) body.append(suffix);
   }
 
   const renderVisibility = () => {
@@ -111,27 +100,41 @@ export const vaultField = ({
       control.hidden = concealed;
       preview.hidden = !concealed;
     } else preview.textContent = concealed ? placeholderText : text();
-    if (masked)
+    if (masked) {
       iconButton(
         toggle,
         concealed ? "show" : "hide",
-        `${concealed ? "Show" : "Hide"} ${label}`,
+        `${concealed ? "Show" : "Hide"} ${actionLabel}`,
       );
-    toggle.hidden = !masked;
+      if (!toggle.parentElement) actions.prepend(toggle);
+    } else toggle.remove();
   };
 
   toggle.addEventListener("click", () => {
     concealed = !concealed;
     renderVisibility();
   });
-  actions.append(toggle);
-  element.append(body, actions);
+  const element = createField({
+    label,
+    content: createInputGroup(body, actions),
+    control,
+    showLabel,
+  });
+  element.classList.add("vault-field");
   renderVisibility();
 
-  const canCopy = copyable && (control !== undefined || text() !== "");
+  if (href) {
+    const open = fieldAction("a");
+    open.href = href;
+    open.target = "_blank";
+    open.rel = "noopener noreferrer";
+    iconButton(open, "open", `Open ${actionLabel.toLowerCase()} in a new tab`);
+    actions.append(open);
+  }
+  const canCopy = copyable && !control && text() !== "";
   if (canCopy) {
-    const copy = fieldButton();
-    const copyLabel = `Copy ${label}`;
+    const copy = fieldAction("button");
+    const copyLabel = `Copy ${actionLabel}`;
     iconButton(copy, "copy", copyLabel);
     actions.append(copy);
 
@@ -142,10 +145,6 @@ export const vaultField = ({
 
     let sequence = 0;
     let timeout: number | undefined;
-    const updateCopy = () =>
-      copy.setAttribute("aria-disabled", String(text() === ""));
-    control?.addEventListener("input", updateCopy);
-    updateCopy();
     copy.addEventListener("click", async () => {
       const value = text();
       if (!value) return;
@@ -161,7 +160,7 @@ export const vaultField = ({
       if (!element.isConnected || attempt !== sequence) return;
       feedback.toggleAttribute("data-error", !copied);
       feedback.textContent = copied
-        ? `${label} copied.`
+        ? `${actionLabel} copied.`
         : "Couldn’t copy to the clipboard.";
       iconButton(copy, copied ? "check" : "copy", copyLabel);
       timeout = window.setTimeout(() => {
@@ -172,12 +171,12 @@ export const vaultField = ({
     });
   }
 
-  actions.hidden = !masked && !canCopy;
+  actions.hidden = !masked && !canCopy && !href;
   return {
     element,
     setMaskable(maskable: boolean) {
       masked = concealed = maskable;
-      actions.hidden = !masked && !canCopy;
+      actions.hidden = !masked && !canCopy && !href;
       renderVisibility();
     },
   };

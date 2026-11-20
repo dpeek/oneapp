@@ -1,7 +1,8 @@
+import { createAvatar } from "@oneapp/ui";
 import type { ItemType } from "./vault-item-content.ts";
 import { websiteIconPath } from "./website-icon-host.ts";
 
-const itemPaths = {
+export const vaultItemPaths = {
   1: [
     "M15.5 3a5.5 5.5 0 0 0-5.2 7.3L3 17.6V21h3.4l2.2-2.2v-2.3h2.3l2.8-2.8A5.5 5.5 0 1 0 15.5 3Z",
     "M17 7h.01",
@@ -34,7 +35,7 @@ const itemPaths = {
 
 const svgNamespace = "http://www.w3.org/2000/svg";
 
-const outlineIcon = (paths: readonly string[]) => {
+export const vaultIcon = (paths: readonly string[]) => {
   const svg = document.createElementNS(svgNamespace, "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
   svg.setAttribute("fill", "none");
@@ -51,27 +52,17 @@ const outlineIcon = (paths: readonly string[]) => {
   return svg;
 };
 
-export const vaultFolderIcon = () =>
-  outlineIcon([
-    "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z",
-  ]);
+export const vaultFolderPaths = [
+  "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z",
+] as const;
+export const vaultFolderIcon = () => vaultIcon(vaultFolderPaths);
 
 export const vaultItemIcon = (type: ItemType, hostname?: string) => {
-  const element = document.createElement("span");
-  element.className = "vault-item-icon";
-  element.setAttribute("aria-hidden", "true");
-  const fallback = outlineIcon(itemPaths[type]);
-  element.append(fallback);
-  if (type === 1 && hostname) {
-    const icon = document.createElement("img");
-    icon.alt = "";
-    icon.loading = "lazy";
-    icon.decoding = "async";
-    icon.referrerPolicy = "no-referrer";
-    icon.addEventListener("load", () => fallback.remove(), { once: true });
-    icon.addEventListener("error", () => icon.remove(), { once: true });
-    icon.src = websiteIconPath(hostname);
-    element.append(icon);
-  }
+  const element = createAvatar({
+    variant: "square",
+    fallback: vaultIcon(vaultItemPaths[type]),
+    src: type === 1 && hostname ? websiteIconPath(hostname) : null,
+  });
+  element.classList.add("vault-item-icon");
   return element;
 };

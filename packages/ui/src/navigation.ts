@@ -51,6 +51,16 @@ const styles = stylex.create({
     backgroundColor: controls.hover,
     fontWeight: 500,
   },
+  sidebarButton: {
+    boxSizing: "border-box",
+    inlineSize: "100%",
+    paddingBlock: 0,
+    borderStyle: "none",
+    fontFamily: "inherit",
+    textAlign: "start",
+    cursor: "pointer",
+    outline: { ":focus-visible": `2px solid ${controls.focus}` },
+  },
   iconLabel: { display: "inline-flex", alignItems: "center", gap: "0.5rem" },
   tabLink: {
     minBlockSize: "2rem",
@@ -106,6 +116,19 @@ type Destination = Readonly<{
   unread?: number;
 }>;
 
+export const sidebarClassNames = {
+  list: stylex.props(styles.menu).className ?? "",
+  label: stylex.props(styles.iconLabel).className ?? "",
+};
+
+export const sidebarItemClassName = (current: boolean, asButton = false) =>
+  stylex.props(
+    styles.link,
+    styles.sidebarLink,
+    asButton && styles.sidebarButton,
+    current && styles.sidebarSelected,
+  ).className ?? "";
+
 export const unreadBadge = <Message>(
   h: HtmlBuilder<Message>,
   count: number,
@@ -133,22 +156,17 @@ export const navigationLinks = <Message>(
 ): Html => {
   const sidebar = props.variant === "sidebar";
   const line = props.variant === "tabs-line";
-  const selected = sidebar
-    ? styles.sidebarSelected
-    : line
-      ? styles.lineTabSelected
-      : styles.tabSelected;
+  const selected = line ? styles.lineTabSelected : styles.tabSelected;
   return h.nav(
     [h.AriaLabel(props.label)],
     [
       h.ul(
         [
           h.Class(
-            stylex.props(
-              styles.menu,
-              !sidebar && styles.tabs,
-              line && styles.lineTabs,
-            ).className ?? "",
+            sidebar
+              ? sidebarClassNames.list
+              : (stylex.props(styles.menu, styles.tabs, line && styles.lineTabs)
+                  .className ?? ""),
           ),
         ],
         props.destinations.map(({ href, label, icon, current, unread }) =>
@@ -166,24 +184,19 @@ export const navigationLinks = <Message>(
                     ? [h.AriaLabel(`${label}, ${unread} unread`)]
                     : []),
                   h.Class(
-                    stylex.props(
-                      styles.link,
-                      sidebar ? styles.sidebarLink : styles.tabLink,
-                      line && styles.lineTab,
-                      current && selected,
-                    ).className ?? "",
+                    sidebar
+                      ? sidebarItemClassName(current === true)
+                      : (stylex.props(
+                          styles.link,
+                          styles.tabLink,
+                          line && styles.lineTab,
+                          current && selected,
+                        ).className ?? ""),
                   ),
                 ],
                 [
                   icon
-                    ? h.span(
-                        [
-                          h.Class(
-                            stylex.props(styles.iconLabel).className ?? "",
-                          ),
-                        ],
-                        [icon, label],
-                      )
+                    ? h.span([h.Class(sidebarClassNames.label)], [icon, label])
                     : label,
                   ...(unread ? [unreadBadge(h, unread)] : []),
                 ],

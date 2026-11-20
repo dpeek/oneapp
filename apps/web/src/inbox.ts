@@ -1,5 +1,6 @@
 import {
   avatarGroup,
+  backIcon,
   button,
   buttonClassName,
   DropdownMenu,
@@ -2226,22 +2227,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
                   rounded: true,
                   ariaLabel: "Back",
                   onClick: Message.RequestedBack(),
-                  children: [
-                    h.svg(
-                      [
-                        h.ViewBox("0 0 24 24"),
-                        h.Width("16"),
-                        h.Height("16"),
-                        h.Fill("none"),
-                        h.Stroke("currentColor"),
-                        h.StrokeWidth("2"),
-                        h.StrokeLinecap("round"),
-                        h.StrokeLinejoin("round"),
-                        h.AriaHidden(true),
-                      ],
-                      [h.path([h.D("M19 12H5m7 7-7-7 7-7")], [])],
-                    ),
-                  ],
+                  children: [backIcon(h)],
                 },
                 h,
               ),

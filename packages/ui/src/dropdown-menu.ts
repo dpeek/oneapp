@@ -7,13 +7,14 @@ import { controls } from "./tokens.stylex.ts";
 export const { Model, Message, init } = Menu;
 
 const styles = stylex.create({
-  trigger: {
+  openGhostTrigger: {
     backgroundColor: { ":is([data-open])": controls.hover },
   },
   backdrop: { position: "fixed", inset: 0, zIndex: 49 },
   panel: {
     zIndex: 50,
     minInlineSize: "9rem",
+    maxInlineSize: "calc(100vw - 1rem)",
     padding: "0.25rem",
     borderColor: controls.border,
     borderStyle: "solid",
@@ -33,7 +34,12 @@ const styles = stylex.create({
     fontSize: "0.875rem",
     cursor: "pointer",
   },
-  label: { display: "inline-flex", alignItems: "center", gap: "0.5rem" },
+  label: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "0.5rem",
+    overflowWrap: "anywhere",
+  },
   active: { backgroundColor: controls.hover },
   disabled: { opacity: 0.5, cursor: "default" },
   destructive: { color: "light-dark(#a42020, #ff9797)" },
@@ -57,6 +63,8 @@ export const create = <Action extends string>() => {
         model: typeof Model.Type;
         label: string;
         trigger: Html;
+        triggerVariant?: "primary" | "ghost";
+        placement?: "top-start" | "bottom-start";
         disabled?: boolean;
         items: ReadonlyArray<Item<Action>>;
         toParentMessage: (message: typeof Message.Type) => ParentMessage;
@@ -91,12 +99,16 @@ export const create = <Action extends string>() => {
             props.items.find((item) => item.action === action)?.label ?? action,
           buttonContent: props.trigger,
           buttonClassName: [
-            buttonClassName({
-              variant: "ghost",
-              size: "icon-sm",
-              rounded: true,
-            }),
-            stylex.props(styles.trigger).className,
+            buttonClassName(
+              props.triggerVariant === "primary"
+                ? { variant: "primary", size: "sm", rounded: true }
+                : props.triggerVariant === "ghost"
+                  ? { variant: "ghost", size: "sm" }
+                  : { variant: "ghost", size: "icon-sm", rounded: true },
+            ),
+            props.triggerVariant === "primary"
+              ? ""
+              : stylex.props(styles.openGhostTrigger).className,
           ].join(" "),
           buttonAttributes: childAttributes([
             h.DataAttribute("slot", "button"),
@@ -104,7 +116,7 @@ export const create = <Action extends string>() => {
           isButtonDisabled: props.disabled,
           itemsClassName: stylex.props(styles.panel).className ?? "",
           backdropClassName: stylex.props(styles.backdrop).className ?? "",
-          anchor: { placement: "bottom-start", gap: 4 },
+          anchor: { placement: props.placement ?? "bottom-start", gap: 4 },
           ariaLabel: props.label,
         },
         toParentMessage: props.toParentMessage,

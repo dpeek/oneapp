@@ -50,6 +50,15 @@ const styles = stylex.create({
     outlineOffset: { default: null, ":focus-visible::after": 3 },
   },
   media: { flexShrink: 0 },
+  linkButton: {
+    borderStyle: "none",
+    padding: 0,
+    backgroundColor: "transparent",
+    color: controls.foreground,
+    fontFamily: "inherit",
+    textAlign: "start",
+    cursor: "pointer",
+  },
   content: {
     display: "grid",
     flex: 1,
@@ -101,6 +110,20 @@ const styles = stylex.create({
   },
 });
 
+export const itemClassName = (variant: ItemVariant = "default") =>
+  stylex.props(styles.item, styles.row, variant === "outline" && styles.outline)
+    .className ?? "";
+
+export const itemClassNames = {
+  group: stylex.props(styles.group).className ?? "",
+  button: stylex.props(styles.link, styles.linkButton).className ?? "",
+  media: stylex.props(styles.media).className ?? "",
+  content: stylex.props(styles.content).className ?? "",
+  title: stylex.props(styles.title).className ?? "",
+  description: stylex.props(styles.description).className ?? "",
+  actions: stylex.props(styles.actions).className ?? "",
+};
+
 export const itemGroup = <Message>(
   children: ReadonlyArray<Html>,
   h: HtmlBuilder<Message>,
@@ -109,7 +132,7 @@ export const itemGroup = <Message>(
     [
       h.Role("list"),
       h.DataAttribute("slot", "item-group"),
-      h.Class(stylex.props(styles.group).className ?? ""),
+      h.Class(itemClassNames.group),
     ],
     [...children],
   );
@@ -139,13 +162,7 @@ export const item = <Message>(
       h.Key(props.key),
       h.DataAttribute("slot", "item"),
       h.DataAttribute("variant", variant),
-      h.Class(
-        stylex.props(
-          styles.item,
-          styles.row,
-          variant === "outline" && styles.outline,
-        ).className ?? "",
-      ),
+      h.Class(itemClassName(variant)),
     ],
     [
       h.a(
@@ -166,7 +183,7 @@ export const item = <Message>(
                 h.div(
                   [
                     h.DataAttribute("slot", "item-media"),
-                    h.Class(stylex.props(styles.media).className ?? ""),
+                    h.Class(itemClassNames.media),
                   ],
                   [props.media],
                 ),
@@ -175,13 +192,13 @@ export const item = <Message>(
           h.div(
             [
               h.DataAttribute("slot", "item-content"),
-              h.Class(stylex.props(styles.content).className ?? ""),
+              h.Class(itemClassNames.content),
             ],
             [
               h.div(
                 [
                   h.DataAttribute("slot", "item-title"),
-                  h.Class(stylex.props(styles.title).className ?? ""),
+                  h.Class(itemClassNames.title),
                 ],
                 [props.title],
               ),
@@ -189,7 +206,7 @@ export const item = <Message>(
                 [
                   h.Id(descriptionId),
                   h.DataAttribute("slot", "item-description"),
-                  h.Class(stylex.props(styles.description).className ?? ""),
+                  h.Class(itemClassNames.description),
                 ],
                 [props.description],
               ),
@@ -202,7 +219,7 @@ export const item = <Message>(
             h.div(
               [
                 h.DataAttribute("slot", "item-actions"),
-                h.Class(stylex.props(styles.actions).className ?? ""),
+                h.Class(itemClassNames.actions),
               ],
               [props.action],
             ),

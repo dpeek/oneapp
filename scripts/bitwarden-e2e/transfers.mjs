@@ -91,8 +91,9 @@ const webExport = async (app, web, password, format, filePassword) => {
 };
 
 const unlockWeb = async (web, password) => {
-  await web.getByLabel("Vault master password", { exact: true }).fill(password);
-  await button(web, "Unlock vault").press("Enter");
+  const input = web.getByLabel("Vault master password", { exact: true });
+  await input.fill(password);
+  await input.press("Enter");
   await button(web, "Import").waitFor();
 };
 
@@ -203,7 +204,7 @@ export const checkTransfers = async ({
   await unlockWeb(web, password);
   await button(web, "Archive").press("Enter");
   await button(web, archivedNote).waitFor();
-  const selectionActions = web.getByRole("group", {
+  const selectionActions = web.getByRole("toolbar", {
     name: "Selected item actions",
   });
   await web.getByRole("checkbox", { name: `Select ${archivedNote}` }).check();
@@ -214,12 +215,12 @@ export const checkTransfers = async ({
   const titles = ["Imported fixture login", "Edited fixture card"];
   for (const title of titles)
     await web.getByRole("checkbox", { name: `Select ${title}` }).check();
-  await button(selectionActions, "Add to folder").press("Enter");
+  await button(selectionActions, "Move…").press("Enter");
   await web
-    .getByLabel("Destination folder")
-    .selectOption({ label: "No folder" });
-  await button(web, "Move items").press("Enter");
-  await web.getByRole("status").filter({ hasText: "Items updated." }).waitFor();
+    .getByRole("menu", { name: "Move…", exact: true })
+    .getByRole("menuitem", { name: "No folder", exact: true })
+    .click();
+  await web.getByRole("status").filter({ hasText: "Items moved." }).waitFor();
   for (const title of titles)
     await web.getByRole("checkbox", { name: `Select ${title}` }).check();
   await button(selectionActions, "Delete").press("Enter");
@@ -252,7 +253,7 @@ export const checkTransfers = async ({
     .getByLabel("Title", { exact: true })
     .fill("Fixture driver’s license");
   await web.getByLabel("License number", { exact: true }).fill("SYNTHETIC-DL");
-  await button(web, "Save Driver’s License").press("Enter");
+  await button(web, "Save").press("Enter");
   await web
     .getByRole("heading", { name: "Fixture driver’s license" })
     .waitFor();
@@ -401,7 +402,7 @@ export const captureFixturePasskey = async ({
   await web.getByLabel("Title", { exact: true }).fill(passkeyName);
   await web.getByLabel("Username", { exact: true }).fill(fixtureUser);
   await web.getByLabel("Website", { exact: true }).fill(siteUrl);
-  await button(web, "Save Login").press("Enter");
+  await button(web, "Save").press("Enter");
   await button(web, "Back to items").press("Enter");
   await syncNow(source, client);
 
@@ -485,7 +486,7 @@ export const importFixturePasskey = async ({
   await web.getByText("Saved in this login", { exact: true }).waitFor();
   await button(web, "Edit").press("Enter");
   await web.getByLabel("Username", { exact: true }).fill("edited@example.net");
-  await button(web, "Save Login").press("Enter");
+  await button(web, "Save").press("Enter");
   await web.getByText("edited@example.net", { exact: true }).waitFor();
   await button(web, "Back to items").press("Enter");
   const imported = (await syncNow(profile, client)).ciphers.find(

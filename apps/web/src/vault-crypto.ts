@@ -1,5 +1,6 @@
 import { Result } from "effect";
 import { Base64, Hex } from "effect/encoding";
+import type { EditableItemDetails, ItemDetails } from "./vault-item-content.ts";
 import { type VaultSetup, vaultKdfIterations } from "./vault-setup-contract.ts";
 
 const encoder = new TextEncoder();
@@ -237,6 +238,59 @@ export const decryptVaultText = async (value: string, key: VaultKey) => {
   } finally {
     bytes.fill(0);
   }
+};
+
+const mapText = async (
+  values: Readonly<Record<string, string | null>>,
+  transform: (value: string) => Promise<string | null>,
+) =>
+  Object.fromEntries(
+    await Promise.all(
+      Object.entries(values).map(async ([name, value]) => [
+        name,
+        value === null ? null : await transform(value),
+      ]),
+    ),
+  );
+
+export const decryptItemDetails = async (
+  details: typeof ItemDetails.Type,
+  key: VaultKey,
+): Promise<typeof EditableItemDetails.Type> => {
+  const read = (value: string | null | undefined) =>
+    value == null ? Promise.resolve(null) : decryptVaultText(value, key);
+  const credentials = details.credentials;
+  return {
+    ...details,
+    notes: await read(details.notes),
+    fields: await Promise.all(
+      (details.fields ?? []).map(async (field) => ({
+        ...field,
+        name: await read(field.name),
+        value: await read(field.value),
+      })),
+    ),
+    ...(credentials && {
+      credentials: {
+        autofillOnPageLoad: credentials.autofillOnPageLoad,
+        passwordRevisionDate: credentials.passwordRevisionDate,
+        username: await read(credentials.username),
+        password: await read(credentials.password),
+        totp: await read(credentials.totp),
+        uris: await Promise.all(
+          (credentials.uris ?? []).map(async ({ uri, match }) => ({
+            uri: await read(uri),
+            match,
+          })),
+        ),
+      },
+    }),
+    ...(details.data && {
+      data: await mapText(details.data, (value) =>
+        decryptVaultText(value, key),
+      ),
+    }),
+  };
 };
 
 export const encryptVaultText = async (value: string, key: VaultKey) => {

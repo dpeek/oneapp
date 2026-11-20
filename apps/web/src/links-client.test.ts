@@ -1,5 +1,5 @@
 import { expect, it } from "@effect/vitest";
-import { parseLinkInput } from "./links-client.ts";
+import { parseLinkInput, webLinkHref } from "./links-client.ts";
 
 it.each([
   [" example.com/path?q=one#two ", "https://example.com/path?q=one#two"],
@@ -28,4 +28,27 @@ it.each([
   "javascript:alert(1)",
 ])("rejects %j", (input) => {
   expect(parseLinkInput(input)).toBeNull();
+});
+
+it.each([
+  [
+    "example.com:8443/settings#account",
+    "https://example.com:8443/settings#account",
+  ],
+  ["http://localhost:8080/login", "http://localhost:8080/login"],
+  [
+    `https://example.com/${"a".repeat(2048)}`,
+    `https://example.com/${"a".repeat(2048)}`,
+  ],
+])("opens saved web address %s", (input, href) => {
+  expect(webLinkHref(input)).toBe(href);
+});
+
+it.each([
+  "androidapp://com.example.app",
+  "javascript:alert(1)",
+  "data:text/html,example",
+  "https://user:password@example.com",
+])("does not open stored URI %s", (input) => {
+  expect(webLinkHref(input)).toBeUndefined();
 });

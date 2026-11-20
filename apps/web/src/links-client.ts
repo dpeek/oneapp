@@ -12,15 +12,22 @@ const isSaveLink = Schema.is(SaveLink);
 const bareWebAddress =
   /^(?:localhost|\[[^\]]+\]|[^./:?#\\\s]+(?:\.[^./:?#\\\s]+)+)\.?(?::\d+)?(?:[/?#]|$)/i;
 
-export const parseLinkInput = (value: string): typeof SaveLink.Type | null => {
+const withDefaultWebProtocol = (value: string) => {
   const text = value.trim();
   const address = text.replace(/^\/\//, "");
-  const input = {
-    url:
-      bareWebAddress.test(address) && !address.includes("\\")
-        ? `https://${address}`
-        : text,
-  };
+  return bareWebAddress.test(address) && !address.includes("\\")
+    ? `https://${address}`
+    : text;
+};
+
+export const webLinkHref = (value: string) => {
+  const address = withDefaultWebProtocol(value);
+  const url = /^https?:\/\//iu.test(address) ? URL.parse(address) : null;
+  return url && !url.username && !url.password ? url.href : undefined;
+};
+
+export const parseLinkInput = (value: string): typeof SaveLink.Type | null => {
+  const input = { url: withDefaultWebProtocol(value) };
   return isSaveLink(input) ? { url: normalizeLinkUrl(input.url) } : null;
 };
 

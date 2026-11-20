@@ -153,7 +153,14 @@ export const update = (
 
 export const view = Submodel.defineView<Model, Message>((model, h) =>
   h.section(
-    [h.Class("vault-setup"), h.AriaBusy(model.pending)],
+    [
+      h.Class(
+        model.status?.initialized
+          ? "vault-setup vault-initialized"
+          : "vault-setup",
+      ),
+      h.AriaBusy(model.pending),
+    ],
     [
       ...(model.status === null
         ? model.pending || !model.error
@@ -165,7 +172,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
               ),
             ]
         : model.status.initialized
-          ? [h.h2([], ["Your vault is ready"]), vaultReader.withMessage(h)()]
+          ? [vaultReader.withMessage(h)()]
           : [
               h.h2([], ["Set up your vault"]),
               h.p(

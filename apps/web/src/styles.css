@@ -76,7 +76,7 @@ body:has(.app-shell) {
 
 :where(
   a:not([data-slot="item-link"]),
-  button:not([data-slot="button"]),
+  button:not([data-slot]),
   input:not([data-slot="input"])
 ):focus-visible {
   outline: 2px solid var(--accent);
@@ -101,7 +101,7 @@ body:has(.app-shell) {
 }
 
 .settings,
-.vault-setup {
+.vault-setup:not(.vault-initialized) {
   padding: clamp(1rem, 3vw, 1.5rem);
   border: 1px solid var(--border);
   border-radius: 0.875rem;
@@ -136,6 +136,10 @@ body:has(.app-shell) {
   max-width: 26rem;
 }
 
+.vault-unlock-form {
+  margin-inline: auto;
+}
+
 .vault-password-field,
 .vault-item-field {
   display: grid;
@@ -146,13 +150,6 @@ body:has(.app-shell) {
   display: none;
 }
 
-.vault-item-fieldset textarea,
-.vault-item-field textarea {
-  padding: 0.65rem;
-  font: inherit;
-  resize: vertical;
-}
-
 oneapp-vault-reader {
   display: block;
 }
@@ -160,17 +157,6 @@ oneapp-vault-reader {
 .page:has(.workspace) {
   width: 100%;
   padding: 0;
-}
-
-.page:has(.workspace) > h1,
-.vault-setup:has(.vault-workspace) > h2 {
-  display: none;
-}
-
-.vault-setup:has(.vault-workspace) {
-  padding: 0;
-  border: 0;
-  background: none;
 }
 
 .workspace {
@@ -242,7 +228,7 @@ oneapp-vault-reader {
   line-height: 1.3;
 }
 
-.inbox > .workspace-header h1 {
+:is(.inbox > .workspace-header, .vault-workspace-header) h1 {
   font-size: 1rem;
   font-weight: 700;
 }
@@ -252,18 +238,14 @@ oneapp-vault-reader {
 }
 
 .workspace
-  :is(
-    button:not([data-slot="button"]),
-    summary:not([data-slot="button"]),
-    select
-  ) {
+  :is(button:not([data-slot]), summary:not([data-slot="button"]), select) {
   font: inherit;
   font-size: 0.875rem;
 }
 
 .workspace
   :is(
-    button:not([data-slot="button"]),
+    button:not([data-slot]),
     summary:not([data-slot="button"]),
     select
   ):focus-visible {
@@ -283,50 +265,38 @@ oneapp-vault-reader {
   background: var(--canvas);
 }
 
-.workspace-nav-list {
-  display: grid;
-  gap: 0.125rem;
-  padding: 0;
-  margin: 0;
-  list-style: none;
+.vault-header-mount {
+  display: contents;
 }
 
-.vault-views,
-.vault-nav-tools {
+.vault-new-menu {
+  margin-inline-start: auto;
+}
+
+.vault-new-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.vault-filters {
+  --vault-group-gap: 1.25rem;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--vault-group-gap);
+}
+
+.vault-filters svg {
   flex: none;
+  inline-size: 1rem;
+  block-size: 1rem;
 }
 
 .vault-nav-tools {
   margin-block-start: auto;
-  padding-block-start: 0.5rem;
-  border-block-start: 1px solid var(--border);
 }
 
-.workspace .workspace-nav-list :is(button, a) {
-  box-sizing: border-box;
-  inline-size: 100%;
-  min-block-size: 2.125rem;
-  padding: 0.375rem 0.625rem;
-  border-color: transparent;
-  background: transparent;
-  overflow-wrap: anywhere;
-  text-align: start;
-}
-
-.workspace .workspace-nav-list a {
-  display: flex;
-  align-items: center;
-  border: 1px solid transparent;
-  border-radius: 0.5rem;
-  text-decoration: none;
-  font-size: 0.875rem;
-}
-
-.workspace .workspace-nav-list :is(button, a):focus-visible {
-  outline-offset: -2px;
-}
-
-.workspace-nav-list :is(button, a)[aria-current="true"],
 .vault-items li:has(.vault-row[aria-current="true"]) {
   background: var(--selected);
   color: var(--accent);
@@ -334,17 +304,7 @@ oneapp-vault-reader {
 
 .vault-item-filters:not([hidden]) {
   display: grid;
-  min-block-size: 0;
-  gap: 1rem;
-  overflow: auto;
-}
-
-.vault-item-filters h2 {
-  margin: 0 0 0.25rem;
-  padding-inline: 0.625rem;
-  color: var(--muted);
-  font-size: 0.8125rem;
-  font-weight: 600;
+  gap: var(--vault-group-gap);
 }
 
 .vault-workspace select {
@@ -366,28 +326,27 @@ oneapp-vault-reader {
   border-inline-end: 1px solid var(--border);
 }
 
-.workspace-list-header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.75rem;
-  border-block-end: 1px solid var(--border);
+.vault-workspace {
+  --vault-content-width: 48rem;
 }
 
-.vault-list-header input {
-  flex: 1 1 8rem;
-  min-width: 0;
-  font-size: 0.875rem;
+.vault-list-header,
+.vault-list-status,
+.vault-items,
+.vault-empty,
+.vault-detail-content {
+  box-sizing: border-box;
+  inline-size: min(calc(100% - 1.5rem), var(--vault-content-width));
+  margin-inline: auto;
 }
 
-.vault-workspace button.vault-primary {
-  background: var(--accent);
-  color: light-dark(#fff, #1d1844);
+.vault-list-header {
+  padding-block: 0.25rem 0.5rem;
 }
 
-.vault-workspace button.vault-primary:hover {
-  background: light-dark(#3d3693, #d8d3ff);
+.vault-items {
+  gap: 0.125rem;
+  margin-block: 0.25rem 0.75rem;
 }
 
 .workspace-results {
@@ -397,83 +356,37 @@ oneapp-vault-reader {
   overflow-anchor: none;
 }
 
-.vault-items,
-.vault-item-types {
-  list-style: none;
-  padding: 0;
-  margin: 0;
+.vault-row [data-slot="item-content"] {
+  grid-template-columns: minmax(0, 1fr);
 }
 
-.vault-items li {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  border-block-end: 1px solid var(--border);
-}
-
-.vault-items button.vault-row {
-  justify-self: stretch;
-  display: grid;
-  grid-template-columns: 2rem minmax(0, 1fr);
-  gap: 0.25rem 0.625rem;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  padding: 0.7rem 0.875rem;
-  padding-inline-start: 0;
-  overflow-wrap: anywhere;
-  text-align: start;
-  font-weight: 600;
-}
-
-.vault-items .vault-row:focus-visible {
-  outline-offset: -2px;
-}
-
-.vault-items button.vault-row:hover {
-  background: var(--selected);
-}
-
-.vault-items button.vault-row[aria-current="true"] {
-  color: var(--accent);
-}
-
-.vault-row > .vault-item-icon {
-  grid-area: 1 / 1 / span 2;
-  align-self: center;
+.vault-row [data-slot="item-title"] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .vault-item-icon {
-  display: grid;
-  place-items: center;
+  --vault-icon-size: 1.125rem;
+  --vault-icon-inset: 0.4375rem;
   inline-size: 2rem;
   block-size: 2rem;
-  border-radius: 0.5rem;
-  background: var(--canvas);
-  color: var(--muted);
 }
 
-.vault-item-icon > :is(svg, img) {
-  grid-area: 1 / 1;
-  inline-size: 1.125rem;
-  block-size: 1.125rem;
-  object-fit: contain;
+.vault-item-icon [data-slot="avatar-fallback"] svg {
+  display: block;
+  inline-size: var(--vault-icon-size);
+  block-size: var(--vault-icon-size);
 }
 
-.vault-item-icon > img:not(:only-child) {
-  opacity: 0;
-}
-
-.vault-row small {
-  color: var(--muted);
-  font-size: 0.75rem;
-  font-weight: 400;
+.vault-item-icon > [data-slot="avatar-image"] {
+  padding: var(--vault-icon-inset);
 }
 
 .vault-items input {
   inline-size: 1rem;
   block-size: 1rem;
-  margin-inline: 0.75rem;
+  margin: 0;
   accent-color: var(--accent);
 }
 
@@ -486,18 +399,11 @@ oneapp-vault-reader {
   margin: 0 0.75rem 0.75rem;
 }
 
-.vault-bulk:not([hidden]) {
-  display: flex;
+.vault-bulk {
   flex: none;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.375rem;
-  padding: 0.5rem 0.75rem;
-  border-block-start: 1px solid var(--border);
-}
-
-.vault-bulk [role="status"] {
-  font-size: 0.8125rem;
+  align-self: center;
+  max-inline-size: calc(100% - 1.5rem);
+  margin-block: 0.5rem 0.75rem;
 }
 
 .workspace-detail {
@@ -515,9 +421,17 @@ oneapp-vault-reader {
   color: var(--muted);
 }
 
+.vault-detail {
+  padding-inline: 0;
+}
+
 .workspace:not([data-panel]) .workspace-detail {
   display: grid;
   place-items: center;
+}
+
+.vault-workspace:not([data-panel]) .vault-detail {
+  display: none;
 }
 
 .workspace-detail h2 {
@@ -530,18 +444,6 @@ oneapp-vault-reader {
   align-items: center;
   gap: 0.5rem;
   margin-block-end: 1rem;
-}
-
-.vault-item-types {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
-  gap: 0.5rem;
-  max-width: 32rem;
-}
-
-.vault-item-types button {
-  width: 100%;
-  text-align: start;
 }
 
 @media (max-width: 64rem) {
@@ -566,21 +468,6 @@ oneapp-vault-reader {
     padding: 0.5rem 0.75rem;
     border-inline-end: 0;
     border-block-end: 1px solid var(--border);
-  }
-
-  .vault-views,
-  .vault-nav-tools {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .vault-workspace :is(.vault-views, .vault-nav-tools) button {
-    text-align: center;
-  }
-
-  .vault-item-filters:not([hidden]) {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.5rem;
-    max-block-size: min(30dvh, 15rem);
   }
 
   .workspace-list {
@@ -642,7 +529,7 @@ oneapp-vault-reader {
     order: -1;
   }
 
-  .inbox[data-panel] .workspace-drawer-trigger {
+  .workspace-stacked[data-panel] .workspace-drawer-trigger {
     order: 0;
   }
 }
@@ -652,7 +539,7 @@ oneapp-vault-reader {
     font-size: 1.0625rem;
   }
 
-  .inbox > .workspace-header h1 {
+  :is(.inbox > .workspace-header, .vault-workspace-header) h1 {
     font-size: 0.875rem;
   }
 
@@ -661,33 +548,45 @@ oneapp-vault-reader {
   }
 }
 
-.vault-item-fields dt {
-  color: var(--muted);
-  font-size: 0.875rem;
+.vault-item-form,
+.vault-item-editor,
+.vault-item-sections {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1.5rem;
 }
 
-.vault-item-fields dd {
-  margin: 0.25rem 0 1rem;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-
-.vault-item-fieldset,
 .vault-item-summary {
   display: grid;
   gap: 0.75rem;
   min-inline-size: 0;
-  margin: 0 0 0.875rem;
+  margin: 0 0 1.5rem;
   padding: 0.875rem;
   border: 1px solid var(--border);
   border-radius: 0.65rem;
-}
-
-.vault-item-summary {
   background: var(--canvas);
 }
 
+.vault-item-form .vault-item-summary {
+  margin-block-end: 0;
+}
+
+.vault-item-summary-row,
+.vault-item-summary-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.vault-item-summary-actions {
+  justify-content: flex-end;
+  margin-inline-start: auto;
+}
+
 .vault-item-summary h2 {
+  flex: 1 1 12rem;
+  min-inline-size: 0;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
@@ -696,51 +595,20 @@ oneapp-vault-reader {
 }
 
 .vault-item-summary .vault-item-icon {
+  --vault-icon-size: 2rem;
+  --vault-icon-inset: 0.5rem;
   inline-size: 3rem;
   block-size: 3rem;
-  background: var(--surface);
 }
 
-.vault-item-summary .vault-item-icon > :is(svg, img) {
-  inline-size: 2rem;
-  block-size: 2rem;
-}
-
-.vault-item-summary-folder {
+.vault-attachment-controls {
   display: grid;
-  grid-template-columns: 1rem minmax(0, 1fr);
-  align-items: center;
-  gap: 0.5rem;
-  color: var(--muted);
-  font-size: 0.875rem;
-}
-
-.vault-item-summary-folder > svg {
-  inline-size: 100%;
-}
-
-.vault-item-summary-folder .vault-field {
-  align-items: center;
-}
-
-.vault-item-fieldset legend {
-  font-size: 0.875rem;
-  font-weight: 600;
-}
-
-.vault-item-fields,
-.vault-item-fields dd:last-child {
-  margin: 0;
-}
-
-.vault-item-fieldset textarea {
-  box-sizing: border-box;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.75rem;
   min-inline-size: 0;
-  max-inline-size: 100%;
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
-  background: var(--surface);
-  color: var(--text);
+  margin: 0;
+  padding: 0;
+  border: 0;
 }
 
 .vault-attachment-list {
@@ -793,65 +661,21 @@ oneapp-vault-reader {
   font-size: 0.8125rem;
 }
 
-.vault-item-fieldset :is(.vault-attachment-hint, [role="status"]) {
+.vault-attachment-controls :is(.vault-attachment-hint, [role="status"]) {
   margin: 0;
 }
 
-.vault-item-fieldset [role="status"]:empty {
+.vault-attachment-controls [role="status"]:empty {
   position: absolute;
 }
 
-.vault-field {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 0.375rem 0.5rem;
-}
-
-.vault-field-label,
-.vault-field-feedback {
-  grid-column: 1 / -1;
-}
-
 .vault-field-body {
-  min-inline-size: 0;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
-.vault-field-body > :is(input, textarea) {
-  box-sizing: border-box;
-  inline-size: 100%;
-}
-
 .vault-field-placeholder:not([hidden]) {
   display: block;
-  padding: 0.65rem;
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
-}
-
-.vault-field-actions:not([hidden]) {
-  display: flex;
-  gap: 0.125rem;
-}
-
-.vault-workspace button.vault-field-button:not([hidden]) {
-  display: grid;
-  place-items: center;
-  inline-size: 2rem;
-  block-size: 2rem;
-  padding: 0;
-  border-color: transparent;
-  background: transparent;
-}
-
-.vault-workspace button.vault-field-button[aria-disabled="true"] {
-  opacity: 0.45;
-}
-
-.vault-workspace button.vault-field-button:hover:not([aria-disabled="true"]) {
-  background: var(--selected);
 }
 
 .vault-field-button svg {
@@ -897,11 +721,38 @@ oneapp-vault-reader {
   border-block-end: 1px solid var(--border);
 }
 
-.vault-item-checkbox {
+.vault-item-editor [data-slot="field-group"] > button,
+.vault-item-repeat-row > button {
+  justify-self: start;
+}
+
+.vault-website-row {
+  grid-template-columns: minmax(0, 1fr) clamp(6.5rem, 35%, 10rem) auto;
+  align-items: end;
+}
+
+.vault-website-row [data-slot="native-select-wrapper"] {
+  inline-size: 100%;
+}
+
+.vault-website-row [data-slot="native-select"] {
+  min-block-size: calc(2.25rem + 2px);
+}
+
+.vault-website-row > button {
+  margin-block-end: 3px;
+}
+
+.vault-item-editor .vault-item-checkbox {
   display: flex;
   flex-direction: row-reverse;
   align-items: center;
   justify-content: start;
+}
+
+.vault-item-editor .vault-item-checkbox[hidden],
+.vault-item-editor [data-slot="field"][hidden] {
+  display: none;
 }
 
 .vault-setup [role="alert"] {
@@ -1207,7 +1058,8 @@ oneapp-vault-reader {
   color: var(--accent);
 }
 
-.page :is(input, button:where(:not([data-slot="button"]))) {
+.page
+  :is(input:where(:not([data-slot="input"])), button:where(:not([data-slot]))) {
   box-sizing: border-box;
   max-width: 100%;
   border: 1px solid var(--border);
@@ -1216,18 +1068,17 @@ oneapp-vault-reader {
   color: var(--text);
 }
 
-.page button:where(:not([data-slot="button"])):not(:disabled):hover {
+.page button:where(:not([data-slot])):not(:disabled):hover {
   background: var(--selected);
 }
 
-.page button:where(:not([data-slot="button"]))[type="submit"] {
+.page button:where(:not([data-slot]))[type="submit"] {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--on-accent);
 }
 
-.page
-  button:where(:not([data-slot="button"]))[type="submit"]:not(:disabled):hover {
+.page button:where(:not([data-slot]))[type="submit"]:not(:disabled):hover {
   background: var(--accent-hover);
 }
 
@@ -1288,7 +1139,7 @@ form {
 }
 
 input:where(:not([data-slot="input"])),
-button:where(:not([data-slot="button"])) {
+button:where(:not([data-slot])) {
   padding: 0.65rem;
   font: inherit;
 }

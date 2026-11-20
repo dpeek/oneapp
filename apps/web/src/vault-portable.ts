@@ -10,6 +10,7 @@ import {
   type ItemDetails,
 } from "./vault-item-content.ts";
 import {
+  decryptItemDetails,
   decryptVaultText,
   deriveMasterKey,
   encryptNewItem,
@@ -19,7 +20,6 @@ import {
   unwrapVaultKey,
   type VaultKey,
 } from "./vault-crypto.ts";
-import { decryptItemDetails } from "./vault-item-editor.ts";
 import {
   csvExportUris,
   readVaultCsv,

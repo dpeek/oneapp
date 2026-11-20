@@ -8,6 +8,17 @@ const styles = stylex.create({
   },
 });
 
+const groupClassName = stylex.props(styles.group).className ?? "";
+
+export const createButtonGroup = (children: readonly HTMLElement[]) => {
+  const element = document.createElement("div");
+  element.dataset.slot = "button-group";
+  element.setAttribute("role", "group");
+  element.className = groupClassName;
+  element.append(...children);
+  return element;
+};
+
 export const buttonGroup = <Message>(
   children: ReadonlyArray<Html>,
   h: HtmlBuilder<Message>,
@@ -16,7 +27,7 @@ export const buttonGroup = <Message>(
     [
       h.Role("group"),
       h.DataAttribute("slot", "button-group"),
-      h.Class(stylex.props(styles.group).className ?? ""),
+      h.Class(groupClassName),
     ],
     [...children],
   );

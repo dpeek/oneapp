@@ -10,7 +10,9 @@ import {
   buttonGroup,
   item,
   itemGroup,
+  outlineIcon,
   plusIcon,
+  trashIconPaths,
 } from "@oneapp/ui";
 import * as Client from "@yielded/auth/Client";
 import { Effect, Option, Schema, Stream } from "effect";
@@ -1073,31 +1075,7 @@ const linksView = (model: Model, h: HtmlBuilder<Message>) =>
                             onClick: Message.RequestedLinkDeletion({
                               id: link.id,
                             }),
-                            children: [
-                              h.svg(
-                                [
-                                  h.ViewBox("0 0 24 24"),
-                                  h.Width("16"),
-                                  h.Height("16"),
-                                  h.Fill("none"),
-                                  h.Stroke("currentColor"),
-                                  h.StrokeWidth("2"),
-                                  h.StrokeLinecap("round"),
-                                  h.StrokeLinejoin("round"),
-                                  h.AriaHidden(true),
-                                ],
-                                [
-                                  h.path(
-                                    [
-                                      h.D(
-                                        "M3 6h18M9 6V4h6v2m4 0-1 14H6L5 6m5 4v6m4-6v6",
-                                      ),
-                                    ],
-                                    [],
-                                  ),
-                                ],
-                              ),
-                            ],
+                            children: [outlineIcon(h, trashIconPaths)],
                           },
                           h,
                         ),
@@ -1278,7 +1256,10 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
     people: "People",
     settings: "Settings",
   }[model.page];
-  const usesOwnHeading = model.page === "links" || model.page === "mail";
+  const usesOwnHeading =
+    model.page === "links" ||
+    model.page === "mail" ||
+    (model.page === "vault" && model.vaultSetup.status?.initialized === true);
   return {
     title: `${title} · ${appName}`,
     body: h.div(

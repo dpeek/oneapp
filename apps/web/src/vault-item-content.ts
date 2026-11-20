@@ -209,6 +209,7 @@ export const itemTypes = {
 } as const;
 
 export const extraItemTypes = [3, 4, 5, 6, 7, 8] as const;
+export const vaultItemTypeOrder = [1, 2, ...extraItemTypes] as const;
 export const ExtraItemType = Schema.Literals(extraItemTypes);
 
 export const encryptedTypeData = (type: typeof ExtraItemType.Type) =>

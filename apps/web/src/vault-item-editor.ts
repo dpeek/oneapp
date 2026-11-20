@@ -1,9 +1,13 @@
-import type {
-  EditableItemDetails,
-  ItemDetails,
-  ItemType,
-} from "./vault-item-content.ts";
+import {
+  buttonClassName,
+  createField,
+  createFieldGroup,
+  createNativeSelect,
+  trashIconPaths,
+} from "@oneapp/ui";
+import type { EditableItemDetails, ItemType } from "./vault-item-content.ts";
 import { vaultField } from "./vault-field.ts";
+import { vaultIcon } from "./vault-item-icon.ts";
 import { hostUriMatch } from "./vault-items-contract.ts";
 import { identityEditGroups } from "./vault-identity-layout.ts";
 import {
@@ -11,7 +15,6 @@ import {
   type VaultFieldPresentation,
 } from "./vault-item-layout.ts";
 import {
-  decryptVaultText,
   encryptOptionalText,
   encryptWebsite,
   type VaultKey,
@@ -19,60 +22,7 @@ import {
 
 type Details = typeof EditableItemDetails.Type;
 
-const mapText = async (
-  values: Readonly<Record<string, string | null>>,
-  transform: (value: string) => Promise<string | null>,
-) =>
-  Object.fromEntries(
-    await Promise.all(
-      Object.entries(values).map(async ([name, value]) => [
-        name,
-        value === null ? null : await transform(value),
-      ]),
-    ),
-  );
-
-export const decryptItemDetails = async (
-  details: typeof ItemDetails.Type,
-  key: VaultKey,
-): Promise<Details> => {
-  const read = (value: string | null | undefined) =>
-    value == null ? Promise.resolve(null) : decryptVaultText(value, key);
-  const credentials = details.credentials;
-  return {
-    ...details,
-    notes: await read(details.notes),
-    fields: await Promise.all(
-      (details.fields ?? []).map(async (field) => ({
-        ...field,
-        name: await read(field.name),
-        value: await read(field.value),
-      })),
-    ),
-    ...(credentials && {
-      credentials: {
-        autofillOnPageLoad: credentials.autofillOnPageLoad,
-        passwordRevisionDate: credentials.passwordRevisionDate,
-        username: await read(credentials.username),
-        password: await read(credentials.password),
-        totp: await read(credentials.totp),
-        uris: await Promise.all(
-          (credentials.uris ?? []).map(async ({ uri, match }) => ({
-            uri: await read(uri),
-            match,
-          })),
-        ),
-      },
-    }),
-    ...(details.data && {
-      data: await mapText(details.data, (value) =>
-        decryptVaultText(value, key),
-      ),
-    }),
-  };
-};
-
-export const uriMatchLabels = [
+const uriMatchLabels = [
   "Base domain",
   "Host",
   "Starts with",
@@ -119,12 +69,10 @@ const linkedFields: Partial<
 export const linkedFieldLabel = (type: ItemType, id: number) =>
   linkedFields[type]?.[id] ?? `Field ${id}`;
 
-const field = (caption: string, input: HTMLElement) => {
-  const label = document.createElement("label");
-  label.className = "vault-item-field";
-  label.textContent = caption;
-  label.append(input);
-  return label;
+const checkboxField = (label: string, control: HTMLInputElement) => {
+  const element = createField({ label, content: control, control });
+  element.classList.add("vault-item-checkbox");
+  return element;
 };
 
 const input = (value: string | null | undefined, type = "text") => {
@@ -136,18 +84,6 @@ const input = (value: string | null | undefined, type = "text") => {
   return el;
 };
 
-export const vaultItemFieldset = (
-  caption: string,
-  ...children: HTMLElement[]
-) => {
-  const element = document.createElement("fieldset");
-  element.className = "vault-item-fieldset";
-  const legend = document.createElement("legend");
-  legend.textContent = caption;
-  element.append(legend, ...children);
-  return element;
-};
-
 const builtInInputs = (
   element: HTMLElement,
   type: ItemType,
@@ -156,7 +92,7 @@ const builtInInputs = (
   if (type === 1 || type === 2) return [];
   const groups = type === 4 ? identityEditGroups : [structuredEditGroup(type)];
   return groups.flatMap(({ label, fields }) => {
-    const section = vaultItemFieldset(label);
+    const section = createFieldGroup(label);
     element.append(section);
     return fields.map(
       ({
@@ -195,36 +131,54 @@ const websiteAddress = (value: string, match: string) => {
 };
 
 const choice = (
+  label: string,
   values: readonly string[],
   selected: number | null | undefined,
   defaultLabel?: string,
-) => {
-  const el = document.createElement("select");
-  if (defaultLabel) el.add(new Option(defaultLabel, ""));
-  values.forEach((label, index) => el.add(new Option(label, String(index))));
-  el.value = selected == null ? (defaultLabel ? "" : "0") : String(selected);
-  return el;
-};
+) =>
+  createNativeSelect({
+    label,
+    options: [
+      ...(defaultLabel ? [{ label: defaultLabel, value: "" }] : []),
+      ...values.map((label, index) => ({ label, value: String(index) })),
+    ],
+    value: selected == null ? (defaultLabel ? "" : "0") : String(selected),
+  });
 
 const rows = <Value, Row extends { element: HTMLElement }>(
   caption: string,
   addLabel: string,
   initial: readonly (Value | undefined)[],
   makeRow: (value?: Value) => Row,
+  removeIcon?: { label: string; paths: readonly string[] },
 ) => {
-  const element = vaultItemFieldset(caption);
+  const element = createFieldGroup(caption);
   const add = document.createElement("button");
   add.type = "button";
+  add.dataset.slot = "button";
+  add.className = buttonClassName({ variant: "outline", size: "sm" });
   add.textContent = addLabel;
   const contents: Row[] = [];
   const changed = () =>
     element.dispatchEvent(new Event("input", { bubbles: true }));
   const append = (value?: Value) => {
     const row = makeRow(value);
-    row.element.className = "vault-item-repeat-row";
+    row.element.classList.add("vault-item-repeat-row");
     const remove = document.createElement("button");
     remove.type = "button";
-    remove.textContent = "Remove";
+    remove.dataset.slot = "button";
+    remove.className = buttonClassName({
+      variant: "ghost",
+      size: removeIcon ? "icon-sm" : "sm",
+    });
+    if (removeIcon) {
+      const icon = vaultIcon(removeIcon.paths);
+      icon.setAttribute("width", "16");
+      icon.setAttribute("height", "16");
+      remove.setAttribute("aria-label", removeIcon.label);
+      remove.title = removeIcon.label;
+      remove.append(icon);
+    } else remove.textContent = "Remove";
     remove.addEventListener("click", () => {
       contents.splice(contents.indexOf(row), 1);
       row.element.remove();
@@ -249,6 +203,7 @@ export const vaultItemEditor = (
   hasPasskey: boolean,
 ) => {
   const element = document.createElement("div");
+  element.className = "vault-item-editor";
   const notes = document.createElement("textarea");
   notes.rows = 5;
   notes.value = initial.notes ?? "";
@@ -268,10 +223,12 @@ export const vaultItemEditor = (
     login?.uris?.length ? login.uris : [undefined],
     (value) => {
       const element = document.createElement("div");
+      element.className = "vault-website-row";
       const uri = input(value?.uri);
       uri.inputMode = "url";
       uri.placeholder = "https://example.com";
-      const match = choice(
+      const { element: matchField, select: match } = choice(
+        "URI match",
         uriMatchLabels,
         value ? value.match : hostUriMatch,
         "Default",
@@ -287,13 +244,14 @@ export const vaultItemEditor = (
       match.addEventListener("change", validate);
       element.append(
         vaultField({ label: "Website", value: uri }).element,
-        field("URI match", match),
+        matchField,
       );
       return { element, uri, match, previous: value };
     },
+    { label: "Remove website", paths: trashIconPaths },
   );
   if (type === 1) {
-    const credentials = vaultItemFieldset(
+    const credentials = createFieldGroup(
       "Login credentials",
       vaultField({ label: "Username", value: username }).element,
       vaultField({ label: "Password", value: password, masked: true }).element,
@@ -315,24 +273,35 @@ export const vaultItemEditor = (
       const element = document.createElement("div");
       const name = input(previous?.name);
       const value = input(previous?.value, "password");
-      const linked = document.createElement("select");
-      linked.add(new Option("Choose a field", ""));
       const supported = linkedFields[type];
-      for (const [id, label] of Object.entries(supported ?? {}))
-        linked.add(new Option(label, id));
+      const linkedOptions = [
+        { label: "Choose a field", value: "" },
+        ...Object.entries(supported ?? {}).map(([value, label]) => ({
+          label,
+          value,
+        })),
+      ];
       const previousId = previous?.linkedId;
       if (previousId != null && !supported?.[previousId])
-        linked.add(
-          new Option(linkedFieldLabel(type, previousId), String(previousId)),
-        );
-      linked.value = previousId?.toString() ?? "";
+        linkedOptions.push({
+          label: linkedFieldLabel(type, previousId),
+          value: String(previousId),
+        });
+      const { element: linkedField, select: linked } = createNativeSelect({
+        label: "Linked field",
+        options: linkedOptions,
+        value: previousId?.toString() ?? "",
+      });
       const boolean = input(undefined, "checkbox");
       boolean.checked = previous?.value === "true";
-      const kind = choice(customFieldLabels, previous?.type);
+      const { element: kindField, select: kind } = choice(
+        "Field type",
+        customFieldLabels,
+        previous?.type,
+      );
       if (!supported && previous?.type !== 3) kind.options[3]!.disabled = true;
       const valueField = vaultField({ label: "Field value", value });
-      const booleanField = field("True", boolean);
-      const linkedField = field("Linked field", linked);
+      const booleanField = checkboxField("True", boolean);
       const showValue = () => {
         valueField.element.hidden = kind.value === "2" || kind.value === "3";
         booleanField.hidden = kind.value !== "2";
@@ -343,7 +312,7 @@ export const vaultItemEditor = (
       showValue();
       element.append(
         vaultField({ label: "Field name", value: name }).element,
-        field("Field type", kind),
+        kindField,
         valueField.element,
         booleanField,
         linkedField,
@@ -351,12 +320,10 @@ export const vaultItemEditor = (
       return { element, name, kind, value, linked, boolean, previous };
     },
   );
-  const favoriteField = field("Favourite", favorite);
-  const repromptField = field("Require master password", reprompt);
-  favoriteField.classList.add("vault-item-checkbox");
-  repromptField.classList.add("vault-item-checkbox");
+  const favoriteField = checkboxField("Favourite", favorite);
+  const repromptField = checkboxField("Require master password", reprompt);
   element.append(
-    vaultItemFieldset(
+    createFieldGroup(
       "Notes",
       vaultField({
         label: type === 2 ? "Note" : "Notes",
@@ -364,7 +331,7 @@ export const vaultItemEditor = (
         showLabel: false,
       }).element,
     ),
-    vaultItemFieldset("Item options", favoriteField, repromptField),
+    createFieldGroup("Item options", favoriteField, repromptField),
     fields.element,
   );
   return {

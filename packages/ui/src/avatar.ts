@@ -7,17 +7,22 @@ import { controls } from "./tokens.stylex.ts";
 
 const Message = defineMessageUnion({ CompletedAvatarImageMount: {} });
 
+const revealAvatarImage = (element: HTMLImageElement) => {
+  const reveal = () => element.setAttribute("data-loaded", "");
+  if (element.complete && element.naturalWidth > 0) reveal();
+  else element.addEventListener("load", reveal, { once: true });
+  return () => element.removeEventListener("load", reveal);
+};
+
 const RevealAvatarImage = Mount.define("RevealAvatarImage", {
   messages: [Message.CompletedAvatarImageMount],
   execute: ({ element }) =>
     Effect.acquireRelease(
-      Effect.sync(() => {
-        if (!(element instanceof HTMLImageElement)) return;
-        const reveal = () => element.setAttribute("data-loaded", "");
-        if (element.complete && element.naturalWidth > 0) reveal();
-        else element.addEventListener("load", reveal, { once: true });
-        return () => element.removeEventListener("load", reveal);
-      }),
+      Effect.sync(() =>
+        element instanceof HTMLImageElement
+          ? revealAvatarImage(element)
+          : undefined,
+      ),
       (cleanup) => Effect.sync(() => cleanup?.()),
     ).pipe(Effect.as(Message.CompletedAvatarImageMount())),
 });
@@ -33,6 +38,7 @@ const styles = stylex.create({
     backgroundColor: controls.hover,
     color: controls.mutedForeground,
   },
+  square: { borderRadius: controls.radius },
   large: {
     inlineSize: "4rem",
     blockSize: "4rem",
@@ -47,37 +53,59 @@ const styles = stylex.create({
     padding: "0.625rem",
     objectFit: "contain",
     backgroundColor: controls.hover,
-    visibility: { default: "hidden", ":where([data-loaded])": "visible" },
+    visibility: { default: "hidden", ":where([data-loaded])": "inherit" },
   },
   photo: { objectFit: "cover", padding: 0 },
 });
 
-type AvatarProps<Message> = Readonly<{
-  fallback: Html | string;
-  src: string | null;
-  imageMounted: Message;
+type AvatarAppearance = Readonly<{
+  variant?: "round" | "square";
   size?: "lg";
   fit?: "cover";
 }>;
 
+type AvatarProps<Message> = AvatarAppearance &
+  Readonly<{
+    fallback: Html | string;
+    src: string | null;
+    imageMounted: Message;
+  }>;
+
+const avatarClassName = ({ variant, size }: AvatarAppearance) =>
+  stylex.props(
+    styles.root,
+    variant === "square" && styles.square,
+    size === "lg" && styles.large,
+  ).className ?? "";
+
+const fallbackClassName = stylex.props(styles.layer).className ?? "";
+const imageClassName = (fit: AvatarAppearance["fit"]) =>
+  stylex.props(styles.layer, styles.image, fit === "cover" && styles.photo)
+    .className ?? "";
+
 export const avatar = <Message>(
-  { fallback, src, imageMounted, size, fit }: AvatarProps<Message>,
+  {
+    fallback,
+    src,
+    imageMounted,
+    variant = "round",
+    size,
+    fit,
+  }: AvatarProps<Message>,
   h: HtmlBuilder<Message>,
 ): Html =>
   h.span(
     [
       h.AriaHidden(true),
       h.DataAttribute("slot", "avatar"),
-      h.Class(
-        stylex.props(styles.root, size === "lg" && styles.large).className ??
-          "",
-      ),
+      h.DataAttribute("variant", variant),
+      h.Class(avatarClassName({ variant, size })),
     ],
     [
       h.span(
         [
           h.DataAttribute("slot", "avatar-fallback"),
-          h.Class(stylex.props(styles.layer).className ?? ""),
+          h.Class(fallbackClassName),
         ],
         [fallback],
       ),
@@ -90,13 +118,7 @@ export const avatar = <Message>(
               h.Loading("lazy"),
               h.Decoding("async"),
               h.Referrerpolicy("no-referrer"),
-              h.Class(
-                stylex.props(
-                  styles.layer,
-                  styles.image,
-                  fit === "cover" && styles.photo,
-                ).className ?? "",
-              ),
+              h.Class(imageClassName(fit)),
               h.OnMount(
                 Mount.mapMessage(RevealAvatarImage(), () => imageMounted),
               ),
@@ -106,3 +128,40 @@ export const avatar = <Message>(
         : []),
     ],
   );
+
+// Shared Avatar for callers that render directly into the DOM.
+export const createAvatar = ({
+  fallback,
+  src,
+  variant = "round",
+  size,
+  fit,
+}: AvatarAppearance &
+  Readonly<{ fallback: Node | string; src: string | null }>) => {
+  const element = document.createElement("span");
+  element.dataset.slot = "avatar";
+  element.dataset.variant = variant;
+  element.setAttribute("aria-hidden", "true");
+  element.className = avatarClassName({ variant, size });
+
+  const placeholder = document.createElement("span");
+  placeholder.dataset.slot = "avatar-fallback";
+  placeholder.className = fallbackClassName;
+  placeholder.append(fallback);
+  element.append(placeholder);
+
+  if (src) {
+    const image = document.createElement("img");
+    image.dataset.slot = "avatar-image";
+    image.className = imageClassName(fit);
+    image.alt = "";
+    image.loading = "lazy";
+    image.decoding = "async";
+    image.referrerPolicy = "no-referrer";
+    image.addEventListener("error", () => image.remove(), { once: true });
+    image.src = src;
+    revealAvatarImage(image);
+    element.append(image);
+  }
+  return element;
+};

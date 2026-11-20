@@ -211,8 +211,11 @@ export const checkAttachments = async ({
   );
 
   await button(webVault, "Lock vault").press("Enter");
-  await webVault.getByLabel("Vault master password").fill(password);
-  await button(webVault, "Unlock vault").press("Enter");
+  const unlockPassword = webVault.getByLabel("Vault master password", {
+    exact: true,
+  });
+  await unlockPassword.fill(password);
+  await unlockPassword.press("Enter");
   await button(webVault, itemName).press("Enter");
   const fileRow = webVault.locator("li").filter({ hasText: stockFile.name });
   const webDownload = await downloadBytes(app, () =>
@@ -278,8 +281,8 @@ export const checkAttachmentCleanup = async ({
     next.ciphers.find(({ id }) => id === item)?.attachments.length,
     1,
   );
-  await webVault.getByLabel("Vault master password").fill(password);
-  await button(webVault, "Unlock vault").press("Enter");
+  await unlockPassword.fill(password);
+  await unlockPassword.press("Enter");
   await webVault.getByRole("checkbox", { name: `Select ${itemName}` }).check();
   await button(
     webVault.getByRole("group", { name: "Selected item actions" }),

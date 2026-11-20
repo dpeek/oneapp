@@ -265,9 +265,10 @@ try {
       "wrappedKey",
       "wrappedPrivateKey",
     ]);
-    await app.getByRole("heading", { name: "Your vault is ready" }).waitFor();
+    const unlock = app.locator("oneapp-vault-reader");
+    await unlock.getByLabel("Vault master password", { exact: true }).waitFor();
     await app.reload();
-    await app.getByRole("heading", { name: "Your vault is ready" }).waitFor();
+    await unlock.getByLabel("Vault master password", { exact: true }).waitFor();
     console.log(
       "PASS A fresh OneApp account created a vault with browser-generated keys.",
     );
@@ -719,18 +720,25 @@ try {
     step = "opening the encrypted vault in the OneApp web app";
     await app.goto(new URL("/vault", origin).href);
     const webVault = app.locator("oneapp-vault-reader");
+    const unlockPassword = webVault.getByLabel("Vault master password", {
+      exact: true,
+    });
     // Exercise the vault by keyboard because Bitwarden can overlay its controls.
     const unlockWeb = async (password) => {
-      await webVault
-        .getByLabel("Vault master password", { exact: true })
-        .fill(password);
-      await button(webVault, "Unlock vault").press("Enter");
+      await unlockPassword.fill(password);
+      await unlockPassword.press("Enter");
     };
     await unlockWeb("Incorrect test master password");
     await webVault
       .getByRole("alert")
       .filter({ hasText: /check your master password/iu })
       .waitFor();
+    assert.equal(
+      await unlockPassword.evaluate(
+        (input) => input === document.activeElement,
+      ),
+      true,
+    );
     assert.equal(await button(webVault, itemName).count(), 0);
     await unlockWeb(masterPassword);
     await button(webVault, itemName).waitFor();
@@ -774,7 +782,7 @@ try {
 
     step = "clearing the web vault on lock and navigation";
     await button(webVault, "Lock vault").press("Enter");
-    await button(webVault, "Unlock vault").waitFor();
+    await unlockPassword.waitFor();
     const lockedContent = await webVault.textContent();
     assert.ok(
       ![
@@ -799,7 +807,7 @@ try {
     await app.getByRole("link", { name: "Links", exact: true }).press("Enter");
     await webVault.waitFor({ state: "detached" });
     await app.getByRole("link", { name: "Vault", exact: true }).press("Enter");
-    await button(webVault, "Unlock vault").waitFor();
+    await unlockPassword.waitFor();
     assert.equal(await noteText.count(), 0);
     assert.equal(await button(webVault, noteName).count(), 0);
     console.log(
@@ -827,7 +835,7 @@ try {
         throw new TypeError("Simulated loss of the save response");
       };
     }, itemsPath);
-    await button(webVault, "Save Secure Note").press("Enter");
+    await button(webVault, "Save").press("Enter");
     const firstSave = await localResponse(isWebSave);
     const submitted = firstSave.request().postData();
     assert.equal(firstSave.status(), 201);
@@ -855,7 +863,7 @@ try {
       await webVault.getByLabel("Note", { exact: true }).inputValue(),
       webNoteBody,
     );
-    await button(webVault, "Save Secure Note").press("Enter");
+    await button(webVault, "Save").press("Enter");
     const retry = await localResponse(
       (response) => isWebSave(response) && response !== firstSave,
     );
@@ -903,7 +911,7 @@ try {
     const editWebNote = button(webVault, "Edit");
     const webTitle = webVault.getByLabel("Title", { exact: true });
     const webBody = webVault.getByLabel("Note", { exact: true });
-    const saveWebNote = button(webVault, "Save Secure Note");
+    const saveWebNote = button(webVault, "Save");
     await editWebNote.press("Enter", { timeout: 10_000 });
     assert.equal(await webTitle.inputValue(), webNoteTitle);
     assert.equal(await webBody.inputValue(), webNoteBody);
@@ -998,7 +1006,7 @@ try {
       .filter({ hasText: "This note changed since you opened it." })
       .waitFor({ timeout: 10_000 });
     assert.equal(await webBody.inputValue(), staleDraft);
-    await button(webVault, "Discard draft and reload").press("Enter");
+    await button(webVault, "Cancel").press("Enter");
     await webVault
       .getByText(deviceNoteBody, { exact: true })
       .waitFor({ timeout: 10_000 });
@@ -1024,7 +1032,7 @@ try {
     await webPassword.fill(webLoginPassword);
     await webVault.getByLabel("Website", { exact: true }).fill(webLoginUrl);
     const beforeWebLogin = responses.length;
-    await button(webVault, "Save Login").press("Enter");
+    await button(webVault, "Save").press("Enter");
     const webLoginResponse = await localResponse(
       (response) =>
         isWebSave(response) && responses.indexOf(response) >= beforeWebLogin,
@@ -1076,6 +1084,10 @@ try {
     await webVault
       .getByText(webLoginUrl, { exact: true })
       .waitFor({ timeout: 10_000 });
+    const websiteActions = webVault
+      .getByRole("group", { name: "Website", exact: true })
+      .locator('[data-slot="input-group-addon"]');
+    assert.equal(await websiteActions.locator("button:visible").count(), 1);
     assert.equal(
       await webVault.getByText(webLoginPassword, { exact: true }).count(),
       0,
@@ -1111,7 +1123,7 @@ try {
     step = "rotating the personal login password in OneApp";
     const rotatedWebPassword = "Rotated-In-OneApp!45";
     const editWebLogin = button(webVault, "Edit");
-    const saveWebLogin = button(webVault, "Save Login");
+    const saveWebLogin = button(webVault, "Save");
     const isWebLoginEdit = (response) =>
       endpoint(response, `${itemsPath}/${savedLogin.id}`, "PUT");
     await editWebLogin.press("Enter");
@@ -1221,7 +1233,7 @@ try {
       .filter({ hasText: "This login changed since you opened it." })
       .waitFor({ timeout: 10_000 });
     assert.equal(await webPassword.inputValue(), staleLoginDraft);
-    await button(webVault, "Discard draft and reload").press("Enter");
+    await button(webVault, "Cancel").press("Enter");
     await button(webVault, "Show password").press("Enter");
     await webVault
       .getByText(latestLoginPassword, { exact: true })

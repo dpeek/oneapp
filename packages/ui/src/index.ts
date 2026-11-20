@@ -3,17 +3,46 @@ import { Schema } from "effect";
 import { Runtime } from "foldkit";
 import type { Document, HtmlBuilder } from "foldkit/html";
 
-export { avatar } from "./avatar.ts";
+export { avatar, createAvatar } from "./avatar.ts";
+export { actionBar } from "./action-bar.ts";
 export { avatarGroup } from "./avatar-group.ts";
 export { button, buttonClassName } from "./button.ts";
-export { buttonGroup } from "./button-group.ts";
+export { buttonGroup, createButtonGroup } from "./button-group.ts";
 export { dialog } from "./dialog.ts";
 export * as DropdownMenu from "./dropdown-menu.ts";
-export { field, input, textarea } from "./field.ts";
-export { ellipsisIcon, plusIcon } from "./icons.ts";
-export { item, itemDisclosure, itemGroup } from "./item.ts";
+export {
+  createField,
+  createFieldGroup,
+  field,
+  fieldClassNames,
+  input,
+  inputClassName,
+  inputGroupControlClassName,
+  textarea,
+} from "./field.ts";
+export {
+  backIcon,
+  ellipsisIcon,
+  outlineIcon,
+  plusIcon,
+  trashIconPaths,
+} from "./icons.ts";
+export { createInputGroup } from "./input-group.ts";
+export {
+  item,
+  itemClassName,
+  itemClassNames,
+  itemDisclosure,
+  itemGroup,
+} from "./item.ts";
 export { marker } from "./marker.ts";
-export { navigationLinks, unreadBadge } from "./navigation.ts";
+export { createNativeSelect } from "./native-select.ts";
+export {
+  navigationLinks,
+  sidebarClassNames,
+  sidebarItemClassName,
+  unreadBadge,
+} from "./navigation.ts";
 export * as Sheet from "./sheet.ts";
 export { spinner } from "./spinner.ts";
 export * as Tooltip from "./tooltip.ts";

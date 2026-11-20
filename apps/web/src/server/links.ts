@@ -7,6 +7,7 @@ import {
   linksPath,
   linksReadScope,
   linksWriteScope,
+  normalizeLinkUrl,
 } from "@oneapp/core/links";
 import { ByteSize, Clock, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -48,13 +49,14 @@ export const listSavedLinks = Effect.fnUntraced(function* (
   offset = 0,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  return yield* sql<typeof Link.Type>`
+  const links = yield* sql<typeof Link.Type>`
     SELECT id, url, saved_at AS "savedAt"
     FROM links
     WHERE owner_id = ${ownerId}
     ORDER BY saved_at DESC, id DESC
     LIMIT ${limit} OFFSET ${offset}
   `;
+  return links.map((link) => ({ ...link, url: normalizeLinkUrl(link.url) }));
 });
 
 const listLinks = Effect.gen(function* () {
@@ -78,7 +80,7 @@ export const insertSavedLink = Effect.fnUntraced(function* (
 ) {
   const link = {
     id: crypto.randomUUID(),
-    url,
+    url: normalizeLinkUrl(url),
     savedAt: yield* Clock.currentTimeMillis,
   };
   const sql = yield* SqlClient.SqlClient;

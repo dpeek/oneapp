@@ -4,11 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun ./src/index.html",
+    "dev": "bun ./dev.ts",
     "build": "bun ./build.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261112.1",
+    "@stylexjs/unplugin": "0.19.2",
     "@types/html-to-text": "9.0.4"
   },
   "dependencies": {
@@ -16,6 +17,8 @@
     "@modelcontextprotocol/server": "2.4.0",
     "@noble/hashes": "2.4.0",
     "@oneapp/core": "workspace:*",
+    "@oneapp/ui": "workspace:*",
+    "@resvg/resvg-wasm": "2.6.2",
     "@yielded/auth": "0.1.0-beta.47",
     "@yielded/auth-persistence": "0.1.0-beta.47",
     "@yielded/auth-persistence-drizzle": "0.1.0-beta.47",

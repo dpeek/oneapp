@@ -1,3 +1,5 @@
+@import "@oneapp/ui/theme.css";
+
 :root {
   color-scheme: light dark;
   font-family: Inter, system-ui, sans-serif;
@@ -6,7 +8,6 @@
   --text: light-dark(#1c2030, #eef0f8);
   --muted: light-dark(#53576b, #b8bbcf);
   --border: light-dark(#dcdeea, #3c4055);
-  --accent: light-dark(#4b43ad, #c5bfff);
   --selected: light-dark(#eeecfc, #2a2845);
 }
 
@@ -91,7 +92,11 @@ body:has(.app-shell) {
   color: var(--accent);
 }
 
-:where(a, button, input):focus-visible {
+:where(
+  a:not([data-slot="item-link"]),
+  button:not([data-slot="button"]),
+  input
+):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
@@ -134,7 +139,6 @@ body:has(.app-shell) {
   line-height: 1.2;
 }
 
-.links,
 .settings,
 .vault-setup {
   padding: clamp(1rem, 3vw, 1.5rem);
@@ -1148,27 +1152,28 @@ oneapp-vault-reader {
   color: var(--accent);
 }
 
-.page :is(input, button) {
+.page :is(input, button:where(:not([data-slot="button"]))) {
   box-sizing: border-box;
   max-width: 100%;
   border: 1px solid var(--border);
-  border-radius: 0.5rem;
+  border-radius: var(--control-radius);
   background: var(--surface);
   color: var(--text);
 }
 
-.page button:not(:disabled):hover {
+.page button:where(:not([data-slot="button"])):not(:disabled):hover {
   background: var(--selected);
 }
 
-.page button[type="submit"] {
+.page button:where(:not([data-slot="button"]))[type="submit"] {
   background: var(--accent);
   border-color: var(--accent);
-  color: light-dark(#fff, #1d1844);
+  color: var(--on-accent);
 }
 
-.page button[type="submit"]:not(:disabled):hover {
-  background: light-dark(#3d3693, #d8d3ff);
+.page
+  button:where(:not([data-slot="button"]))[type="submit"]:not(:disabled):hover {
+  background: var(--accent-hover);
 }
 
 .page [role="alert"]:empty,
@@ -1209,7 +1214,7 @@ form {
 }
 
 input,
-button {
+button:where(:not([data-slot="button"])) {
   padding: 0.65rem;
   font: inherit;
 }
@@ -1222,32 +1227,20 @@ button {
   color: light-dark(#a42020, #ff9797);
 }
 
-.saved-links {
-  list-style: none;
-  padding: 0;
+.links [data-slot="button-group"] > input {
+  flex: 1;
+  min-inline-size: 0;
+  min-block-size: 2.75rem;
 }
 
-.saved-links li {
-  border-block-end: 1px solid light-dark(#ddd, #444);
-  display: flex;
-  justify-content: space-between;
-  align-items: start;
-  gap: 0.75rem;
-  padding-block: 0.75rem;
+.links [data-slot="button-group"]:has(> input:focus-visible) {
+  border-radius: var(--control-radius);
+  outline: 1px solid color-mix(in oklab, var(--accent) 65%, var(--border));
+  outline-offset: 1px;
 }
 
-.saved-link-details {
-  min-width: 0;
-  display: grid;
-  gap: 0.25rem;
-}
-
-.saved-links a {
-  overflow-wrap: anywhere;
-}
-
-.saved-links time {
-  font-size: 0.875rem;
+.links [data-slot="button-group"] > input:focus-visible {
+  outline: none;
 }
 
 .inbox-status,

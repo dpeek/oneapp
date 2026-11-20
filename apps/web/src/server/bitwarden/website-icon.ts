@@ -3,6 +3,7 @@ import { decodeHTMLAttribute } from "entities";
 import ipaddr from "ipaddr.js";
 
 import { iconHostname } from "../../website-icon-host.ts";
+import type { RasterizeSvg } from "./website-icon-svg.ts";
 
 const isPublicAddress = (value: string) => {
   if (!ipaddr.isValid(value)) return false;
@@ -144,7 +145,7 @@ const rasterType = (bytes: Uint8Array) => {
   return null;
 };
 
-const iconLinks = async (page: Response, url: URL) => {
+const iconLinks = async (page: Response, url: URL, allowSvg: boolean) => {
   const type = page.headers
     .get("content-type")
     ?.split(";")[0]
@@ -176,7 +177,8 @@ const iconLinks = async (page: Response, url: URL) => {
         const href = element.getAttribute("href");
         if (
           href &&
-          element.getAttribute("type")?.toLowerCase() !== "image/svg+xml" &&
+          (allowSvg ||
+            element.getAttribute("type")?.toLowerCase() !== "image/svg+xml") &&
           rel.some((part) =>
             [
               "icon",
@@ -202,14 +204,36 @@ const iconLinks = async (page: Response, url: URL) => {
 export const downloadWebsiteIcon = async (
   host: string,
   blockedHosts: ReadonlySet<string>,
+  rasterizeSvg?: RasterizeSvg,
 ) => {
   const homepage = new URL(`https://${host}`);
   const fetchSite = siteFetcher(blockedHosts);
   const readIcon = async (url: URL) => {
-    const result = await fetchSite(url, acceptImage);
-    const body = result && (await readBody(result.response, maxIconBytes));
-    const type = body && rasterType(body);
-    return type && body ? { body, type } : null;
+    const result = await fetchSite(
+      url,
+      rasterizeSvg ? `${acceptImage},image/svg+xml` : acceptImage,
+    );
+    if (!result) return null;
+    const { response, target } = result;
+    const body = await readBody(response, maxIconBytes);
+    if (!body) return null;
+    const type = rasterType(body);
+    if (type) return { body, type };
+    const contentType = response.headers
+      .get("content-type")
+      ?.split(";", 1)[0]
+      ?.trim()
+      .toLowerCase();
+    if (
+      rasterizeSvg &&
+      (contentType === "image/svg+xml" ||
+        url.pathname.toLowerCase().endsWith(".svg") ||
+        target.pathname.toLowerCase().endsWith(".svg"))
+    ) {
+      const png = await rasterizeSvg(body);
+      if (png) return { body: png, type: "image/png" };
+    }
+    return null;
   };
 
   const favicon = new URL("/favicon.ico", homepage);
@@ -217,7 +241,9 @@ export const downloadWebsiteIcon = async (
   if (conventionalIcon) return conventionalIcon;
 
   const page = await fetchSite(homepage, "text/html,application/xhtml+xml");
-  const declared = page ? await iconLinks(page.response, page.target) : [];
+  const declared = page
+    ? await iconLinks(page.response, page.target, Boolean(rasterizeSvg))
+    : [];
   const location = page?.target ?? homepage;
   const candidates = [
     ...declared.slice(0, 3),

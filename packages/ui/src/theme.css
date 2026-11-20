@@ -1,0 +1,22 @@
+:root {
+  --accent: light-dark(#4b43ad, #c5bfff);
+  --accent-hover: light-dark(#3d3693, #d8d3ff);
+  --on-accent: light-dark(#fff, #1d1844);
+  --control-radius: 0.5rem;
+}
+
+[data-slot="button-group"] > :not(:last-child) {
+  border-start-end-radius: 0;
+  border-end-end-radius: 0;
+}
+
+[data-slot="button-group"] > :not(:first-child) {
+  border-inline-start-width: 0;
+  border-start-start-radius: 0;
+  border-end-start-radius: 0;
+}
+
+[data-slot="button-group"] > :focus-visible {
+  position: relative;
+  z-index: 1;
+}

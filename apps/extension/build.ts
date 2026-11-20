@@ -1,3 +1,4 @@
+import { cp } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 const source = new URL("./src/", import.meta.url);
@@ -23,3 +24,6 @@ await Bun.write(
   new URL("manifest.json", output),
   Bun.file(new URL("manifest.json", source)),
 );
+await cp(new URL("icons/", source), new URL("icons/", output), {
+  recursive: true,
+});

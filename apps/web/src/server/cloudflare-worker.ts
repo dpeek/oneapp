@@ -3,12 +3,26 @@ import type {
   Request as CloudflareRequest,
   WebSocket as CloudflareWebSocket,
 } from "@cloudflare/workers-types";
+import resvgModule from "@resvg/resvg-wasm/index_bg.wasm";
 import { DurableObject } from "cloudflare:workers";
 import { inboxChanged } from "../inbox-contract.ts";
 import { ownerId } from "./auth.ts";
+import { createSvgRasterizer } from "./bitwarden/website-icon-svg.ts";
 import { inboxSessionHeaders, type InboxSocketSession } from "./inbox.ts";
+import worker from "./worker.ts";
 
-export { default } from "./worker.ts";
+const rasterizeSvg = createSvgRasterizer(resvgModule);
+
+export default {
+  ...worker,
+  fetch: ((request, env, context) =>
+    worker.fetch(
+      request,
+      env,
+      context,
+      rasterizeSvg,
+    )) satisfies typeof worker.fetch,
+};
 
 declare const WebSocketPair: typeof import("@cloudflare/workers-types").WebSocketPair;
 declare const Response: typeof import("@cloudflare/workers-types").Response;

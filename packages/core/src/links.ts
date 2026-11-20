@@ -9,6 +9,9 @@ export const LinkId = Schema.String.check(Schema.isUUID(4));
 export const linkPath = (id: string) =>
   `${linksPath}/${encodeURIComponent(id)}`;
 
+export const normalizeLinkUrl = (url: string) =>
+  url.replace(/^(https?:\/\/[^/?#\\\s]+)\/$/i, "$1");
+
 const WebUrl = Schema.Trimmed.check(
   Schema.isMaxLength(2048),
   Schema.makeFilter((value) => {

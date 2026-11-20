@@ -6,7 +6,7 @@ it("builds a same-origin icon path from the hostname alone", () => {
     "https://user:password@EXAMPLE.com.:8888/private?token=secret#login",
   );
   expect(hostname).toBe("example.com");
-  expect(websiteIconPath(hostname!)).toBe("/icons/example.com/icon.png");
+  expect(websiteIconPath(hostname!)).toBe("/icons/example.com/icon.png?v=2");
   expect(websiteIconHostname("http://bücher.example.com/")).toBe(
     "xn--bcher-kva.example.com",
   );

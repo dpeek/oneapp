@@ -2,6 +2,7 @@ import { afterEach, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 import type { WorkerEnv } from "../../../../../alchemy.run.ts";
 import worker from "../worker.ts";
+import { createSvgRasterizer } from "./website-icon-svg.ts";
 
 const dns = vi.hoisted(() => ({
   resolve4: vi.fn<(host: string) => Promise<string[]>>(),
@@ -14,6 +15,12 @@ const iconPath = "/icons/example.com/icon.png";
 const png = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jX8sAAAAASUVORK5CYII=",
   "base64",
+);
+const wasmFile = new URL(
+  import.meta.resolve("@resvg/resvg-wasm/index_bg.wasm"),
+);
+const rasterizeSvg = createSvgRasterizer(
+  await WebAssembly.compile(await Bun.file(wasmFile).arrayBuffer()),
 );
 
 const setup = (success = true) => {
@@ -37,7 +44,12 @@ const setup = (success = true) => {
     BITWARDEN_ICON_LIMIT: { limit },
   } as unknown as WorkerEnv;
   const request = (path = iconPath, init?: RequestInit) =>
-    worker.fetch(new Request(appOrigin + path, init), env);
+    worker.fetch(
+      new Request(appOrigin + path, init),
+      env,
+      undefined,
+      rasterizeSvg,
+    );
   return { request, fetch, limit };
 };
 
@@ -114,6 +126,76 @@ it("discovers relative icon links from the redirected homepage", async () => {
   ]);
 });
 
+it("renders a declared SVG favicon as a bounded PNG and caches it", async () => {
+  const { request, fetch } = setup();
+  fetch
+    .mockResolvedValueOnce(new Response(null, { status: 404 }))
+    .mockResolvedValueOnce(
+      new Response(
+        '<head><link rel="icon" href="/logo.svg" type="image/svg+xml"></head>',
+        {
+          headers: { "content-type": "text/html" },
+        },
+      ),
+    )
+    .mockResolvedValueOnce(
+      new Response(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 128"><rect width="32" height="128" fill="red"/></svg>',
+        {
+          headers: { "content-type": "image/svg+xml" },
+        },
+      ),
+    );
+
+  const icon = await request();
+  expect(icon.status).toBe(200);
+  expect(icon.headers.get("content-type")).toBe("image/png");
+  const result = Buffer.from(await icon.arrayBuffer());
+  expect(result.subarray(0, 8)).toEqual(png.subarray(0, 8));
+  expect([result.readUInt32BE(16), result.readUInt32BE(20)]).toEqual([16, 64]);
+  expect(fetch.mock.calls.map(([url]) => String(url))).toEqual([
+    "https://example.com/favicon.ico",
+    "https://example.com/",
+    "https://example.com/logo.svg",
+  ]);
+  expect(Buffer.from(await (await request()).arrayBuffer())).toEqual(result);
+  expect(fetch).toHaveBeenCalledTimes(3);
+});
+
+it.each([
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><image href="https://outside.example.com/icon.png" width="32" height="32"/></svg>',
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32000 64000"><rect width="32000" height="64000"/></svg>',
+  "<not-svg/>",
+])(
+  "continues looking for raster icons after an unusable SVG (%s)",
+  async (svg) => {
+    const { request, fetch } = setup();
+    fetch
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(
+        new Response(
+          '<head><link rel="icon" href="/logo.svg"><link rel="icon" href="/logo.png"></head>',
+          {
+            headers: { "content-type": "text/html" },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(svg, { headers: { "content-type": "image/svg+xml" } }),
+      )
+      .mockResolvedValueOnce(new Response(png));
+    const icon = await request();
+    expect(icon.status).toBe(200);
+    expect(Buffer.from(await icon.arrayBuffer())).toEqual(png);
+    expect(fetch.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://example.com/favicon.ico",
+      "https://example.com/",
+      "https://example.com/logo.svg",
+      "https://example.com/logo.png",
+    ]);
+  },
+);
+
 it("blocks invalid hosts, non-public DNS and unsafe redirect and link targets", async () => {
   const { request, fetch } = setup();
   for (const host of [
@@ -161,7 +243,7 @@ it("blocks invalid hosts, non-public DNS and unsafe redirect and link targets", 
   ]);
 });
 
-it("caches misses and rejects SVG and oversized images", async () => {
+it("caches misses and rejects unrecognized and oversized images", async () => {
   const { request, fetch } = setup();
   const oversized = new Uint8Array(512 * 1024 + 1);
   oversized.set(png);

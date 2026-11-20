@@ -1,8 +1,20 @@
 import { expect, it } from "@effect/vitest";
 import { Schema } from "effect";
-import { SaveLink } from "./links.ts";
+import { normalizeLinkUrl, SaveLink } from "./links.ts";
 
 const decode = Schema.decodeUnknownSync(SaveLink);
+
+it.each([
+  ["https://creaseui.com/", "https://creaseui.com"],
+  ["http://example.com:8080/", "http://example.com:8080"],
+  ["https://example.com", "https://example.com"],
+  ["https://example.com/docs/", "https://example.com/docs/"],
+  ["https://example.com//", "https://example.com//"],
+  ["https://example.com/?q=value#part", "https://example.com/?q=value#part"],
+  ["https://example.com/#part", "https://example.com/#part"],
+])("normalizes %s to %s", (input, expected) => {
+  expect(normalizeLinkUrl(input)).toBe(expected);
+});
 
 it("trims surrounding whitespace without changing the saved URL", () => {
   expect(decode({ url: " https://example.com/path?q=test#part " })).toEqual({

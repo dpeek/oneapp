@@ -3,6 +3,11 @@ import { Schema } from "effect";
 import { Runtime } from "foldkit";
 import type { Document, HtmlBuilder } from "foldkit/html";
 
+export { avatar } from "./avatar.ts";
+export { button } from "./button.ts";
+export { buttonGroup } from "./button-group.ts";
+export { item, itemGroup } from "./item.ts";
+
 const Model = Schema.Struct({ title: Schema.String });
 type Model = typeof Model.Type;
 

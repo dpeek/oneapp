@@ -3,11 +3,13 @@ import {
   bitwardenSignInQuery,
 } from "./bitwarden-connection.ts";
 import { appName } from "@oneapp/core";
-import { Link, LinkList, SaveLink } from "@oneapp/core/links";
+import { Link, LinkList } from "@oneapp/core/links";
+import { avatar, button, buttonGroup, item, itemGroup } from "@oneapp/ui";
 import * as Client from "@yielded/auth/Client";
 import { Effect, Option, Schema, Stream } from "effect";
 import {
   Command,
+  Mount,
   Navigation,
   Runtime,
   Subscription,
@@ -28,7 +30,12 @@ import {
   MailRoute,
   mailRouteFor,
 } from "./inbox-contract.ts";
-import { deleteLink, readLinks, saveLink } from "./links-client.ts";
+import {
+  deleteLink,
+  parseLinkInput,
+  readLinks,
+  saveLink,
+} from "./links-client.ts";
 import { mcpAuthorizePath, mcpLoginQuery } from "./mcp-access-contract.ts";
 import { navigationView } from "./navigation.ts";
 import * as PasswordRecovery from "./password-recovery.ts";
@@ -38,6 +45,7 @@ import { PeopleRoute, peopleRouteFor } from "./people-contract.ts";
 import * as PeopleDirectory from "./people-directory.ts";
 import { vaultPath } from "./vault-setup-contract.ts";
 import * as VaultSetup from "./vault-setup.ts";
+import { websiteIconHostname, websiteIconPath } from "./website-icon-host.ts";
 
 const Page = Schema.Literals(["links", "inbox", "vault", "people", "settings"]);
 type Page = typeof Page.Type;
@@ -89,6 +97,8 @@ const Message = defineMessageUnion({
   GotInboxMessage: { message: Inbox.Message },
   GotPeopleMessage: { message: People.Message },
   ChangedLinkUrl: { url: Schema.String },
+  FocusedLinkInput: {},
+  CompletedLinkAvatarImageMount: {},
   SubmittedLink: {},
   RequestedLinkDeletion: { id: Schema.String },
   RetriedLinks: {},
@@ -114,7 +124,6 @@ const savedAtFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeStyle: "short",
 });
-const isSaveLink = Schema.is(SaveLink);
 const toAccountSettingsMessage = (
   message: typeof AccountSettings.Message.Type,
 ) => Message.GotAccountSettingsMessage({ message });
@@ -319,6 +328,16 @@ const StoreLink = Command.define("StoreLink", {
         ),
       ),
     ),
+});
+
+const FocusLinkInput = Mount.define("FocusLinkInput", {
+  messages: [Message.FocusedLinkInput],
+  execute: ({ element }) =>
+    Effect.sync(() => {
+      if (element instanceof HTMLInputElement)
+        element.focus({ preventScroll: true });
+      return Message.FocusedLinkInput();
+    }),
 });
 
 const DeleteLink = Command.define("DeleteLink", {
@@ -710,10 +729,12 @@ const update = (
       );
     },
     ChangedLinkUrl: ({ url }) => ({ model: { ...model, linkUrl: url } }),
+    FocusedLinkInput: () => ({ model }),
+    CompletedLinkAvatarImageMount: () => ({ model }),
     SubmittedLink: () => {
       if (model.pending || !model.account || !model.links) return { model };
-      const input = { url: model.linkUrl.trim() };
-      if (!isSaveLink(input)) {
+      const input = parseLinkInput(model.linkUrl);
+      if (!input) {
         return {
           model: {
             ...model,
@@ -889,6 +910,35 @@ const update = (
       foldExtensionAccess(model, message),
   });
 
+const savedLinkAvatar = (url: string, h: HtmlBuilder<Message>) => {
+  const hostname = websiteIconHostname(url);
+  return avatar(
+    {
+      src: hostname ? websiteIconPath(hostname) : null,
+      imageMounted: Message.CompletedLinkAvatarImageMount(),
+      fallback: h.svg(
+        [
+          h.ViewBox("0 0 24 24"),
+          h.Width("18"),
+          h.Height("18"),
+          h.Fill("none"),
+          h.Stroke("currentColor"),
+          h.StrokeWidth("1.75"),
+          h.StrokeLinecap("round"),
+        ],
+        [
+          h.path([h.D("M10 13a4 4 0 0 0 6 .4l4-4a4 4 0 0 0-5.7-5.7L12 6")], []),
+          h.path(
+            [h.D("M14 11a4 4 0 0 0-6-.4l-4 4a4 4 0 0 0 5.7 5.7L12 18")],
+            [],
+          ),
+        ],
+      ),
+    },
+    h,
+  );
+};
+
 const linksView = (model: Model, h: HtmlBuilder<Message>) =>
   h.section(
     [h.Class("links")],
@@ -906,74 +956,122 @@ const linksView = (model: Model, h: HtmlBuilder<Message>) =>
             h.form(
               [h.Method("post"), h.OnSubmit(Message.SubmittedLink())],
               [
-                h.input([
-                  h.Id("link-url"),
-                  h.Type("url"),
-                  h.AriaLabel("Link URL"),
-                  h.Placeholder("Paste a URL and press Enter"),
-                  h.EnterKeyHint("done"),
-                  h.Required(true),
-                  h.Value(model.linkUrl),
-                  h.Readonly(model.pending),
-                  h.OnInput((url) => Message.ChangedLinkUrl({ url })),
-                ]),
+                buttonGroup(
+                  [
+                    h.input([
+                      h.Id("link-url"),
+                      h.Type("text"),
+                      h.InputMode("url"),
+                      h.Autocapitalize("off"),
+                      h.Spellcheck(false),
+                      h.AriaLabel("Link URL"),
+                      h.Placeholder("Paste a URL"),
+                      h.EnterKeyHint("done"),
+                      h.Required(true),
+                      h.Value(model.linkUrl),
+                      h.Readonly(model.pending),
+                      h.OnMount(FocusLinkInput()),
+                      h.OnInput((url) => Message.ChangedLinkUrl({ url })),
+                    ]),
+                    button(
+                      {
+                        type: "submit",
+                        variant: "outline",
+                        size: "icon",
+                        ariaLabel: "Save link",
+                        disabled:
+                          model.pending || !parseLinkInput(model.linkUrl),
+                        children: [
+                          h.svg(
+                            [
+                              h.ViewBox("0 0 24 24"),
+                              h.Width("18"),
+                              h.Height("18"),
+                              h.Fill("none"),
+                              h.Stroke("currentColor"),
+                              h.StrokeWidth("2"),
+                              h.StrokeLinecap("round"),
+                              h.AriaHidden(true),
+                            ],
+                            [h.path([h.D("M12 5v14M5 12h14")], [])],
+                          ),
+                        ],
+                      },
+                      h,
+                    ),
+                  ],
+                  h,
+                ),
                 h.p(
                   [h.Role("status")],
                   [
-                    model.pending && model.deletingLink === null
-                      ? "Saving…"
-                      : "",
+                    model.deletingLink !== null
+                      ? "Deleting link…"
+                      : model.pending
+                        ? "Saving…"
+                        : "",
                   ],
                 ),
               ],
             ),
             model.links.length === 0
               ? h.p([], ["No saved links yet."])
-              : h.ul(
-                  [h.Class("saved-links")],
+              : itemGroup(
                   model.links.map((link) =>
-                    h.li(
-                      [h.Key(link.id)],
-                      [
-                        h.div(
-                          [h.Class("saved-link-details")],
-                          [
-                            h.a(
-                              [
-                                h.Href(link.url),
-                                h.Target("_blank"),
-                                h.Rel("noopener noreferrer"),
-                              ],
-                              [link.url],
-                            ),
-                            h.time(
-                              [
-                                h.Datetime(
-                                  new Date(link.savedAt).toISOString(),
-                                ),
-                              ],
-                              [savedAtFormat.format(link.savedAt)],
-                            ),
-                          ],
+                    item(
+                      {
+                        key: link.id,
+                        href: link.url,
+                        target: "_blank",
+                        media: savedLinkAvatar(link.url, h),
+                        title: link.url.replace(/^https?:\/\//i, ""),
+                        description: h.time(
+                          [h.Datetime(new Date(link.savedAt).toISOString())],
+                          [savedAtFormat.format(link.savedAt)],
                         ),
-                        h.button(
-                          [
-                            h.Type("button"),
-                            h.AriaLabel(`Delete ${link.url}`),
-                            h.Disabled(model.pending),
-                            h.OnClick(
-                              Message.RequestedLinkDeletion({ id: link.id }),
-                            ),
-                          ],
-                          [
-                            model.deletingLink === link.id
-                              ? "Deleting…"
-                              : "Delete",
-                          ],
+                        action: button(
+                          {
+                            variant: "ghost",
+                            size: "icon",
+                            rounded: true,
+                            ariaLabel: `Delete ${link.url}`,
+                            disabled: model.pending,
+                            onClick: Message.RequestedLinkDeletion({
+                              id: link.id,
+                            }),
+                            children: [
+                              h.svg(
+                                [
+                                  h.ViewBox("0 0 24 24"),
+                                  h.Width("16"),
+                                  h.Height("16"),
+                                  h.Fill("none"),
+                                  h.Stroke("currentColor"),
+                                  h.StrokeWidth("2"),
+                                  h.StrokeLinecap("round"),
+                                  h.StrokeLinejoin("round"),
+                                  h.AriaHidden(true),
+                                ],
+                                [
+                                  h.path(
+                                    [
+                                      h.D(
+                                        "M3 6h18M9 6V4h6v2m4 0-1 14H6L5 6m5 4v6m4-6v6",
+                                      ),
+                                    ],
+                                    [],
+                                  ),
+                                ],
+                              ),
+                            ],
+                          },
+                          h,
                         ),
-                      ],
+                      },
+                      h,
                     ),
                   ),
+                  h,
                 ),
           ]),
     ],
@@ -1146,6 +1244,7 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
     people: "People",
     settings: "Settings",
   }[model.page];
+  const isLinksPage = model.page === "links";
   return {
     title: `${title} · ${appName}`,
     body: h.div(
@@ -1153,9 +1252,9 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
       [
         navigationView(model.page, model.inbox.unreadCount, h),
         h.main(
-          [h.Class("page")],
+          [h.Class("page"), ...(isLinksPage ? [h.AriaLabel(title)] : [])],
           [
-            h.h1([], [title]),
+            ...(isLinksPage ? [] : [h.h1([], [title])]),
             {
               links: () => linksView(model, h),
               inbox: () =>

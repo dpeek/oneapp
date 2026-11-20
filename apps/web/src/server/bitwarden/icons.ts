@@ -1,5 +1,6 @@
 import type { WorkerEnv } from "../../../../../alchemy.run.ts";
 import { iconHostname, websiteIconPath } from "../../website-icon-host.ts";
+import type { RasterizeSvg } from "./website-icon-svg.ts";
 import { downloadWebsiteIcon } from "./website-icon.ts";
 
 const iconPath = /^\/icons\/([a-z0-9.-]+)\/icon\.png$/iu;
@@ -25,6 +26,7 @@ export const bitwardenIcon = async (
   url: URL,
   env: Pick<WorkerEnv, "APP_ORIGIN" | "BITWARDEN_ICON_LIMIT">,
   defer: (work: Promise<unknown>) => void,
+  rasterizeSvg?: RasterizeSvg,
 ) => {
   if (request.method !== "GET" && request.method !== "HEAD")
     return new Response(null, {
@@ -53,9 +55,11 @@ export const bitwardenIcon = async (
         headers: { "cache-control": "no-store" },
       });
 
-    const image = await downloadWebsiteIcon(host, blockedHosts).catch(
-      () => null,
-    );
+    const image = await downloadWebsiteIcon(
+      host,
+      blockedHosts,
+      rasterizeSvg,
+    ).catch(() => null);
     icon = image
       ? new Response(image.body, {
           headers: {

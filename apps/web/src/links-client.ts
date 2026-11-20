@@ -1,5 +1,28 @@
-import { Link, LinkList, linkPath, linksPath } from "@oneapp/core/links";
+import {
+  Link,
+  LinkList,
+  linkPath,
+  linksPath,
+  normalizeLinkUrl,
+  SaveLink,
+} from "@oneapp/core/links";
 import { Effect, Schema } from "effect";
+
+const isSaveLink = Schema.is(SaveLink);
+const bareWebAddress =
+  /^(?:localhost|\[[^\]]+\]|[^./:?#\\\s]+(?:\.[^./:?#\\\s]+)+)\.?(?::\d+)?(?:[/?#]|$)/i;
+
+export const parseLinkInput = (value: string): typeof SaveLink.Type | null => {
+  const text = value.trim();
+  const address = text.replace(/^\/\//, "");
+  const input = {
+    url:
+      bareWebAddress.test(address) && !address.includes("\\")
+        ? `https://${address}`
+        : text,
+  };
+  return isSaveLink(input) ? { url: normalizeLinkUrl(input.url) } : null;
+};
 
 export const readLinks = Effect.tryPromise(async (signal) => {
   const response = await fetch(linksPath, { signal, cache: "no-store" });

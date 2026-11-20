@@ -38,4 +38,4 @@ export const websiteIconHostname = (uri: string) => {
 };
 
 export const websiteIconPath = (hostname: string) =>
-  `/icons/${hostname}/icon.png`;
+  `/icons/${hostname}/icon.png?v=2`;

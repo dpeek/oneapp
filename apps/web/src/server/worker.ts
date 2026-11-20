@@ -23,6 +23,7 @@ import { AppAuth, authHttp, ownerId, sessionCookieName } from "./auth.ts";
 import { bitwardenDeviceRoutes } from "./bitwarden/devices.ts";
 import { bitwardenIcon } from "./bitwarden/icons.ts";
 import { bitwardenFetch, isBitwardenPath } from "./bitwarden/routes.ts";
+import type { RasterizeSvg } from "./bitwarden/website-icon-svg.ts";
 import { privateHeaders } from "./api-response.ts";
 import { cliLoginRoutes } from "./cli-login.ts";
 import { cliTokenRoutes } from "./cli-tokens.ts";
@@ -136,6 +137,7 @@ export default {
       ASSETS?: { fetch(request: Request): Promise<Response> };
     },
     context?: { waitUntil(promise: Promise<unknown>): void },
+    rasterizeSvg?: RasterizeSvg,
   ): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -144,7 +146,7 @@ export default {
       else void work;
     };
     if (path.startsWith("/icons/"))
-      return bitwardenIcon(request, url, env, defer);
+      return bitwardenIcon(request, url, env, defer, rasterizeSvg);
     if (
       (path === forgotPasswordPage || path === resetPasswordPage) &&
       env.ASSETS

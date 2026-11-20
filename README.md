@@ -51,6 +51,8 @@ The deploy script uses the named `cf` profile locally. For CI, supply `CLOUDFLAR
 
 The main deployment uses `APP_DOMAIN=app.dpeek.com`. Alchemy attaches the hostname to the Worker, and Cloudflare manages DNS and TLS. Stages with a custom domain serve traffic on that domain. Stages without one use their `workers.dev` URL.
 
+Set `ONEAPP_EXTERNAL_AUTH_SECRETS=true` for an existing Worker whose `AUTH_SECRET` and `MCP_OAUTH_SECRET` bindings are managed directly in Cloudflare. This keeps their values out of the deployment environment.
+
 Set `ACCOUNT_EMAIL_ZONE_ID` to the Cloudflare DNS zone ID that owns `APP_DOMAIN` to enable account email. Alchemy onboards that hostname for Email Sending and the Worker sends from `accounts@APP_DOMAIN`. Leave this setting unset on preview deployments that should not send mail.
 
 Set `INBOX_EMAIL_ZONE_ID` to the Cloudflare DNS zone ID that owns the `APP_DOMAIN` subdomain to receive mail at `mail@APP_DOMAIN`. Alchemy configures Email Routing for the subdomain and creates a rule for that address. After deploying, send a test email and verify that a `.eml` object appears in the stage's private `InboxMessages` R2 bucket. Each object contains the raw email, including attachments, and stores the SMTP envelope sender and recipient as object metadata.

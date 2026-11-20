@@ -40,6 +40,9 @@ export const Web = Cloudflare.Worker(
   "Web",
   Effect.gen(function* () {
     const domain = yield* Config.option(Config.String("APP_DOMAIN"));
+    const externalAuthSecrets = yield* Config.Boolean(
+      "ONEAPP_EXTERNAL_AUTH_SECRETS",
+    ).pipe(Config.withDefault(false));
     const emailZone = yield* Config.option(
       Config.String("ACCOUNT_EMAIL_ZONE_ID"),
     );
@@ -107,8 +110,12 @@ export const Web = Cloudflare.Worker(
           namespaceId: 1004,
           simple: { limit: 300, period: 60 },
         }),
-        AUTH_SECRET: Config.Redacted("AUTH_SECRET"),
-        MCP_OAUTH_SECRET: Config.Redacted("MCP_OAUTH_SECRET"),
+        ...(externalAuthSecrets
+          ? {}
+          : {
+              AUTH_SECRET: Config.Redacted("AUTH_SECRET"),
+              MCP_OAUTH_SECRET: Config.Redacted("MCP_OAUTH_SECRET"),
+            }),
         AUTH_LIMIT: Cloudflare.RateLimit("AuthLimit", {
           namespaceId: 1001,
           simple: { limit: 10, period: 60 },
@@ -152,7 +159,13 @@ export const Web = Cloudflare.Worker(
   }),
 );
 
-export type WorkerEnv = Cloudflare.InferEnv<typeof Web>;
+export type WorkerEnv = Omit<
+  Cloudflare.InferEnv<typeof Web>,
+  "AUTH_SECRET" | "MCP_OAUTH_SECRET"
+> & {
+  AUTH_SECRET: string;
+  MCP_OAUTH_SECRET: string;
+};
 
 export default Alchemy.Stack(
   "OneApp",

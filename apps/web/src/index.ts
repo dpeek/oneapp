@@ -1259,6 +1259,7 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
   const usesOwnHeading =
     model.page === "links" ||
     model.page === "mail" ||
+    model.page === "people" ||
     (model.page === "vault" && model.vaultSetup.status?.initialized === true);
   return {
     title: `${title} · ${appName}`,

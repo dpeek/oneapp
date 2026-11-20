@@ -1,6 +1,7 @@
 import {
   avatar as uiAvatar,
   button,
+  buttonGroup,
   dialog,
   field,
   input,
@@ -8,7 +9,8 @@ import {
 } from "@oneapp/ui";
 import { Effect, Schema } from "effect";
 import { Command, Submodel, Update } from "foldkit";
-import type { HtmlBuilder } from "foldkit/html";
+import { focus } from "foldkit/dom";
+import type { Html, HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import * as Mount from "foldkit/mount";
 import {
@@ -19,9 +21,11 @@ import {
   personAddressLimit,
   personApiPath,
   PersonDraft,
+  PersonId,
   personLookupPath,
   PersonLookup,
   personNameLimit,
+  personPath,
   personPhotoPath,
   type PersonSummary,
   profilePhotoSize,
@@ -156,6 +160,21 @@ const LoadDirectory = Command.define("LoadPeopleDirectory", {
     }).pipe(
       Effect.catch(() => Effect.succeed(Message.DirectoryFailed({ request }))),
     ),
+});
+
+const FocusDirectory = Command.define("FocusPeopleDirectory", {
+  args: { id: PersonId },
+  messages: [Message.Mounted],
+  execute: ({ id }) => {
+    const list = ".people-workspace:not([data-panel]) .people-list";
+    return focus(`${list} [href="${personPath(id)}"]`, {
+      preventScroll: true,
+    }).pipe(
+      Effect.catch(() => focus(list, { preventScroll: true })),
+      Effect.ignore,
+      Effect.as(Message.Mounted()),
+    );
+  },
 });
 
 const photoTypes = ["image/jpeg", "image/png", "image/webp"];
@@ -402,9 +421,19 @@ export const update = (
         ...model,
         directory: { ...directory, selected: id, edit: null, editError: null },
       };
-      return refresh || directory.records === null
-        ? loadDirectory(next)
-        : { model: next };
+      const result =
+        refresh || directory.records === null
+          ? loadDirectory(next)
+          : { model: next };
+      return id === null && directory.selected && !refresh
+        ? {
+            ...result,
+            commands: [
+              ...(result.commands ?? []),
+              FocusDirectory({ id: directory.selected }),
+            ],
+          }
+        : result;
     },
     RetriedDirectory: () => loadDirectory(model),
     LoadedDirectory: ({ request, people }) =>
@@ -565,6 +594,50 @@ export const avatar = <Message>(
     ],
   );
 
+export const profileAvatar = (
+  h: HtmlBuilder<Message>,
+  person: PersonSummary | null,
+  address: string,
+  options: { name?: string; size?: "lg" } = {},
+) =>
+  uiAvatar(
+    {
+      fallback: profileInitials(options.name ?? person?.name ?? "", address),
+      src: person?.photo ? personPhotoPath(person.id, person.photo) : null,
+      imageMounted: Message.Mounted(),
+      size: options.size,
+      fit: "cover",
+    },
+    h,
+  );
+
+export const profileHeader = (
+  h: HtmlBuilder<Message>,
+  name: string,
+  media: Html,
+  actions: ReadonlyArray<Html>,
+  subtitle?: string,
+) =>
+  h.header(
+    [h.Class("people-detail-header")],
+    [
+      h.div(
+        [h.Class("people-profile-identity")],
+        [
+          media,
+          h.div(
+            [],
+            [
+              h.h2([], [name]),
+              ...(subtitle ? [h.p([h.Class("people-self")], [subtitle])] : []),
+            ],
+          ),
+        ],
+      ),
+      buttonGroup(actions, h),
+    ],
+  );
+
 const photoPicker = (
   h: HtmlBuilder<Message>,
   person: Person | null,
@@ -581,16 +654,7 @@ const photoPicker = (
       h.OnMount(PreviewPhoto()),
     ],
     [
-      uiAvatar(
-        {
-          fallback: profileInitials(name, address),
-          src: person?.photo ? personPhotoPath(person.id, person.photo) : null,
-          imageMounted: Message.Mounted(),
-          size: "lg",
-          fit: "cover",
-        },
-        h,
-      ),
+      profileAvatar(h, person, address, { name, size: "lg" }),
       h.img([h.DataAttribute("photo-preview", ""), h.Hidden(true), h.Alt("")]),
       h.span(
         [h.Class("person-photo-picker-icon"), h.AriaHidden(true)],
@@ -632,10 +696,39 @@ const profileForm = (
     submit: Message;
     cancel: Message;
     suggestedName?: string;
+    heading?: string;
   },
 ) => {
   const emails = person?.addresses ?? (address ? [address] : []);
   const name = person?.name || options.suggestedName || "";
+  const photo = photoPicker(
+    h,
+    person,
+    name,
+    address ?? emails[0] ?? person?.managedAddresses[0] ?? "",
+    pending,
+  );
+  const actions = [
+    button(
+      {
+        variant: "outline",
+        size: "sm",
+        disabled: pending,
+        onClick: options.cancel,
+        children: ["Cancel"],
+      },
+      h,
+    ),
+    button(
+      {
+        type: "submit",
+        size: "sm",
+        disabled: pending,
+        children: [pending ? "Saving…" : "Save"],
+      },
+      h,
+    ),
+  ];
   return h.form(
     [
       h.Id(options.formId),
@@ -649,13 +742,9 @@ const profileForm = (
       ),
     ],
     [
-      photoPicker(
-        h,
-        person,
-        name,
-        address ?? emails[0] ?? person?.managedAddresses[0] ?? "",
-        pending,
-      ),
+      options.heading
+        ? profileHeader(h, options.heading, photo, actions)
+        : photo,
       field(
         "Display name",
         input(
@@ -693,30 +782,7 @@ const profileForm = (
             ),
           ]
         : []),
-      h.div(
-        [h.Class("person-actions")],
-        [
-          button(
-            {
-              variant: "outline",
-              size: "sm",
-              disabled: pending,
-              onClick: options.cancel,
-              children: ["Cancel"],
-            },
-            h,
-          ),
-          button(
-            {
-              type: "submit",
-              size: "sm",
-              disabled: pending,
-              children: [pending ? "Saving…" : "Save"],
-            },
-            h,
-          ),
-        ],
-      ),
+      ...(options.heading ? [] : [h.div([h.Class("person-actions")], actions)]),
     ],
   );
 };
@@ -725,11 +791,13 @@ export const editForm = (
   h: HtmlBuilder<Message>,
   person: typeof Person.Type,
   pending: boolean,
+  heading: string,
 ) =>
   profileForm(h, person, null, pending, {
     formId: editFormId,
     submit: Message.SubmittedEdit(),
     cancel: Message.CanceledEdit(),
+    heading,
   });
 
 export const view = Submodel.defineView<Model, Message>((model, h) => {

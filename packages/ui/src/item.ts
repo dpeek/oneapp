@@ -146,7 +146,7 @@ type ItemProps<Message> = Readonly<{
   target?: "_blank";
   media?: Html;
   title: string;
-  description: Html;
+  description?: Html;
   action?: Html;
   linkAttributes?: ReadonlyArray<Attribute<Message>>;
 }>;
@@ -171,7 +171,9 @@ export const item = <Message>(
           h.Class(stylex.props(styles.link).className ?? ""),
           h.Href(props.href),
           h.AriaLabel(props.title),
-          h.AriaDescribedBy(descriptionId),
+          ...(props.description === undefined
+            ? []
+            : [h.AriaDescribedBy(descriptionId)]),
           ...(props.linkAttributes ?? []),
           ...(props.target
             ? [h.Target(props.target), h.Rel("noopener noreferrer")]
@@ -202,14 +204,18 @@ export const item = <Message>(
                 ],
                 [props.title],
               ),
-              h.div(
-                [
-                  h.Id(descriptionId),
-                  h.DataAttribute("slot", "item-description"),
-                  h.Class(itemClassNames.description),
-                ],
-                [props.description],
-              ),
+              ...(props.description === undefined
+                ? []
+                : [
+                    h.div(
+                      [
+                        h.Id(descriptionId),
+                        h.DataAttribute("slot", "item-description"),
+                        h.Class(itemClassNames.description),
+                      ],
+                      [props.description],
+                    ),
+                  ]),
             ],
           ),
         ],

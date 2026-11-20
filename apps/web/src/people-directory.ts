@@ -1,10 +1,23 @@
-import { navigationLinks } from "@oneapp/ui";
+import {
+  backIcon,
+  button,
+  buttonClassName,
+  item,
+  itemGroup,
+  spinner,
+} from "@oneapp/ui";
 import { Effect } from "effect";
 import { Submodel } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";
 import * as Mount from "foldkit/mount";
 import { peoplePath, personPath, type Person } from "./people-contract.ts";
-import { avatar, editForm, Message, type Model } from "./people.ts";
+import {
+  editForm,
+  Message,
+  type Model,
+  profileAvatar,
+  profileHeader,
+} from "./people.ts";
 import { workspace } from "./workspace.ts";
 
 type DirectoryMessage = typeof Message.Type;
@@ -13,7 +26,8 @@ type Directory = (typeof Model.Type)["directory"];
 const primaryEmail = (person: Person) =>
   person.managedAddresses[0] ?? person.addresses[0] ?? "";
 const displayName = (person: Person) =>
-  person.name || (person.self ? "Your profile" : primaryEmail(person));
+  person.name ||
+  (person.self ? "Your profile" : primaryEmail(person) || "Unnamed person");
 
 const names = new Intl.Collator(undefined, { sensitivity: "base" });
 
@@ -27,74 +41,82 @@ const FocusDetail = Mount.define("FocusPersonDetail", {
     }),
 });
 
+const loading = (label: string, h: HtmlBuilder<DirectoryMessage>) =>
+  h.div([h.Class("people-loading")], [spinner(label, h)]);
+
+const loadError = (label: string, h: HtmlBuilder<DirectoryMessage>) =>
+  h.div(
+    [h.Class("people-list-status")],
+    [
+      h.p([h.Role("alert")], [label]),
+      button(
+        {
+          variant: "outline",
+          size: "sm",
+          onClick: Message.RetriedDirectory(),
+          children: ["Retry"],
+        },
+        h,
+      ),
+    ],
+  );
+
+const personItem = (
+  person: Person,
+  selected: Directory["selected"],
+  h: HtmlBuilder<DirectoryMessage>,
+) => {
+  const name = displayName(person);
+  const email = primaryEmail(person);
+  return item(
+    {
+      key: person.id,
+      href: personPath(person.id),
+      title: name,
+      description: email && email !== name ? h.span([], [email]) : undefined,
+      media: profileAvatar(h, person, email),
+      linkAttributes: selected === person.id ? [h.AriaCurrent("page")] : [],
+    },
+    h,
+  );
+};
+
 const listView = (directory: Directory, h: HtmlBuilder<DirectoryMessage>) => {
   const records = [...(directory.records ?? [])].sort(
     (first, second) =>
       names.compare(displayName(first), displayName(second)) ||
       names.compare(primaryEmail(first), primaryEmail(second)),
   );
-  const pending = directory.listRequest !== null;
+  const loadingPeople =
+    directory.listRequest || (!directory.records && !directory.listFailed);
   return h.section(
-    [h.Class("workspace-list"), h.AriaLabel("People records")],
+    [
+      h.Class("workspace-list people-list"),
+      h.AriaLabel("People records"),
+      h.Inert(directory.selected !== null),
+      h.Tabindex(-1),
+    ],
     [
       h.div(
         [h.Class("workspace-results")],
         [
-          ...(pending
-            ? [
-                h.p(
-                  [h.Class("people-list-status"), h.Role("status")],
-                  ["Loading people…"],
-                ),
-              ]
-            : []),
           ...(directory.listFailed
+            ? [loadError("Could not load people.", h)]
+            : []),
+          ...(records.length
             ? [
-                h.div(
-                  [h.Class("people-list-status")],
-                  [
-                    h.p([h.Role("alert")], ["Could not load people."]),
-                    h.button(
-                      [h.Type("button"), h.OnClick(Message.RetriedDirectory())],
-                      ["Retry"],
-                    ),
-                  ],
+                itemGroup(
+                  records.map((person) =>
+                    personItem(person, directory.selected, h),
+                  ),
+                  h,
                 ),
               ]
-            : []),
-          h.ul(
-            [h.Class("people-rows")],
-            records.map((person) => {
-              const name = displayName(person);
-              const email = primaryEmail(person);
-              return h.li(
-                [h.Key(person.id)],
-                [
-                  h.a(
-                    [
-                      h.Class("people-row"),
-                      h.Href(personPath(person.id)),
-                      ...(directory.selected === person.id
-                        ? [h.AriaCurrent("page")]
-                        : []),
-                    ],
-                    [
-                      avatar(h, person, email),
-                      h.span(
-                        [],
-                        [
-                          h.strong([], [name]),
-                          ...(email && email !== name
-                            ? [h.span([], [email])]
-                            : []),
-                        ],
-                      ),
-                    ],
-                  ),
-                ],
-              );
-            }),
-          ),
+            : loadingPeople
+              ? [loading("Loading people…", h)]
+              : directory.listFailed
+                ? []
+                : [h.p([h.Class("people-list-status")], ["No people yet."])]),
         ],
       ),
     ],
@@ -121,15 +143,46 @@ const addressList = (
       ]
     : [];
 
-const detailView = (directory: Directory, h: HtmlBuilder<DirectoryMessage>) => {
-  const { selected, records, edit, editRequest, editError } = directory;
-  if (!selected)
-    return h.div(
-      [h.Class("workspace-detail")],
-      ["Select a person to view their profile."],
-    );
-
+const detailView = (
+  selected: string,
+  directory: Directory,
+  h: HtmlBuilder<DirectoryMessage>,
+) => {
+  const { records, edit, editRequest, editError } = directory;
   const person = records?.find(({ id }) => id === selected);
+  const content = person
+    ? [
+        ...(editError ? [h.p([h.Role("alert")], [editError])] : []),
+        edit
+          ? editForm(h, edit, editRequest !== null, displayName(person))
+          : profileHeader(
+              h,
+              displayName(person),
+              profileAvatar(h, person, primaryEmail(person), { size: "lg" }),
+              [
+                button(
+                  {
+                    size: "sm",
+                    disabled:
+                      editRequest !== null || directory.listRequest !== null,
+                    onClick: Message.EditedRecord(),
+                    children: ["Edit"],
+                  },
+                  h,
+                ),
+              ],
+              person.self && person.name ? "Your profile" : undefined,
+            ),
+        ...addressList(h, "Account addresses", person.managedAddresses),
+        ...(edit ? [] : addressList(h, "Email addresses", person.addresses)),
+      ]
+    : [
+        directory.listFailed
+          ? loadError("Could not load the profile.", h)
+          : directory.listRequest || !records
+            ? loading("Loading profile…", h)
+            : h.p([], ["Person not found."]),
+      ];
   return h.article(
     [
       h.Key(selected),
@@ -138,82 +191,43 @@ const detailView = (directory: Directory, h: HtmlBuilder<DirectoryMessage>) => {
       h.Tabindex(-1),
       h.OnMount(FocusDetail()),
     ],
-    [
-      h.a([h.Href(peoplePath)], ["Back"]),
-      ...(person
-        ? [
-            h.header(
-              [h.Class("people-detail-header")],
-              [
-                ...(!edit ? [avatar(h, person, primaryEmail(person))] : []),
-                h.h2([], [edit ? "Edit profile" : displayName(person)]),
-                ...(!edit
-                  ? [
-                      h.button(
-                        [
-                          h.Type("button"),
-                          h.Disabled(
-                            editRequest !== null ||
-                              directory.listRequest !== null,
-                          ),
-                          h.OnClick(Message.EditedRecord()),
-                        ],
-                        ["Edit"],
-                      ),
-                    ]
-                  : []),
-              ],
-            ),
-            ...(!edit && person.self && person.name
-              ? [h.p([h.Class("people-self")], ["Your profile"])]
-              : []),
-            ...addressList(h, "Account addresses", person.managedAddresses),
-            ...(edit
-              ? [
-                  ...(editError ? [h.p([h.Role("alert")], [editError])] : []),
-                  editForm(h, edit, editRequest !== null),
-                ]
-              : addressList(h, "Email addresses", person.addresses)),
-          ]
-        : [
-            directory.listRequest
-              ? h.p([h.Role("status")], ["Loading profile…"])
-              : directory.listFailed
-                ? h.p([h.Role("alert")], ["Could not load the profile."])
-                : h.p([], ["Person not found."]),
-            ...(directory.listFailed
-              ? [
-                  h.button(
-                    [h.Type("button"), h.OnClick(Message.RetriedDirectory())],
-                    ["Retry"],
-                  ),
-                ]
-              : []),
-          ]),
-    ],
+    [h.div([h.Class("people-detail-content")], content)],
   );
 };
 
 export const view = Submodel.defineView<Directory, DirectoryMessage>(
-  (directory, h) =>
-    workspace(
+  (directory, h) => {
+    const selected = directory.selected;
+    return workspace(
       {
-        className: "people-workspace",
-        title: "People",
-        sidebar: navigationLinks(
-          {
-            label: "People navigation",
-            variant: "sidebar",
-            destinations: [
-              { href: peoplePath, label: "All people", current: true },
-            ],
-          },
-          h,
-        ),
+        className: "workspace-stacked people-workspace",
+        ...(selected
+          ? {
+              headerActions: [
+                h.a(
+                  [
+                    h.Href(peoplePath),
+                    h.Class(
+                      buttonClassName({
+                        variant: "ghost",
+                        size: "icon-sm",
+                        rounded: true,
+                      }),
+                    ),
+                    h.DataAttribute("slot", "button"),
+                    h.AriaLabel("Back to People"),
+                    h.Title("Back to People"),
+                  ],
+                  [backIcon(h)],
+                ),
+              ],
+              detail: detailView(selected, directory, h),
+            }
+          : { title: "People" }),
         list: listView(directory, h),
-        detail: detailView(directory, h),
-        hasSelection: directory.selected !== null,
+        hasSelection: selected !== null,
       },
       h,
-    ),
+    );
+  },
 );

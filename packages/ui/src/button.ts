@@ -1,6 +1,6 @@
 import { Button as ButtonPrimitive } from "@foldkit/ui";
 import * as stylex from "@stylexjs/stylex";
-import type { Html, HtmlBuilder } from "foldkit/html";
+import type { Attribute, Html, HtmlBuilder } from "foldkit/html";
 import { controls } from "./tokens.stylex.ts";
 
 const styles = stylex.create({
@@ -94,6 +94,7 @@ type ButtonProps<Message> = Readonly<{
   type?: "button" | "submit";
   disabled?: boolean;
   onClick?: Message;
+  attributes?: ReadonlyArray<Attribute<Message>>;
 }>;
 
 export const buttonClassName = (
@@ -119,6 +120,7 @@ export const button = <Message>(
         h.button(
           [
             ...attributes,
+            ...(props.attributes ?? []),
             h.Disabled(props.disabled ?? false),
             h.DataAttribute("slot", "button"),
             ...(props.ariaLabel ? [h.AriaLabel(props.ariaLabel)] : []),

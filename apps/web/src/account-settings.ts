@@ -1,3 +1,4 @@
+import { button, dialog, field, input, item, itemGroup } from "@oneapp/ui";
 import { Effect, Option, Schema } from "effect";
 import { Command } from "foldkit";
 import { focus } from "foldkit/dom";
@@ -243,34 +244,55 @@ export const view = <Parent>(
 ) => {
   const disabled = busy || model.pending !== null;
   const action = (label: string, message: Message, id?: string) =>
-    h.button(
-      [
-        ...(id ? [h.Id(id), h.AriaHasPopup("dialog")] : []),
-        h.Type("button"),
-        h.Disabled(disabled),
-        h.OnClick(emit(message)),
-      ],
-      [label],
+    button(
+      {
+        variant: "outline",
+        size: "sm",
+        disabled,
+        attributes: id ? [h.Id(id), h.AriaHasPopup("dialog")] : [],
+        onClick: emit(message),
+        children: [label],
+      },
+      h,
     );
   const submit = (label: string) =>
-    h.button([h.Type("submit"), h.Disabled(disabled)], [label]);
+    button({ type: "submit", size: "sm", disabled, children: [label] }, h);
+  const actions = (...children: Html[]) =>
+    h.div([h.Class("account-actions")], children);
   const passwordField = (
     name: string,
     label: string,
     autocomplete: "current-password" | "new-password",
   ) =>
-    h.label(
-      [h.For(name)],
-      [
-        label,
-        h.input([
+    field(
+      label,
+      input(
+        [
           h.Id(name),
           h.Name(name),
           h.Type("password"),
           h.Autocomplete(autocomplete),
           h.Required(true),
-        ]),
-      ],
+        ],
+        h,
+      ),
+      h,
+    );
+  const codeField = (id: string) =>
+    field(
+      "Verification code",
+      input(
+        [
+          h.Id(id),
+          h.Name("code"),
+          h.Type("text"),
+          h.InputMode("numeric"),
+          h.Autocomplete("one-time-code"),
+          h.Required(true),
+        ],
+        h,
+      ),
+      h,
     );
   const username = h.input([
     h.Type("hidden"),
@@ -283,6 +305,7 @@ export const view = <Parent>(
   const emailForm = model.emailChange
     ? h.form(
         [
+          h.Class("account-form"),
           h.Id("confirm-account-email"),
           h.Method("post"),
           h.OnSubmit(emit(Message.ConfirmEmailChange())),
@@ -294,30 +317,21 @@ export const view = <Parent>(
               `Enter the code sent to ${model.emailChange.email}. It expires in 5 minutes.`,
             ],
           ),
-          h.label([h.For("email-change-code")], ["Verification code"]),
-          h.input([
-            h.Id("email-change-code"),
-            h.Name("code"),
-            h.InputMode("numeric"),
-            h.Autocomplete("one-time-code"),
-            h.Required(true),
-          ]),
-          h.div(
-            [h.Class("account-actions")],
-            [
-              submit(
-                model.pending === "confirm-email-change"
-                  ? "Confirming…"
-                  : "Confirm email change",
-              ),
-              action("Start over", Message.OpenDialog({ dialog: "email" })),
-              cancel,
-            ],
+          codeField("email-change-code"),
+          actions(
+            cancel,
+            action("Start over", Message.OpenDialog({ dialog: "email" })),
+            submit(
+              model.pending === "confirm-email-change"
+                ? "Confirming…"
+                : "Confirm email change",
+            ),
           ),
         ],
       )
     : h.form(
         [
+          h.Class("account-form"),
           h.Id("change-account-email"),
           h.Method("post"),
           h.OnSubmit(emit(Message.SubmitEmailChange())),
@@ -330,35 +344,39 @@ export const view = <Parent>(
             ],
           ),
           username,
-          h.label([h.For("new-email")], ["New email"]),
-          h.input([
-            h.Id("new-email"),
-            h.Name("new-email"),
-            h.Type("email"),
-            h.Autocomplete("email"),
-            h.Required(true),
-          ]),
+          field(
+            "New email",
+            input(
+              [
+                h.Id("new-email"),
+                h.Name("new-email"),
+                h.Type("email"),
+                h.Autocomplete("email"),
+                h.Required(true),
+              ],
+              h,
+            ),
+            h,
+          ),
           passwordField(
             "email-current-password",
             "Current password",
             "current-password",
           ),
-          h.div(
-            [h.Class("account-actions")],
-            [
-              submit(
-                model.pending === "send-email-change"
-                  ? "Sending…"
-                  : "Send code to new email",
-              ),
-              cancel,
-            ],
+          actions(
+            cancel,
+            submit(
+              model.pending === "send-email-change"
+                ? "Sending…"
+                : "Send code to new email",
+            ),
           ),
         ],
       );
 
   const passwordForm = h.form(
     [
+      h.Class("account-form"),
       h.Id("change-account-password"),
       h.Method("post"),
       h.OnSubmit(emit(Message.ChangePassword())),
@@ -374,97 +392,95 @@ export const view = <Parent>(
       passwordField("current-password", "Current password", "current-password"),
       passwordField("new-password", "New password", "new-password"),
       passwordField("confirm-password", "Confirm new password", "new-password"),
-      h.div(
-        [h.Class("account-actions")],
-        [
-          submit(
-            model.pending === "password" ? "Changing…" : "Change password",
-          ),
-          cancel,
-        ],
+      actions(
+        cancel,
+        submit(model.pending === "password" ? "Changing…" : "Change password"),
       ),
     ],
   );
 
   return [
-    h.div(
-      [h.Class("account-summary")],
+    itemGroup(
       [
-        h.div(
-          [h.Class("account-status")],
-          [
-            h.p([h.Class("account-address")], [account.email]),
-            h.p(
-              [h.Class("account-hint"), h.Role("status")],
-              [account.emailVerified ? "Email verified" : "Email unverified"],
+        item(
+          {
+            key: "settings-email",
+            title: account.email,
+            description: h.div(
+              [],
+              [
+                h.div(
+                  [h.Role("status")],
+                  [
+                    account.emailVerified
+                      ? "Email verified"
+                      : "Email unverified",
+                  ],
+                ),
+                ...(!account.emailDeliveryEnabled
+                  ? [
+                      h.div(
+                        [],
+                        ["Email sending is unavailable on this deployment."],
+                      ),
+                    ]
+                  : []),
+              ],
             ),
-            ...(!account.emailDeliveryEnabled
-              ? [
-                  h.p(
-                    [h.Class("account-hint")],
-                    ["Email sending is unavailable on this deployment."],
-                  ),
-                ]
-              : []),
-          ],
-        ),
-        h.div(
-          [h.Class("account-actions")],
-          [
-            ...(canVerify
-              ? [
-                  action(
-                    model.pending === "send"
-                      ? "Sending…"
-                      : model.verification
-                        ? "Send a new code"
-                        : "Send verification code",
-                    Message.SendCode(),
-                  ),
-                ]
-              : []),
-            ...(account.emailDeliveryEnabled
-              ? [
+            action: account.emailDeliveryEnabled
+              ? actions(
+                  ...(canVerify
+                    ? [
+                        action(
+                          model.pending === "send"
+                            ? "Sending…"
+                            : model.verification
+                              ? "Send a new code"
+                              : "Send verification code",
+                          Message.SendCode(),
+                        ),
+                      ]
+                    : []),
                   action(
                     "Change email",
                     Message.OpenDialog({ dialog: "email" }),
                     "open-email-dialog",
                   ),
-                ]
-              : []),
-            action(
+                )
+              : undefined,
+          },
+          h,
+        ),
+        item(
+          {
+            key: "settings-password",
+            title: "Password",
+            action: action(
               "Change password",
               Message.OpenDialog({ dialog: "password" }),
               "open-password-dialog",
             ),
-            signOut,
-          ],
+          },
+          h,
         ),
       ],
+      h,
     ),
     ...(canVerify && model.verification
       ? [
           h.form(
             [
-              h.Class("account-verification"),
+              h.Class("account-form account-verification"),
               h.Id("verify-account-email"),
               h.Method("post"),
               h.OnSubmit(emit(Message.VerifyCode())),
             ],
             [
               h.p(
-                [],
+                [h.Class("account-hint")],
                 ["Check your inbox for a code that expires in 5 minutes."],
               ),
-              h.label([h.For("email-code")], ["Verification code"]),
-              h.input([
-                h.Id("email-code"),
-                h.Name("code"),
-                h.Type("text"),
-                h.InputMode("numeric"),
-                h.Autocomplete("one-time-code"),
-                h.Required(true),
-              ]),
+              codeField("email-code"),
               submit(
                 model.pending === "verify" ? "Verifying…" : "Verify email",
               ),
@@ -472,29 +488,34 @@ export const view = <Parent>(
           ),
         ]
       : []),
-    model.dialog
-      ? h.dialog(
-          [
-            h.Key(model.dialog),
-            h.Class("account-dialog"),
-            h.AriaLabelledBy("account-dialog-title"),
-            h.OnMount(Mount.mapMessage(ShowDialog(), emit)),
-            h.OnKeyDownPreventDefault((key) =>
-              key === "Escape"
-                ? Option.some(emit(Message.CloseDialog()))
-                : Option.none(),
-            ),
-            h.OnCancel(emit(Message.CloseDialog())),
-          ],
-          [
-            h.h3(
-              [h.Id("account-dialog-title")],
-              [model.dialog === "email" ? "Change email" : "Change password"],
-            ),
-            model.dialog === "email" ? emailForm : passwordForm,
-            h.p([h.Role("alert")], [model.error]),
-          ],
-        )
-      : h.p([h.Role("alert")], [model.error]),
+    h.div([h.Class("settings-sign-out")], [signOut]),
+    ...(model.dialog
+      ? [
+          dialog(
+            {
+              titleId: "account-dialog-title",
+              title:
+                model.dialog === "email" ? "Change email" : "Change password",
+              attributes: [
+                h.Key(model.dialog),
+                h.OnMount(Mount.mapMessage(ShowDialog(), emit)),
+                h.OnKeyDownPreventDefault((key) =>
+                  key === "Escape"
+                    ? Option.some(emit(Message.CloseDialog()))
+                    : Option.none(),
+                ),
+                h.OnCancel(emit(Message.CloseDialog())),
+              ],
+              children: [
+                model.dialog === "email" ? emailForm : passwordForm,
+                ...(model.error ? [h.p([h.Role("alert")], [model.error])] : []),
+              ],
+            },
+            h,
+          ),
+        ]
+      : model.error
+        ? [h.p([h.Role("alert")], [model.error])]
+        : []),
   ];
 };

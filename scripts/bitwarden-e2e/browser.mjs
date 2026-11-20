@@ -1413,10 +1413,10 @@ try {
     for (const device of devices) assert.match(device.name, /chrome/iu);
     const clients = app.getByRole("region", { name: "Clients" });
     const rowFor = (id) =>
-      clients.getByRole("row").filter({ hasText: id.slice(-8).toUpperCase() });
-    await rowFor(firstDevice)
-      .getByRole("cell", { name: "Bitwarden", exact: true })
-      .waitFor();
+      clients
+        .getByRole("listitem")
+        .filter({ hasText: id.slice(-8).toUpperCase() });
+    await rowFor(firstDevice).getByText("Bitwarden", { exact: true }).waitFor();
     const target = rowFor(secondDevice);
     const revokedGrant = await latestGrant(second, secondToken);
     await target.getByRole("button", { name: /^Revoke /u }).click();

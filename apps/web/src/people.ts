@@ -594,17 +594,17 @@ export const avatar = <Message>(
     ],
   );
 
-export const profileAvatar = (
-  h: HtmlBuilder<Message>,
+export const profileAvatar = <Parent>(
+  h: HtmlBuilder<Parent>,
   person: PersonSummary | null,
   address: string,
-  options: { name?: string; size?: "lg" } = {},
+  options: { name?: string; size?: "lg"; imageMounted: Parent },
 ) =>
   uiAvatar(
     {
       fallback: profileInitials(options.name ?? person?.name ?? "", address),
       src: person?.photo ? personPhotoPath(person.id, person.photo) : null,
-      imageMounted: Message.Mounted(),
+      imageMounted: options.imageMounted,
       size: options.size,
       fit: "cover",
     },
@@ -654,7 +654,11 @@ const photoPicker = (
       h.OnMount(PreviewPhoto()),
     ],
     [
-      profileAvatar(h, person, address, { name, size: "lg" }),
+      profileAvatar(h, person, address, {
+        name,
+        size: "lg",
+        imageMounted: Message.Mounted(),
+      }),
       h.img([h.DataAttribute("photo-preview", ""), h.Hidden(true), h.Alt("")]),
       h.span(
         [h.Class("person-photo-picker-icon"), h.AriaHidden(true)],

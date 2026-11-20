@@ -100,22 +100,11 @@ body:has(.app-shell) {
   line-height: 1.2;
 }
 
-.settings,
 .vault-setup:not(.vault-initialized) {
   padding: clamp(1rem, 3vw, 1.5rem);
   border: 1px solid var(--border);
   border-radius: 0.875rem;
   background: var(--surface);
-}
-
-.settings {
-  display: grid;
-  gap: 0.875rem;
-}
-
-.settings h2 {
-  margin: 0 0 0.75rem;
-  font-size: 1.0625rem;
 }
 
 .vault-setup h2 {
@@ -177,7 +166,7 @@ oneapp-vault-reader {
     / var(--workspace-sidebar-width) minmax(0, 1fr);
 }
 
-.workspace.workspace-stacked.people-workspace {
+.workspace.workspace-stacked:not(:has(> .workspace-sidebar)) {
   grid-template:
     "header" auto
     "items" minmax(0, 1fr)
@@ -766,19 +755,6 @@ oneapp-vault-reader {
   margin-block-start: 1rem;
 }
 
-.settings-account p {
-  margin-block: 0 0.75rem;
-  overflow-wrap: anywhere;
-}
-
-.settings-profile-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.75rem;
-  overflow-wrap: anywhere;
-}
-
 .person-avatar {
   display: inline-grid;
   flex: none;
@@ -800,33 +776,6 @@ oneapp-vault-reader {
   object-fit: cover;
 }
 
-.settings-profile-row .person-avatar {
-  inline-size: 2.5rem;
-  block-size: 2.5rem;
-  font-size: 0.875rem;
-}
-
-.account-summary {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: start;
-  justify-content: space-between;
-  gap: 0.875rem;
-}
-
-.account-status {
-  flex: 1 1 12rem;
-  min-width: 0;
-}
-
-.account-status p:last-child {
-  margin-block-end: 0;
-}
-
-.account-address {
-  font-weight: 600;
-}
-
 .account-hint {
   color: var(--muted);
   font-size: 0.875rem;
@@ -834,16 +783,25 @@ oneapp-vault-reader {
 
 .account-verification {
   max-width: 26rem;
-  margin-block-start: 1rem;
+  padding-inline: 0.75rem;
+}
+
+.account-verification > button {
+  justify-self: start;
+}
+
+.account-form {
+  display: grid;
+  gap: 0.875rem;
 }
 
 .account-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
+  justify-content: flex-end;
 }
 
-.account-dialog,
 .inbox-delete-dialog,
 .inbox-compose-dialog,
 .inbox-attachment-dialog {
@@ -859,7 +817,6 @@ oneapp-vault-reader {
 }
 
 :is(
-  .account-dialog,
   .inbox-delete-dialog,
   .inbox-compose-dialog,
   .inbox-attachment-dialog
@@ -869,7 +826,6 @@ oneapp-vault-reader {
 
 :root:has(
   :is(
-    .account-dialog,
     .inbox-delete-dialog,
     .inbox-compose-dialog,
     .inbox-attachment-dialog,
@@ -879,22 +835,9 @@ oneapp-vault-reader {
   overflow: hidden;
 }
 
-.account-dialog h3 {
-  margin: 0 0 0.875rem;
-  font-size: 1.125rem;
-}
-
-.account-dialog label {
-  display: grid;
-  gap: 0.375rem;
-}
-
-.account-dialog form p {
+.account-form p,
+.account-form + [role="alert"] {
   margin: 0;
-}
-
-.account-dialog [role="alert"] {
-  margin: 0.75rem 0 0;
 }
 
 .person-managed-emails p {
@@ -1637,47 +1580,70 @@ button {
   color: var(--muted);
 }
 
-.connected-clients {
-  min-width: 0;
-  padding-block-start: 0.875rem;
-  border-block-start: 1px solid var(--border);
+.settings-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1.75rem;
+  inline-size: min(calc(100% - 1.5rem), 48rem);
+  margin: 0.5rem auto 1.5rem;
 }
 
-.connections-table-container {
-  overflow-x: auto;
+.settings-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.625rem;
 }
 
-.connections-table-container:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
-}
-
-.connections-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.connections-table :is(th, td) {
-  border-block-end: 1px solid var(--border);
-  padding: 0.625rem;
-  text-align: start;
-}
-
-.connections-table thead {
-  color: var(--muted);
-  font-size: 0.875rem;
-}
-
-.connections-table th[scope="row"] {
+.settings-section > :is(h2, p) {
+  margin: 0;
   overflow-wrap: anywhere;
 }
 
-.connections-table th[scope="col"] {
-  white-space: nowrap;
+.settings-section > h2 {
+  font-size: 1rem;
+  font-weight: 600;
 }
 
-.connections-table tr > :last-child {
-  text-align: end;
+.settings-content [data-slot="item-group"] {
+  margin: 0;
+  gap: 0.125rem;
+}
+
+.settings-content [data-slot="item"] {
+  flex-wrap: wrap;
+}
+
+.settings-content [data-slot="item-body"] {
+  flex-basis: 9rem;
+}
+
+.settings-content [data-slot="item-actions"] {
+  max-inline-size: 100%;
+  margin-inline-start: auto;
+}
+
+.settings-content [data-slot="item-description"] {
+  overflow-wrap: anywhere;
+}
+
+.settings-sign-out {
+  justify-self: start;
+}
+
+.settings-client-icon {
+  display: grid;
+  place-items: center;
+  inline-size: 2rem;
+  block-size: 2rem;
+  border-radius: var(--control-radius);
+  background: var(--selected);
+  color: var(--muted);
+}
+
+.settings-loading {
+  display: grid;
+  min-block-size: 4rem;
+  place-items: center;
 }
 
 .cli-approval {

@@ -55,7 +55,7 @@ import * as PeopleDirectory from "./people-directory.ts";
 import { vaultPath } from "./vault-setup-contract.ts";
 import * as VaultSetup from "./vault-setup.ts";
 import { websiteIconHostname, websiteIconPath } from "./website-icon-host.ts";
-import { workspaceDrawerMedia } from "./workspace.ts";
+import { workspace, workspaceDrawerMedia } from "./workspace.ts";
 
 type Page = typeof AppNavigation.Page.Type;
 const pageFor = (url: Url.Url): Page => {
@@ -1090,71 +1090,111 @@ const linksView = (model: Model, h: HtmlBuilder<Message>) =>
   );
 
 const settingsView = (model: Model, h: HtmlBuilder<Message>) =>
-  h.div(
-    [h.Class("settings")],
-    [
-      h.section(
-        [h.Class("settings-profile")],
+  workspace(
+    {
+      className: "workspace-stacked settings-workspace",
+      title: "Settings",
+      hasSelection: false,
+      list: h.div(
+        [h.Class("workspace-list")],
         [
-          h.h2([], ["Profile"]),
           h.div(
-            [h.Class("settings-profile-row")],
+            [h.Class("workspace-results")],
             [
-              People.avatar(
-                h,
-                model.people.self,
-                model.people.self?.managedAddresses[0] ?? "",
-              ),
-              ...(model.people.self?.name
-                ? [h.strong([], [model.people.self.name])]
-                : []),
-              h.button(
+              h.div(
+                [h.Class("settings-content")],
                 [
-                  h.Type("button"),
-                  h.OnClick(
-                    toPeopleMessage(People.Message.Opened({ address: null })),
+                  h.section(
+                    [
+                      h.Class("settings-section"),
+                      h.AriaLabelledBy("settings-profile"),
+                    ],
+                    [
+                      h.h2([h.Id("settings-profile")], ["Profile"]),
+                      itemGroup(
+                        [
+                          item(
+                            {
+                              key: "settings-profile",
+                              title: model.people.self?.name || "Your profile",
+                              media: People.profileAvatar(
+                                h,
+                                model.people.self,
+                                model.people.self?.managedAddresses[0] ??
+                                  model.account?.email ??
+                                  "",
+                                {
+                                  imageMounted: toPeopleMessage(
+                                    People.Message.Mounted(),
+                                  ),
+                                },
+                              ),
+                              action: button(
+                                {
+                                  size: "sm",
+                                  variant: "outline",
+                                  onClick: toPeopleMessage(
+                                    People.Message.Opened({ address: null }),
+                                  ),
+                                  children: ["Edit profile"],
+                                },
+                                h,
+                              ),
+                            },
+                            h,
+                          ),
+                        ],
+                        h,
+                      ),
+                    ],
                   ),
+                  ...(model.account
+                    ? [
+                        h.section(
+                          [
+                            h.Class("settings-section"),
+                            h.AriaLabelledBy("settings-account"),
+                          ],
+                          [
+                            h.h2([h.Id("settings-account")], ["Account"]),
+                            ...AccountSettings.view(
+                              model.account,
+                              model.accountSettings,
+                              model.pending,
+                              h,
+                              toAccountSettingsMessage,
+                              button(
+                                {
+                                  size: "sm",
+                                  variant: "ghost",
+                                  disabled:
+                                    model.pending ||
+                                    model.accountSettings.pending !== null ||
+                                    model.connectedClients.pending,
+                                  onClick: Message.ClickedSignOut(),
+                                  children: ["Sign out"],
+                                },
+                                h,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ]
+                    : []),
+                  h.submodel({
+                    slotId: "connected-clients",
+                    view: ConnectedClients.view,
+                    model: model.connectedClients,
+                    toParentMessage: toConnectedClientsMessage,
+                  }),
                 ],
-                ["Edit profile"],
               ),
             ],
           ),
         ],
       ),
-      h.section(
-        [h.Class("settings-account")],
-        [
-          h.h2([], ["Account"]),
-          ...(model.account
-            ? AccountSettings.view(
-                model.account,
-                model.accountSettings,
-                model.pending,
-                h,
-                toAccountSettingsMessage,
-                h.button(
-                  [
-                    h.Type("button"),
-                    h.Disabled(
-                      model.pending ||
-                        model.accountSettings.pending !== null ||
-                        model.connectedClients.pending,
-                    ),
-                    h.OnClick(Message.ClickedSignOut()),
-                  ],
-                  ["Sign out"],
-                ),
-              )
-            : []),
-        ],
-      ),
-      h.submodel({
-        slotId: "connected-clients",
-        view: ConnectedClients.view,
-        model: model.connectedClients,
-        toParentMessage: toConnectedClientsMessage,
-      }),
-    ],
+    },
+    h,
   );
 
 const signInView = (model: Model, h: HtmlBuilder<Message>) =>
@@ -1260,6 +1300,7 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
     model.page === "links" ||
     model.page === "mail" ||
     model.page === "people" ||
+    model.page === "settings" ||
     (model.page === "vault" && model.vaultSetup.status?.initialized === true);
   return {
     title: `${title} · ${appName}`,

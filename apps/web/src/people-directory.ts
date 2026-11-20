@@ -74,7 +74,9 @@ const personItem = (
       href: personPath(person.id),
       title: name,
       description: email && email !== name ? h.span([], [email]) : undefined,
-      media: profileAvatar(h, person, email),
+      media: profileAvatar(h, person, email, {
+        imageMounted: Message.Mounted(),
+      }),
       linkAttributes: selected === person.id ? [h.AriaCurrent("page")] : [],
     },
     h,
@@ -158,7 +160,10 @@ const detailView = (
           : profileHeader(
               h,
               displayName(person),
-              profileAvatar(h, person, primaryEmail(person), { size: "lg" }),
+              profileAvatar(h, person, primaryEmail(person), {
+                size: "lg",
+                imageMounted: Message.Mounted(),
+              }),
               [
                 button(
                   {

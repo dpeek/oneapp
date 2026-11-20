@@ -1,3 +1,4 @@
+import { button, item, itemGroup, outlineIcon, spinner } from "@oneapp/ui";
 import { CliTokenList, cliTokensPath } from "@oneapp/core/cli-auth";
 import {
   ExtensionAccessList,
@@ -196,82 +197,62 @@ export const update = (model: Model, message: Message) =>
   });
 
 const headingId = "connected-clients-heading";
+const clientIcons = {
+  CLI: ["m5 7 5 5-5 5m8 0h6"],
+  Extension: ["M3 5h18v14H3zM3 9h18m-14 6h6"],
+  MCP: ["M4 8h16v8H4zm4 4h2m4 0h2M12 4v4m0 8v4"],
+  Bitwarden: ["M12 22s7-3 7-9V5l-7-3-7 3v8c0 6 7 9 7 9Z"],
+} satisfies Record<ClientType, readonly string[]>;
 
 export const view = Submodel.defineView<Model, Message>((model, h) =>
   h.section(
-    [h.Class("connected-clients")],
+    [h.Class("settings-section"), h.AriaLabelledBy(headingId)],
     [
       h.h2([h.Id(headingId)], ["Clients"]),
       h.p(
-        [h.Id("cli-access")],
+        [h.Id("cli-access"), h.Class("account-hint")],
         ["Run ", h.code([], ["one auth login"]), " to connect a CLI device."],
       ),
       ...(model.connections === null
-        ? [h.p([h.Role("status")], ["Loading connections…"])]
+        ? [
+            h.div(
+              [h.Class("settings-loading")],
+              [spinner("Loading connections…", h)],
+            ),
+          ]
         : model.connections.length > 0
           ? [
-              h.div(
-                [
-                  h.Class("connections-table-container"),
-                  h.Role("region"),
-                  h.AriaLabelledBy(headingId),
-                  h.Tabindex(0),
-                ],
-                [
-                  h.table(
-                    [h.Class("connections-table")],
-                    [
-                      h.thead(
-                        [],
-                        [
-                          h.tr(
-                            [],
-                            ["Client", "Type", "Actions"].map((label) =>
-                              h.th([h.Scope("col")], [label]),
-                            ),
-                          ),
-                        ],
+              itemGroup(
+                model.connections.map(({ name, type, id }) =>
+                  item(
+                    {
+                      key: `client-${type}:${id}`,
+                      title: name,
+                      description: h.span([], [type]),
+                      media: h.span(
+                        [h.Class("settings-client-icon")],
+                        [outlineIcon(h, clientIcons[type])],
                       ),
-                      h.tbody(
-                        [],
-                        model.connections.map((connection) =>
-                          h.tr(
-                            [h.Key(`${connection.type}:${connection.id}`)],
-                            [
-                              h.th([h.Scope("row")], [connection.name]),
-                              h.td([], [connection.type]),
-                              h.td(
-                                [],
-                                [
-                                  h.button(
-                                    [
-                                      h.Type("button"),
-                                      h.Disabled(model.pending),
-                                      h.AriaLabel(
-                                        `Revoke ${connection.name} access`,
-                                      ),
-                                      h.OnClick(
-                                        Message.RequestedRevocation({
-                                          type: connection.type,
-                                          id: connection.id,
-                                        }),
-                                      ),
-                                    ],
-                                    ["Revoke"],
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                        ),
+                      action: button(
+                        {
+                          size: "sm",
+                          variant: "ghost",
+                          disabled: model.pending,
+                          ariaLabel: `Revoke ${name} access`,
+                          onClick: Message.RequestedRevocation({ type, id }),
+                          children: ["Revoke"],
+                        },
+                        h,
                       ),
-                    ],
+                    },
+                    h,
                   ),
-                ],
+                ),
+                h,
               ),
             ]
           : model.unavailable.length === 0
-            ? [h.p([], ["No connected clients."])]
+            ? [h.p([h.Class("account-hint")], ["No connected clients."])]
             : []),
       ...(model.unavailable.length > 0
         ? [
@@ -281,17 +262,24 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
                 `Could not load connections for ${model.unavailable.join(", ")}.`,
               ],
             ),
-            h.button(
+            h.div(
+              [],
               [
-                h.Type("button"),
-                h.Disabled(model.pending),
-                h.OnClick(Message.Requested()),
+                button(
+                  {
+                    size: "sm",
+                    variant: "outline",
+                    disabled: model.pending,
+                    onClick: Message.Requested(),
+                    children: ["Retry loading connections"],
+                  },
+                  h,
+                ),
               ],
-              ["Retry loading connections"],
             ),
           ]
         : []),
-      h.p([h.Role("alert")], [model.error]),
+      ...(model.error ? [h.p([h.Role("alert")], [model.error])] : []),
     ],
   ),
 );

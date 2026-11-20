@@ -49,6 +49,13 @@ const styles = stylex.create({
     },
     outlineOffset: { default: null, ":focus-visible::after": 3 },
   },
+  body: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.75rem",
+    flex: 1,
+    minInlineSize: 0,
+  },
   media: { flexShrink: 0 },
   linkButton: {
     borderStyle: "none",
@@ -141,7 +148,7 @@ type ItemVariant = "default" | "outline";
 
 type ItemProps<Message> = Readonly<{
   key: string;
-  href: string;
+  href?: string;
   variant?: ItemVariant;
   target?: "_blank";
   media?: Html;
@@ -157,15 +164,48 @@ export const item = <Message>(
 ): Html => {
   const descriptionId = `item-description-${props.key}`;
   const { variant = "default" } = props;
-  return h.li(
-    [
-      h.Key(props.key),
-      h.DataAttribute("slot", "item"),
-      h.DataAttribute("variant", variant),
-      h.Class(itemClassName(variant)),
-    ],
-    [
-      h.a(
+  const content = [
+    ...(props.media
+      ? [
+          h.div(
+            [
+              h.DataAttribute("slot", "item-media"),
+              h.Class(itemClassNames.media),
+            ],
+            [props.media],
+          ),
+        ]
+      : []),
+    h.div(
+      [
+        h.DataAttribute("slot", "item-content"),
+        h.Class(itemClassNames.content),
+      ],
+      [
+        h.div(
+          [
+            h.DataAttribute("slot", "item-title"),
+            h.Class(itemClassNames.title),
+          ],
+          [props.title],
+        ),
+        ...(props.description === undefined
+          ? []
+          : [
+              h.div(
+                [
+                  h.Id(descriptionId),
+                  h.DataAttribute("slot", "item-description"),
+                  h.Class(itemClassNames.description),
+                ],
+                [props.description],
+              ),
+            ]),
+      ],
+    ),
+  ];
+  const body = props.href
+    ? h.a(
         [
           h.DataAttribute("slot", "item-link"),
           h.Class(stylex.props(styles.link).className ?? ""),
@@ -179,47 +219,24 @@ export const item = <Message>(
             ? [h.Target(props.target), h.Rel("noopener noreferrer")]
             : []),
         ],
+        content,
+      )
+    : h.div(
         [
-          ...(props.media
-            ? [
-                h.div(
-                  [
-                    h.DataAttribute("slot", "item-media"),
-                    h.Class(itemClassNames.media),
-                  ],
-                  [props.media],
-                ),
-              ]
-            : []),
-          h.div(
-            [
-              h.DataAttribute("slot", "item-content"),
-              h.Class(itemClassNames.content),
-            ],
-            [
-              h.div(
-                [
-                  h.DataAttribute("slot", "item-title"),
-                  h.Class(itemClassNames.title),
-                ],
-                [props.title],
-              ),
-              ...(props.description === undefined
-                ? []
-                : [
-                    h.div(
-                      [
-                        h.Id(descriptionId),
-                        h.DataAttribute("slot", "item-description"),
-                        h.Class(itemClassNames.description),
-                      ],
-                      [props.description],
-                    ),
-                  ]),
-            ],
-          ),
+          h.DataAttribute("slot", "item-body"),
+          h.Class(stylex.props(styles.body).className ?? ""),
         ],
-      ),
+        content,
+      );
+  return h.li(
+    [
+      h.Key(props.key),
+      h.DataAttribute("slot", "item"),
+      h.DataAttribute("variant", variant),
+      h.Class(itemClassName(variant)),
+    ],
+    [
+      body,
       ...(props.action
         ? [
             h.div(

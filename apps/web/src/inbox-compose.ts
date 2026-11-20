@@ -1,3 +1,4 @@
+import { button, plusIcon } from "@oneapp/ui";
 import { Effect, Schema } from "effect";
 import { Command, Submodel, Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";
@@ -166,18 +167,18 @@ export const view = Submodel.defineView<
   return h.div(
     [h.Class("inbox-compose")],
     [
-      ...(model.sender
-        ? [
-            h.button(
-              [
-                h.Type("button"),
-                h.Class("inbox-compose-button"),
-                h.OnClick(Message.Opened({ from: model.sender })),
-              ],
-              ["Compose"],
-            ),
-          ]
-        : []),
+      button(
+        {
+          size: "sm",
+          rounded: true,
+          ariaLabel: "New email",
+          children: [plusIcon(h, "16"), "New"],
+          ...(model.sender
+            ? { onClick: Message.Opened({ from: model.sender }) }
+            : { disabled: true }),
+        },
+        h,
+      ),
       h.p([h.Role("status")], [model.notice ?? ""]),
       ...(model.from
         ? [

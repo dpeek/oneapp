@@ -31,28 +31,6 @@ export const collapsibleMiddleCount = (
     : middle.length;
 };
 
-const timeOnly = new Intl.DateTimeFormat(undefined, {
-  hour: "numeric",
-  minute: "2-digit",
-});
-const dayOnly = new Intl.DateTimeFormat(undefined, {
-  month: "short",
-  day: "numeric",
-});
-const dayAndYear = new Intl.DateTimeFormat(undefined, {
-  month: "short",
-  day: "numeric",
-  year: "2-digit",
-});
-
-export const compactMailTime = (timestamp: number, now = new Date()) => {
-  const date = new Date(timestamp);
-  if (date.toDateString() === now.toDateString()) return timeOnly.format(date);
-  return (
-    date.getFullYear() === now.getFullYear() ? dayOnly : dayAndYear
-  ).format(date);
-};
-
 const quoteLine = (line: string | undefined) => /^[\t ]*>/u.test(line ?? "");
 const attribution = (line: string | undefined) =>
   /\bwrote:\s*$/iu.test(line ?? "");
@@ -128,4 +106,22 @@ export const splitMailQuote = (text: string) => {
   }
   add(start, lines.length, false);
   return parts;
+};
+
+export const mailBodyPreview = (text: string) => {
+  const content = splitMailQuote(text)
+    .filter(({ quoted }) => !quoted)
+    .map(({ text }) => text)
+    .join(" ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  const limit = 200;
+  if (content.length <= limit) return content;
+  const characters = Array.from(content);
+  return characters.length > limit
+    ? characters
+        .slice(0, limit - 1)
+        .join("")
+        .trimEnd() + "…"
+    : content;
 };

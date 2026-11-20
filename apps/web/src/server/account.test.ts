@@ -506,7 +506,7 @@ it("lets only the owner send plain-text mail from the configured Inbox address",
     sentAt: expect.any(Number),
   };
   expect(await sentList.json()).toEqual({
-    messages: [entrySummary],
+    messages: [{ ...entrySummary, bodyPreview: "Hi Alice, Thanks!" }],
     cursor: null,
     address: from,
     sender: from,
@@ -697,6 +697,9 @@ it("threads replies from the stored message and archives the sent copy", async (
   const accepted = await call(inboxSendPath, reply, session);
   expect(accepted.status).toBe(204);
   expect(accepted.headers.get(replyCompletionHeader)).toBe("done");
+  expect(get).toHaveBeenLastCalledWith(originalId, {
+    range: { offset: 0, length: 256 * 1024 },
+  });
   expect(
     await (await call(conversationApi(originalId), undefined, session)).json(),
   ).toMatchObject({ archived: true });
@@ -705,9 +708,6 @@ it("threads replies from the stored message and archives the sent copy", async (
     References: `${root} ${ancestor} ${messageId}`,
   };
   expect(send).toHaveBeenCalledExactlyOnceWith({ ...draft, from, headers });
-  expect(get).toHaveBeenLastCalledWith(originalId, {
-    range: { offset: 0, length: 256 * 1024 },
-  });
   const [key, record] = put.mock.lastCall ?? [];
   if (!key || !record) throw new Error("Expected a Sent copy");
   expect(accepted.headers.get(sentMessageHeader)).toBe(key);
@@ -998,7 +998,7 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
     to: "outreach@example.net",
     subject: `Re: ${subject}`,
     sentAt: 4500,
-    text: "A saved reply.",
+    text: "A saved reply.\n\nThe update is ready.\n\n> Previous message.",
     providerMessageId: "<sent@example.net>",
     reply: { originalId: root.key },
   };
@@ -1066,6 +1066,7 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
         id: separate.key,
         messageCount: 1,
         unreadCount: 1,
+        bodyPreview: "Hello.",
         profiles: [{ email: address, person: { self: true } }],
       },
       {
@@ -1075,6 +1076,8 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
         unreadCount: 1,
         receivedAt: 4000,
         lastMessageAt: 4500,
+        bodyPreview: "A saved reply. The update is ready.",
+        senders: [{ address: "sender@example.net", name: "Project Lead" }],
         participants: [
           { address: "sender@example.net", name: "Project Lead" },
           { address, name: "" },
@@ -1118,6 +1121,10 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
     const thread = await get(conversationApi(anchor));
     expect(thread.messages.map(({ id }: { id: string }) => id)).toEqual(
       expected,
+    );
+    expect(thread.messages[0].bodyPreview).toBe("Hello.");
+    expect(thread.messages.at(-1)?.bodyPreview).toBe(
+      "A saved reply. The update is ready.",
     );
     expect(thread.messages[0].people).toEqual({
       sender: { address: "sender@example.net", name: "Project Lead" },

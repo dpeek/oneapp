@@ -15,12 +15,14 @@
     "build": "bun run --parallel --filter './apps/*' build",
     "deploy": "bun scripts/deploy.ts",
     "db:generate": "bun --bun drizzle-kit generate --config apps/web/drizzle.config.ts",
+    "mail:seed": "bun scripts/seed-mail.ts",
     "test": "bun --bun vitest run",
     "test:watch": "bun --bun vitest",
     "verify": "bun fmt && bun check && bun run test"
   },
   "devDependencies": {
     "@alchemy.run/cloudflare": "2.0.0-beta.85",
+    "@alchemy.run/cloudflare-runtime": "2.0.0-beta.85",
     "@cloudflare/workers-auth": "0.18.1",
     "@effect/platform-bun": "~4.1.0",
     "@effect/platform-node": "~4.1.0",

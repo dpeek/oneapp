@@ -33,6 +33,12 @@ const styles = stylex.create({
     backgroundColor: controls.hover,
     color: controls.mutedForeground,
   },
+  large: {
+    inlineSize: "4rem",
+    blockSize: "4rem",
+    fontSize: "1.25rem",
+    fontWeight: 600,
+  },
   layer: { gridArea: "1 / 1" },
   image: {
     inlineSize: "100%",
@@ -43,23 +49,29 @@ const styles = stylex.create({
     backgroundColor: controls.hover,
     visibility: { default: "hidden", ":where([data-loaded])": "visible" },
   },
+  photo: { objectFit: "cover", padding: 0 },
 });
 
 type AvatarProps<Message> = Readonly<{
-  fallback: Html;
+  fallback: Html | string;
   src: string | null;
   imageMounted: Message;
+  size?: "lg";
+  fit?: "cover";
 }>;
 
 export const avatar = <Message>(
-  { fallback, src, imageMounted }: AvatarProps<Message>,
+  { fallback, src, imageMounted, size, fit }: AvatarProps<Message>,
   h: HtmlBuilder<Message>,
 ): Html =>
   h.span(
     [
       h.AriaHidden(true),
       h.DataAttribute("slot", "avatar"),
-      h.Class(stylex.props(styles.root).className ?? ""),
+      h.Class(
+        stylex.props(styles.root, size === "lg" && styles.large).className ??
+          "",
+      ),
     ],
     [
       h.span(
@@ -78,7 +90,13 @@ export const avatar = <Message>(
               h.Loading("lazy"),
               h.Decoding("async"),
               h.Referrerpolicy("no-referrer"),
-              h.Class(stylex.props(styles.layer, styles.image).className ?? ""),
+              h.Class(
+                stylex.props(
+                  styles.layer,
+                  styles.image,
+                  fit === "cover" && styles.photo,
+                ).className ?? "",
+              ),
               h.OnMount(
                 Mount.mapMessage(RevealAvatarImage(), () => imageMounted),
               ),

@@ -5,6 +5,7 @@ export const controls = stylex.defineVars({
   primaryHover: "var(--accent-hover)",
   onPrimary: "var(--on-accent)",
   surface: "var(--surface)",
+  popover: "var(--popover)",
   foreground: "var(--text)",
   mutedForeground: "var(--muted)",
   border: "var(--border)",

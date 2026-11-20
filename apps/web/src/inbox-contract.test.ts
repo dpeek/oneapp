@@ -4,6 +4,14 @@ import { folderPath, mailMessagePage, mailRouteFor } from "./inbox-contract.ts";
 const key = "0-8199999999990-00000000-0000-4000-8000-000000000000";
 const inboxId = `${key}.eml`;
 
+it("uses /mail for the inbox and its folders", () => {
+  expect(folderPath("inbox")).toBe("/mail");
+  expect(mailRouteFor("/mail")).toEqual({ folder: "inbox", id: null });
+  expect(mailRouteFor("/mail/noise")).toEqual({ folder: "noise", id: null });
+  expect(mailRouteFor("/inbox")).toBeNull();
+  expect(mailRouteFor(`/inbox/${key}`)).toBeNull();
+});
+
 it("routes clean and original .eml links for received mail", () => {
   for (const folder of ["inbox", "noise", "archive"] as const) {
     const path = mailMessagePage(folder, inboxId);
@@ -23,8 +31,8 @@ it("routes clean and original .eml links for received mail", () => {
 it("distinguishes received and sent mail with matching key stems", () => {
   const received = mailMessagePage("all", inboxId);
   const sent = mailMessagePage("all", key);
-  expect(received).toBe(`/inbox/all/received/${key}`);
-  expect(sent).toBe(`/inbox/all/${key}`);
+  expect(received).toBe(`/mail/all/received/${key}`);
+  expect(sent).toBe(`/mail/all/${key}`);
   expect(mailRouteFor(received)).toEqual({ folder: "all", id: inboxId });
   expect(mailRouteFor(`${sent}.eml`)).toEqual({ folder: "all", id: inboxId });
   expect(mailRouteFor(sent)).toEqual({ folder: "all", id: key });
@@ -32,5 +40,5 @@ it("distinguishes received and sent mail with matching key stems", () => {
     folder: "sent",
     id: key,
   });
-  expect(mailRouteFor(`/inbox/sent/${inboxId}`)).toBeNull();
+  expect(mailRouteFor(`/mail/sent/${inboxId}`)).toBeNull();
 });

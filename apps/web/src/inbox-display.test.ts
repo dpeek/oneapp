@@ -1,5 +1,9 @@
 import { expect, it } from "@effect/vitest";
-import { collapsibleMiddleCount, splitMailQuote } from "./inbox-display.ts";
+import {
+  collapsibleMiddleCount,
+  mailBodyPreview,
+  splitMailQuote,
+} from "./inbox-display.ts";
 
 it("keeps the oldest and newest two messages visible and skips hiding unread or targeted mail", () => {
   const messages = ["first", "second", "third", "fourth", "last"].map((id) => ({
@@ -53,4 +57,15 @@ it("folds the original Outlook message when it has no quote prefixes", () => {
       text: "From: Alice\nSent: Tuesday\nTo: Bob\nSubject: Planning\n\nEarlier email.",
     },
   ]);
+});
+
+it("flattens a mail preview and skips reply quotes without splitting Unicode characters", () => {
+  expect(
+    mailBodyPreview(
+      "Hi\r\nthere\n\nOn Friday, Alice wrote:\n> Old text\n\nSee\t you soon.",
+    ),
+  ).toBe("Hi there See you soon.");
+  expect(mailBodyPreview("> Quoted message only")).toBe("");
+  expect(mailBodyPreview("📨".repeat(200))).toBe("📨".repeat(200));
+  expect(mailBodyPreview("📨".repeat(201))).toBe("📨".repeat(199) + "…");
 });

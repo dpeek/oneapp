@@ -4,7 +4,14 @@ import {
 } from "./bitwarden-connection.ts";
 import { appName } from "@oneapp/core";
 import { Link, LinkList } from "@oneapp/core/links";
-import { avatar, button, buttonGroup, item, itemGroup } from "@oneapp/ui";
+import {
+  avatar,
+  button,
+  buttonGroup,
+  item,
+  itemGroup,
+  plusIcon,
+} from "@oneapp/ui";
 import * as Client from "@yielded/auth/Client";
 import { Effect, Option, Schema, Stream } from "effect";
 import {
@@ -37,7 +44,7 @@ import {
   saveLink,
 } from "./links-client.ts";
 import { mcpAuthorizePath, mcpLoginQuery } from "./mcp-access-contract.ts";
-import { navigationView } from "./navigation.ts";
+import * as AppNavigation from "./navigation.ts";
 import * as PasswordRecovery from "./password-recovery.ts";
 import { forgotPasswordPage } from "./password-recovery-contract.ts";
 import * as People from "./people.ts";
@@ -46,11 +53,11 @@ import * as PeopleDirectory from "./people-directory.ts";
 import { vaultPath } from "./vault-setup-contract.ts";
 import * as VaultSetup from "./vault-setup.ts";
 import { websiteIconHostname, websiteIconPath } from "./website-icon-host.ts";
+import { workspaceDrawerMedia } from "./workspace.ts";
 
-const Page = Schema.Literals(["links", "inbox", "vault", "people", "settings"]);
-type Page = typeof Page.Type;
+type Page = typeof AppNavigation.Page.Type;
 const pageFor = (url: Url.Url): Page => {
-  if (mailRouteFor(url.pathname)) return "inbox";
+  if (mailRouteFor(url.pathname)) return "mail";
   if (peopleRouteFor(url.pathname)) return "people";
   if (url.pathname === vaultPath || url.pathname === `${vaultPath}/`)
     return "vault";
@@ -62,7 +69,8 @@ const pageFor = (url: Url.Url): Page => {
 };
 
 const Model = Schema.Struct({
-  page: Page,
+  page: AppNavigation.Page,
+  navigation: AppNavigation.Model,
   account: Schema.NullOr(Account),
   sessionCheck: Schema.Literals(["checking", "failed", "resolved"]),
   accountSettings: AccountSettings.Model,
@@ -86,6 +94,7 @@ type Model = typeof Model.Type;
 const Message = defineMessageUnion({
   RequestedUrl: { request: Navigation.UrlRequest },
   ChangedUrl: { url: Url.Url },
+  GotNavigationMessage: { message: AppNavigation.Message },
   NavigationFinished: {},
   RetriedSessionCheck: {},
   SessionCheckFailed: {},
@@ -144,6 +153,14 @@ const foldInbox = Update.foldChild({
     model.account ? Option.some(model.inbox) : Option.none(),
   write: (model, inbox) => ({ ...model, inbox }),
   toParentMessage: toInboxMessage,
+});
+const toNavigationMessage = (message: typeof AppNavigation.Message.Type) =>
+  Message.GotNavigationMessage({ message });
+const foldNavigation = Update.foldChild({
+  update: AppNavigation.update,
+  read: (model: Model) => Option.some(model.navigation),
+  write: (model, navigation) => ({ ...model, navigation }),
+  toParentMessage: toNavigationMessage,
 });
 const toPeopleMessage = (message: typeof People.Message.Type) =>
   Message.GotPeopleMessage({ message });
@@ -367,6 +384,24 @@ const isApproval = (model: Model) =>
   model.extensionAccess.approved;
 
 const subscriptions = Subscription.make<Model, Message>()((entry) => ({
+  folderSheet: entry(
+    { open: Schema.Boolean },
+    {
+      modelToDependencies: (model) => ({
+        open: model.inbox.folderSheet.isOpen,
+      }),
+      dependenciesToStream: ({ open }) =>
+        open
+          ? Stream.fromEventListener<MediaQueryListEvent>(
+              matchMedia(workspaceDrawerMedia),
+              "change",
+            ).pipe(
+              Stream.filter((event) => !event.matches),
+              Stream.map(() => toInboxMessage(Inbox.closeFolderSheet())),
+            )
+          : Stream.empty,
+    },
+  ),
   inbox: entry(
     { active: Schema.Boolean },
     {
@@ -419,6 +454,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
   const page = pageFor(url);
   const model: Model = {
     page,
+    navigation: AppNavigation.initial,
     account: null,
     sessionCheck: "checking",
     accountSettings: AccountSettings.initial,
@@ -466,10 +502,12 @@ const update = (
           mailRouteFor(request.url.pathname) ||
           peopleRouteFor(request.url.pathname))
       ) {
-        if (request.url.pathname === window.location.pathname) return { model };
+        const from = foldInbox(model, Inbox.closeFolderSheet());
+        if (request.url.pathname === window.location.pathname) return from;
         return {
-          model,
+          model: from.model,
           commands: [
+            ...(from.commands ?? []),
             Navigate({ href: Url.toString(request.url), mode: "push" }),
           ],
         };
@@ -482,21 +520,27 @@ const update = (
       const page = pageFor(url);
       const mailRoute = mailRouteFor(url.pathname);
       const peopleRoute = peopleRouteFor(url.pathname);
-      const result =
+      const sameRoute =
         page === model.page &&
         mailRoute?.folder === model.mailRoute?.folder &&
         mailRoute?.id === model.mailRoute?.id &&
-        peopleRoute?.id === model.peopleRoute?.id
-          ? { model }
-          : loadPage(
-              { ...model, page, mailRoute, peopleRoute, error: null },
-              model.page,
-            );
+        peopleRoute?.id === model.peopleRoute?.id;
+      const result = sameRoute
+        ? { model }
+        : Update.combine(model, [
+            foldInbox(Inbox.closeFolderSheet()),
+            (next) =>
+              loadPage(
+                { ...next, page, mailRoute, peopleRoute, error: null },
+                model.page,
+              ),
+          ]);
       const mailNavigation = canonicalMailNavigation(url, mailRoute);
       return mailNavigation
         ? { ...result, commands: [...(result.commands ?? []), mailNavigation] }
         : result;
     },
+    GotNavigationMessage: ({ message }) => foldNavigation(model, message),
     NavigationFinished: () => ({ model }),
     RetriedSessionCheck: () =>
       model.sessionCheck === "failed"
@@ -524,6 +568,7 @@ const update = (
       const cliLogin = CliLogin.initial();
       const next: Model = {
         page: model.page,
+        navigation: AppNavigation.initial,
         account,
         sessionCheck: "resolved",
         accountSettings: AccountSettings.initial,
@@ -807,7 +852,7 @@ const update = (
         message._tag !== "Saved" ||
         (message.request !== saveRequest &&
           message.request !== directory.editRequest) ||
-        model.page !== "inbox"
+        model.page !== "mail"
       )
         return result;
       const inbox = foldInbox(result.model, Inbox.Message.UpdatedProfiles());
@@ -820,9 +865,12 @@ const update = (
       if (message._tag === "RequestedPerson")
         return foldPeople(
           model,
-          People.Message.Opened({ address: message.address }),
+          People.Message.Opened({
+            address: message.address,
+            suggestedName: message.name,
+          }),
         );
-      if (message._tag === "LiveChanged" && model.page !== "inbox")
+      if (message._tag === "LiveChanged" && model.page !== "mail")
         return foldInbox(model, Inbox.Message.RefreshedUnread());
       if (
         message._tag === "RequestedBack" &&
@@ -843,7 +891,7 @@ const update = (
       const moving = model.inbox.archiveRequest;
       if (
         message._tag === "SessionExpired" &&
-        (message.request === model.inbox.listRequest ||
+        (message.request === model.inbox.listRequest?.id ||
           message.request === model.inbox.entryRequest ||
           message.request === model.inbox.threadRequest ||
           message.request === model.inbox.unreadRequest ||
@@ -981,21 +1029,7 @@ const linksView = (model: Model, h: HtmlBuilder<Message>) =>
                         ariaLabel: "Save link",
                         disabled:
                           model.pending || !parseLinkInput(model.linkUrl),
-                        children: [
-                          h.svg(
-                            [
-                              h.ViewBox("0 0 24 24"),
-                              h.Width("18"),
-                              h.Height("18"),
-                              h.Fill("none"),
-                              h.Stroke("currentColor"),
-                              h.StrokeWidth("2"),
-                              h.StrokeLinecap("round"),
-                              h.AriaHidden(true),
-                            ],
-                            [h.path([h.D("M12 5v14M5 12h14")], [])],
-                          ),
-                        ],
+                        children: [plusIcon(h, "18")],
                       },
                       h,
                     ),
@@ -1239,25 +1273,31 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
   }
   const title = {
     links: "Links",
-    inbox: "Inbox",
+    mail: "Mail",
     vault: "Vault",
     people: "People",
     settings: "Settings",
   }[model.page];
-  const isLinksPage = model.page === "links";
+  const usesOwnHeading = model.page === "links" || model.page === "mail";
   return {
     title: `${title} · ${appName}`,
     body: h.div(
       [h.Class("app-shell")],
       [
-        navigationView(model.page, model.inbox.unreadCount, h),
+        AppNavigation.navigationView(
+          model.page,
+          model.inbox.unreadCount,
+          model.navigation,
+          toNavigationMessage,
+          h,
+        ),
         h.main(
-          [h.Class("page"), ...(isLinksPage ? [h.AriaLabel(title)] : [])],
+          [h.Class("page"), ...(usesOwnHeading ? [h.AriaLabel(title)] : [])],
           [
-            ...(isLinksPage ? [] : [h.h1([], [title])]),
+            ...(usesOwnHeading ? [] : [h.h1([], [title])]),
             {
               links: () => linksView(model, h),
-              inbox: () =>
+              mail: () =>
                 h.submodel({
                   slotId: "inbox",
                   view: Inbox.view,

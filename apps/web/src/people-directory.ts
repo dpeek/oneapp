@@ -1,9 +1,11 @@
+import { navigationLinks } from "@oneapp/ui";
 import { Effect } from "effect";
 import { Submodel } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";
 import * as Mount from "foldkit/mount";
 import { peoplePath, personPath, type Person } from "./people-contract.ts";
 import { avatar, editForm, Message, type Model } from "./people.ts";
+import { workspace } from "./workspace.ts";
 
 type DirectoryMessage = typeof Message.Type;
 type Directory = (typeof Model.Type)["directory"];
@@ -143,7 +145,7 @@ const detailView = (directory: Directory, h: HtmlBuilder<DirectoryMessage>) => {
             h.header(
               [h.Class("people-detail-header")],
               [
-                avatar(h, person, primaryEmail(person)),
+                ...(!edit ? [avatar(h, person, primaryEmail(person))] : []),
                 h.h2([], [edit ? "Edit profile" : displayName(person)]),
                 ...(!edit
                   ? [
@@ -194,34 +196,24 @@ const detailView = (directory: Directory, h: HtmlBuilder<DirectoryMessage>) => {
 
 export const view = Submodel.defineView<Directory, DirectoryMessage>(
   (directory, h) =>
-    h.div(
-      [
-        h.Class("workspace people-workspace"),
-        ...(directory.selected ? [h.DataAttribute("panel", "")] : []),
-      ],
-      [
-        h.header([h.Class("workspace-header")], [h.h1([], ["People"])]),
-        h.nav(
-          [h.Class("workspace-sidebar"), h.AriaLabel("People navigation")],
-          [
-            h.ul(
-              [h.Class("workspace-nav-list")],
-              [
-                h.li(
-                  [],
-                  [
-                    h.a(
-                      [h.Href(peoplePath), h.AriaCurrent("true")],
-                      ["All people"],
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ],
+    workspace(
+      {
+        className: "people-workspace",
+        title: "People",
+        sidebar: navigationLinks(
+          {
+            label: "People navigation",
+            variant: "sidebar",
+            destinations: [
+              { href: peoplePath, label: "All people", current: true },
+            ],
+          },
+          h,
         ),
-        listView(directory, h),
-        detailView(directory, h),
-      ],
+        list: listView(directory, h),
+        detail: detailView(directory, h),
+        hasSelection: directory.selected !== null,
+      },
+      h,
     ),
 );

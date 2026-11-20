@@ -16,6 +16,7 @@ export const mailIndexMessages = sqliteTable(
     archived: integer().notNull().default(0),
     people: text(),
     listMail: integer("list_mail"),
+    bodyPreview: text("body_preview"),
   },
   (table) => [
     index("mail_index_folder_date").on(

@@ -41,6 +41,7 @@ import {
   sentCopyHeader,
   sentMessageHeader,
 } from "../inbox-contract.ts";
+import { mailBodyPreview } from "../inbox-display.ts";
 import { jsonError, privateHeaders } from "./api-response.ts";
 import { AppAuth, ownerId, type authHttp } from "./auth.ts";
 import {
@@ -120,6 +121,7 @@ const isMailMessageId = Schema.is(MailMessageId);
 const headerLimit = 64 * 1024;
 const textLimit = 256 * 1024;
 const htmlLimit = 1024 * 1024;
+const bodyPreviewReadLimit = 128 * 1024;
 const htmlToText = compile({
   wordwrap: false,
   limits: { maxDepth: 48 },
@@ -133,6 +135,82 @@ const htmlToText = compile({
     { selector: "svg", format: "skip" },
   ],
 });
+
+const readableMessage = (email: Email) => {
+  const html = email.text?.trim() ? "" : (email.html ?? "");
+  return {
+    html,
+    text: html ? htmlToText(html.slice(0, htmlLimit)) : (email.text ?? ""),
+  };
+};
+
+const readBodyPreview = async (env: InboxEnv, id: string) => {
+  if (isSentMessageId(id)) {
+    const entry = await readSent(env.SENT_MESSAGES, id);
+    return entry ? mailBodyPreview(entry.text) : undefined;
+  }
+  // The body usually precedes attachments. A ranged read bounds list work.
+  const object = await env.INBOX_MESSAGES.get(id, {
+    range: { offset: 0, length: bodyPreviewReadLimit },
+  });
+  if (!object) return;
+  const bytes = await object.arrayBuffer();
+  const email = await PostalMime.parse(bytes, mimeOptions).catch(() => null);
+  return email ? mailBodyPreview(readableMessage(email).text) : "";
+};
+
+const withBodyPreviews = async <
+  Message extends { id: string; lastMessageId?: string },
+>(
+  env: InboxEnv,
+  messages: ReadonlyArray<Message>,
+) => {
+  if (!messages.length) return [];
+  const previewId = (message: Message) => message.lastMessageId ?? message.id;
+  const ids = [...new Set(messages.map(previewId))];
+  const { results }: { results: { id: string; bodyPreview: string }[] } =
+    await env.DB.prepare(
+      `SELECT id, body_preview AS bodyPreview FROM mail_index_messages
+     WHERE deleted = 0 AND body_preview IS NOT NULL
+       AND id IN (SELECT value FROM json_each(?))`,
+    )
+      .bind(JSON.stringify(ids))
+      .all<{ id: string; bodyPreview: string }>();
+  const previews = new Map(
+    results.map(({ id, bodyPreview }) => [id, bodyPreview]),
+  );
+  const missing = ids.filter((id) => !previews.has(id));
+  const loaded = await Effect.runPromise(
+    Effect.forEach(
+      missing,
+      (id) =>
+        Effect.promise(
+          async () =>
+            [
+              id,
+              await readBodyPreview(env, id).catch(() => undefined),
+            ] as const,
+        ),
+      { concurrency: 4 },
+    ),
+  );
+  const updates = loaded.flatMap(([id, bodyPreview]) => {
+    if (bodyPreview === undefined) return [];
+    previews.set(id, bodyPreview);
+    return [
+      env.DB.prepare(
+        `UPDATE mail_index_messages SET body_preview = ?
+         WHERE id = ? AND deleted = 0 AND body_preview IS NULL`,
+      ).bind(bodyPreview, id),
+    ];
+  });
+  for (let start = 0; start < updates.length; start += 20)
+    await env.DB.batch(updates.slice(start, start + 20));
+  return messages.map((message) => {
+    const bodyPreview = previews.get(previewId(message));
+    return bodyPreview ? { ...message, bodyPreview } : message;
+  });
+};
 
 // R2 lists keys in ascending order, so new messages sort newest first.
 const newestFirstKey = (date: number) => {
@@ -341,10 +419,7 @@ const readMessage = async (
   const bytes = await object.arrayBuffer();
   try {
     const email = await PostalMime.parse(bytes, mimeOptions);
-    const html = email.text?.trim() ? "" : (email.html ?? "");
-    const text = html
-      ? htmlToText(html.slice(0, htmlLimit))
-      : (email.text ?? "");
+    const { html, text } = readableMessage(email);
     const from = email.from?.address;
     const attachments = describeAttachments(email.attachments);
     return {
@@ -667,9 +742,13 @@ export const inboxRoutes = (
       };
       if (folder === "sent") {
         const indexing = yield* Effect.tryPromise(() => syncMailIndex(env));
-        const page = yield* Effect.tryPromise(() =>
-          listSent(env.SENT_MESSAGES, query.value.cursor),
-        );
+        const page = yield* Effect.tryPromise(async () => {
+          const page = await listSent(env.SENT_MESSAGES, query.value.cursor);
+          return {
+            ...page,
+            messages: await withBodyPreviews(env, page.messages),
+          };
+        });
         return yield* HttpServerResponse.schemaJson(SentPage)(
           { ...page, ...mailbox, ...(indexing ? { indexing } : {}) },
           { headers: privateHeaders },
@@ -862,16 +941,19 @@ export const inboxRoutes = (
       const indexing = yield* Effect.tryPromise(() => syncMailIndex(env));
       const page = yield* Effect.tryPromise(async () => {
         const page = await listConversations(env.DB, cursor, view);
-        const matches = await profilesFor(
-          env,
-          page.messages.flatMap(({ participants }) =>
-            participants.map(({ address }) => address),
+        const [matches, messages] = await Promise.all([
+          profilesFor(
+            env,
+            page.messages.flatMap(({ participants }) =>
+              participants.map(({ address }) => address),
+            ),
           ),
-        );
+          withBodyPreviews(env, page.messages),
+        ]);
         const profiles = new Map(matches.map((match) => [match.email, match]));
         return {
           ...page,
-          messages: page.messages.map((message) => ({
+          messages: messages.map((message) => ({
             ...message,
             profiles: message.participants.flatMap(({ address }) => {
               const match = profiles.get(normalizePersonEmail(address));
@@ -993,11 +1075,14 @@ export const inboxRoutes = (
         const addresses = thread.messages.flatMap(
           ({ people }) => people?.members.map(({ address }) => address) ?? [],
         );
-        const profiles = yield* Effect.tryPromise(() =>
-          profilesFor(env, addresses),
+        const [profiles, messages] = yield* Effect.tryPromise(() =>
+          Promise.all([
+            profilesFor(env, addresses),
+            withBodyPreviews(env, thread.messages),
+          ]),
         );
         return yield* HttpServerResponse.schemaJson(Conversation)(
-          { ...thread, profiles },
+          { ...thread, messages, profiles },
           { headers: privateHeaders },
         );
       }).pipe(Effect.catchTags(inboxErrors)),

@@ -14,6 +14,10 @@ bun run build
 
 Run `bun fmt` to format and `bun check` to type-check. `bun run test` runs Vitest on Bun with `@effect/vitest`, and `bun run test:watch` reruns tests as you edit. `bun run verify` formats files, then checks types and runs tests.
 
+## Local Mail fixtures
+
+After starting the local Alchemy Worker, run `bun run mail:seed` and refresh **Mail** (`/mail`). The sample mailbox includes single messages, a long thread with a sent reply and an attachment, newsletters in **Noise**, and an archived conversation. The command targets the local `dev_ui` stage by default. Use `bun run mail:seed --stage <stage>` for a different local stage. Rerunning the command preserves existing messages and their read or archive state.
+
 ## Workspaces
 
 | Workspace        | Run or build                                                                                                                                                                       |
@@ -51,7 +55,7 @@ Set `ACCOUNT_EMAIL_ZONE_ID` to the Cloudflare DNS zone ID that owns `APP_DOMAIN`
 
 Set `INBOX_EMAIL_ZONE_ID` to the Cloudflare DNS zone ID that owns the `APP_DOMAIN` subdomain to receive mail at `mail@APP_DOMAIN`. Alchemy configures Email Routing for the subdomain and creates a rule for that address. After deploying, send a test email and verify that a `.eml` object appears in the stage's private `InboxMessages` R2 bucket. Each object contains the raw email, including attachments, and stores the SMTP envelope sender and recipient as object metadata.
 
-Sign in and open **Inbox** (`/inbox`) to browse conversations by their latest incoming message. Open a conversation to read the selected message and expand earlier emails and sent replies. Select **Back** to return to the folder’s list.
+Sign in and open **Mail** (`/mail`) to browse Inbox conversations by their latest incoming message. Open a conversation to read the selected message and expand earlier emails and sent replies. Select **Back** to return to the folder’s list.
 
 The OneApp vault and Bitwarden clients request website icons from OneApp at `/icons/<hostname>/icon.png`. On a cache miss, the Worker tries the site’s HTTPS favicon and checks its homepage for icon links. It serves raster icons and caches successful lookups for seven days and misses for one hour. IP literals and private DNS addresses are blocked. The web vault shows a generic icon for protected logins and when no website icon is available. Icon requests contain the login hostname, which can appear in Cloudflare’s Worker request logs.
 

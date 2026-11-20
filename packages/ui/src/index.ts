@@ -4,9 +4,20 @@ import { Runtime } from "foldkit";
 import type { Document, HtmlBuilder } from "foldkit/html";
 
 export { avatar } from "./avatar.ts";
-export { button } from "./button.ts";
+export { avatarGroup } from "./avatar-group.ts";
+export { button, buttonClassName } from "./button.ts";
 export { buttonGroup } from "./button-group.ts";
-export { item, itemGroup } from "./item.ts";
+export { dialog } from "./dialog.ts";
+export * as DropdownMenu from "./dropdown-menu.ts";
+export { field, input, textarea } from "./field.ts";
+export { ellipsisIcon, plusIcon } from "./icons.ts";
+export { item, itemDisclosure, itemGroup } from "./item.ts";
+export { marker } from "./marker.ts";
+export { navigationLinks, unreadBadge } from "./navigation.ts";
+export * as Sheet from "./sheet.ts";
+export { spinner } from "./spinner.ts";
+export * as Tooltip from "./tooltip.ts";
+export { timestamp } from "./timestamp.ts";
 
 const Model = Schema.Struct({ title: Schema.String });
 type Model = typeof Model.Type;

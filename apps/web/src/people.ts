@@ -1,3 +1,11 @@
+import {
+  avatar as uiAvatar,
+  button,
+  dialog,
+  field,
+  input,
+  textarea,
+} from "@oneapp/ui";
 import { Effect, Schema } from "effect";
 import { Command, Submodel, Update } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";
@@ -25,6 +33,7 @@ export const Model = Schema.Struct({
   selfRequest: Schema.NullOr(Schema.String),
   opened: Schema.Boolean,
   address: Schema.NullOr(Schema.String),
+  suggestedName: Schema.String,
   person: Schema.NullOr(Person),
   ready: Schema.Boolean,
   loadRequest: Schema.NullOr(Schema.String),
@@ -46,6 +55,7 @@ export const initial: Model = {
   selfRequest: null,
   opened: false,
   address: null,
+  suggestedName: "",
   person: null,
   ready: false,
   loadRequest: null,
@@ -64,7 +74,10 @@ export const initial: Model = {
 
 export const Message = defineMessageUnion({
   RequestedSelf: {},
-  Opened: { address: Schema.NullOr(Schema.String) },
+  Opened: {
+    address: Schema.NullOr(Schema.String),
+    suggestedName: Schema.optionalKey(Schema.String),
+  },
   Closed: {},
   Mounted: {},
   Retried: {},
@@ -145,11 +158,12 @@ const LoadDirectory = Command.define("LoadPeopleDirectory", {
     ),
 });
 
+const photoTypes = ["image/jpeg", "image/png", "image/webp"];
+const isProfilePhoto = (file: File) =>
+  file.size <= 10 * 1024 * 1024 && photoTypes.includes(file.type);
+
 const photoFor = async (file: File) => {
-  if (
-    file.size > 10 * 1024 * 1024 ||
-    !["image/jpeg", "image/png", "image/webp"].includes(file.type)
-  )
+  if (!isProfilePhoto(file))
     throw new Error("Choose a JPEG, PNG, or WebP photo up to 10 MB.");
   const source = await createImageBitmap(file);
   try {
@@ -288,7 +302,7 @@ export const update = (
         commands: [Load({ request, address: null })],
       };
     },
-    Opened: ({ address }) =>
+    Opened: ({ address, suggestedName }) =>
       model.opened
         ? { model }
         : loadDialog({
@@ -298,6 +312,11 @@ export const update = (
             directory,
             opened: true,
             address,
+            suggestedName:
+              suggestedName
+                ?.trim()
+                .slice(0, personNameLimit)
+                .replace(/[\uD800-\uDBFF]$/u, "") ?? "",
           }),
     Closed: () =>
       model.saveRequest
@@ -472,28 +491,133 @@ const PrepareForm = Mount.define("PrefillPersonProfileForm", {
     }),
 });
 
+const PreviewPhoto = Mount.define("PreviewPersonProfilePhoto", {
+  messages: [Message.Mounted],
+  execute: ({ element }) =>
+    Effect.acquireRelease(
+      Effect.sync(() => {
+        const input = element.querySelector('input[type="file"]');
+        const preview = element.querySelector("img[data-photo-preview]");
+        if (
+          !(input instanceof HTMLInputElement) ||
+          !(preview instanceof HTMLImageElement)
+        )
+          return;
+        let previewUrl: string | null = null;
+        const clear = () => {
+          preview.hidden = true;
+          preview.removeAttribute("src");
+          if (previewUrl) URL.revokeObjectURL(previewUrl);
+          previewUrl = null;
+        };
+        const select = () => {
+          clear();
+          const file = input.files?.[0];
+          if (file && isProfilePhoto(file)) {
+            previewUrl = URL.createObjectURL(file);
+            preview.src = previewUrl;
+          }
+        };
+        const reveal = () => {
+          preview.hidden = false;
+        };
+        // Canceling the file picker should keep the profile dialog open.
+        const cancel = (event: Event) => event.stopPropagation();
+        input.addEventListener("change", select);
+        input.addEventListener("cancel", cancel);
+        preview.addEventListener("load", reveal);
+        return () => {
+          input.removeEventListener("change", select);
+          input.removeEventListener("cancel", cancel);
+          preview.removeEventListener("load", reveal);
+          clear();
+        };
+      }),
+      (cleanup) => Effect.sync(() => cleanup?.()),
+    ).pipe(Effect.as(Message.Mounted())),
+});
+
+const profileInitials = (name: string, address: string) => {
+  const words = (name || address.split("@", 1)[0] || "").match(
+    /[\p{L}\p{N}]+/gu,
+  );
+  return (
+    words
+      ?.slice(0, 2)
+      .map((word) => Array.from(word)[0])
+      .join("")
+      .toLocaleUpperCase() || "?"
+  );
+};
+
 export const avatar = <Message>(
   h: HtmlBuilder<Message>,
   person: PersonSummary | null | undefined,
   address: string,
   suggestedName?: string,
-) => {
-  const letters =
-    (person?.name || suggestedName || address.split("@", 1)[0] || "").match(
-      /[\p{L}\p{N}]+/gu,
-    ) ?? [];
-  const initials =
-    letters
-      .slice(0, 2)
-      .map((word) => Array.from(word)[0])
-      .join("")
-      .toLocaleUpperCase() || "?";
-  return h.span(
+) =>
+  h.span(
     [h.Class("person-avatar"), h.AriaHidden(true)],
     [
       person?.photo
         ? h.img([h.Src(personPhotoPath(person.id, person.photo)), h.Alt("")])
-        : initials,
+        : profileInitials(person?.name || suggestedName || "", address),
+    ],
+  );
+
+const photoPicker = (
+  h: HtmlBuilder<Message>,
+  person: Person | null,
+  name: string,
+  address: string,
+  pending: boolean,
+) => {
+  const label = person?.photo ? "Change profile photo" : "Upload profile photo";
+  return h.label(
+    [
+      h.Class("person-photo-picker"),
+      h.Title(label),
+      h.Inert(pending),
+      h.OnMount(PreviewPhoto()),
+    ],
+    [
+      uiAvatar(
+        {
+          fallback: profileInitials(name, address),
+          src: person?.photo ? personPhotoPath(person.id, person.photo) : null,
+          imageMounted: Message.Mounted(),
+          size: "lg",
+          fit: "cover",
+        },
+        h,
+      ),
+      h.img([h.DataAttribute("photo-preview", ""), h.Hidden(true), h.Alt("")]),
+      h.span(
+        [h.Class("person-photo-picker-icon"), h.AriaHidden(true)],
+        [
+          h.svg(
+            [
+              h.ViewBox("0 0 24 24"),
+              h.Width("14"),
+              h.Height("14"),
+              h.Fill("none"),
+              h.Stroke("currentColor"),
+              h.StrokeWidth("2"),
+              h.StrokeLinejoin("round"),
+            ],
+            [
+              h.path([h.D("M4 6h4l2-2h4l2 2h4v14H4z")], []),
+              h.circle([h.Cx("12"), h.Cy("13"), h.R("3")], []),
+            ],
+          ),
+        ],
+      ),
+      h.input([
+        h.Name("photo"),
+        h.Type("file"),
+        h.AriaLabel(label),
+        h.Accept(photoTypes.join(",")),
+      ]),
     ],
   );
 };
@@ -503,9 +627,15 @@ const profileForm = (
   person: typeof Person.Type | null,
   address: string | null,
   pending: boolean,
-  options: { formId: string; submit: Message; cancel: Message },
+  options: {
+    formId: string;
+    submit: Message;
+    cancel: Message;
+    suggestedName?: string;
+  },
 ) => {
   const emails = person?.addresses ?? (address ? [address] : []);
+  const name = person?.name || options.suggestedName || "";
   return h.form(
     [
       h.Id(options.formId),
@@ -513,51 +643,49 @@ const profileForm = (
       h.OnSubmit(options.submit),
       h.OnMount(
         PrepareForm({
-          name: person?.name ?? "",
+          name,
           addresses: emails.join("\n"),
         }),
       ),
     ],
     [
-      h.label(
-        [],
-        [
-          "Display name",
-          h.input([
+      photoPicker(
+        h,
+        person,
+        name,
+        address ?? emails[0] ?? person?.managedAddresses[0] ?? "",
+        pending,
+      ),
+      field(
+        "Display name",
+        input(
+          [
             h.Name("name"),
             h.Type("text"),
             h.Maxlength(personNameLimit),
             h.Readonly(pending),
-          ]),
-        ],
+          ],
+          h,
+        ),
+        h,
       ),
-      h.label(
-        [],
-        [
-          "Email addresses",
-          h.textarea([
+      field(
+        "Email addresses",
+        textarea(
+          [
             h.Name("addresses"),
             h.Rows(3),
             h.Readonly(pending),
             h.Placeholder("One address per line"),
-          ]),
-        ],
-      ),
-      h.label(
-        [],
-        [
-          "Profile photo",
-          h.input([
-            h.Name("photo"),
-            h.Type("file"),
-            h.Accept("image/jpeg,image/png,image/webp"),
-          ]),
-        ],
+          ],
+          h,
+        ),
+        h,
       ),
       ...(person?.photo
         ? [
             h.label(
-              [h.Class("person-photo-remove")],
+              [h.Class("person-photo-remove"), h.Inert(pending)],
               [
                 h.input([h.Type("checkbox"), h.Name("removePhoto")]),
                 "Remove photo",
@@ -568,13 +696,24 @@ const profileForm = (
       h.div(
         [h.Class("person-actions")],
         [
-          h.button(
-            [h.Type("button"), h.Disabled(pending), h.OnClick(options.cancel)],
-            ["Cancel"],
+          button(
+            {
+              variant: "outline",
+              size: "sm",
+              disabled: pending,
+              onClick: options.cancel,
+              children: ["Cancel"],
+            },
+            h,
           ),
-          h.button(
-            [h.Type("submit"), h.Disabled(pending)],
-            [pending ? "Saving…" : "Save"],
+          button(
+            {
+              type: "submit",
+              size: "sm",
+              disabled: pending,
+              children: [pending ? "Saving…" : "Save"],
+            },
+            h,
           ),
         ],
       ),
@@ -598,61 +737,66 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
   const { person, address } = model;
   const heading = person?.self || !address ? "Your profile" : "Person profile";
   const pending = model.saveRequest !== null;
-  return h.dialog(
-    [
-      h.Class("person-dialog"),
-      h.AriaLabelledBy("person-dialog-title"),
-      h.OnMount(OpenDialog()),
-      h.OnCancel(Message.Closed()),
-    ],
-    [
-      h.h2([h.Id("person-dialog-title")], [heading]),
-      ...(model.error ? [h.p([h.Role("alert")], [model.error])] : []),
-      ...(model.loadRequest
-        ? [h.p([h.Role("status")], ["Loading profile…"])]
-        : []),
-      ...(!model.ready
-        ? [
-            h.div(
-              [h.Class("person-actions")],
-              [
-                h.button(
-                  [h.Type("button"), h.OnClick(Message.Closed())],
-                  ["Close"],
-                ),
-                ...(!model.loadRequest
-                  ? [
-                      h.button(
-                        [h.Type("button"), h.OnClick(Message.Retried())],
-                        ["Retry"],
-                      ),
-                    ]
-                  : []),
-              ],
-            ),
-          ]
-        : [
-            h.div(
-              [h.Class("person-photo-preview")],
-              [avatar(h, person, address ?? person?.managedAddresses[0] ?? "")],
-            ),
-            ...(person?.managedAddresses.length
-              ? [
-                  h.div(
-                    [h.Class("person-managed-emails")],
-                    [
-                      h.strong([], ["Account addresses"]),
-                      h.p([], [person.managedAddresses.join(", ")]),
-                    ],
+  return dialog(
+    {
+      title: heading,
+      titleId: "person-dialog-title",
+      attributes: [h.OnMount(OpenDialog()), h.OnCancel(Message.Closed())],
+      children: [
+        ...(model.error ? [h.p([h.Role("alert")], [model.error])] : []),
+        ...(model.loadRequest
+          ? [h.p([h.Role("status")], ["Loading profile…"])]
+          : []),
+        ...(!model.ready
+          ? [
+              h.div(
+                [h.Class("person-actions")],
+                [
+                  button(
+                    {
+                      variant: "outline",
+                      size: "sm",
+                      onClick: Message.Closed(),
+                      children: ["Close"],
+                    },
+                    h,
                   ),
-                ]
-              : []),
-            profileForm(h, person, address, pending, {
-              formId,
-              submit: Message.Submitted(),
-              cancel: Message.Closed(),
-            }),
-          ]),
-    ],
+                  ...(!model.loadRequest
+                    ? [
+                        button(
+                          {
+                            size: "sm",
+                            onClick: Message.Retried(),
+                            children: ["Retry"],
+                          },
+                          h,
+                        ),
+                      ]
+                    : []),
+                ],
+              ),
+            ]
+          : [
+              ...(person?.managedAddresses.length
+                ? [
+                    h.div(
+                      [h.Class("person-managed-emails")],
+                      [
+                        h.strong([], ["Account addresses"]),
+                        h.p([], [person.managedAddresses.join(", ")]),
+                      ],
+                    ),
+                  ]
+                : []),
+              profileForm(h, person, address, pending, {
+                formId,
+                submit: Message.Submitted(),
+                cancel: Message.Closed(),
+                suggestedName: model.suggestedName,
+              }),
+            ]),
+      ],
+    },
+    h,
   );
 });

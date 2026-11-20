@@ -61,10 +61,25 @@ const styles = stylex.create({
     color: controls.mutedForeground,
     opacity: { default: 1, ":disabled": 0.55 },
   },
+  sm: {
+    minBlockSize: "2rem",
+    gap: "0.25rem",
+    paddingBlock: "0.25rem",
+    paddingInline: "0.625rem",
+    fontSize: "0.875rem",
+    lineHeight: "1.25rem",
+  },
   icon: {
     inlineSize: "2.75rem",
     flexShrink: 0,
     padding: 0,
+  },
+  "icon-sm": {
+    inlineSize: "2rem",
+    minBlockSize: "2rem",
+    flexShrink: 0,
+    paddingBlock: 0,
+    paddingInline: 0,
   },
   rounded: { borderRadius: "9999px" },
 });
@@ -72,13 +87,24 @@ const styles = stylex.create({
 type ButtonProps<Message> = Readonly<{
   children: ReadonlyArray<Html | string>;
   ariaLabel?: string;
+  dialogId?: string;
   variant?: "primary" | "outline" | "ghost";
-  size?: "icon";
+  size?: "sm" | "icon" | "icon-sm";
   rounded?: boolean;
   type?: "button" | "submit";
   disabled?: boolean;
   onClick?: Message;
 }>;
+
+export const buttonClassName = (
+  props: Pick<ButtonProps<never>, "variant" | "size" | "rounded">,
+) =>
+  stylex.props(
+    styles.base,
+    styles[props.variant ?? "primary"],
+    props.size && styles[props.size],
+    props.rounded === true && styles.rounded,
+  ).className ?? "";
 
 export const button = <Message>(
   props: ButtonProps<Message>,
@@ -96,14 +122,10 @@ export const button = <Message>(
             h.Disabled(props.disabled ?? false),
             h.DataAttribute("slot", "button"),
             ...(props.ariaLabel ? [h.AriaLabel(props.ariaLabel)] : []),
-            h.Class(
-              stylex.props(
-                styles.base,
-                styles[props.variant ?? "primary"],
-                props.size === "icon" && styles.icon,
-                props.rounded === true && styles.rounded,
-              ).className ?? "",
-            ),
+            ...(props.dialogId
+              ? [h.AriaHasPopup("dialog"), h.AriaControls(props.dialogId)]
+              : []),
+            h.Class(buttonClassName(props)),
           ],
           [...props.children],
         ),

@@ -1,3 +1,19 @@
+import {
+  avatarGroup,
+  button,
+  buttonClassName,
+  DropdownMenu,
+  ellipsisIcon,
+  item,
+  itemDisclosure,
+  itemGroup,
+  marker,
+  navigationLinks,
+  Sheet,
+  spinner,
+  timestamp,
+  unreadBadge,
+} from "@oneapp/ui";
 import { Effect, Option, Queue, Schema, Stream } from "effect";
 import { Command, Submodel, Update } from "foldkit";
 import { focus } from "foldkit/dom";
@@ -9,7 +25,6 @@ import * as Compose from "./inbox-compose.ts";
 import * as QuickReply from "./inbox-inline-reply.ts";
 import {
   collapsibleMiddleCount,
-  compactMailTime,
   conversationPeople,
   conversationSubject,
   splitMailQuote,
@@ -30,6 +45,7 @@ import {
   InboxEntry,
   inboxEventsPath,
   InboxMessageId,
+  inboxOriginalApi,
   inboxReadApi,
   InboxUnread,
   inboxUnreadPath,
@@ -53,7 +69,6 @@ import {
   SenderRule,
   senderRuleApiPath,
 } from "./inbox-contract.ts";
-import { unreadBadge } from "./navigation.ts";
 import {
   normalizePersonEmail,
   PersonEmail,
@@ -61,6 +76,7 @@ import {
   type PersonSummary,
 } from "./people-contract.ts";
 import { avatar } from "./people.ts";
+import { workspace, workspaceDrawerMedia } from "./workspace.ts";
 
 const MessageLocation = Schema.Struct({
   folder: MailFolder,
@@ -69,7 +85,6 @@ const MessageLocation = Schema.Struct({
 
 const isSentMessageId = Schema.is(SentMessageId);
 const isPersonEmail = Schema.is(PersonEmail);
-const isSenderPriority = Schema.is(SenderPriority);
 const mailboxLabels = {
   inbox: "Inbox",
   noise: "Inbox",
@@ -105,12 +120,27 @@ const SenderRuleRequest = Schema.Struct({
 const messageFolder = (id: string): MailFolder =>
   isSentMessageId(id) ? "sent" : "inbox";
 
+type ConversationAction = "archive" | typeof SenderPriority.Type;
+type MessageAction = "toggleUnread" | "download" | "delete";
+const conversationMenu = DropdownMenu.create<ConversationAction>();
+const messageMenu = DropdownMenu.create<MessageAction>();
+
 export const Model = Schema.Struct({
   folder: MailboxView,
+  folderSheet: Sheet.Model,
+  conversationMenu: DropdownMenu.Model,
+  messageMenu: DropdownMenu.Model,
   list: Schema.NullOr(MailPage),
-  listRequest: Schema.NullOr(Schema.String),
+  listRequest: Schema.NullOr(
+    Schema.Struct({ id: Schema.String, cursor: Schema.NullOr(Schema.String) }),
+  ),
   listRefreshQueued: Schema.Boolean,
-  listError: Schema.NullOr(Schema.String),
+  listError: Schema.NullOr(
+    Schema.Struct({
+      message: Schema.String,
+      cursor: Schema.NullOr(Schema.String),
+    }),
+  ),
   unreadCount: Schema.Number,
   unreadRequest: Schema.NullOr(Schema.String),
   unreadRefreshQueued: Schema.Boolean,
@@ -127,7 +157,7 @@ export const Model = Schema.Struct({
   entryRequest: Schema.NullOr(Schema.String),
   entryError: Schema.NullOr(Schema.String),
   attachmentPreview: Attachments.State,
-  confirmingDelete: Schema.Boolean,
+  deleteTarget: Schema.NullOr(MessageLocation),
   deleteRequest: Schema.NullOr(
     Schema.Struct({
       id: MailMessageId,
@@ -148,6 +178,9 @@ type Model = typeof Model.Type;
 
 export const initial: Model = {
   folder: "inbox",
+  folderSheet: Sheet.init({ id: "mail-folders" }),
+  conversationMenu: DropdownMenu.init({ id: "mail-conversation-actions" }),
+  messageMenu: DropdownMenu.init({ id: "mail-message-actions" }),
   list: null,
   listRequest: null,
   listRefreshQueued: false,
@@ -168,7 +201,7 @@ export const initial: Model = {
   entryRequest: null,
   entryError: null,
   attachmentPreview: null,
-  confirmingDelete: false,
+  deleteTarget: null,
   deleteRequest: null,
   deleteFailed: false,
   archiveRequest: null,
@@ -182,39 +215,37 @@ export const initial: Model = {
 
 export const Message = defineMessageUnion({
   Opened: MailRoute.fields,
+  GotFolderSheetMessage: { message: Sheet.Message },
   RetriedList: {},
   RefreshedUnread: {},
   GotComposeMessage: { message: Compose.Message },
   GotQuickReplyMessage: { message: QuickReply.Message },
   GotAttachmentMessage: { message: Attachments.Message },
   LiveChanged: {},
-  RequestedMore: {},
+  RequestedMore: { folder: MailboxView, cursor: Schema.String },
   RetriedEntry: {},
   RetriedThread: {},
   UpdatedProfiles: {},
-  ToggledUnread: {},
   ToggledMessage: MessageLocation.fields,
   RevealedMiddle: { firstMessageId: MailMessageId },
   RequestedBack: {},
-  RequestedPerson: { address: Schema.String },
+  RequestedPerson: { address: Schema.String, name: Schema.String },
   RequestedReply: {},
-  RequestedDelete: {},
+  DownloadStarted: {},
   CanceledDelete: {},
   ConfirmedDelete: {},
   DeletedEntry: { id: MailMessageId, request: Schema.String },
   DeleteFailed: { request: Schema.String },
-  RequestedArchiveChange: {},
-  MarkedRowDone: { id: InboxMessageId },
+  GotConversationMenuMessage: { message: DropdownMenu.Message },
+  GotMessageMenuMessage: { message: DropdownMenu.Message },
   UndidArchive: {},
   ArchiveChanged: { request: Schema.String },
   ArchiveFailed: { request: Schema.String, error: Schema.String },
-  ChangedSenderPriority: { priority: Schema.String },
   SenderRuleSaved: { request: Schema.String },
   SenderRuleFailed: { request: Schema.String },
   LoadedList: {
     request: Schema.String,
     page: MailPage,
-    append: Schema.Boolean,
   },
   ListFailed: { request: Schema.String },
   LoadedUnread: { request: Schema.String, ...InboxUnread.fields },
@@ -312,6 +343,17 @@ export const changes = Stream.callback<Message>(
   { bufferSize: 1, strategy: "sliding" },
 );
 
+export const closeFolderSheet = () =>
+  Message.GotFolderSheetMessage({ message: Sheet.Message.RequestedClose() });
+
+const foldFolderSheet = Update.foldChild({
+  update: Sheet.update,
+  read: (model: Model) => Option.some(model.folderSheet),
+  write: (model, folderSheet) => ({ ...model, folderSheet }),
+  toParentMessage: (message) => Message.GotFolderSheetMessage({ message }),
+  foldOutMessage: () => (model) => ({ model }),
+});
+
 const FocusEntry = Mount.define("FocusInboxEntry", {
   messages: [Message.FocusUpdated],
   execute: ({ element }) =>
@@ -356,6 +398,41 @@ const ShowDeleteDialog = Mount.define("ShowInboxDeleteDialog", {
     }),
 });
 
+const ObserveListEnd = Mount.defineStream("ObserveInboxListEnd", {
+  args: { folder: MailboxView, cursor: Schema.String },
+  messages: [Message.RequestedMore],
+  execute: ({ element, folder, cursor, viewStateChanges }) =>
+    viewStateChanges.pipe(
+      Stream.switchMap((state) =>
+        state === "Paused"
+          ? Stream.empty
+          : Stream.callback<typeof Message.RequestedMore.Type>((queue) =>
+              Effect.acquireRelease(
+                Effect.sync(() => {
+                  const observer = new IntersectionObserver(
+                    (entries) => {
+                      if (entries.some((entry) => entry.isIntersecting))
+                        Queue.offerUnsafe(
+                          queue,
+                          Message.RequestedMore({ folder, cursor }),
+                        );
+                    },
+                    {
+                      root: element.parentElement,
+                      rootMargin: "0px 0px 384px",
+                    },
+                  );
+                  observer.observe(element);
+                  return observer;
+                }),
+                (observer) => Effect.sync(() => observer.disconnect()),
+              ).pipe(Effect.andThen(Effect.never)),
+            ),
+      ),
+      Stream.take(1),
+    ),
+});
+
 const LoadList = Command.define("LoadInboxList", {
   args: {
     request: Schema.String,
@@ -390,7 +467,7 @@ const LoadList = Command.define("LoadInboxList", {
           : next;
         nextCursor = page.cursor;
       } while (nextCursor && !page.indexing && page.messages.length < minimum);
-      return Message.LoadedList({ request, page, append: cursor !== null });
+      return Message.LoadedList({ request, page });
     }).pipe(
       Effect.catch(() => Effect.succeed(Message.ListFailed({ request }))),
     ),
@@ -592,6 +669,21 @@ const SaveSenderRule = Command.define("SaveMailSenderRule", {
     ),
 });
 
+const DownloadOriginal = Command.define("DownloadInboxOriginal", {
+  args: { id: InboxMessageId },
+  messages: [Message.DownloadStarted],
+  execute: ({ id }) =>
+    Effect.sync(() => {
+      const link = document.createElement("a");
+      link.href = inboxOriginalApi(id);
+      link.download = id;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      return Message.DownloadStarted();
+    }),
+});
+
 const loadList = (
   model: Model,
   cursor: string | null,
@@ -601,7 +693,7 @@ const loadList = (
   return {
     model: {
       ...model,
-      listRequest: request,
+      listRequest: { id: request, cursor },
       listRefreshQueued: false,
       listError: null,
     },
@@ -653,6 +745,7 @@ const selectMessage = (model: Model, active: Model["active"]) =>
   loadEntry({
     ...model,
     active,
+    messageMenu: initial.messageMenu,
     entry: null,
     entryRequest: null,
     entryError: null,
@@ -779,11 +872,100 @@ const quoteMessage = (entry: typeof InboxEntry.Type) => {
   return `\n\n${from} wrote:\n${clipped}${truncated ? "\n> [Original message truncated]" : ""}`;
 };
 
+const toConversationMenuMessage = (message: typeof DropdownMenu.Message.Type) =>
+  Message.GotConversationMenuMessage({ message });
+
+const toMessageMenuMessage = (message: typeof DropdownMenu.Message.Type) =>
+  Message.GotMessageMenuMessage({ message });
+
+const selectedMessage = (model: Model): Model["active"] =>
+  model.active ??
+  (model.selected
+    ? { id: model.selected, folder: messageFolder(model.selected) }
+    : null);
+
+const changeSenderPriority = (
+  model: Model,
+  priority: typeof SenderPriority.Type,
+): Update.Return<Model, Message> => {
+  const rule = model.thread?.senderRule;
+  if (!rule || model.senderRuleRequest || rule.priority === priority)
+    return { model };
+  const change = {
+    address: rule.address,
+    priority,
+    request: crypto.randomUUID(),
+  };
+  return {
+    model: { ...model, senderRuleRequest: change, senderRuleFailed: false },
+    commands: [SaveSenderRule(change)],
+  };
+};
+
+const foldConversationMenu = Update.foldChild({
+  update: conversationMenu.update,
+  read: (model: Model) => Option.some(model.conversationMenu),
+  write: (model, conversationMenu) => ({ ...model, conversationMenu }),
+  toParentMessage: toConversationMenuMessage,
+  foldOutMessage:
+    ({ value }) =>
+    (model) => {
+      if (value === "archive") {
+        if (model.archiveRequest || model.folder === "sent" || !model.thread)
+          return { model };
+        const newest = model.thread.messages.findLast(
+          ({ folder }) => folder === "inbox",
+        );
+        return newest
+          ? changeArchive(
+              model,
+              { id: newest.id, archived: !model.thread.archived },
+              model.selected,
+            )
+          : { model };
+      }
+      return changeSenderPriority(model, value);
+    },
+});
+
+const foldMessageMenu = Update.foldChild({
+  update: messageMenu.update,
+  read: (model: Model) => Option.some(model.messageMenu),
+  write: (model, messageMenu) => ({ ...model, messageMenu }),
+  toParentMessage: toMessageMenuMessage,
+  foldOutMessage:
+    ({ value }) =>
+    (model) => {
+      const { active, entry } = model;
+      if (!active) return { model };
+      if (value === "delete") {
+        return model.deleteRequest
+          ? { model }
+          : { model: { ...model, deleteTarget: active, deleteFailed: false } };
+      }
+      if (active.folder !== "inbox") return { model };
+      if (value === "download") {
+        return { model, commands: [DownloadOriginal({ id: active.id })] };
+      }
+      return entry?.id === active.id && "receivedAt" in entry
+        ? setUnread(model, entry.id, !entryUnread(model))
+        : { model };
+    },
+});
+
 export const update = (
   model: Model,
   message: Message,
 ): Update.Return<Model, Message> =>
   Message.match<Update.Return<Model, Message>>(message, {
+    GotFolderSheetMessage: ({ message }) =>
+      message._tag === "RequestedOpen" &&
+      !matchMedia(workspaceDrawerMedia).matches
+        ? { model }
+        : foldFolderSheet(model, message),
+    GotConversationMenuMessage: ({ message }) =>
+      foldConversationMenu(model, message),
+    GotMessageMenuMessage: ({ message }) => foldMessageMenu(model, message),
     Opened: ({ id, folder }) => {
       const base =
         folder === model.folder
@@ -791,6 +973,7 @@ export const update = (
           : {
               ...initial,
               folder,
+              folderSheet: model.folderSheet,
               compose: model.compose,
               quickReply: model.quickReply,
               deleteRequest: model.deleteRequest,
@@ -804,10 +987,12 @@ export const update = (
             };
       const next =
         base.selected === id
-          ? { ...base, confirmingDelete: false }
+          ? { ...base, deleteTarget: null }
           : {
               ...base,
               selected: id,
+              conversationMenu: initial.conversationMenu,
+              messageMenu: initial.messageMenu,
               middleRevealed: false,
               senderRuleFailed: false,
               active: id ? { id, folder: messageFolder(id) } : null,
@@ -819,7 +1004,7 @@ export const update = (
               entryRequest: null,
               entryError: null,
               attachmentPreview: null,
-              confirmingDelete: false,
+              deleteTarget: null,
               deleteFailed: false,
             };
       const previous = id === null ? base.selected : null;
@@ -840,7 +1025,10 @@ export const update = (
         ],
       };
     },
-    RetriedList: () => withUnread(withThread(loadList(model, null))),
+    RetriedList: () =>
+      model.listError?.cursor
+        ? loadList(model, model.listError.cursor)
+        : withUnread(withThread(loadList(model, null))),
     GotAttachmentMessage: ({ message }) => foldAttachments(model, message),
     RefreshedUnread: () => refreshUnread(model),
     GotComposeMessage: ({ message }) => {
@@ -866,31 +1054,18 @@ export const update = (
       withUnread(
         withThread(model.folder !== "sent" ? refreshList(model) : { model }),
       ),
-    RequestedMore: () =>
-      model.list?.cursor && !model.list.indexing
-        ? loadList(model, model.list.cursor)
+    RequestedMore: ({ folder, cursor }) =>
+      model.selected === null &&
+      model.folder === folder &&
+      model.list?.cursor === cursor &&
+      !model.list.indexing &&
+      !model.listError
+        ? loadList(model, cursor)
         : { model },
     RetriedEntry: () => loadEntry(model),
     RetriedThread: () => refreshThread(model),
     UpdatedProfiles: () =>
       withThread(model.folder !== "sent" ? refreshList(model) : { model }),
-    RequestedArchiveChange: () => {
-      if (model.archiveRequest || model.folder === "sent" || !model.thread)
-        return { model };
-      const newest = model.thread.messages.findLast(
-        ({ folder }) => folder === "inbox",
-      );
-      if (!newest) return { model };
-      return changeArchive(
-        model,
-        { id: newest.id, archived: !model.thread.archived },
-        model.selected,
-      );
-    },
-    MarkedRowDone: ({ id }) =>
-      model.archiveRequest
-        ? { model }
-        : changeArchive(model, { id, archived: true }, null),
     UndidArchive: () =>
       model.archiveNotice?.archived && !model.archiveRequest
         ? changeArchive(
@@ -939,25 +1114,6 @@ export const update = (
             }),
           )
         : { model },
-    ChangedSenderPriority: ({ priority }) => {
-      const rule = model.thread?.senderRule;
-      if (
-        !rule ||
-        model.senderRuleRequest ||
-        rule.priority === priority ||
-        !isSenderPriority(priority)
-      )
-        return { model };
-      const change = {
-        address: rule.address,
-        priority,
-        request: crypto.randomUUID(),
-      };
-      return {
-        model: { ...model, senderRuleRequest: change, senderRuleFailed: false },
-        commands: [SaveSenderRule(change)],
-      };
-    },
     SenderRuleSaved: ({ request }) => {
       const change = model.senderRuleRequest;
       if (change?.request !== request) return { model };
@@ -985,12 +1141,6 @@ export const update = (
             },
           }
         : { model },
-    ToggledUnread: () => {
-      const entry = model.entry;
-      return entry && "receivedAt" in entry
-        ? setUnread(model, entry.id, !entryUnread(model))
-        : { model };
-    },
     ToggledMessage: ({ id, folder }) =>
       selectMessage(model, model.active?.id === id ? null : { id, folder }),
     RevealedMiddle: ({ firstMessageId }) => ({
@@ -1017,26 +1167,16 @@ export const update = (
         }),
       );
     },
-    RequestedDelete: () =>
-      model.entry && !model.deleteRequest
-        ? { model: { ...model, confirmingDelete: true, deleteFailed: false } }
-        : { model },
-    CanceledDelete: () => ({ model: { ...model, confirmingDelete: false } }),
+    DownloadStarted: () => ({ model }),
+    CanceledDelete: () => ({ model: { ...model, deleteTarget: null } }),
     ConfirmedDelete: () => {
-      if (
-        !model.confirmingDelete ||
-        !model.entry ||
-        !model.active ||
-        model.deleteRequest
-      )
-        return { model };
+      if (!model.deleteTarget || model.deleteRequest) return { model };
       const deletion = {
-        id: model.entry.id,
+        ...model.deleteTarget,
         request: crypto.randomUUID(),
-        folder: model.active.folder,
       };
       return {
-        model: { ...model, confirmingDelete: false, deleteRequest: deletion },
+        model: { ...model, deleteTarget: null, deleteRequest: deletion },
         commands: [DeleteEntry(deletion)],
       };
     },
@@ -1059,6 +1199,7 @@ export const update = (
         deleteRequest: null,
         ...(model.active?.id === id
           ? {
+              messageMenu: initial.messageMenu,
               active:
                 model.selected && model.selected !== id
                   ? {
@@ -1089,16 +1230,18 @@ export const update = (
             model: {
               ...model,
               deleteRequest: null,
-              deleteFailed: model.active?.id === model.deleteRequest.id,
+              deleteFailed:
+                selectedMessage(model)?.id === model.deleteRequest.id,
             },
           },
-    LoadedList: ({ request, page, append }) => {
-      if (request !== model.listRequest) return { model };
+    LoadedList: ({ request, page }) => {
+      if (request !== model.listRequest?.id) return { model };
+      const { cursor } = model.listRequest;
       const next = {
         ...model,
         listRequest: null,
         list:
-          append && model.list
+          cursor !== null && model.list
             ? { ...page, messages: [...model.list.messages, ...page.messages] }
             : page,
       };
@@ -1111,11 +1254,18 @@ export const update = (
         : result;
     },
     ListFailed: ({ request }) => {
-      if (request !== model.listRequest) return { model };
+      if (request !== model.listRequest?.id) return { model };
+      const { cursor } = model.listRequest;
       const next = {
         ...model,
         listRequest: null,
-        listError: "Could not load messages. Try again.",
+        listError: {
+          cursor,
+          message:
+            cursor === null
+              ? "Could not load messages. Try again."
+              : "Could not load more messages. Try again.",
+        },
       };
       return next.listRefreshQueued ? loadList(next, null) : { model: next };
     },
@@ -1203,12 +1353,6 @@ const messageDateFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeStyle: "short",
 });
-const messageTime = (h: HtmlBuilder<Message>, time: number) =>
-  h.time(
-    [h.Datetime(new Date(time).toISOString())],
-    [messageDateFormat.format(time)],
-  );
-
 const participantTooltip = (
   name: string,
   address: string,
@@ -1246,72 +1390,94 @@ const groupParticipants = (
   return [...groups];
 };
 
-const conversationRow = (
-  message: typeof ConversationSummary.Type,
+const messageItem = (
+  model: Model,
+  message: NonNullable<Model["list"]>["messages"][number],
+  now: number,
   h: HtmlBuilder<Message>,
 ) => {
+  const sent = "sentAt" in message;
+  const subject = sent
+    ? message.subject || "(No subject)"
+    : conversationSubject([message]);
+  const people = sent
+    ? [{ address: message.to, name: "" }]
+    : (message.senders ?? message.participants);
   const participants = groupParticipants(
-    message.participants,
-    findProfiles(message.profiles),
+    people.length ? people : [{ address: message.from, name: "" }],
+    findProfiles(sent ? undefined : message.profiles),
   );
-  const timestamp = message.lastMessageAt;
-  const count = message.messageCount;
-  const countLabel = `${count} ${count === 1 ? "message" : "messages"}${message.unreadCount ? `, ${message.unreadCount} unread` : ""}`;
-  return [
-    h.div(
-      [h.Class("inbox-conversation-summary")],
-      [
-        h.strong([], [conversationSubject([message])]),
-        h.span(
-          [
-            h.Class("inbox-conversation-count"),
-            h.Title(countLabel),
-            h.Role("img"),
-            h.AriaLabel(countLabel),
-          ],
-          [String(count)],
-        ),
-        ...(message.archived
-          ? [h.span([h.Class("inbox-conversation-done")], ["Done"])]
-          : []),
-        h.time(
-          [
-            h.Datetime(new Date(timestamp).toISOString()),
-            h.Title(messageDateFormat.format(timestamp)),
-          ],
-          [compactMailTime(timestamp)],
-        ),
+  const unreadCount = sent ? 0 : message.unreadCount;
+  const unread = unreadCount > 0;
+  const current =
+    model.selected === message.id ||
+    (model.folder !== "sent" &&
+      model.thread?.messages.some(({ id }) => id === message.id));
+  return item(
+    {
+      key: message.id,
+      href: mailMessagePage(model.folder, message.id),
+      title: subject,
+      linkAttributes: [
+        h.DataAttribute("message-id", message.id),
+        ...(current ? [h.AriaCurrent("page")] : []),
+        ...(unread ? [h.DataAttribute("unread", "")] : []),
       ],
-    ),
-    ...(participants.length
-      ? [
+      description: h.div(
+        [h.Class("inbox-item-details")],
+        [
           h.div(
-            [h.Class("inbox-list-avatars")],
-            participants.map(
-              ([
-                key,
-                {
-                  addresses: [address, ...aliases],
-                  name,
-                  person,
-                },
-              ]) => {
-                const tooltip = participantTooltip(name, address, aliases);
-                return h.span(
-                  [
-                    h.Key(key),
-                    h.Title(tooltip),
-                    h.Role("img"),
-                    h.AriaLabel(tooltip),
-                  ],
-                  [avatar(h, person, address, name)],
-                );
-              },
-            ),
+            [h.Class("inbox-item-preview")],
+            [
+              h.span(
+                [h.Class("inbox-preview-text")],
+                [message.bodyPreview ?? ""],
+              ),
+              timestamp(sent ? message.sentAt : message.lastMessageAt, now, h),
+            ],
           ),
-        ]
-      : []),
-  ];
+          h.div(
+            [h.Class("inbox-item-summary")],
+            [
+              avatarGroup(
+                participants.map(
+                  ([
+                    key,
+                    {
+                      addresses: [address, ...aliases],
+                      name,
+                      person,
+                    },
+                  ]) => ({
+                    key,
+                    label:
+                      sent && !address
+                        ? "Unknown recipient"
+                        : participantTooltip(name, address, aliases),
+                    picture: avatar(h, person, address, name),
+                  }),
+                ),
+                h,
+              ),
+              ...(unread
+                ? [
+                    unreadBadge(
+                      h,
+                      unreadCount,
+                      `${unreadCount} unread ${unreadCount === 1 ? "message" : "messages"}`,
+                    ),
+                  ]
+                : []),
+              ...(!sent && message.archived
+                ? [h.span([h.Class("inbox-conversation-done")], ["Done"])]
+                : []),
+            ],
+          ),
+        ],
+      ),
+    },
+    h,
+  );
 };
 
 const archiveFeedback = (model: Model, h: HtmlBuilder<Message>) => [
@@ -1355,59 +1521,53 @@ const archiveFeedback = (model: Model, h: HtmlBuilder<Message>) => [
 ];
 
 const inboxPriorityTabs = (selected: MailboxView, h: HtmlBuilder<Message>) =>
-  h.nav(
-    [h.Class("inbox-priority-tabs"), h.AriaLabel("Inbox priority")],
-    (["inbox", "noise"] as const).map((view) =>
-      h.a(
-        [
-          h.Key(view),
-          h.Href(folderPath(view)),
-          ...(view === selected ? [h.AriaCurrent("page")] : []),
-        ],
-        [view === "inbox" ? "Signal" : "Noise"],
-      ),
-    ),
+  navigationLinks(
+    {
+      label: "Inbox priority",
+      variant: "tabs-line",
+      destinations: (["inbox", "noise"] as const).map((folder) => ({
+        href: folderPath(folder),
+        label: folder === "inbox" ? "Signal" : "Noise",
+        current: folder === selected,
+      })),
+    },
+    h,
   );
 
-const listView = (model: Model, h: HtmlBuilder<Message>) =>
-  h.section(
+const listLoading = (label: string, h: HtmlBuilder<Message>) =>
+  h.div([h.Class("inbox-list-loading")], [spinner(label, h)]);
+
+const listFailure = (message: string, h: HtmlBuilder<Message>) =>
+  h.div(
+    [h.Class("inbox-status")],
+    [
+      h.p([h.Role("alert")], [message]),
+      h.button([h.Type("button"), h.OnClick(Message.RetriedList())], ["Retry"]),
+    ],
+  );
+
+const listView = (model: Model, h: HtmlBuilder<Message>) => {
+  const now = Date.now();
+  const { list, listRequest, listError, folder, selected } = model;
+  return h.section(
     [
       h.Class("workspace-list inbox-list"),
       h.AriaLabel("Messages"),
-      h.Inert(model.selected !== null),
+      h.Inert(selected !== null),
       h.Tabindex(-1),
     ],
     [
-      ...(isInboxView(model.folder)
-        ? [inboxPriorityTabs(model.folder, h)]
-        : []),
-      ...(model.selected === null ? archiveFeedback(model, h) : []),
+      ...(selected === null ? archiveFeedback(model, h) : []),
       h.div(
-        [h.Key(model.folder), h.Class("workspace-results")],
+        [h.Key(folder), h.Class("workspace-results")],
         [
-          ...(model.listRequest === null
-            ? []
-            : [
-                h.p(
-                  [h.Class("inbox-status"), h.Role("status")],
-                  ["Loading messages…"],
-                ),
-              ]),
-          ...(model.listError === null
-            ? []
-            : [
-                h.div(
-                  [h.Class("inbox-status")],
-                  [
-                    h.p([h.Role("alert")], [model.listError]),
-                    h.button(
-                      [h.Type("button"), h.OnClick(Message.RetriedList())],
-                      ["Retry"],
-                    ),
-                  ],
-                ),
-              ]),
-          ...(model.list?.indexing
+          ...(listRequest?.cursor === null
+            ? [listLoading("Loading messages…", h)]
+            : []),
+          ...(listError?.cursor === null
+            ? [listFailure(listError.message, h)]
+            : []),
+          ...(list?.indexing
             ? [
                 h.p(
                   [h.Class("inbox-status"), h.Role("status")],
@@ -1415,115 +1575,60 @@ const listView = (model: Model, h: HtmlBuilder<Message>) =>
                 ),
               ]
             : []),
-          ...(model.list === null
+          ...(list === null
             ? []
             : [
-                model.list.messages.length === 0 &&
-                model.list.cursor === null &&
-                !model.list.indexing &&
-                model.listRequest === null
+                list.messages.length === 0 &&
+                list.cursor === null &&
+                !list.indexing &&
+                listRequest === null
                   ? h.p(
                       [h.Class("inbox-status")],
                       [
-                        model.folder === "archive"
+                        folder === "archive"
                           ? "No archived conversations."
-                          : isInboxView(model.folder)
-                            ? `No ${model.folder === "noise" ? "noise" : "signal"} conversations.`
+                          : isInboxView(folder)
+                            ? `No ${folder === "noise" ? "noise" : "signal"} conversations.`
                             : "No messages yet.",
                       ],
                     )
-                  : h.ul(
-                      [h.Class("inbox-messages")],
-                      model.list.messages.map((message) => {
-                        const unread =
-                          "unreadCount" in message && message.unreadCount > 0;
-                        const markDoneId =
-                          isInboxView(model.folder) &&
-                          "latestIncomingId" in message
-                            ? message.latestIncomingId
-                            : null;
-                        return h.li(
-                          [h.Key(message.id)],
-                          [
-                            h.a(
-                              [
-                                h.Class(
-                                  unread
-                                    ? "inbox-message-row is-unread"
-                                    : "inbox-message-row",
-                                ),
-                                h.Href(
-                                  mailMessagePage(model.folder, message.id),
-                                ),
-                                h.DataAttribute("message-id", message.id),
-                                ...(model.selected === message.id ||
-                                (model.folder !== "sent" &&
-                                  model.thread?.messages.some(
-                                    ({ id }) => id === message.id,
-                                  ))
-                                  ? [h.AriaCurrent("page")]
-                                  : []),
-                              ],
-                              "sentAt" in message
-                                ? [
-                                    h.strong(
-                                      [],
-                                      [message.subject || "(No subject)"],
-                                    ),
-                                    h.span(
-                                      [],
-                                      [message.to || "Unknown recipient"],
-                                    ),
-                                    messageTime(h, message.sentAt),
-                                  ]
-                                : conversationRow(message, h),
-                            ),
-                            ...(markDoneId
-                              ? [
-                                  h.button(
-                                    [
-                                      h.Type("button"),
-                                      h.Class("inbox-row-done"),
-                                      h.AriaLabel(
-                                        `Mark ${conversationSubject([message])} done`,
-                                      ),
-                                      h.Disabled(model.archiveRequest !== null),
-                                      h.OnClick(
-                                        Message.MarkedRowDone({
-                                          id: markDoneId,
-                                        }),
-                                      ),
-                                    ],
-                                    ["Mark done"],
-                                  ),
-                                ]
-                              : []),
-                          ],
-                        );
-                      }),
+                  : itemGroup(
+                      list.messages.map((message) =>
+                        messageItem(model, message, now, h),
+                      ),
+                      h,
                     ),
-                ...(model.list.cursor === null || model.list.indexing
-                  ? []
-                  : [
+                ...(listRequest?.cursor != null
+                  ? [listLoading("Loading more messages…", h)]
+                  : []),
+                ...(listError?.cursor != null
+                  ? [listFailure(listError.message, h)]
+                  : []),
+                ...(list.cursor &&
+                !list.indexing &&
+                !listRequest &&
+                !listError &&
+                selected === null
+                  ? [
                       h.div(
-                        [h.Class("inbox-list-footer")],
                         [
-                          h.button(
-                            [
-                              h.Type("button"),
-                              h.Disabled(model.listRequest !== null),
-                              h.OnClick(Message.RequestedMore()),
-                            ],
-                            ["Load more"],
+                          h.Key(`inbox-list-end-${list.cursor}`),
+                          h.Class("inbox-list-end"),
+                          h.AriaHidden(true),
+                          h.OnMount(
+                            ObserveListEnd({ folder, cursor: list.cursor }),
                           ),
                         ],
+                        [],
                       ),
-                    ]),
+                    ]
+                  : []),
               ]),
         ],
       ),
     ],
   );
+};
 
 const previewNotice = {
   truncated: "This preview is shortened.",
@@ -1576,9 +1681,6 @@ const entryContent = (model: Model, h: HtmlBuilder<Message>) => {
     ...(entry && model.readFailed === entry.id
       ? [h.p([h.Role("alert")], ["Could not update read status. Try again."])]
       : []),
-    ...(model.deleteFailed
-      ? [h.p([h.Role("alert")], ["Could not confirm the deletion. Try again."])]
-      : []),
     ...(model.entryRequest
       ? [h.p([h.Role("status")], ["Opening message…"])]
       : []),
@@ -1603,17 +1705,19 @@ const entryContent = (model: Model, h: HtmlBuilder<Message>) => {
                           [h.Key(String(index)), h.Class("inbox-quote")],
                           [
                             h.summary(
-                              [],
                               [
-                                h.span(
-                                  [h.Class("inbox-quote-closed")],
-                                  ["Show quoted text"],
-                                ),
-                                h.span(
-                                  [h.Class("inbox-quote-open")],
-                                  ["Hide quoted text"],
+                                h.DataAttribute("slot", "button"),
+                                h.AriaLabel("Quoted text"),
+                                h.Title("Quoted text"),
+                                h.Class(
+                                  buttonClassName({
+                                    variant: "ghost",
+                                    size: "icon-sm",
+                                    rounded: true,
+                                  }),
                                 ),
                               ],
+                              [ellipsisIcon(h)],
                             ),
                             h.blockquote([], [text]),
                           ],
@@ -1652,40 +1756,19 @@ const entryContent = (model: Model, h: HtmlBuilder<Message>) => {
                 }),
               ]
             : []),
-          h.div(
-            [h.Class("inbox-toolbar-actions")],
-            [
-              ...("receivedAt" in entry && entry.reply && model.list?.sender
-                ? [
+          ...("receivedAt" in entry && entry.reply && model.list?.sender
+            ? [
+                h.div(
+                  [h.Class("inbox-toolbar-actions")],
+                  [
                     h.button(
                       [h.Type("button"), h.OnClick(Message.RequestedReply())],
                       ["Reply"],
                     ),
-                  ]
-                : []),
-              ...("receivedAt" in entry
-                ? [
-                    h.button(
-                      [
-                        h.Type("button"),
-                        h.Disabled(Boolean(model.readRequests[entry.id])),
-                        h.OnClick(Message.ToggledUnread()),
-                      ],
-                      [entryUnread(model) ? "Mark read" : "Mark unread"],
-                    ),
-                  ]
-                : []),
-              h.button(
-                [
-                  h.Type("button"),
-                  h.Class("inbox-delete-button"),
-                  h.Disabled(model.deleteRequest !== null),
-                  h.OnClick(Message.RequestedDelete()),
-                ],
-                [model.deleteRequest?.id === entry.id ? "Deleting…" : "Delete"],
-              ),
-            ],
-          ),
+                  ],
+                ),
+              ]
+            : []),
         ]
       : []),
   ];
@@ -1743,7 +1826,7 @@ const profileAvatar = (
           h.Class("inbox-profile-button"),
           h.Title(tooltip),
           h.AriaLabel(editLabel),
-          h.OnClick(Message.RequestedPerson({ address })),
+          h.OnClick(Message.RequestedPerson({ address, name })),
         ],
         [picture],
       )
@@ -1753,37 +1836,119 @@ const profileAvatar = (
       );
 };
 
-const senderPriorityControl = (
-  rule: typeof SenderRule.Type,
-  pending: Model["senderRuleRequest"],
-  h: HtmlBuilder<Message>,
-) => {
-  const priority =
-    pending?.address === rule.address ? pending.priority : rule.priority;
-  return h.label(
-    [h.Class("inbox-sender-priority"), h.Title(rule.address)],
+const mailIcon = (h: HtmlBuilder<Message>, path: string) =>
+  h.svg(
     [
-      "Sender priority",
-      h.select(
-        [
-          h.AriaLabel(`Sender priority for ${rule.address}`),
-          h.Disabled(pending !== null),
-          h.OnChange((priority) => Message.ChangedSenderPriority({ priority })),
-        ],
-        (
-          [
-            ["automatic", "Automatic"],
-            ["signal", "Signal"],
-            ["noise", "Noise"],
-          ] as const
-        ).map(([value, label]) =>
-          h.option(
-            [h.Key(value), h.Value(value), h.Selected(priority === value)],
-            [label],
-          ),
-        ),
-      ),
+      h.ViewBox("0 0 24 24"),
+      h.Width("16"),
+      h.Height("16"),
+      h.Fill("none"),
+      h.Stroke("currentColor"),
+      h.StrokeWidth("2"),
+      h.StrokeLinecap("round"),
+      h.StrokeLinejoin("round"),
+      h.AriaHidden(true),
     ],
+    [h.path([h.D(path)], [])],
+  );
+
+const conversationActions = (model: Model, h: HtmlBuilder<Message>) => {
+  const items: DropdownMenu.Item<ConversationAction>[] = [];
+  const canArchive =
+    model.folder !== "sent" &&
+    model.thread?.messages.some(({ folder }) => folder === "inbox");
+  if (canArchive) {
+    const archived = model.thread?.archived;
+    items.push({
+      action: "archive",
+      label: archived ? "Move to Inbox" : "Mark done",
+      icon: mailIcon(
+        h,
+        archived ? "M9 14 4 9l5-5M4 9h10a5 5 0 0 1 0 10" : "m5 12 4 4L19 6",
+      ),
+    });
+  }
+  const rule = model.thread?.senderRule;
+  if (rule) {
+    const pending = model.senderRuleRequest !== null;
+    items.push(
+      {
+        action: "signal",
+        label: "Sender → Signal",
+        disabled: pending || rule.priority === "signal",
+        icon: mailIcon(h, "M2 12c2-6 4-6 6 0s4 6 6 0 4-6 6 0"),
+      },
+      {
+        action: "noise",
+        label: "Sender → Noise",
+        disabled: pending || rule.priority === "noise",
+        icon: mailIcon(h, "M3 10v4m4-7v10m5-14v18m5-14v10m4-7v4"),
+      },
+    );
+    if (rule.priority !== "automatic") {
+      items.push({
+        action: "automatic",
+        label: "Sender → Automatic",
+        disabled: pending,
+        icon: mailIcon(h, "M3 12a9 9 0 1 1 2.7 6.4M3 12V5m0 7h7"),
+      });
+    }
+  }
+  if (items.length === 0) return h.empty;
+  return conversationMenu.view(
+    {
+      model: model.conversationMenu,
+      label: "Conversation actions",
+      disabled: model.archiveRequest !== null,
+      toParentMessage: toConversationMenuMessage,
+      trigger: ellipsisIcon(h),
+      items,
+    },
+    h,
+  );
+};
+
+const messageActions = (model: Model, h: HtmlBuilder<Message>) => {
+  const { active, entry } = model;
+  if (!active) return h.empty;
+  const items: DropdownMenu.Item<MessageAction>[] = [];
+  if (active.folder === "inbox") {
+    if (entry?.id === active.id && "receivedAt" in entry) {
+      items.push({
+        action: "toggleUnread",
+        label: entryUnread(model) ? "Mark read" : "Mark unread",
+        disabled: Boolean(model.readRequests[entry.id]),
+        icon: mailIcon(h, "M3 5h18v14H3zM3 6l9 7 9-7"),
+      });
+    }
+    items.push({
+      action: "download",
+      label: "Download .eml",
+      icon: mailIcon(
+        h,
+        "M12 3v12m-5-5 5 5 5-5M4 16v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4",
+      ),
+    });
+  }
+  items.push({
+    action: "delete",
+    label: "Delete message",
+    disabled: model.deleteRequest !== null,
+    destructive: true,
+    icon: mailIcon(
+      h,
+      "M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0-1 14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1L5 6m5 4v7m4-7v7",
+    ),
+  });
+  return messageMenu.view(
+    {
+      model: model.messageMenu,
+      label: "Message actions",
+      toParentMessage: toMessageMenuMessage,
+      trigger: ellipsisIcon(h),
+      items,
+    },
+    h,
   );
 };
 
@@ -1793,6 +1958,7 @@ const entryView = (
   h: HtmlBuilder<Message>,
 ) => {
   const { active } = model;
+  const now = Date.now();
   const messages = readerMessages(model);
   const participants = conversationPeople(messages);
   const profiles = findProfiles(model.thread?.profiles);
@@ -1808,48 +1974,9 @@ const entryView = (
         model.compose.reply?.originalId,
       ]);
   const firstHidden = middleCount > 0 ? messages[1]?.id : undefined;
-  const canArchive =
-    model.folder !== "sent" &&
-    model.thread?.messages.some(({ folder }) => folder === "inbox");
-  return h.article(
+  const content = h.div(
+    [h.Class("inbox-reader-content")],
     [
-      h.Key(selected),
-      h.Class("workspace-detail inbox-reader"),
-      h.AriaLabel("Message"),
-      h.Tabindex(-1),
-      h.OnMount(FocusEntry()),
-    ],
-    [
-      h.div(
-        [h.Class("inbox-toolbar")],
-        [
-          h.button(
-            [h.Type("button"), h.OnClick(Message.RequestedBack())],
-            ["Back"],
-          ),
-          ...(canArchive
-            ? [
-                h.button(
-                  [
-                    h.Type("button"),
-                    h.Disabled(model.archiveRequest !== null),
-                    h.OnClick(Message.RequestedArchiveChange()),
-                  ],
-                  [model.thread?.archived ? "Move to Inbox" : "Mark done"],
-                ),
-              ]
-            : []),
-          ...(model.thread?.senderRule
-            ? [
-                senderPriorityControl(
-                  model.thread.senderRule,
-                  model.senderRuleRequest,
-                  h,
-                ),
-              ]
-            : []),
-        ],
-      ),
       ...archiveFeedback(model, h),
       ...(model.senderRuleFailed
         ? [
@@ -1859,7 +1986,15 @@ const entryView = (
             ),
           ]
         : []),
-      ...(model.confirmingDelete ? [deleteDialog(h)] : []),
+      ...(model.deleteFailed
+        ? [
+            h.p(
+              [h.Role("alert")],
+              ["Could not confirm the deletion. Try again."],
+            ),
+          ]
+        : []),
+      ...(model.deleteTarget ? [deleteDialog(h)] : []),
       ...(!model.thread &&
       model.threadRequest &&
       !model.entryRequest &&
@@ -1880,14 +2015,16 @@ const entryView = (
             h.header(
               [h.Class("inbox-conversation-heading")],
               [
-                h.h2([], [conversationSubject(messages)]),
+                h.div(
+                  [h.Class("inbox-conversation-title")],
+                  [
+                    h.h1([], [conversationSubject(messages)]),
+                    conversationActions(model, h),
+                  ],
+                ),
                 ...(participantAvatars.length
                   ? [
-                      h.ul(
-                        [
-                          h.Class("inbox-participant-avatars"),
-                          h.AriaLabel("Participant profiles"),
-                        ],
+                      avatarGroup(
                         participantAvatars.map(
                           ([
                             key,
@@ -1896,20 +2033,20 @@ const entryView = (
                               name,
                               person,
                             },
-                          ]) =>
-                            h.li(
-                              [h.Key(key)],
-                              [
-                                profileAvatar(h, {
-                                  address,
-                                  person,
-                                  name,
-                                  aliases,
-                                  editLabel: `Edit participant profile for ${address}`,
-                                }),
-                              ],
-                            ),
+                          ]) => ({
+                            key,
+                            label: participantTooltip(name, address, aliases),
+                            picture: profileAvatar(h, {
+                              address,
+                              person,
+                              name,
+                              aliases,
+                              editLabel: `Edit participant profile for ${address}`,
+                            }),
+                          }),
                         ),
+                        h,
+                        "Participant profiles",
                       ),
                     ]
                   : []),
@@ -1919,88 +2056,83 @@ const entryView = (
               [h.Class("inbox-thread"), h.AriaLabel("Conversation messages")],
               messages.flatMap((message, index) => {
                 if (index > 0 && index <= middleCount) return [];
-                const { id, folder, from, timestamp, unread } = message;
+                const {
+                  id,
+                  folder,
+                  from,
+                  timestamp: messageTime,
+                  unread,
+                } = message;
                 const sender = message.people?.sender;
                 const address = sender?.address || from;
                 const person = profiles.get(normalizePersonEmail(address));
-                const date = messageDateFormat.format(timestamp);
+                const name = person?.name || sender?.name || "";
+                const date = messageDateFormat.format(messageTime);
                 const expanded = active?.id === id;
-                const panel = `mail-content-${id}`;
-                const header = [
-                  ...(unread
-                    ? [h.span([h.Class("inbox-thread-unread")], ["Unread"])]
-                    : []),
-                  h.time(
-                    [
-                      h.Datetime(new Date(timestamp).toISOString()),
-                      h.Title(date),
-                    ],
-                    [compactMailTime(timestamp)],
-                  ),
-                ];
-                const row = h.li(
-                  [h.Key(id)],
-                  [
-                    h.div(
-                      [h.Class("inbox-message-heading")],
-                      [
-                        profileAvatar(h, {
-                          address,
-                          person,
-                          name: person?.name || sender?.name || "",
-                          editLabel: `Edit profile for ${address}`,
-                        }),
-                        grouped
-                          ? h.button(
-                              [
-                                h.Type("button"),
-                                h.Class("inbox-thread-summary"),
-                                h.DataAttribute("thread-message-id", id),
-                                h.AriaLabel(
-                                  `Message from ${address || "unknown sender"}, ${date}${unread ? ", unread" : ""}`,
-                                ),
-                                h.AriaExpanded(expanded),
-                                ...(expanded ? [h.AriaControls(panel)] : []),
-                                h.OnClick(
-                                  Message.ToggledMessage({ id, folder }),
-                                ),
-                              ],
-                              header,
-                            )
-                          : h.header([h.Class("inbox-thread-summary")], header),
-                      ],
-                    ),
-                    ...(expanded
-                      ? [
-                          h.section(
-                            [h.Id(panel), h.Class("inbox-thread-content")],
-                            entryContent(model, h),
+                const preview = expanded ? undefined : message.bodyPreview;
+                const previewId = `mail-preview-${id}`;
+                const row = itemDisclosure(
+                  {
+                    key: id,
+                    variant: "outline",
+                    media: profileAvatar(h, {
+                      address,
+                      person,
+                      name,
+                      editLabel: `Edit profile for ${address}`,
+                    }),
+                    summary: [
+                      preview
+                        ? h.span(
+                            [h.Id(previewId), h.Class("inbox-message-preview")],
+                            [preview],
+                          )
+                        : h.span(
+                            [h.Class("inbox-message-sender")],
+                            [name || address || "Unknown sender"],
                           ),
-                        ]
-                      : []),
-                  ],
+                      ...(unread
+                        ? [h.span([h.Class("inbox-thread-unread")], ["Unread"])]
+                        : []),
+                    ],
+                    trailing: [
+                      ...(expanded ? [messageActions(model, h)] : []),
+                      timestamp(messageTime, now, h),
+                    ],
+                    ...(grouped
+                      ? {
+                          toggle: {
+                            label: `Message from ${address || "unknown sender"}, ${date}${unread ? ", unread" : ""}`,
+                            onClick: Message.ToggledMessage({ id, folder }),
+                            attributes: [
+                              h.DataAttribute("thread-message-id", id),
+                              ...(preview
+                                ? [h.AriaDescribedBy(previewId)]
+                                : []),
+                            ],
+                          },
+                        }
+                      : {}),
+                    ...(expanded
+                      ? { panel: h.div([], entryContent(model, h)) }
+                      : {}),
+                  },
+                  h,
                 );
                 return index === 0 && firstHidden
                   ? [
                       row,
                       h.li(
+                        [h.Key("thread-middle")],
                         [
-                          h.Key("thread-middle"),
-                          h.Class("inbox-thread-middle"),
-                        ],
-                        [
-                          h.button(
-                            [
-                              h.Type("button"),
-                              h.OnClick(
-                                Message.RevealedMiddle({
-                                  firstMessageId: firstHidden,
-                                }),
-                              ),
-                            ],
-                            [
-                              `Show ${middleCount} hidden ${middleCount === 1 ? "message" : "messages"}`,
-                            ],
+                          marker(
+                            {
+                              label: `Show ${middleCount} hidden ${middleCount === 1 ? "message" : "messages"}`,
+                              onClick: Message.RevealedMiddle({
+                                firstMessageId: firstHidden,
+                              }),
+                            },
+                            h,
                           ),
                         ],
                       ),
@@ -2032,59 +2164,129 @@ const entryView = (
         : []),
     ],
   );
+  return h.article(
+    [
+      h.Key(selected),
+      h.Class("workspace-detail inbox-reader"),
+      h.AriaLabel("Message"),
+      h.Tabindex(-1),
+      h.OnMount(FocusEntry()),
+    ],
+    [content],
+  );
 };
 
+const mailboxIcons = {
+  inbox:
+    "M4 12l2.5-7h11l2.5 7v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-6Zm0 0h4l2 3h4l2-3h4",
+  sent: "m21 3-6 18-4-8-8-4 18-6Zm0 0L11 13",
+  all: "M5 8h14a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Zm0 1 7 6 7-6M7 4h10",
+  archive: "M4 8h16v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V8Zm-1-4h18v4H3zM10 12h4",
+} as const;
+
+const folderNavigation = (model: Model, h: HtmlBuilder<Message>) =>
+  navigationLinks(
+    {
+      label: "Mailbox navigation",
+      variant: "sidebar",
+      destinations: (["inbox", "sent", "all", "archive"] as const).map(
+        (folder) => ({
+          href: folderPath(folder),
+          label: mailboxLabels[folder],
+          icon: mailIcon(h, mailboxIcons[folder]),
+          current:
+            folder === model.folder ||
+            (folder === "inbox" && isInboxView(model.folder)),
+          unread: folder === "inbox" ? model.unreadCount : 0,
+        }),
+      ),
+    },
+    h,
+  );
+
 export const view = Submodel.defineView<Model, Message>((model, h) =>
-  h.div(
-    [
-      h.Class("workspace inbox"),
-      ...(model.selected === null ? [] : [h.DataAttribute("panel", "")]),
-    ],
-    [
-      h.header(
-        [h.Class("workspace-header")],
-        [
-          h.h1([], [mailboxLabels[model.folder]]),
-          h.submodel({
-            slotId: "inbox-compose",
-            view: Compose.view,
-            model: { ...model.compose, sender: model.list?.sender },
-            toParentMessage: toComposeMessage,
-          }),
-        ],
+  workspace(
+    {
+      className: "workspace-stacked inbox",
+      ...(model.selected === null
+        ? {
+            title: mailboxLabels[model.folder],
+            ...(isInboxView(model.folder)
+              ? { titleAccessory: inboxPriorityTabs(model.folder, h) }
+              : {}),
+          }
+        : {}),
+      headerActions: [
+        ...(model.selected
+          ? [
+              button(
+                {
+                  variant: "ghost",
+                  size: "icon-sm",
+                  rounded: true,
+                  ariaLabel: "Back",
+                  onClick: Message.RequestedBack(),
+                  children: [
+                    h.svg(
+                      [
+                        h.ViewBox("0 0 24 24"),
+                        h.Width("16"),
+                        h.Height("16"),
+                        h.Fill("none"),
+                        h.Stroke("currentColor"),
+                        h.StrokeWidth("2"),
+                        h.StrokeLinecap("round"),
+                        h.StrokeLinejoin("round"),
+                        h.AriaHidden(true),
+                      ],
+                      [h.path([h.D("M19 12H5m7 7-7-7 7-7")], [])],
+                    ),
+                  ],
+                },
+                h,
+              ),
+            ]
+          : []),
+        h.div(
+          [h.Class("workspace-drawer-trigger")],
+          [
+            button(
+              {
+                variant: "outline",
+                dialogId: model.folderSheet.id,
+                onClick: Message.GotFolderSheetMessage({
+                  message: Sheet.Message.RequestedOpen(),
+                }),
+                children: ["Folders"],
+              },
+              h,
+            ),
+          ],
+        ),
+        h.submodel({
+          slotId: "inbox-compose",
+          view: Compose.view,
+          model: { ...model.compose, sender: model.list?.sender },
+          toParentMessage: toComposeMessage,
+        }),
+      ],
+      sidebar: folderNavigation(model, h),
+      list: listView(model, h),
+      ...(model.selected
+        ? { detail: entryView(model, model.selected, h) }
+        : {}),
+      hasSelection: model.selected !== null,
+      sheet: Sheet.sheet(
+        {
+          model: model.folderSheet,
+          title: "Mail folders",
+          content: folderNavigation(model, h),
+          toParentMessage: (message) =>
+            Message.GotFolderSheetMessage({ message }),
+        },
+        h,
       ),
-      h.nav(
-        [h.Class("workspace-sidebar"), h.AriaLabel("Mailbox navigation")],
-        [
-          h.ul(
-            [h.Class("workspace-nav-list")],
-            (["inbox", "sent", "all", "archive"] as const).map((folder) => {
-              const label = mailboxLabels[folder];
-              const count = folder === "inbox" ? model.unreadCount : 0;
-              return h.li(
-                [h.Key(folder)],
-                [
-                  h.a(
-                    [
-                      h.Href(folderPath(folder)),
-                      ...(count
-                        ? [h.AriaLabel(`${label}, ${count} unread`)]
-                        : []),
-                      ...(model.folder === folder ||
-                      (folder === "inbox" && isInboxView(model.folder))
-                        ? [h.AriaCurrent("true")]
-                        : []),
-                    ],
-                    [label, ...(count ? [unreadBadge(h, count)] : [])],
-                  ),
-                ],
-              );
-            }),
-          ),
-        ],
-      ),
-      listView(model, h),
-      ...(model.selected ? [entryView(model, model.selected, h)] : []),
-    ],
+    },
+    h,
   ),
 );

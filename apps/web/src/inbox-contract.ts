@@ -3,7 +3,7 @@ import { Schema as AuthSchema } from "@yielded/auth";
 import { Schema } from "effect";
 import { PersonEmail, PersonMatch } from "./people-contract.ts";
 
-export const inboxPath = "/inbox";
+export const mailPath = "/mail";
 export const inboxApiPath = "/api/inbox";
 export const inboxEventsPath = `${inboxApiPath}/events`;
 export const conversationsApiPath = `${inboxApiPath}/conversations`;
@@ -20,10 +20,10 @@ export const sentCopyHeader = "x-oneapp-sent-copy";
 export const sentMessageHeader = "x-oneapp-sent-message";
 export const replyCompletionHeader = "x-oneapp-reply-completion";
 export const ReplyCompletion = Schema.Literals(["done", "new-mail", "failed"]);
-export const sentPath = `${inboxPath}/sent`;
-export const archivePath = `${inboxPath}/archive`;
-export const allMailPath = `${inboxPath}/all`;
-export const noisePath = `${inboxPath}/noise`;
+export const sentPath = `${mailPath}/sent`;
+export const archivePath = `${mailPath}/archive`;
+export const allMailPath = `${mailPath}/all`;
+export const noisePath = `${mailPath}/noise`;
 export const sentApiPath = `${inboxApiPath}/sent`;
 export const inboxChanged = "inbox.changed";
 export const MailFolder = Schema.Literals(["inbox", "sent"]);
@@ -39,7 +39,7 @@ export type MailboxView = typeof MailboxView.Type;
 export const isInboxView = (view: MailboxView) =>
   view === "inbox" || view === "noise";
 const mailboxPaths = {
-  inbox: inboxPath,
+  inbox: mailPath,
   noise: noisePath,
   sent: sentPath,
   archive: archivePath,
@@ -146,11 +146,16 @@ export const InboxSummary = Schema.Struct({
   profiles: Schema.optionalKey(Schema.Array(PersonMatch)),
 });
 
-export const SentSummary = Schema.Struct({
+const sentSummaryFields = {
   ...messageFields,
   id: SentMessageId,
   to: Schema.String,
   sentAt: Schema.Number,
+};
+
+export const SentSummary = Schema.Struct({
+  ...sentSummaryFields,
+  bodyPreview: Schema.optionalKey(Schema.String),
 });
 
 const pageFields = {
@@ -177,9 +182,11 @@ export const ConversationSummary = Schema.Struct({
   archived: Schema.Boolean,
   receivedAt: Schema.optionalKey(Schema.Number),
   lastMessageAt: Schema.Number,
+  bodyPreview: Schema.optionalKey(Schema.String),
   messageCount: Schema.Number,
   unreadCount: Schema.Number,
   participants: Schema.Array(MailPerson),
+  senders: Schema.optionalKey(Schema.Array(MailPerson)),
   profiles: Schema.Array(PersonMatch),
 });
 
@@ -270,7 +277,7 @@ export const InboxEntry = Schema.Struct({
 });
 
 export const SentEntry = Schema.Struct({
-  ...SentSummary.fields,
+  ...sentSummaryFields,
   ...previewFields,
 });
 export const MailEntry = Schema.Union([InboxEntry, SentEntry]);
@@ -283,6 +290,7 @@ export const ConversationMessage = Schema.Struct({
   timestamp: Schema.Number,
   unread: Schema.optionalKey(Schema.Boolean),
   people: Schema.optionalKey(MailPeople),
+  bodyPreview: Schema.optionalKey(Schema.String),
 });
 export type ConversationMessage = typeof ConversationMessage.Type;
 export const Conversation = Schema.Struct({

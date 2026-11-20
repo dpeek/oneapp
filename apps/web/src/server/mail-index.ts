@@ -7,6 +7,7 @@ import {
   MailPeople,
   type ConversationMessage,
   type MailFolder,
+  type MailPerson,
   type MailboxView,
   type SenderRule,
 } from "../inbox-contract.ts";
@@ -167,7 +168,7 @@ export const removeIndexedMail = async (
       `
     INSERT INTO mail_index_messages (id, thread_id, folder, sender, recipient, subject, timestamp, deleted)
     VALUES (?1, ?1, ?2, '', '', '', 0, 1)
-    ON CONFLICT(id) DO UPDATE SET sender = '', recipient = '', subject = '', timestamp = 0, deleted = 1, unread = 0, people = NULL
+    ON CONFLICT(id) DO UPDATE SET sender = '', recipient = '', subject = '', timestamp = 0, deleted = 1, unread = 0, people = NULL, body_preview = NULL
   `,
     )
     .bind(id, folder)
@@ -276,7 +277,7 @@ export const conversationCursor = (
 
 type IndexedThreadMember = Pick<
   ConversationMessage,
-  "from" | "to" | "subject" | "timestamp"
+  "id" | "from" | "to" | "subject" | "timestamp" | "folder"
 > & {
   people: string | null;
 };
@@ -314,8 +315,8 @@ export const listConversations = async (
            ${all ? "incoming.id" : "m.id"} AS latestIncomingId,
            ${all ? "coalesce(incoming.archived, 0)" : "m.archived"} AS archived,
            (SELECT json_group_array(json_object(
-              'from', member.sender, 'to', member.recipient, 'subject', member.subject,
-              'timestamp', member.timestamp, 'people', member.people
+              'id', member.id, 'from', member.sender, 'to', member.recipient, 'subject', member.subject,
+              'timestamp', member.timestamp, 'people', member.people, 'folder', member.folder
             ) ORDER BY member.timestamp, member.id)
             FROM mail_index_messages member
             WHERE member.thread_id = m.thread_id AND member.deleted = 0) AS metadata,
@@ -367,14 +368,29 @@ export const listConversations = async (
       const members = (JSON.parse(metadata) as IndexedThreadMember[]).map(
         withPeople,
       );
+      const lastMessage = members.at(-1);
+      const senders = new Map<string, MailPerson>();
+      const folder = members.some(({ folder }) => folder === "inbox")
+        ? "inbox"
+        : "sent";
+      for (const member of members.toReversed()) {
+        const sender = member.people.sender;
+        if (!sender || member.folder !== folder) continue;
+        const key = normalizePersonEmail(sender.address);
+        const previous = senders.get(key);
+        if (!previous || (!previous.name && sender.name))
+          senders.set(key, sender);
+      }
       return {
         ...row,
         archived: archived === 1,
         ...(all ? {} : { receivedAt: sortAt }),
         subject: conversationSubject(members),
-        lastMessageAt: members.at(-1)?.timestamp ?? sortAt,
+        lastMessageAt: lastMessage?.timestamp ?? sortAt,
+        lastMessageId: lastMessage?.id ?? row.id,
         messageCount: members.length,
         participants: conversationPeople(members),
+        senders: [...senders.values()],
       };
     });
   const last = results[pageSize - 1];

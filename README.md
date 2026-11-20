@@ -1,6 +1,6 @@
 # OneApp
 
-A Bun workspace for the OneApp CLI, web app, and Chromium extension. The web app and extension popup use Foldkit and Effect.
+A Bun workspace for the OneApp CLI, web app, and Chromium extension, with a Swift app for macOS. The web app and extension popup use Foldkit and Effect.
 
 ## Getting started
 
@@ -21,8 +21,17 @@ Run `bun fmt` to format and `bun check` to type-check. `bun run test` runs Vites
 | `apps/cli`       | `bun run --filter @oneapp/cli dev` runs from source. The build produces `apps/cli/dist/one` for the current platform.                                                              |
 | `apps/web`       | `bun run --filter @oneapp/web dev` starts the local web app. The static build goes to `apps/web/dist`.                                                                             |
 | `apps/extension` | `bun run --filter @oneapp/extension build` builds the popup and manifest. In `chrome://extensions`, enable Developer mode and load `apps/extension/dist` as an unpacked extension. |
+| `apps/apple`     | `bun run apple:dev` builds and opens the macOS app.                                                                                                                                |
 | `packages/core`  | Shared, runtime-neutral TypeScript imported by all three apps.                                                                                                                     |
 | `packages/ui`    | Foldkit starter UI mounted by the extension.                                                                                                                                       |
+
+## macOS app
+
+Install the standalone Command Line Tools with `xcode-select --install` or use an existing Xcode installation. On macOS 14 or later, run `bun run apple:dev` to open OneApp. Quit a running copy before rebuilding to pick up native changes. `bun run apple:build` writes a locally signed app to `apps/apple/dist/OneApp.app`.
+
+Xcode 26 or later compiles `apps/apple/OneApp.icon` into the layered app icon. Builds with the standalone Command Line Tools use the bundled `apps/apple/OneApp.icns`. After editing the icon in Icon Composer, build with Xcode 26 or later selected and copy `apps/apple/dist/OneApp.app/Contents/Resources/OneApp.icns` to `apps/apple/OneApp.icns` to refresh the fallback.
+
+The app loads `https://app.dpeek.com` and keeps its own OneApp sign-in session. Links to other sites open in your default browser.
 
 ## Cloudflare preview
 

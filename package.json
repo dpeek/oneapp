@@ -10,6 +10,8 @@
     "packages/*"
   ],
   "scripts": {
+    "apple:build": "sh apps/apple/build.sh",
+    "apple:dev": "bun run apple:build && open apps/apple/dist/OneApp.app",
     "build": "bun run --parallel --filter './apps/*' build",
     "deploy": "bun scripts/deploy.ts",
     "db:generate": "bun --bun drizzle-kit generate --config apps/web/drizzle.config.ts",

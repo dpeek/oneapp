@@ -140,6 +140,8 @@ export const vaultField = ({
 
     const feedback = document.createElement("span");
     feedback.className = "vault-field-feedback";
+    feedback.id = `vault-copy-feedback-${crypto.randomUUID()}`;
+    copy.setAttribute("aria-describedby", feedback.id);
     feedback.setAttribute("aria-live", "polite");
     element.append(feedback);
 
@@ -161,8 +163,9 @@ export const vaultField = ({
       feedback.toggleAttribute("data-error", !copied);
       feedback.textContent = copied
         ? `${actionLabel} copied.`
-        : "Couldn’t copy to the clipboard.";
+        : "Couldn’t copy to the clipboard. Try Copy again.";
       iconButton(copy, copied ? "check" : "copy", copyLabel);
+      if (!copied) return;
       timeout = window.setTimeout(() => {
         feedback.textContent = "";
         feedback.removeAttribute("data-error");

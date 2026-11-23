@@ -47,6 +47,7 @@ export * as Popover from "./popover.ts";
 export * as Sheet from "./sheet.ts";
 export { spinner } from "./spinner.ts";
 export * as Tooltip from "./tooltip.ts";
+export * as Toast from "./toast.ts";
 export { timestamp } from "./timestamp.ts";
 
 const Model = Schema.Struct({ title: Schema.String });

@@ -15,11 +15,7 @@ import {
   attachmentBytes,
   inboxSendPath,
 } from "./inbox-contract.ts";
-import {
-  sendInboxRequest,
-  SentConfirmation,
-  sentNotice,
-} from "./inbox-send.ts";
+import { sendInboxRequest, SentConfirmation } from "./inbox-send.ts";
 
 const ReplyDraft = Schema.Struct({
   ...InboxDraft.fields,
@@ -39,7 +35,6 @@ export const Model = Schema.Struct({
   reply: Schema.NullOr(ReplyDraft),
   request: Schema.NullOr(Schema.String),
   error: Schema.NullOr(Schema.String),
-  notice: Schema.NullOr(Schema.String),
 });
 type Model = typeof Model.Type;
 
@@ -51,7 +46,6 @@ export const initial: Model = {
   reply: null,
   request: null,
   error: null,
-  notice: null,
 };
 
 export const Message = defineMessageUnion({
@@ -71,6 +65,7 @@ export const Message = defineMessageUnion({
   RemovedForwarded: { part: Schema.Number },
   Sent: { request: Schema.String, ...SentConfirmation },
   Failed: { request: Schema.String, error: Schema.String },
+  SendFailed: { request: Schema.String, error: Schema.String },
   SessionExpired: { request: Schema.String },
 });
 type Message = typeof Message.Type;
@@ -153,7 +148,12 @@ const Send = Command.define("SendInboxEmail", {
     reply: Schema.NullOr(ReplyDraft),
     attachments: OutgoingAttachments,
   },
-  messages: [Message.Sent, Message.Failed, Message.SessionExpired],
+  messages: [
+    Message.Sent,
+    Message.Failed,
+    Message.SendFailed,
+    Message.SessionExpired,
+  ],
   execute: ({ request, reply, attachments }) =>
     Effect.promise(async (signal) => {
       const form = document.getElementById(formId);
@@ -233,7 +233,7 @@ const Send = Command.define("SendInboxEmail", {
             completion: result.completion,
           });
         case "Failed":
-          return Message.Failed({ request, error: result.error });
+          return Message.SendFailed({ request, error: result.error });
       }
     }),
 });
@@ -313,18 +313,18 @@ export const update = (
         ],
       };
     },
-    Sent: ({ request, saved, completion }) => ({
-      model:
-        model.request === request
-          ? {
-              ...initial,
-              notice: sentNotice(saved, completion),
-            }
-          : model,
+    Sent: ({ request }) => ({
+      model: model.request === request ? initial : model,
     }),
     Failed: ({ request, error }) => ({
       model:
         model.request === request ? { ...model, request: null, error } : model,
+    }),
+    SendFailed: ({ request }) => ({
+      model:
+        model.request === request
+          ? { ...model, request: null, error: null }
+          : model,
     }),
     SessionExpired: () => ({ model }),
   });
@@ -351,7 +351,6 @@ export const view = Submodel.defineView<
         },
         h,
       ),
-      h.p([h.Role("status")], [model.notice ?? ""]),
       ...(model.from
         ? [
             h.dialog(

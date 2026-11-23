@@ -34,6 +34,7 @@ import {
 } from "./people-contract.ts";
 
 import { contactImage } from "./contact-image.ts";
+import { Notification } from "./notifications.ts";
 import { normalizeCompanyDomain } from "./company-domains.ts";
 
 export const Model = Schema.Struct({
@@ -58,6 +59,7 @@ export const Model = Schema.Struct({
     listFailed: Schema.Boolean,
     edit: Schema.NullOr(Person),
     editRequest: Schema.NullOr(Schema.String),
+    editTarget: Schema.NullOr(Person),
     editError: Schema.NullOr(Schema.String),
   }),
 });
@@ -84,6 +86,7 @@ export const initial: Model = {
     listFailed: false,
     edit: null,
     editRequest: null,
+    editTarget: null,
     editError: null,
   },
 };
@@ -120,6 +123,12 @@ export const Message = defineMessageUnion({
   SubmittedEdit: {},
 });
 type Message = typeof Message.Type;
+export const OutMessage = defineMessageUnion({
+  Notify: { notification: Notification },
+  DismissNotification: { key: Schema.String },
+});
+export type OutMessage = typeof OutMessage.Type;
+const notificationKey = (id: string) => `contact-save:${id}`;
 
 const formId = "person-profile-form";
 const editFormId = "person-directory-edit";
@@ -363,241 +372,310 @@ const loadDirectory = (model: Model): Update.Return<Model, Message> => {
 export const update = (
   model: Model,
   message: Message,
-): Update.Return<Model, Message> => {
+  directoryVisible = true,
+): Update.ReturnWithOutMessage<Model, Message, OutMessage> => {
   const directory = model.directory;
-  return Message.match<Update.Return<Model, Message>>(message, {
-    RequestedSelf: () => {
-      if (model.selfRequest) return { model };
-      const request = crypto.randomUUID();
-      return {
-        model: { ...model, selfRequest: request },
-        commands: [Load({ request, address: null })],
-      };
-    },
-    Created: ({ kind }) =>
-      model.opened
-        ? { model }
-        : {
+  return Message.match<Update.ReturnWithOutMessage<Model, Message, OutMessage>>(
+    message,
+    {
+      RequestedSelf: () => {
+        if (model.selfRequest) return { model };
+        const request = crypto.randomUUID();
+        return {
+          model: { ...model, selfRequest: request },
+          commands: [Load({ request, address: null })],
+        };
+      },
+      Created: ({ kind }) =>
+        model.opened
+          ? { model }
+          : {
+              model: {
+                ...model,
+                opened: true,
+                creating: true,
+                ready: true,
+                address: null,
+                person: null,
+                kind,
+                suggestedDomains: [],
+                suggestedName: "",
+                companySuggestion: null,
+                loadRequest: null,
+                error: null,
+              },
+            },
+      ChangedKind: ({ kind }) => {
+        if (model.saveRequest || directory.editRequest) return { model };
+        if (directory.edit?.self) return { model };
+        if (directory.edit)
+          return {
             model: {
               ...model,
-              opened: true,
-              creating: true,
-              ready: true,
-              address: null,
-              person: null,
-              kind,
-              suggestedDomains: [],
-              suggestedName: "",
-              companySuggestion: null,
-              loadRequest: null,
-              error: null,
+              directory: { ...directory, edit: { ...directory.edit, kind } },
             },
-          },
-    ChangedKind: ({ kind }) => {
-      if (model.saveRequest || directory.editRequest) return { model };
-      if (directory.edit?.self) return { model };
-      if (directory.edit)
+          };
+        if (model.person?.self) return { model };
+        return { model: { ...model, kind } };
+      },
+      UsedCompanySuggestion: () => {
+        if (!model.companySuggestion || model.saveRequest || !model.address)
+          return { model };
         return {
           model: {
             ...model,
-            directory: { ...directory, edit: { ...directory.edit, kind } },
+            kind: "company",
+            person: {
+              ...model.companySuggestion,
+              addresses: [
+                ...new Set([
+                  ...model.companySuggestion.addresses,
+                  model.address,
+                ]),
+              ],
+            },
+            companySuggestion: null,
           },
         };
-      if (model.person?.self) return { model };
-      return { model: { ...model, kind } };
-    },
-    UsedCompanySuggestion: () => {
-      if (!model.companySuggestion || model.saveRequest || !model.address)
-        return { model };
-      return {
-        model: {
-          ...model,
-          kind: "company",
-          person: {
-            ...model.companySuggestion,
-            addresses: [
-              ...new Set([...model.companySuggestion.addresses, model.address]),
-            ],
-          },
-          companySuggestion: null,
-        },
-      };
-    },
-    Opened: ({ address, suggestedName, suggestedKind, suggestedDomain }) =>
-      model.opened
-        ? { model }
-        : loadDialog({
-            ...initial,
-            self: model.self,
-            selfRequest: model.selfRequest,
-            directory,
-            opened: true,
-            address,
-            kind: suggestedKind ?? "person",
-            suggestedDomains: suggestedDomain ? [suggestedDomain] : [],
-            suggestedName:
-              suggestedName
-                ?.trim()
-                .slice(0, personNameLimit)
-                .replace(/[\uD800-\uDBFF]$/u, "") ?? "",
-          }),
-    Closed: () =>
-      model.saveRequest
-        ? { model }
-        : {
-            model: {
+      },
+      Opened: ({ address, suggestedName, suggestedKind, suggestedDomain }) =>
+        model.opened
+          ? { model }
+          : loadDialog({
               ...initial,
               self: model.self,
               selfRequest: model.selfRequest,
               directory,
+              opened: true,
+              address,
+              kind: suggestedKind ?? "person",
+              suggestedDomains: suggestedDomain ? [suggestedDomain] : [],
+              suggestedName:
+                suggestedName
+                  ?.trim()
+                  .slice(0, personNameLimit)
+                  .replace(/[\uD800-\uDBFF]$/u, "") ?? "",
+            }),
+      Closed: () =>
+        model.saveRequest
+          ? { model }
+          : {
+              model: {
+                ...initial,
+                self: model.self,
+                selfRequest: model.selfRequest,
+                directory,
+              },
+            },
+      Mounted: () => ({ model }),
+      Retried: () =>
+        model.opened && !model.loadRequest ? loadDialog(model) : { model },
+      Loaded: ({ request, person, companySuggestion }) => {
+        if (request === model.selfRequest)
+          return { model: { ...model, selfRequest: null, self: person } };
+        if (request !== model.loadRequest) return { model };
+        return {
+          model: {
+            ...model,
+            loadRequest: null,
+            ready: true,
+            person,
+            kind: person ? (person.kind ?? "person") : model.kind,
+            companySuggestion: companySuggestion ?? null,
+            self: person?.self ? person : model.self,
+          },
+        };
+      },
+      Submitted: () => {
+        if (!model.ready || !model.opened || model.saveRequest)
+          return { model };
+        const request = crypto.randomUUID();
+        return {
+          model: { ...model, saveRequest: request, error: null },
+          commands: [Save({ request, person: model.person, formId })],
+        };
+      },
+      Saved: ({ request, person }) => {
+        const editing = request === directory.editRequest;
+        if (!editing && request !== model.saveRequest) return { model };
+        if (editing && directory.editTarget?.id !== person.id) return { model };
+        const records = directory.records
+          ? [...directory.records.filter(({ id }) => id !== person.id), person]
+          : null;
+        return {
+          outMessage: OutMessage.DismissNotification({
+            key: notificationKey(person.id),
+          }),
+          model: {
+            ...(editing ? model : initial),
+            self: person.self ? person : model.self,
+            selfRequest: person.self ? null : model.selfRequest,
+            directory: {
+              ...directory,
+              records,
+              listRequest: records ? null : directory.listRequest,
+              ...(editing
+                ? {
+                    edit: null,
+                    editRequest: null,
+                    editTarget: null,
+                    editError: null,
+                  }
+                : {}),
             },
           },
-    Mounted: () => ({ model }),
-    Retried: () =>
-      model.opened && !model.loadRequest ? loadDialog(model) : { model },
-    Loaded: ({ request, person, companySuggestion }) => {
-      if (request === model.selfRequest)
-        return { model: { ...model, selfRequest: null, self: person } };
-      if (request !== model.loadRequest) return { model };
-      return {
-        model: {
+        };
+      },
+      Failed: ({ request, error }) => {
+        if (request === directory.editRequest) {
+          const target = directory.editTarget;
+          const visible =
+            directoryVisible &&
+            target &&
+            directory.selected === target.id &&
+            directory.edit?.id === target.id;
+          return {
+            model: {
+              ...model,
+              directory: {
+                ...directory,
+                editRequest: null,
+                editTarget: null,
+                editError: visible ? error : null,
+              },
+            },
+            ...(!visible && target
+              ? {
+                  outMessage: OutMessage.Notify({
+                    notification: {
+                      key: notificationKey(target.id),
+                      variant: "Error",
+                      title:
+                        "Could not save the contact. Reopen it in Contacts to try again.",
+                      description:
+                        target.name || target.addresses[0] || "Unnamed contact",
+                    },
+                  }),
+                }
+              : target
+                ? {
+                    outMessage: OutMessage.DismissNotification({
+                      key: notificationKey(target.id),
+                    }),
+                  }
+                : {}),
+          };
+        }
+        if (request === model.selfRequest)
+          return { model: { ...model, selfRequest: null } };
+        if (request !== model.loadRequest && request !== model.saveRequest)
+          return { model };
+        return {
+          model: { ...model, error, loadRequest: null, saveRequest: null },
+          ...(request === model.saveRequest && model.person
+            ? {
+                outMessage: OutMessage.DismissNotification({
+                  key: notificationKey(model.person.id),
+                }),
+              }
+            : {}),
+        };
+      },
+      SessionExpired: () => ({ model }),
+      VisitedDirectory: ({ id, refresh }) => {
+        const next = {
           ...model,
-          loadRequest: null,
-          ready: true,
-          person,
-          kind: person ? (person.kind ?? "person") : model.kind,
-          companySuggestion: companySuggestion ?? null,
-          self: person?.self ? person : model.self,
-        },
-      };
-    },
-    Submitted: () => {
-      if (!model.ready || !model.opened || model.saveRequest) return { model };
-      const request = crypto.randomUUID();
-      return {
-        model: { ...model, saveRequest: request, error: null },
-        commands: [Save({ request, person: model.person, formId })],
-      };
-    },
-    Saved: ({ request, person }) => {
-      const editing = request === directory.editRequest;
-      if (!editing && request !== model.saveRequest) return { model };
-      const records = directory.records
-        ? [...directory.records.filter(({ id }) => id !== person.id), person]
-        : null;
-      return {
-        model: {
-          ...(editing ? model : initial),
-          self: person.self ? person : model.self,
-          selfRequest: person.self ? null : model.selfRequest,
           directory: {
             ...directory,
-            records,
-            listRequest: records ? null : directory.listRequest,
-            ...(editing
-              ? { edit: null, editRequest: null, editError: null }
-              : {}),
+            selected: id,
+            edit: null,
+            editError: null,
           },
-        },
-      };
-    },
-    Failed: ({ request, error }) => {
-      if (request === directory.editRequest)
+        };
+        const result =
+          refresh || directory.records === null
+            ? loadDirectory(next)
+            : { model: next };
+        return id === null && directory.selected && !refresh
+          ? {
+              ...result,
+              commands: [
+                ...(result.commands ?? []),
+                FocusDirectory({ id: directory.selected }),
+              ],
+            }
+          : result;
+      },
+      RetriedDirectory: () => loadDirectory(model),
+      LoadedDirectory: ({ request, people }) =>
+        request !== directory.listRequest
+          ? { model }
+          : {
+              model: {
+                ...model,
+                directory: { ...directory, records: people, listRequest: null },
+              },
+            },
+      DirectoryFailed: ({ request }) =>
+        request !== directory.listRequest
+          ? { model }
+          : {
+              model: {
+                ...model,
+                directory: {
+                  ...directory,
+                  listRequest: null,
+                  listFailed: true,
+                },
+              },
+            },
+      EditedRecord: () => {
+        const edit = directory.records?.find(
+          ({ id }) => id === directory.selected,
+        );
+        if (
+          !edit ||
+          directory.edit ||
+          directory.editRequest ||
+          directory.listRequest
+        )
+          return { model };
+        return {
+          model: {
+            ...model,
+            directory: { ...directory, edit, editError: null },
+          },
+        };
+      },
+      CanceledEdit: () =>
+        directory.editRequest
+          ? { model }
+          : {
+              model: {
+                ...model,
+                directory: { ...directory, edit: null, editError: null },
+              },
+            },
+      SubmittedEdit: () => {
+        if (!directory.edit || directory.editRequest) return { model };
+        const request = crypto.randomUUID();
         return {
           model: {
             ...model,
             directory: {
               ...directory,
-              editRequest: null,
-              editError: directory.edit ? error : null,
+              editRequest: request,
+              editTarget: directory.edit,
+              editError: null,
             },
           },
+          commands: [
+            Save({ request, person: directory.edit, formId: editFormId }),
+          ],
         };
-      if (request === model.selfRequest)
-        return { model: { ...model, selfRequest: null } };
-      if (request !== model.loadRequest && request !== model.saveRequest)
-        return { model };
-      return {
-        model: { ...model, error, loadRequest: null, saveRequest: null },
-      };
+      },
     },
-    SessionExpired: () => ({ model }),
-    VisitedDirectory: ({ id, refresh }) => {
-      const next = {
-        ...model,
-        directory: { ...directory, selected: id, edit: null, editError: null },
-      };
-      const result =
-        refresh || directory.records === null
-          ? loadDirectory(next)
-          : { model: next };
-      return id === null && directory.selected && !refresh
-        ? {
-            ...result,
-            commands: [
-              ...(result.commands ?? []),
-              FocusDirectory({ id: directory.selected }),
-            ],
-          }
-        : result;
-    },
-    RetriedDirectory: () => loadDirectory(model),
-    LoadedDirectory: ({ request, people }) =>
-      request !== directory.listRequest
-        ? { model }
-        : {
-            model: {
-              ...model,
-              directory: { ...directory, records: people, listRequest: null },
-            },
-          },
-    DirectoryFailed: ({ request }) =>
-      request !== directory.listRequest
-        ? { model }
-        : {
-            model: {
-              ...model,
-              directory: { ...directory, listRequest: null, listFailed: true },
-            },
-          },
-    EditedRecord: () => {
-      const edit = directory.records?.find(
-        ({ id }) => id === directory.selected,
-      );
-      if (
-        !edit ||
-        directory.edit ||
-        directory.editRequest ||
-        directory.listRequest
-      )
-        return { model };
-      return {
-        model: { ...model, directory: { ...directory, edit, editError: null } },
-      };
-    },
-    CanceledEdit: () =>
-      directory.editRequest
-        ? { model }
-        : {
-            model: {
-              ...model,
-              directory: { ...directory, edit: null, editError: null },
-            },
-          },
-    SubmittedEdit: () => {
-      if (!directory.edit || directory.editRequest) return { model };
-      const request = crypto.randomUUID();
-      return {
-        model: {
-          ...model,
-          directory: { ...directory, editRequest: request, editError: null },
-        },
-        commands: [
-          Save({ request, person: directory.edit, formId: editFormId }),
-        ],
-      };
-    },
-  });
+  );
 };
 
 const OpenDialog = Mount.define("OpenPersonProfileDialog", {

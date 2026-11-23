@@ -26,6 +26,8 @@ import { mailHtmlDocument, mailHtmlSandbox } from "./inbox-html.ts";
 import * as Recovery from "./inbox-recovery.ts";
 import * as Compose from "./inbox-compose.ts";
 import * as QuickReply from "./inbox-inline-reply.ts";
+import { Action, Notification } from "./notifications.ts";
+import { sentNotice } from "./inbox-send.ts";
 import {
   collapsibleMiddleCount,
   conversationPeople,
@@ -117,6 +119,7 @@ const ArchiveChange = Schema.Struct({
 
 const ArchiveRequest = Schema.Struct({
   ...ArchiveChange.fields,
+  subject: Schema.optional(Schema.String),
   request: Schema.String,
   folder: MailboxView,
   selected: Schema.NullOr(MailMessageId),
@@ -164,7 +167,15 @@ export const Model = Schema.Struct({
   unreadCount: Schema.Number,
   unreadRequest: Schema.NullOr(Schema.String),
   unreadRefreshQueued: Schema.Boolean,
-  readRequests: Schema.Record(Schema.String, Schema.String),
+  readRequests: Schema.Record(
+    Schema.String,
+    Schema.Struct({
+      request: Schema.String,
+      userInitiated: Schema.Boolean,
+      unread: Schema.Boolean,
+      subject: Schema.optional(Schema.String),
+    }),
+  ),
   readFailed: Schema.NullOr(InboxMessageId),
   selected: Schema.NullOr(MailMessageId),
   middleRevealed: Schema.Boolean,
@@ -185,20 +196,16 @@ export const Model = Schema.Struct({
   deleteRequest: Schema.NullOr(
     Schema.Struct({
       id: MailMessageId,
+      subject: Schema.optional(Schema.String),
       request: Schema.String,
       folder: MailFolder,
     }),
   ),
-  deleteFailed: Schema.Boolean,
   archiveRequest: Schema.NullOr(ArchiveRequest),
-  archiveNotice: Schema.NullOr(ArchiveChange),
-  archiveError: Schema.NullOr(Schema.String),
   senderRuleRequest: Schema.NullOr(SenderRuleRequest),
-  senderRuleFailed: Schema.Boolean,
   appearanceRequest: Schema.NullOr(
     Schema.Struct({ request: Schema.String, ...SenderAppearanceUpdate.fields }),
   ),
-  appearanceError: Schema.Boolean,
   compose: Compose.Model,
   recovery: Recovery.Model,
   quickReply: QuickReply.Model,
@@ -236,14 +243,9 @@ export const initial: Model = {
   attachmentPopover: Popover.init({ id: "mail-attachments" }),
   deleteTarget: null,
   deleteRequest: null,
-  deleteFailed: false,
   archiveRequest: null,
-  archiveNotice: null,
-  archiveError: null,
   senderRuleRequest: null,
-  senderRuleFailed: false,
   appearanceRequest: null,
-  appearanceError: false,
   compose: Compose.initial,
   recovery: Recovery.initial,
   quickReply: QuickReply.initial,
@@ -283,7 +285,7 @@ export const Message = defineMessageUnion({
   DeleteFailed: { request: Schema.String },
   GotConversationMenuMessage: { message: DropdownMenu.Message },
   GotMessageMenuMessage: { message: DropdownMenu.Message },
-  UndidArchive: {},
+  ActivatedNotification: { action: Action },
   ArchiveChanged: { request: Schema.String },
   ArchiveFailed: { request: Schema.String, error: Schema.String },
   AvatarMounted: {},
@@ -319,6 +321,46 @@ export const Message = defineMessageUnion({
   FocusUpdated: {},
 });
 type Message = typeof Message.Type;
+export const OutMessage = defineMessageUnion({
+  Notify: { notification: Notification },
+  DismissNotification: { key: Schema.String },
+});
+export type OutMessage = typeof OutMessage.Type;
+type Result = Update.ReturnWithOutMessage<Model, Message, OutMessage>;
+const notify = (
+  result: Update.Return<Model, Message>,
+  notification: Notification,
+): Result => ({
+  ...result,
+  outMessage: OutMessage.Notify({ notification }),
+});
+const dismissNotification = (
+  result: Update.Return<Model, Message>,
+  key: string,
+): Result => ({
+  ...result,
+  outMessage: OutMessage.DismissNotification({ key }),
+});
+const archiveKey = (id: string) => `mail-archive:${id}`;
+const deleteKey = (id: string) => `mail-delete:${id}`;
+const readKey = (id: string) => `mail-read:${id}`;
+const priorityKey = (address: string) => `mail-sender-priority:${address}`;
+const appearanceKey = (address: string) => `mail-sender-appearance:${address}`;
+const sent = (
+  result: Update.Return<Model, Message>,
+  key: string,
+  message: typeof Compose.Message.Type & { _tag: "Sent" },
+): Result =>
+  notify(result, {
+    key,
+    variant:
+      !message.saved || message.completion === "failed"
+        ? "Warning"
+        : message.completion === "new-mail"
+          ? "Info"
+          : "Success",
+    title: sentNotice(message.saved, message.completion),
+  });
 
 const toAttachmentMessage = (message: typeof Attachments.Message.Type) =>
   message._tag === "SessionExpired"
@@ -871,13 +913,19 @@ const changeArchive = (
   model: Model,
   change: typeof ArchiveChange.Type,
   selected: Model["selected"],
+  subject?: string,
 ): Update.Return<Model, Message> => {
   const request = crypto.randomUUID();
   return {
     model: {
       ...model,
-      archiveRequest: { ...change, request, folder: model.folder, selected },
-      archiveError: null,
+      archiveRequest: {
+        ...change,
+        request,
+        folder: model.folder,
+        selected,
+        subject,
+      },
     },
     commands: [SaveArchive({ ...change, request })],
   };
@@ -931,7 +979,6 @@ const selectMessage = (model: Model, active: Model["active"]) =>
     showPlainText: false,
     attachmentPreview: null,
     attachmentPopover: Popover.init({ id: "mail-attachments" }),
-    deleteFailed: false,
   });
 
 const refreshThread = (model: Model): Update.Return<Model, Message> => {
@@ -1011,6 +1058,7 @@ const setUnread = (
   model: Model,
   id: string,
   unread: boolean,
+  userInitiated = false,
 ): Update.Return<Model, Message> => {
   if (model.readRequests[id]) return { model };
   const request = crypto.randomUUID();
@@ -1018,7 +1066,18 @@ const setUnread = (
     model: {
       ...model,
       readFailed: null,
-      readRequests: { ...model.readRequests, [id]: request },
+      readRequests: {
+        ...model.readRequests,
+        [id]: {
+          request,
+          userInitiated,
+          unread,
+          subject:
+            model.entry?.id === id
+              ? model.entry.subject || "(no subject)"
+              : undefined,
+        },
+      },
     },
     commands: [SetUnread({ id, unread, request })],
   };
@@ -1036,7 +1095,11 @@ const finishUnread = (
 
 const finishReadStatus = (model: Model, id: string): Model => {
   const { [id]: _completed, ...readRequests } = model.readRequests;
-  return { ...model, readRequests };
+  return {
+    ...model,
+    readRequests,
+    readFailed: model.readFailed === id ? null : model.readFailed,
+  };
 };
 
 const quoteMessage = (entry: typeof MailEntry.Type) => {
@@ -1080,7 +1143,7 @@ const changeSenderPriority = (
     request: crypto.randomUUID(),
   };
   return {
-    model: { ...model, senderRuleRequest: change, senderRuleFailed: false },
+    model: { ...model, senderRuleRequest: change },
     commands: [SaveSenderRule(change)],
   };
 };
@@ -1104,6 +1167,7 @@ const foldConversationMenu = Update.foldChild({
               model,
               { id: newest.id, archived: !model.thread.archived },
               model.selected,
+              conversationSubject(model.thread.messages),
             )
           : { model };
       }
@@ -1148,7 +1212,6 @@ const foldMessageMenu = Update.foldChild({
           model: {
             ...model,
             appearanceRequest: change,
-            appearanceError: false,
           },
           commands: [SaveAppearance(change)],
         };
@@ -1164,13 +1227,19 @@ const foldMessageMenu = Update.foldChild({
       if (value === "retryImages") return loadImages(model);
       if (value === "restore")
         return model.folder === "trash"
-          ? foldRecovery(model, Recovery.Message.Restore({ id: active.id }))
+          ? foldRecovery(
+              model,
+              Recovery.Message.Restore({
+                id: active.id,
+                subject: entry?.subject,
+              }),
+            )
           : { model };
       if (model.folder === "trash" && value !== "download") return { model };
       if (value === "delete") {
         return model.deleteRequest
           ? { model }
-          : { model: { ...model, deleteTarget: active, deleteFailed: false } };
+          : { model: { ...model, deleteTarget: active } };
       }
       if (active.folder !== "inbox") return { model };
       if (value === "download") {
@@ -1185,16 +1254,13 @@ const foldMessageMenu = Update.foldChild({
         };
       }
       return entry?.id === active.id && "receivedAt" in entry
-        ? setUnread(model, entry.id, !entryUnread(model))
+        ? setUnread(model, entry.id, !entryUnread(model), true)
         : { model };
     },
 });
 
-export const update = (
-  model: Model,
-  message: Message,
-): Update.Return<Model, Message> =>
-  Message.match<Update.Return<Model, Message>>(message, {
+export const update = (model: Model, message: Message): Result =>
+  Message.match<Result>(message, {
     GotFolderSheetMessage: ({ message }) =>
       message._tag === "RequestedOpen" &&
       !matchMedia(workspaceDrawerMedia).matches
@@ -1216,7 +1282,6 @@ export const update = (
               quickReply: model.quickReply,
               deleteRequest: model.deleteRequest,
               archiveRequest: model.archiveRequest,
-              archiveNotice: model.archiveNotice,
               senderRuleRequest: model.senderRuleRequest,
               appearanceRequest: model.appearanceRequest,
               unreadCount: model.unreadCount,
@@ -1233,7 +1298,6 @@ export const update = (
               conversationMenu: initial.conversationMenu,
               messageMenu: initial.messageMenu,
               middleRevealed: false,
-              senderRuleFailed: false,
               active: id ? { id, folder: messageFolder(id) } : null,
               thread: null,
               threadRequest: null,
@@ -1248,7 +1312,6 @@ export const update = (
               attachmentPreview: null,
               attachmentPopover: Popover.init({ id: "mail-attachments" }),
               deleteTarget: null,
-              deleteFailed: false,
             };
       const previous = id === null ? base.selected : null;
       const list = id && next.list ? { model: next } : loadList(next, null);
@@ -1292,8 +1355,24 @@ export const update = (
     GotRecoveryMessage: ({ message }) => {
       const result = foldRecovery(model, message);
       if (
+        message._tag === "Failed" &&
+        message.request === model.recovery.request &&
+        model.recovery.restoring
+      )
+        return notify(result, {
+          key: deleteKey(model.recovery.restoring),
+          variant: "Error",
+          title: "Could not restore this message. Try Undo again.",
+          description: model.recovery.subject,
+          action: Action.RestoreMail({
+            id: model.recovery.restoring,
+            subject: model.recovery.subject,
+          }),
+        });
+      if (
         message._tag !== "Restored" ||
-        model.recovery.request !== message.request
+        model.recovery.request !== message.request ||
+        model.recovery.restoring !== message.id
       )
         return result;
       const restoredSelection =
@@ -1311,13 +1390,25 @@ export const update = (
           }
         : result.model;
       const refreshed = withUnread(withThread(refreshList(next)));
-      return {
-        model: refreshed.model,
-        commands: [...(result.commands ?? []), ...(refreshed.commands ?? [])],
-      };
+      return dismissNotification(
+        {
+          model: refreshed.model,
+          commands: [...(result.commands ?? []), ...(refreshed.commands ?? [])],
+        },
+        deleteKey(message.id),
+      );
     },
     GotComposeMessage: ({ message }) => {
       const result = foldCompose(model, message);
+      if (
+        message._tag === "SendFailed" &&
+        model.compose.request === message.request
+      )
+        return notify(result, {
+          key: "mail-compose",
+          variant: "Error",
+          title: message.error,
+        });
       if (message._tag !== "Sent" || model.compose.request !== message.request)
         return result;
       const original = model.compose.reply?.originalId;
@@ -1326,13 +1417,34 @@ export const update = (
         (original === model.selected ||
           model.thread?.messages.some(({ id }) => id === original)),
       );
-      return afterSend(result, message, showReply);
+      return sent(
+        afterSend(result, message, showReply),
+        "mail-compose",
+        message,
+      );
     },
     GotQuickReplyMessage: ({ message }) => {
       const result = foldQuickReply(model, message);
+      if (
+        message._tag === "Failed" &&
+        model.quickReply.request === message.request
+      )
+        return notify(result, {
+          key: "mail-reply",
+          variant: "Error",
+          title: message.error,
+        });
       return message._tag === "Sent" &&
         message.request === model.quickReply.request
-        ? afterSend(result, message, model.quickReply.anchor === model.selected)
+        ? sent(
+            afterSend(
+              result,
+              message,
+              model.quickReply.anchor === model.selected,
+            ),
+            "mail-reply",
+            message,
+          )
         : result;
     },
     LiveChanged: () =>
@@ -1351,14 +1463,24 @@ export const update = (
     RetriedThread: () => refreshThread(model),
     UpdatedProfiles: () =>
       withThread(model.folder !== "sent" ? refreshList(model) : { model }),
-    UndidArchive: () =>
-      model.archiveNotice?.archived && !model.archiveRequest
-        ? changeArchive(
-            model,
-            { id: model.archiveNotice.id, archived: false },
-            null,
-          )
-        : { model },
+    ActivatedNotification: ({ action }) => {
+      if (model.recovery.request)
+        return notify(
+          { model },
+          {
+            key: deleteKey(action.id),
+            variant: "Info",
+            title:
+              "Another restore is still running. Try Undo again when it finishes.",
+            action,
+            description: action.subject,
+          },
+        );
+      return foldRecovery(
+        model,
+        Recovery.Message.Restore({ id: action.id, subject: action.subject }),
+      );
+    },
     ArchiveChanged: ({ request }) => {
       const change = model.archiveRequest;
       if (!change || request !== change.request) return { model };
@@ -1380,46 +1502,61 @@ export const update = (
         listRequest: null,
         threadRequest: null,
         archiveRequest: null,
-        archiveNotice: { id: change.id, archived: change.archived },
-        archiveError: null,
       };
-      return withUnread(
-        withThread(
-          model.folder !== "sent" ? loadList(next, null) : { model: next },
+      return dismissNotification(
+        withUnread(
+          withThread(
+            model.folder !== "sent" ? loadList(next, null) : { model: next },
+          ),
         ),
+        archiveKey(change.id),
       );
     },
-    ArchiveFailed: ({ request, error }) =>
-      request === model.archiveRequest?.request
-        ? withThread(
-            refreshList({
-              ...model,
-              archiveRequest: null,
-              archiveError: error,
-            }),
-          )
-        : { model },
+    ArchiveFailed: ({ request, error }) => {
+      const change = model.archiveRequest;
+      if (request !== change?.request) return { model };
+      return notify(
+        withThread(refreshList({ ...model, archiveRequest: null })),
+        {
+          key: archiveKey(change.id),
+          description: change.subject,
+          variant: "Error",
+          title: error,
+        },
+      );
+    },
     AvatarMounted: () => ({ model }),
     AppearanceSaved: ({ request }) => {
-      if (model.appearanceRequest?.request !== request) return { model };
+      const change = model.appearanceRequest;
+      if (change?.request !== request) return { model };
       const entry = loadEntry({
         ...model,
         appearanceRequest: null,
-        appearanceError: false,
         entryRequest: null,
       });
       const result = withThread(refreshList(entry.model));
-      return {
-        model: result.model,
-        commands: [...(entry.commands ?? []), ...(result.commands ?? [])],
-      };
+      return dismissNotification(
+        {
+          model: result.model,
+          commands: [...(entry.commands ?? []), ...(result.commands ?? [])],
+        },
+        appearanceKey(change.address),
+      );
     },
-    AppearanceFailed: ({ request }) => ({
-      model:
-        model.appearanceRequest?.request === request
-          ? { ...model, appearanceRequest: null, appearanceError: true }
-          : model,
-    }),
+    AppearanceFailed: ({ request }) => {
+      const change = model.appearanceRequest;
+      if (change?.request !== request) return { model };
+      return notify(
+        { model: { ...model, appearanceRequest: null } },
+        {
+          key: appearanceKey(change.address),
+          variant: "Error",
+          title:
+            "Could not update sender appearance. Try again from Message actions.",
+          description: change.address,
+        },
+      );
+    },
     SenderRuleSaved: ({ request }) => {
       const change = model.senderRuleRequest;
       if (change?.request !== request) return { model };
@@ -1433,20 +1570,25 @@ export const update = (
               },
             }
           : model.thread;
-      return withThread(
-        refreshList({ ...model, thread, senderRuleRequest: null }),
+      return dismissNotification(
+        withThread(refreshList({ ...model, thread, senderRuleRequest: null })),
+        priorityKey(change.address),
       );
     },
-    SenderRuleFailed: ({ request }) =>
-      request === model.senderRuleRequest?.request
-        ? {
-            model: {
-              ...model,
-              senderRuleRequest: null,
-              senderRuleFailed: true,
-            },
-          }
-        : { model },
+    SenderRuleFailed: ({ request }) => {
+      const change = model.senderRuleRequest;
+      if (change?.request !== request) return { model };
+      return notify(
+        { model: { ...model, senderRuleRequest: null } },
+        {
+          key: priorityKey(change.address),
+          variant: "Error",
+          title:
+            "Could not update sender priority. Try again from Conversation actions.",
+          description: change.address,
+        },
+      );
+    },
     ToggledMessage: ({ id, folder }) =>
       selectMessage(model, model.active?.id === id ? null : { id, folder }),
     RevealedMiddle: ({ firstMessageId }) => ({
@@ -1527,6 +1669,13 @@ export const update = (
       if (!model.deleteTarget || model.deleteRequest) return { model };
       const deletion = {
         ...model.deleteTarget,
+        subject:
+          model.thread?.messages.find(({ id }) => id === model.deleteTarget?.id)
+            ?.subject ||
+          (model.entry?.id === model.deleteTarget.id
+            ? model.entry.subject
+            : undefined) ||
+          "(no subject)",
         request: crypto.randomUUID(),
       };
       return {
@@ -1535,7 +1684,11 @@ export const update = (
       };
     },
     DeletedEntry: ({ id, request }) => {
-      if (request !== model.deleteRequest?.request) return { model };
+      if (
+        request !== model.deleteRequest?.request ||
+        id !== model.deleteRequest.id
+      )
+        return { model };
       const list = model.list && {
         ...model.list,
         messages: model.list.messages.filter((message) => message.id !== id),
@@ -1551,7 +1704,6 @@ export const update = (
         threadRequest: null,
         listRequest: null,
         deleteRequest: null,
-        recovery: { ...model.recovery, lastDeleted: id },
         ...(model.active?.id === id
           ? {
               messageMenu: initial.messageMenu,
@@ -1580,19 +1732,33 @@ export const update = (
         commands: [...(entry.commands ?? []), ...(updatedList.commands ?? [])],
       };
       // Overlapping reads may have received a snapshot from before the deletion.
-      return withUnread(model.selected === id ? command : withThread(command));
+      return notify(
+        withUnread(model.selected === id ? command : withThread(command)),
+        {
+          key: deleteKey(id),
+          variant: "Success",
+          title: "Email deleted.",
+          description: model.deleteRequest.subject,
+          action: Action.RestoreMail({
+            id,
+            subject: model.deleteRequest.subject,
+          }),
+        },
+      );
     },
     DeleteFailed: ({ request }) =>
       request !== model.deleteRequest?.request
         ? { model }
-        : {
-            model: {
-              ...model,
-              deleteRequest: null,
-              deleteFailed:
-                selectedMessage(model)?.id === model.deleteRequest.id,
+        : notify(
+            { model: { ...model, deleteRequest: null } },
+            {
+              key: deleteKey(model.deleteRequest.id),
+              description: model.deleteRequest.subject,
+              variant: "Error",
+              title:
+                "Could not confirm the deletion. Check Trash before trying again.",
             },
-          },
+          ),
     LoadedList: ({ request, page }) => {
       if (request !== model.listRequest?.id) return { model };
       const { cursor } = model.listRequest;
@@ -1632,7 +1798,9 @@ export const update = (
       finishUnread(model, request, unreadCount),
     UnreadFailed: ({ request }) => finishUnread(model, request),
     UpdatedReadStatus: ({ request, id, unread }) => {
-      if (model.readRequests[id] !== request) return { model };
+      const change = model.readRequests[id];
+      if (change?.request !== request || change.unread !== unread)
+        return { model };
       const next = finishReadStatus(model, id);
       const entry =
         next.entry?.id === id && "receivedAt" in next.entry
@@ -1645,16 +1813,30 @@ export const update = (
         ),
       };
       const updated = { ...next, entry, thread };
-      return withUnread(
+      const result = withUnread(
         withThread(
           updated.folder !== "sent" ? refreshList(updated) : { model: updated },
         ),
       );
+      // Reopening can resolve an earlier explicit failure without a manual retry.
+      return dismissNotification(result, readKey(id));
     },
-    ReadStatusFailed: ({ request, id }) =>
-      model.readRequests[id] === request
-        ? { model: { ...finishReadStatus(model, id), readFailed: id } }
-        : { model },
+    ReadStatusFailed: ({ request, id }) => {
+      const change = model.readRequests[id];
+      if (change?.request !== request) return { model };
+      const next = finishReadStatus(model, id);
+      // Opening an unread message marks it read automatically; keep that failure in context.
+      if (!change.userInitiated) return { model: { ...next, readFailed: id } };
+      return notify(
+        { model: next },
+        {
+          key: readKey(id),
+          variant: "Error",
+          title: `Could not mark email ${change.unread ? "unread" : "read"}. Try again from Message actions.`,
+          description: change.subject,
+        },
+      );
+    },
     LoadedThread: ({ request, thread }) => {
       if (request !== model.threadRequest) return { model };
       const newestIncoming = thread.messages.findLast(
@@ -1911,46 +2093,6 @@ const messageItem = (
   );
 };
 
-const archiveFeedback = (model: Model, h: HtmlBuilder<Message>) => [
-  ...(model.archiveError
-    ? [
-        h.p(
-          [h.Class("inbox-archive-feedback"), h.Role("alert")],
-          [model.archiveError],
-        ),
-      ]
-    : []),
-  ...(model.archiveNotice
-    ? [
-        h.div(
-          [h.Class("inbox-archive-feedback")],
-          [
-            h.span(
-              [h.Role("status")],
-              [
-                model.archiveNotice.archived
-                  ? "Conversation marked done."
-                  : "Conversation moved to Inbox.",
-              ],
-            ),
-            ...(model.archiveNotice.archived
-              ? [
-                  h.button(
-                    [
-                      h.Type("button"),
-                      h.Disabled(model.archiveRequest !== null),
-                      h.OnClick(Message.UndidArchive()),
-                    ],
-                    ["Undo"],
-                  ),
-                ]
-              : []),
-          ],
-        ),
-      ]
-    : []),
-];
-
 const inboxPriorityTabs = (selected: MailboxView, h: HtmlBuilder<Message>) =>
   navigationLinks(
     {
@@ -1988,7 +2130,6 @@ const listView = (model: Model, h: HtmlBuilder<Message>) => {
       h.Tabindex(-1),
     ],
     [
-      ...(selected === null ? archiveFeedback(model, h) : []),
       ...(folder === "trash"
         ? [
             h.p(
@@ -2218,9 +2359,6 @@ const entryContent = (model: Model, h: HtmlBuilder<Message>) => {
                   ],
                 ),
               ]
-            : []),
-          ...(model.folder === "trash" && model.recovery.error
-            ? [h.p([h.Role("alert")], [model.recovery.error])]
             : []),
           ...(entry.attachments?.length
             ? [
@@ -2583,31 +2721,6 @@ const entryView = (
   const content = h.div(
     [h.Class("inbox-reader-content")],
     [
-      ...archiveFeedback(model, h),
-      ...(model.appearanceError
-        ? [
-            h.p(
-              [h.Role("alert")],
-              ["Could not update sender appearance. Try again."],
-            ),
-          ]
-        : []),
-      ...(model.senderRuleFailed
-        ? [
-            h.p(
-              [h.Role("alert")],
-              ["Could not update sender priority. Try again."],
-            ),
-          ]
-        : []),
-      ...(model.deleteFailed
-        ? [
-            h.p(
-              [h.Role("alert")],
-              ["Could not confirm the deletion. Try again."],
-            ),
-          ]
-        : []),
       ...(model.deleteTarget ? [deleteDialog(h)] : []),
       ...(!model.thread &&
       model.threadRequest &&
@@ -2848,31 +2961,6 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
           }
         : {}),
       headerActions: [
-        ...(model.recovery.lastDeleted
-          ? [
-              h.p(
-                [h.Role("status")],
-                [
-                  model.recovery.error ?? "Email deleted. ",
-                  h.button(
-                    [
-                      h.Type("button"),
-                      h.Disabled(model.recovery.request !== null),
-                      h.OnClick(
-                        toRecoveryMessage(
-                          Recovery.Message.Restore({
-                            id: model.recovery.lastDeleted,
-                          }),
-                        ),
-                      ),
-                    ],
-                    ["Undo"],
-                  ),
-                ],
-              ),
-            ]
-          : []),
-
         ...(model.selected
           ? [
               button(

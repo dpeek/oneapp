@@ -18,6 +18,22 @@
   padding: 0 1rem;
 }
 
+.notification-anchor,
+.notification-host {
+  display: contents;
+}
+
+.notification-anchor,
+dialog .notification-host {
+  --bottom-nav-size: 0px;
+}
+
+@media (max-width: 40rem) {
+  body:has(.app-shell) .notification-anchor {
+    --bottom-nav-size: 3.75rem;
+  }
+}
+
 .app-shell {
   --nav-size: 3.75rem;
   --bottom-nav-size: 0px;
@@ -1160,21 +1176,6 @@ button {
 
 .inbox-list-end {
   block-size: 1px;
-}
-
-.inbox-archive-feedback {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  padding: 0.5rem 0.875rem;
-  border-block-end: 1px solid var(--border);
-  font-size: 0.875rem;
-}
-
-.inbox-reader .inbox-archive-feedback {
-  margin: 0 0 0.75rem;
-  padding-inline: 0;
 }
 
 .inbox-list [data-slot="item-group"],

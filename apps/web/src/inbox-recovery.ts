@@ -3,22 +3,19 @@ import { Command, Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";
 import { trashApiPath, MailMessageId } from "./inbox-contract.ts";
 
-// Shared by Trash's Restore action and the transient Undo after deletion.
+// Shared by Trash's Restore action and notification Undo.
 export const Model = Schema.Struct({
-  lastDeleted: Schema.NullOr(MailMessageId),
   restoring: Schema.NullOr(MailMessageId),
+  subject: Schema.optional(Schema.String),
   request: Schema.NullOr(Schema.String),
-  error: Schema.NullOr(Schema.String),
 });
 type Model = typeof Model.Type;
 export const initial: Model = {
-  lastDeleted: null,
   restoring: null,
   request: null,
-  error: null,
 };
 export const Message = defineMessageUnion({
-  Restore: { id: MailMessageId },
+  Restore: { id: MailMessageId, subject: Schema.optional(Schema.String) },
   Restored: { request: Schema.String, id: MailMessageId },
   Failed: { request: Schema.String },
   SessionExpired: { request: Schema.String },
@@ -45,33 +42,20 @@ export const update = (
   message: Message,
 ): Update.Return<Model, Message> =>
   Message.match<Update.Return<Model, Message>>(message, {
-    Restore: ({ id }) => {
+    Restore: ({ id, subject }) => {
       if (model.request) return { model };
       const request = crypto.randomUUID();
       return {
-        model: { ...model, request, restoring: id, error: null },
+        model: { ...model, request, restoring: id, subject },
         commands: [Restore({ request, id })],
       };
     },
     Restored: ({ request, id }) => ({
       model:
-        model.request === request
-          ? {
-              ...initial,
-              lastDeleted: model.lastDeleted === id ? null : model.lastDeleted,
-            }
-          : model,
+        model.request === request && model.restoring === id ? initial : model,
     }),
     Failed: ({ request }) => ({
-      model:
-        model.request === request
-          ? {
-              ...model,
-              request: null,
-              restoring: null,
-              error: "Could not restore this message. Try again.",
-            }
-          : model,
+      model: model.request === request ? initial : model,
     }),
     SessionExpired: () => ({ model }),
   });

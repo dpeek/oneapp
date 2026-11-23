@@ -7,6 +7,7 @@ import {
 import { Effect, Schema } from "effect";
 import { Command, Submodel, type Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";
+import { Notification } from "./notifications.ts";
 import {
   BitwardenDeviceList,
   bitwardenDevicesPath,
@@ -33,7 +34,15 @@ const ClientTypes = Schema.Array(ClientType);
 export const Model = Schema.Struct({
   connections: Schema.NullOr(Connections),
   unavailable: ClientTypes,
-  pending: Schema.Boolean,
+  request: Schema.NullOr(
+    Schema.Union([
+      Schema.TaggedStruct("Load", { id: Schema.String }),
+      Schema.TaggedStruct("Revoke", {
+        id: Schema.String,
+        connection: Connection,
+      }),
+    ]),
+  ),
   error: Schema.String,
 });
 type Model = typeof Model.Type;
@@ -41,19 +50,32 @@ type Model = typeof Model.Type;
 export const initial: Model = {
   connections: null,
   unavailable: [],
-  pending: false,
+  request: null,
   error: "",
 };
 
 const ConnectionKey = { type: ClientType, id: Schema.String };
 export const Message = defineMessageUnion({
   Requested: {},
-  Loaded: { connections: Connections, unavailable: ClientTypes },
+  Loaded: {
+    request: Schema.String,
+    connections: Connections,
+    unavailable: ClientTypes,
+  },
   RequestedRevocation: ConnectionKey,
-  Revoked: ConnectionKey,
-  Failed: { error: Schema.String },
+  Revoked: { ...ConnectionKey, request: Schema.String },
+  Failed: { request: Schema.String, error: Schema.String },
+  SessionExpired: { request: Schema.String },
 });
 type Message = typeof Message.Type;
+export const OutMessage = defineMessageUnion({
+  Notify: { notification: Notification },
+  DismissNotification: { key: Schema.String },
+  SessionExpired: {},
+});
+export type OutMessage = typeof OutMessage.Type;
+const notificationKey = (connection: Connection) =>
+  `client-revoke:${connection.type}:${connection.id}`;
 
 const paths = {
   CLI: cliTokensPath,
@@ -108,9 +130,9 @@ const readConnections = async (
 };
 
 const Load = Command.define("LoadConnectedClients", {
-  args: {},
+  args: { request: Schema.String },
   messages: [Message.Loaded],
-  execute: () =>
+  execute: ({ request }) =>
     Effect.promise(async (signal) => {
       const results = await Promise.all(
         ClientType.literals.map((type) =>
@@ -126,27 +148,29 @@ const Load = Command.define("LoadConnectedClients", {
         if (result.connections) connections.push(...result.connections);
         else unavailable.push(result.type);
       }
-      return Message.Loaded({ connections, unavailable });
+      return Message.Loaded({ request, connections, unavailable });
     }),
 });
 
 const Revoke = Command.define("RevokeConnectedClient", {
-  args: ConnectionKey,
-  messages: [Message.Revoked, Message.Failed],
-  execute: ({ type, id }) =>
+  args: { ...ConnectionKey, request: Schema.String },
+  messages: [Message.Revoked, Message.Failed, Message.SessionExpired],
+  execute: ({ type, id, request }) =>
     Effect.tryPromise(async (signal) => {
       const response = await fetch(`${paths[type]}/${encodeURIComponent(id)}`, {
         method: "DELETE",
         headers: { "x-effect-auth-csrf": "1" },
         signal,
       });
+      if (response.status === 401) return Message.SessionExpired({ request });
       if (response.status !== 204)
         throw new Error(`Could not revoke ${type} access`);
-      return Message.Revoked({ type, id });
+      return Message.Revoked({ type, id, request });
     }).pipe(
       Effect.catch(() =>
         Effect.succeed(
           Message.Failed({
+            request,
             error: `Could not revoke ${type} access. Try again.`,
           }),
         ),
@@ -154,47 +178,108 @@ const Revoke = Command.define("RevokeConnectedClient", {
     ),
 });
 
-export const update = (model: Model, message: Message) =>
-  Message.match<Update.Return<Model, Message>>(message, {
-    Requested: () =>
-      model.pending
-        ? { model }
-        : {
-            model: { ...model, pending: true, error: "" },
-            commands: [Load({})],
+export const update = (model: Model, message: Message, visible = true) =>
+  Message.match<Update.ReturnWithOutMessage<Model, Message, OutMessage>>(
+    message,
+    {
+      Requested: () => {
+        if (model.request) return { model };
+        const request = crypto.randomUUID();
+        return {
+          model: {
+            ...model,
+            request: { _tag: "Load", id: request },
+            error: "",
           },
-    Loaded: ({ connections, unavailable }) => ({
-      model: {
-        ...model,
-        connections: [
-          ...connections,
-          ...(model.connections ?? []).filter(({ type }) =>
-            unavailable.includes(type),
-          ),
-        ].sort((a, b) => b.createdAt - a.createdAt),
-        unavailable,
-        pending: false,
+          commands: [Load({ request })],
+        };
       },
-    }),
-    RequestedRevocation: ({ type, id }) =>
-      model.pending
-        ? { model }
-        : {
-            model: { ...model, pending: true, error: "" },
-            commands: [Revoke({ type, id })],
+      Loaded: ({ request, connections, unavailable }) => {
+        if (model.request?._tag !== "Load" || model.request.id !== request)
+          return { model };
+        return {
+          model: {
+            ...model,
+            connections: [
+              ...connections,
+              ...(model.connections ?? []).filter(({ type }) =>
+                unavailable.includes(type),
+              ),
+            ].sort((a, b) => b.createdAt - a.createdAt),
+            unavailable,
+            request: null,
           },
-    Revoked: ({ type, id }) => ({
-      model: {
-        ...model,
-        connections:
-          model.connections?.filter(
-            (connection) => connection.type !== type || connection.id !== id,
-          ) ?? null,
-        pending: false,
+        };
       },
-    }),
-    Failed: ({ error }) => ({ model: { ...model, pending: false, error } }),
-  });
+      RequestedRevocation: ({ type, id }) => {
+        const connection = model.connections?.find(
+          (item) => item.type === type && item.id === id,
+        );
+        if (model.request || !connection) return { model };
+        const request = crypto.randomUUID();
+        return {
+          model: {
+            ...model,
+            request: { _tag: "Revoke", id: request, connection },
+            error: "",
+          },
+          commands: [Revoke({ type, id, request })],
+        };
+      },
+      Revoked: ({ request, type, id }) => {
+        const pending = model.request;
+        if (
+          pending?._tag !== "Revoke" ||
+          pending.id !== request ||
+          pending.connection.type !== type ||
+          pending.connection.id !== id
+        )
+          return { model };
+        return {
+          model: {
+            ...model,
+            connections:
+              model.connections?.filter(
+                (item) => item.type !== type || item.id !== id,
+              ) ?? null,
+            request: null,
+            error: "",
+          },
+          outMessage: OutMessage.DismissNotification({
+            key: notificationKey(pending.connection),
+          }),
+        };
+      },
+      Failed: ({ request, error }) => {
+        const pending = model.request;
+        if (pending?._tag !== "Revoke" || pending.id !== request)
+          return { model };
+        return {
+          model: { ...model, request: null, error: visible ? error : "" },
+          ...(visible
+            ? {
+                outMessage: OutMessage.DismissNotification({
+                  key: notificationKey(pending.connection),
+                }),
+              }
+            : {
+                outMessage: OutMessage.Notify({
+                  notification: {
+                    key: notificationKey(pending.connection),
+                    variant: "Error",
+                    title: error,
+                    description: pending.connection.name,
+                  },
+                }),
+              }),
+        };
+      },
+      SessionExpired: ({ request }) =>
+        model.request?.id === request
+          ? { model, outMessage: OutMessage.SessionExpired() }
+          : { model },
+    },
+  );
 
 const headingId = "connected-clients-heading";
 const clientIcons = {
@@ -237,7 +322,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
                         {
                           size: "sm",
                           variant: "ghost",
-                          disabled: model.pending,
+                          disabled: model.request !== null,
                           ariaLabel: `Revoke ${name} access`,
                           onClick: Message.RequestedRevocation({ type, id }),
                           children: ["Revoke"],
@@ -269,7 +354,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
                   {
                     size: "sm",
                     variant: "outline",
-                    disabled: model.pending,
+                    disabled: model.request !== null,
                     onClick: Message.Requested(),
                     children: ["Retry loading connections"],
                   },

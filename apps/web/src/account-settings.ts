@@ -14,10 +14,12 @@ import {
   PendingEmailChange,
 } from "./account-contract.ts";
 import type { Account } from "./auth-contract.ts";
+import { Notification } from "./notifications.ts";
 
 const Dialog = Schema.Literals(["email", "password"]);
 
 export const Model = Schema.Struct({
+  request: Schema.NullOr(Schema.String),
   pending: Schema.NullOr(
     Schema.Literals([
       "send",
@@ -34,6 +36,7 @@ export const Model = Schema.Struct({
 });
 type Model = typeof Model.Type;
 export const initial: Model = {
+  request: null,
   pending: null,
   verification: null,
   dialog: null,
@@ -59,6 +62,41 @@ export const Message = defineMessageUnion({
   Failed: { error: Schema.String },
 });
 type Message = typeof Message.Type;
+
+export const notificationKey = "account-settings";
+export const OutMessage = defineMessageUnion({
+  Notify: { notification: Notification },
+  DismissNotification: { key: Schema.String },
+});
+export type OutMessage = typeof OutMessage.Type;
+
+// Authentication details stay in their forms. Only a generic missed failure
+// crosses into notification state; server messages may contain user input.
+export const feedback = (
+  model: Model,
+  message: Message,
+  visible: boolean,
+): OutMessage | undefined => {
+  if (!model.pending) return undefined;
+  if (message._tag === "Failed")
+    return visible
+      ? OutMessage.DismissNotification({ key: notificationKey })
+      : OutMessage.Notify({
+          notification: {
+            key: notificationKey,
+            variant: "Error",
+            title:
+              "Could not complete the account change. Return to Settings to review and try again.",
+          },
+        });
+  if (
+    message._tag === "CodeSent" ||
+    message._tag === "EmailVerified" ||
+    message._tag === "EmailChangeStarted"
+  )
+    return OutMessage.DismissNotification({ key: notificationKey });
+  return undefined;
+};
 
 const ShowDialog = Mount.define("ShowAccountDialog", {
   messages: [Message.DialogUpdated],

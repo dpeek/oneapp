@@ -4,6 +4,8 @@ import { Effect, Option, Redacted, Schema } from "effect";
 import { Command, Runtime, Update } from "foldkit";
 import type { Document, HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
+import * as Notifications from "./notifications.ts";
+import { notificationView } from "./notification-view.ts";
 import {
   forgotPasswordPage,
   passwordResetPath,
@@ -20,6 +22,7 @@ const Model = Schema.Struct({
   ]),
   pending: Schema.Boolean,
   error: Schema.String,
+  notifications: Notifications.Model,
 });
 type Model = typeof Model.Type;
 
@@ -28,6 +31,7 @@ const Message = defineMessageUnion({
   Requested: {},
   ResetComplete: {},
   Failed: { error: Schema.String },
+  GotNotification: { message: Notifications.Message },
 });
 type Message = typeof Message.Type;
 
@@ -139,6 +143,7 @@ export const run = (pathname: string) => {
         : "request",
       pending: false,
       error: "",
+      notifications: Notifications.init(),
     },
   });
 
@@ -152,15 +157,24 @@ export const run = (pathname: string) => {
               commands: [Submit({})],
             },
       Requested: () => ({
-        model: { phase: "requested", pending: false, error: "" },
+        model: { ...model, phase: "requested", pending: false, error: "" },
       }),
       ResetComplete: () => ({
-        model: { phase: "reset-complete", pending: false, error: "" },
+        model: { ...model, phase: "reset-complete", pending: false, error: "" },
       }),
       Failed: ({ error }) => ({ model: { ...model, pending: false, error } }),
+      GotNotification: ({ message }) => {
+        const result = Notifications.update(model.notifications, message);
+        return {
+          model: { ...model, notifications: result.model },
+          commands: Command.mapMessages(result.commands ?? [], (message) =>
+            Message.GotNotification({ message }),
+          ),
+        };
+      },
     });
 
-  const view = (model: Model, h: HtmlBuilder<Message>): Document => {
+  const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
     const title = resetting ? "Reset password" : "Forgot password";
     const passwordField = (id: string, label: string) => [
       h.label([h.For(id)], [label]),
@@ -245,6 +259,24 @@ export const run = (pathname: string) => {
               ]
             : []),
           h.a([h.Href("/")], ["Back to sign in"]),
+        ],
+      ),
+    };
+  };
+
+  const view = (model: Model, h: HtmlBuilder<Message>): Document => {
+    const page = pageView(model, h);
+    return {
+      ...page,
+      body: h.div(
+        [],
+        [
+          page.body,
+          notificationView(
+            model.notifications,
+            (message) => Message.GotNotification({ message }),
+            h,
+          ),
         ],
       ),
     };

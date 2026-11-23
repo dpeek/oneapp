@@ -8,11 +8,7 @@ import {
   InlineReply,
   MailMessageId,
 } from "./inbox-contract.ts";
-import {
-  sendInboxRequest,
-  SentConfirmation,
-  sentNotice,
-} from "./inbox-send.ts";
+import { sendInboxRequest, SentConfirmation } from "./inbox-send.ts";
 
 export const Model = Schema.Struct({
   anchor: Schema.NullOr(MailMessageId),
@@ -21,8 +17,6 @@ export const Model = Schema.Struct({
   text: Schema.String,
   html: Schema.optional(Schema.String),
   request: Schema.NullOr(Schema.String),
-  error: Schema.NullOr(Schema.String),
-  notice: Schema.NullOr(Schema.String),
 });
 type Model = typeof Model.Type;
 
@@ -32,8 +26,6 @@ export const initial: Model = {
   completeThrough: null,
   text: "",
   request: null,
-  error: null,
-  notice: null,
 };
 
 export const Message = defineMessageUnion({
@@ -98,8 +90,6 @@ export const update = (
               ? draft.completeThrough
               : latestIncoming
             : null,
-          error: null,
-          notice: null,
         },
       };
     },
@@ -116,23 +106,15 @@ export const update = (
       if (reply._tag === "None") return { model };
       const request = crypto.randomUUID();
       return {
-        model: { ...model, request, error: null, notice: null },
+        model: { ...model, request },
         commands: [Send({ request, target: model.target, reply: reply.value })],
       };
     },
-    Sent: ({ request, saved, completion }) => ({
-      model:
-        model.request === request
-          ? {
-              ...initial,
-              anchor: model.anchor,
-              notice: sentNotice(saved, completion),
-            }
-          : model,
+    Sent: ({ request }) => ({
+      model: model.request === request ? initial : model,
     }),
-    Failed: ({ request, error }) => ({
-      model:
-        model.request === request ? { ...model, request: null, error } : model,
+    Failed: ({ request }) => ({
+      model: model.request === request ? { ...model, request: null } : model,
     }),
     SessionExpired: () => ({ model }),
   });
@@ -186,8 +168,6 @@ export const view = Submodel.defineView<
       ...(draft.target && draft.target !== latest
         ? [h.p([], ["Replying to the message you started with."])]
         : []),
-      h.p([h.Role("status")], [draft.notice ?? ""]),
-      h.p([h.Role("alert")], [draft.error ?? ""]),
     ],
   );
 });

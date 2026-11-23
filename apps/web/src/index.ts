@@ -4,22 +4,11 @@ import {
   bitwardenSignInQuery,
 } from "./bitwarden-connection.ts";
 import { appName } from "@oneapp/core";
-import { Link, LinkList } from "@oneapp/core/links";
-import {
-  avatar,
-  button,
-  buttonGroup,
-  item,
-  itemGroup,
-  outlineIcon,
-  plusIcon,
-  trashIconPaths,
-} from "@oneapp/ui";
+import { button, item, itemGroup, outlineIcon, plusIcon } from "@oneapp/ui";
 import * as Client from "@yielded/auth/Client";
 import { Effect, Option, Schema, Stream } from "effect";
 import {
   Command,
-  Mount,
   Navigation,
   Runtime,
   Subscription,
@@ -40,12 +29,9 @@ import {
   MailRoute,
   mailRouteFor,
 } from "./inbox-contract.ts";
-import {
-  deleteLink,
-  parseLinkInput,
-  readLinks,
-  saveLink,
-} from "./links-client.ts";
+import * as Links from "./links.ts";
+import * as Notifications from "./notifications.ts";
+import { notificationView } from "./notification-view.ts";
 import { mcpAuthorizePath, mcpLoginQuery } from "./mcp-access-contract.ts";
 import * as AppNavigation from "./navigation.ts";
 import * as PasswordRecovery from "./password-recovery.ts";
@@ -55,7 +41,6 @@ import { ContactsRoute, contactsRouteFor } from "./people-contract.ts";
 import * as PeopleDirectory from "./people-directory.ts";
 import { vaultPath } from "./vault-setup-contract.ts";
 import * as VaultSetup from "./vault-setup.ts";
-import { websiteIconHostname, websiteIconPath } from "./website-icon-host.ts";
 import { workspace, workspaceDrawerMedia } from "./workspace.ts";
 
 type Page = typeof AppNavigation.Page.Type;
@@ -83,9 +68,8 @@ const Model = Schema.Struct({
   mailRoute: Schema.NullOr(MailRoute),
   peopleRoute: Schema.NullOr(ContactsRoute),
   signInNotice: Schema.NullOr(Schema.String),
-  links: Schema.NullOr(LinkList),
-  linkUrl: Schema.String,
-  deletingLink: Schema.NullOr(Schema.String),
+  links: Links.Model,
+  notifications: Notifications.Model,
   connectedClients: ConnectedClients.Model,
   cliLogin: Schema.NullOr(CliLogin.Model),
   extensionAccess: ExtensionAccess.Model,
@@ -105,18 +89,15 @@ const Message = defineMessageUnion({
   ClickedSignOut: {},
   LoadedAccount: { account: Schema.NullOr(Account) },
   GotAccountSettingsMessage: { message: AccountSettings.Message },
+  CompletedAccountSettingsRequest: {
+    request: Schema.String,
+    message: AccountSettings.Message,
+  },
   GotVaultSetupMessage: { message: VaultSetup.Message },
   GotInboxMessage: { message: Inbox.Message },
   GotPeopleMessage: { message: People.Message },
-  ChangedLinkUrl: { url: Schema.String },
-  FocusedLinkInput: {},
-  CompletedLinkAvatarImageMount: {},
-  SubmittedLink: {},
-  RequestedLinkDeletion: { id: Schema.String },
-  RetriedLinks: {},
-  LoadedLinks: { links: LinkList },
-  SavedLink: { link: Link },
-  DeletedLink: { id: Schema.String },
+  GotLinksMessage: { message: Links.Message },
+  GotNotificationMessage: { message: Notifications.Message },
   GotConnectedClientsMessage: { message: ConnectedClients.Message },
   GotCliLoginMessage: { message: CliLogin.Message },
   GotExtensionAccessMessage: { message: ExtensionAccess.Message },
@@ -132,10 +113,6 @@ const connectingBitwarden =
   initialUrl.searchParams.get(bitwardenSignInQuery) === "1";
 const connectingMcp =
   new URL(window.location.href).searchParams.get(mcpLoginQuery) === "1";
-const savedAtFormat = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "medium",
-  timeStyle: "short",
-});
 const toAccountSettingsMessage = (
   message: typeof AccountSettings.Message.Type,
 ) => Message.GotAccountSettingsMessage({ message });
@@ -156,6 +133,8 @@ const foldInbox = Update.foldChild({
     model.account ? Option.some(model.inbox) : Option.none(),
   write: (model, inbox) => ({ ...model, inbox }),
   toParentMessage: toInboxMessage,
+  foldOutMessage: (out: Inbox.OutMessage) => (model) =>
+    applyNotification(model, out),
 });
 const toNavigationMessage = (message: typeof AppNavigation.Message.Type) =>
   Message.GotNavigationMessage({ message });
@@ -167,23 +146,42 @@ const foldNavigation = Update.foldChild({
 });
 const toPeopleMessage = (message: typeof People.Message.Type) =>
   Message.GotPeopleMessage({ message });
-const foldPeople = Update.foldChild({
-  update: People.update,
-  read: (model: Model) =>
-    model.account ? Option.some(model.people) : Option.none(),
-  write: (model, people) => ({ ...model, people }),
-  toParentMessage: toPeopleMessage,
-});
+const foldPeople = (parent: Model, message: typeof People.Message.Type) =>
+  Update.foldChild({
+    update: (
+      model: typeof People.Model.Type,
+      message: typeof People.Message.Type,
+    ) => People.update(model, message, parent.page === "contacts"),
+    read: (model: Model) =>
+      model.account ? Option.some(model.people) : Option.none(),
+    write: (model, people) => ({ ...model, people }),
+    toParentMessage: toPeopleMessage,
+    foldOutMessage: (out: People.OutMessage) => (model) =>
+      applyNotification(model, out),
+  })(parent, message);
 const toConnectedClientsMessage = (
   message: typeof ConnectedClients.Message.Type,
 ) => Message.GotConnectedClientsMessage({ message });
-const foldConnectedClients = Update.foldChild({
-  update: ConnectedClients.update,
-  read: (model: Model) =>
-    model.account ? Option.some(model.connectedClients) : Option.none(),
-  write: (model, connectedClients) => ({ ...model, connectedClients }),
-  toParentMessage: toConnectedClientsMessage,
-});
+const foldConnectedClients = (
+  parent: Model,
+  message: typeof ConnectedClients.Message.Type,
+) =>
+  Update.foldChild({
+    update: (
+      model: typeof ConnectedClients.Model.Type,
+      message: typeof ConnectedClients.Message.Type,
+    ) => ConnectedClients.update(model, message, parent.page === "settings"),
+    read: (model: Model) =>
+      model.account ? Option.some(model.connectedClients) : Option.none(),
+    write: (model, connectedClients) => ({ ...model, connectedClients }),
+    toParentMessage: toConnectedClientsMessage,
+    foldOutMessage:
+      (out: ConnectedClients.OutMessage): Update.Step<Model, Message> =>
+      (model) =>
+        out._tag === "SessionExpired"
+          ? update(model, Message.LoadedAccount({ account: null }))
+          : applyNotification(model, out),
+  })(parent, message);
 const toCliLoginMessage = (message: typeof CliLogin.Message.Type) =>
   Message.GotCliLoginMessage({ message });
 const foldCliLogin = Update.foldChild({
@@ -201,6 +199,46 @@ const foldExtensionAccess = Update.foldChild({
     model.account ? Option.some(model.extensionAccess) : Option.none(),
   write: (model, extensionAccess) => ({ ...model, extensionAccess }),
   toParentMessage: toExtensionAccessMessage,
+});
+
+const applyNotification = (
+  model: Model,
+  outcome: Inbox.OutMessage,
+): Update.Return<Model, Message> => {
+  const result =
+    outcome._tag === "Notify"
+      ? Notifications.show(model.notifications, outcome.notification)
+      : Notifications.dismiss(model.notifications, outcome.key);
+  return {
+    model: { ...model, notifications: result.model },
+    commands: Command.mapMessages(result.commands ?? [], toNotificationMessage),
+  };
+};
+const toNotificationMessage = (message: Notifications.Message) =>
+  Message.GotNotificationMessage({ message });
+const foldNotifications = Update.foldChild({
+  update: Notifications.update,
+  read: (model: Model) => Option.some(model.notifications),
+  write: (model, notifications) => ({ ...model, notifications }),
+  toParentMessage: toNotificationMessage,
+  foldOutMessage: (action: Notifications.Action) => (model) =>
+    foldInbox(model, Inbox.Message.ActivatedNotification({ action })),
+});
+const toLinksMessage = (message: Links.Message) =>
+  Message.GotLinksMessage({ message });
+const foldLinks = Update.foldChild({
+  update: Links.update,
+  read: (model: Model) =>
+    model.account ? Option.some(model.links) : Option.none(),
+  write: (model, links) => ({ ...model, links }),
+  toParentMessage: toLinksMessage,
+  foldOutMessage:
+    (out: Links.OutMessage): Update.Step<Model, Message> =>
+    (model) => {
+      if (out._tag === "SessionExpired")
+        return update(model, Message.LoadedAccount({ account: null }));
+      return applyNotification(model, out);
+    },
 });
 
 const Navigate = Command.define("Navigate", {
@@ -312,74 +350,6 @@ const SignOut = Command.define("SignOut", {
     ),
 });
 
-const LoadLinks = Command.define("LoadLinks", {
-  args: {},
-  messages: [Message.LoadedLinks, Message.LoadedAccount, Message.RequestFailed],
-  execute: () =>
-    readLinks.pipe(
-      Effect.map((links) =>
-        links === null
-          ? Message.LoadedAccount({ account: null })
-          : Message.LoadedLinks({ links }),
-      ),
-      Effect.catch(() =>
-        Effect.succeed(
-          Message.RequestFailed({ error: "Could not load links. Try again." }),
-        ),
-      ),
-    ),
-});
-
-const StoreLink = Command.define("StoreLink", {
-  args: { url: Schema.String },
-  messages: [Message.SavedLink, Message.LoadedAccount, Message.RequestFailed],
-  execute: ({ url }) =>
-    saveLink(url).pipe(
-      Effect.map((link) =>
-        link === null
-          ? Message.LoadedAccount({ account: null })
-          : Message.SavedLink({ link }),
-      ),
-      Effect.catch(() =>
-        Effect.succeed(
-          Message.RequestFailed({
-            error: "Could not confirm the save. Reload to check your links.",
-          }),
-        ),
-      ),
-    ),
-});
-
-const FocusLinkInput = Mount.define("FocusLinkInput", {
-  messages: [Message.FocusedLinkInput],
-  execute: ({ element }) =>
-    Effect.sync(() => {
-      if (element instanceof HTMLInputElement)
-        element.focus({ preventScroll: true });
-      return Message.FocusedLinkInput();
-    }),
-});
-
-const DeleteLink = Command.define("DeleteLink", {
-  args: { id: Schema.String },
-  messages: [Message.DeletedLink, Message.LoadedAccount, Message.RequestFailed],
-  execute: ({ id }) =>
-    deleteLink(id).pipe(
-      Effect.map((deleted) =>
-        deleted
-          ? Message.DeletedLink({ id })
-          : Message.LoadedAccount({ account: null }),
-      ),
-      Effect.catch(() =>
-        Effect.succeed(
-          Message.RequestFailed({
-            error: "Could not delete the link. Try again.",
-          }),
-        ),
-      ),
-    ),
-});
-
 const isApproval = (model: Model) =>
   connectingMcp ||
   model.cliLogin !== null ||
@@ -422,14 +392,8 @@ const loadPage = (
   previousPage?: Page,
 ): Update.Return<Model, Message> => {
   if (!model.account || isApproval(model)) return { model };
-  if (model.page === "links") {
-    return model.pending || model.links !== null
-      ? { model }
-      : {
-          model: { ...model, pending: true, error: null },
-          commands: [LoadLinks({})],
-        };
-  }
+  if (model.page === "links")
+    return foldLinks(model, Links.Message.Requested());
   if (model.page === "vault")
     return foldVaultSetup(model, VaultSetup.Message.Requested());
   if (model.mailRoute)
@@ -442,14 +406,25 @@ const loadPage = (
         refresh: previousPage !== "contacts",
       }),
     );
-  const profile = foldPeople(model, People.Message.RequestedSelf());
+  const notifications = applyNotification(model, {
+    _tag: "DismissNotification",
+    key: AccountSettings.notificationKey,
+  });
+  const profile = foldPeople(
+    notifications.model,
+    People.Message.RequestedSelf(),
+  );
   const clients = foldConnectedClients(
     profile.model,
     ConnectedClients.Message.Requested(),
   );
   return {
     model: clients.model,
-    commands: [...(profile.commands ?? []), ...(clients.commands ?? [])],
+    commands: [
+      ...(notifications.commands ?? []),
+      ...(profile.commands ?? []),
+      ...(clients.commands ?? []),
+    ],
   };
 };
 
@@ -467,9 +442,8 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     mailRoute: mailRouteFor(url.pathname),
     peopleRoute: contactsRouteFor(url.pathname),
     signInNotice: null,
-    links: null,
-    linkUrl: "",
-    deletingLink: null,
+    links: Links.initial,
+    notifications: Notifications.init(),
     connectedClients: ConnectedClients.initial,
     cliLogin: CliLogin.initial(),
     extensionAccess: ExtensionAccess.initial(),
@@ -584,9 +558,8 @@ const update = (
         mailRoute: model.mailRoute,
         peopleRoute: model.peopleRoute,
         signInNotice: null,
-        links: null,
-        linkUrl: "",
-        deletingLink: null,
+        links: Links.initial,
+        notifications: Notifications.clear(model.notifications),
         connectedClients: ConnectedClients.initial,
         cliLogin,
         extensionAccess: ExtensionAccess.initial(),
@@ -608,6 +581,11 @@ const update = (
         commands: [...(result.commands ?? []), ...(unread.commands ?? [])],
       };
     },
+    CompletedAccountSettingsRequest: ({ request, message }) =>
+      model.accountSettings.request === request &&
+      model.accountSettings.pending !== null
+        ? update(model, Message.GotAccountSettingsMessage({ message }))
+        : { model },
     GotAccountSettingsMessage: ({ message }) => {
       const account = model.account;
       if (!account) return { model };
@@ -620,16 +598,26 @@ const update = (
       const start = (
         pending: NonNullable<typeof settings.pending>,
         command: NonNullable<Update.Return<Model, Message>["commands"]>[number],
-      ) =>
-        model.pending || settings.pending
-          ? { model }
-          : {
-              model: {
-                ...model,
-                accountSettings: { ...settings, pending, error: "" },
-              },
-              commands: [command],
-            };
+      ) => {
+        if (model.pending || settings.pending) return { model };
+        const request = crypto.randomUUID();
+        return {
+          model: {
+            ...model,
+            accountSettings: { ...settings, pending, request, error: "" },
+          },
+          commands: [
+            Command.mapMessage(command, (message) =>
+              message._tag === "GotAccountSettingsMessage"
+                ? Message.CompletedAccountSettingsRequest({
+                    request,
+                    message: message.message,
+                  })
+                : message,
+            ),
+          ],
+        };
+      };
       const verified = () => ({
         model: {
           ...model,
@@ -644,200 +632,171 @@ const update = (
           model: { ...result.model, signInNotice: notice },
         };
       };
-      return AccountSettings.Message.match<Update.Return<Model, Message>>(
-        message,
-        {
-          SendCode: () =>
-            start(
-              "send",
-              Command.mapMessage(
-                AccountSettings.SendCode({}),
-                toAccountSettingsMessage,
-              ),
+      const result = AccountSettings.Message.match<
+        Update.Return<Model, Message>
+      >(message, {
+        SendCode: () =>
+          start(
+            "send",
+            Command.mapMessage(
+              AccountSettings.SendCode({}),
+              toAccountSettingsMessage,
             ),
-          VerifyCode: () =>
-            settings.verification
-              ? start(
-                  "verify",
-                  Command.mapMessage(
-                    AccountSettings.VerifyCode({
-                      verification: settings.verification,
-                    }),
-                    toAccountSettingsMessage,
-                  ),
-                )
-              : { model },
-          ChangePassword: () =>
-            settings.dialog === "password"
-              ? start(
-                  "password",
-                  Command.mapMessage(
-                    AccountSettings.ChangePassword({}),
-                    toAccountSettingsMessage,
-                  ),
-                )
-              : { model },
-          CodeSent: ({ verification }) =>
-            verification
-              ? {
-                  model: {
-                    ...model,
-                    accountSettings: {
-                      ...settings,
-                      pending: null,
-                      verification,
-                    },
+          ),
+        VerifyCode: () =>
+          settings.verification
+            ? start(
+                "verify",
+                Command.mapMessage(
+                  AccountSettings.VerifyCode({
+                    verification: settings.verification,
+                  }),
+                  toAccountSettingsMessage,
+                ),
+              )
+            : { model },
+        ChangePassword: () =>
+          settings.dialog === "password"
+            ? start(
+                "password",
+                Command.mapMessage(
+                  AccountSettings.ChangePassword({}),
+                  toAccountSettingsMessage,
+                ),
+              )
+            : { model },
+        CodeSent: ({ verification }) =>
+          verification
+            ? {
+                model: {
+                  ...model,
+                  accountSettings: {
+                    ...settings,
+                    pending: null,
+                    request: null,
+                    verification,
                   },
-                }
-              : verified(),
-          EmailVerified: verified,
-          PasswordChanged: () =>
-            signedOut("Password changed. Sign in with your new password."),
-          OpenDialog: ({ dialog }) =>
-            model.pending ||
-            settings.pending ||
-            (dialog === "email" && !account.emailDeliveryEnabled)
-              ? { model }
-              : {
-                  model: {
-                    ...model,
-                    accountSettings: {
-                      ...settings,
-                      dialog,
-                      emailChange: null,
-                      error: "",
-                    },
-                  },
-                  ...(dialog === "email" && settings.dialog === "email"
-                    ? { commands: [focusAccountElement("#new-email")] }
-                    : {}),
                 },
-          CloseDialog: () =>
-            settings.dialog && !model.pending && !settings.pending
-              ? {
-                  model: {
-                    ...model,
-                    accountSettings: {
-                      ...settings,
-                      dialog: null,
-                      emailChange: null,
-                      error: "",
-                    },
+              }
+            : verified(),
+        EmailVerified: verified,
+        PasswordChanged: () =>
+          signedOut("Password changed. Sign in with your new password."),
+        OpenDialog: ({ dialog }) =>
+          model.pending ||
+          settings.pending ||
+          (dialog === "email" && !account.emailDeliveryEnabled)
+            ? { model }
+            : {
+                model: {
+                  ...model,
+                  accountSettings: {
+                    ...settings,
+                    dialog,
+                    emailChange: null,
+                    error: "",
                   },
-                  commands: [
-                    focusAccountElement(`#open-${settings.dialog}-dialog`),
-                  ],
-                }
-              : { model },
-          DialogUpdated: () => ({ model }),
-          SubmitEmailChange: () =>
-            settings.dialog === "email" && !settings.emailChange
-              ? start(
-                  "send-email-change",
-                  Command.mapMessage(
-                    AccountSettings.SubmitEmailChange({}),
-                    toAccountSettingsMessage,
-                  ),
-                )
-              : { model },
-          ConfirmEmailChange: () =>
-            settings.dialog === "email" && settings.emailChange
-              ? start(
-                  "confirm-email-change",
-                  Command.mapMessage(
-                    AccountSettings.ConfirmEmailChange({
-                      id: settings.emailChange.id,
-                    }),
-                    toAccountSettingsMessage,
-                  ),
-                )
-              : { model },
-          EmailChangeStarted: ({ change }) => ({
-            model: {
-              ...model,
-              accountSettings: {
-                ...settings,
-                pending: null,
-                emailChange: change,
+                },
+                ...(dialog === "email" && settings.dialog === "email"
+                  ? { commands: [focusAccountElement("#new-email")] }
+                  : {}),
               },
-            },
-            commands: [focusAccountElement("#email-change-code")],
-          }),
-          EmailChanged: ({ oldAddressNotified }) =>
-            signedOut(
-              oldAddressNotified
-                ? "Email changed. Sign in with your new address."
-                : "Email changed. Sign in with your new address. OneApp could not send the notice to your old address.",
-            ),
-          SignedOut: () => signedOut(null),
-          Failed: ({ error }) => ({
-            model: {
-              ...model,
-              accountSettings: { ...settings, pending: null, error },
-            },
-          }),
-        },
-      );
-    },
-    ChangedLinkUrl: ({ url }) => ({ model: { ...model, linkUrl: url } }),
-    FocusedLinkInput: () => ({ model }),
-    CompletedLinkAvatarImageMount: () => ({ model }),
-    SubmittedLink: () => {
-      if (model.pending || !model.account || !model.links) return { model };
-      const input = parseLinkInput(model.linkUrl);
-      if (!input) {
-        return {
+        CloseDialog: () =>
+          settings.dialog && !model.pending && !settings.pending
+            ? {
+                model: {
+                  ...model,
+                  accountSettings: {
+                    ...settings,
+                    dialog: null,
+                    emailChange: null,
+                    error: "",
+                  },
+                },
+                commands: [
+                  focusAccountElement(`#open-${settings.dialog}-dialog`),
+                ],
+              }
+            : { model },
+        DialogUpdated: () => ({ model }),
+        SubmitEmailChange: () =>
+          settings.dialog === "email" && !settings.emailChange
+            ? start(
+                "send-email-change",
+                Command.mapMessage(
+                  AccountSettings.SubmitEmailChange({}),
+                  toAccountSettingsMessage,
+                ),
+              )
+            : { model },
+        ConfirmEmailChange: () =>
+          settings.dialog === "email" && settings.emailChange
+            ? start(
+                "confirm-email-change",
+                Command.mapMessage(
+                  AccountSettings.ConfirmEmailChange({
+                    id: settings.emailChange.id,
+                  }),
+                  toAccountSettingsMessage,
+                ),
+              )
+            : { model },
+        EmailChangeStarted: ({ change }) => ({
           model: {
             ...model,
-            error: "Enter a valid HTTP or HTTPS URL without credentials.",
+            accountSettings: {
+              ...settings,
+              pending: null,
+              request: null,
+              emailChange: change,
+            },
           },
-        };
-      }
+          commands: [focusAccountElement("#email-change-code")],
+        }),
+        EmailChanged: ({ oldAddressNotified }) =>
+          signedOut(
+            oldAddressNotified
+              ? "Email changed. Sign in with your new address."
+              : "Email changed. Sign in with your new address. OneApp could not send the notice to your old address.",
+          ),
+        SignedOut: () => signedOut(null),
+        Failed: ({ error }) => ({
+          model: {
+            ...model,
+            accountSettings: {
+              ...settings,
+              pending: null,
+              request: null,
+              error,
+            },
+          },
+        }),
+      });
+      const feedback = AccountSettings.feedback(
+        settings,
+        message,
+        model.page === "settings",
+      );
+      if (!feedback) return result;
+      const notified = applyNotification(result.model, feedback);
       return {
-        model: { ...model, pending: true, error: null },
-        commands: [StoreLink(input)],
+        model: notified.model,
+        commands: [...(result.commands ?? []), ...(notified.commands ?? [])],
       };
     },
-    RetriedLinks: () =>
-      model.pending
+    GotLinksMessage: ({ message }) =>
+      model.pending &&
+      ["Submitted", "RequestedDeletion", "Retried"].includes(message._tag)
         ? { model }
-        : {
-            model: { ...model, pending: true, error: null },
-            commands: [LoadLinks({})],
-          },
-    RequestedLinkDeletion: ({ id }) =>
-      model.pending ||
-      !model.account ||
-      !model.links?.some((link) => link.id === id)
+        : foldLinks(model, message),
+    GotNotificationMessage: ({ message }) =>
+      model.pending &&
+      message._tag === "GotToast" &&
+      message.message._tag === "ActivatedToastAction"
         ? { model }
-        : {
-            model: { ...model, pending: true, deletingLink: id, error: null },
-            commands: [DeleteLink({ id })],
-          },
-    LoadedLinks: ({ links }) => ({
-      model: { ...model, links, pending: false, error: null },
-    }),
-    SavedLink: ({ link }) => ({
-      model: {
-        ...model,
-        links: [link, ...(model.links ?? [])].sort(
-          (a, b) => b.savedAt - a.savedAt || b.id.localeCompare(a.id),
-        ),
-        linkUrl: "",
-        pending: false,
-        error: null,
-      },
-    }),
-    DeletedLink: ({ id }) => ({
-      model: {
-        ...model,
-        links: model.links?.filter((link) => link.id !== id) ?? null,
-        deletingLink: null,
-        pending: false,
-      },
-    }),
+        : foldNotifications(model, message),
     RequestFailed: ({ error }) => ({
-      model: { ...model, deletingLink: null, pending: false, error },
+      model: { ...model, pending: false, error },
     }),
     GotVaultSetupMessage: ({ message }) => foldVaultSetup(model, message),
     GotPeopleMessage: ({ message }) => {
@@ -909,9 +868,13 @@ const update = (
           message.request === model.inbox.recovery.request ||
           message.request === model.inbox.threadRequest ||
           message.request === model.inbox.unreadRequest ||
-          Object.values(model.inbox.readRequests).includes(message.request) ||
+          Object.values(model.inbox.readRequests).some(
+            ({ request }) => request === message.request,
+          ) ||
           message.request === model.inbox.compose.request ||
           message.request === model.inbox.quickReply.request ||
+          message.request === model.inbox.senderRuleRequest?.request ||
+          message.request === model.inbox.appearanceRequest?.request ||
           message.request === model.inbox.attachmentPreview?.request ||
           message.request === deleting?.request ||
           message.request === moving?.request)
@@ -923,6 +886,7 @@ const update = (
         message._tag === "GotRecoveryMessage" &&
         message.message._tag === "Restored" &&
         model.inbox.recovery.request === message.message.request &&
+        model.inbox.recovery.restoring === message.message.id &&
         model.mailRoute?.folder === "trash" &&
         model.mailRoute.id === message.message.id
       )
@@ -963,6 +927,7 @@ const update = (
       if (
         message._tag === "DeletedEntry" &&
         deleting?.request === message.request &&
+        deleting.id === message.id &&
         model.mailRoute &&
         model.mailRoute.id === message.id
       ) {
@@ -985,135 +950,6 @@ const update = (
     GotExtensionAccessMessage: ({ message }) =>
       foldExtensionAccess(model, message),
   });
-
-const savedLinkAvatar = (url: string, h: HtmlBuilder<Message>) => {
-  const hostname = websiteIconHostname(url);
-  return avatar(
-    {
-      src: hostname ? websiteIconPath(hostname) : null,
-      imageMounted: Message.CompletedLinkAvatarImageMount(),
-      fallback: h.svg(
-        [
-          h.ViewBox("0 0 24 24"),
-          h.Width("18"),
-          h.Height("18"),
-          h.Fill("none"),
-          h.Stroke("currentColor"),
-          h.StrokeWidth("1.75"),
-          h.StrokeLinecap("round"),
-        ],
-        [
-          h.path([h.D("M10 13a4 4 0 0 0 6 .4l4-4a4 4 0 0 0-5.7-5.7L12 6")], []),
-          h.path(
-            [h.D("M14 11a4 4 0 0 0-6-.4l-4 4a4 4 0 0 0 5.7 5.7L12 18")],
-            [],
-          ),
-        ],
-      ),
-    },
-    h,
-  );
-};
-
-const linksView = (model: Model, h: HtmlBuilder<Message>) =>
-  h.section(
-    [h.Class("links")],
-    [
-      ...(model.links === null
-        ? [
-            model.pending
-              ? h.p([h.Role("status")], ["Loading links…"])
-              : h.button(
-                  [h.Type("button"), h.OnClick(Message.RetriedLinks())],
-                  ["Retry"],
-                ),
-          ]
-        : [
-            h.form(
-              [h.Method("post"), h.OnSubmit(Message.SubmittedLink())],
-              [
-                buttonGroup(
-                  [
-                    h.input([
-                      h.Id("link-url"),
-                      h.Type("text"),
-                      h.InputMode("url"),
-                      h.Autocapitalize("off"),
-                      h.Spellcheck(false),
-                      h.AriaLabel("Link URL"),
-                      h.Placeholder("Paste a URL"),
-                      h.EnterKeyHint("done"),
-                      h.Required(true),
-                      h.Value(model.linkUrl),
-                      h.Readonly(model.pending),
-                      h.OnMount(FocusLinkInput()),
-                      h.OnInput((url) => Message.ChangedLinkUrl({ url })),
-                    ]),
-                    button(
-                      {
-                        type: "submit",
-                        variant: "outline",
-                        size: "icon",
-                        ariaLabel: "Save link",
-                        disabled:
-                          model.pending || !parseLinkInput(model.linkUrl),
-                        children: [plusIcon(h, "18")],
-                      },
-                      h,
-                    ),
-                  ],
-                  h,
-                ),
-                h.p(
-                  [h.Role("status")],
-                  [
-                    model.deletingLink !== null
-                      ? "Deleting link…"
-                      : model.pending
-                        ? "Saving…"
-                        : "",
-                  ],
-                ),
-              ],
-            ),
-            model.links.length === 0
-              ? h.p([], ["No saved links yet."])
-              : itemGroup(
-                  model.links.map((link) =>
-                    item(
-                      {
-                        key: link.id,
-                        href: link.url,
-                        target: "_blank",
-                        media: savedLinkAvatar(link.url, h),
-                        title: link.url.replace(/^https?:\/\//i, ""),
-                        description: h.time(
-                          [h.Datetime(new Date(link.savedAt).toISOString())],
-                          [savedAtFormat.format(link.savedAt)],
-                        ),
-                        action: button(
-                          {
-                            variant: "ghost",
-                            size: "icon",
-                            rounded: true,
-                            ariaLabel: `Delete ${link.url}`,
-                            disabled: model.pending,
-                            onClick: Message.RequestedLinkDeletion({
-                              id: link.id,
-                            }),
-                            children: [outlineIcon(h, trashIconPaths)],
-                          },
-                          h,
-                        ),
-                      },
-                      h,
-                    ),
-                  ),
-                  h,
-                ),
-          ]),
-    ],
-  );
 
 const settingsView = (model: Model, h: HtmlBuilder<Message>) =>
   workspace(
@@ -1196,7 +1032,7 @@ const settingsView = (model: Model, h: HtmlBuilder<Message>) =>
                                   disabled:
                                     model.pending ||
                                     model.accountSettings.pending !== null ||
-                                    model.connectedClients.pending,
+                                    model.connectedClients.request !== null,
                                   onClick: Message.ClickedSignOut(),
                                   children: ["Sign out"],
                                 },
@@ -1271,7 +1107,7 @@ const approvalView = (model: Model, h: HtmlBuilder<Message>) => {
   });
 };
 
-const view = (model: Model, h: HtmlBuilder<Message>): Document => {
+const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
   if (model.sessionCheck !== "resolved") {
     return {
       title: appName,
@@ -1345,7 +1181,14 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
           [
             ...(usesOwnHeading ? [] : [h.h1([], [title])]),
             {
-              links: () => linksView(model, h),
+              links: () =>
+                h.submodel({
+                  slotId: "links",
+                  view: Links.view,
+                  model: model.links,
+                  viewInputs: { disabled: model.pending },
+                  toParentMessage: toLinksMessage,
+                }),
               mail: () =>
                 h.submodel({
                   slotId: "inbox",
@@ -1378,6 +1221,20 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
           model: model.people,
           toParentMessage: toPeopleMessage,
         }),
+      ],
+    ),
+  };
+};
+
+const view = (model: Model, h: HtmlBuilder<Message>): Document => {
+  const page = pageView(model, h);
+  return {
+    ...page,
+    body: h.div(
+      [],
+      [
+        page.body,
+        notificationView(model.notifications, toNotificationMessage, h),
       ],
     ),
   };

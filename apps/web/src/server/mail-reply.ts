@@ -100,3 +100,35 @@ export const replyHeaders = (email: Email) =>
   buildReplyHeaders(
     (name) => email.headers.find(({ key }) => key === name)?.value,
   );
+
+// Reply-To takes precedence over From. Never copy Bcc or our own addresses.
+export const replyAllRecipients = (
+  email: Email | null,
+  envelopeFrom: string,
+  own: readonly string[],
+) => {
+  const seen = new Set(own.map((address) => address.trim().toLowerCase()));
+  const add = (addresses: readonly (string | undefined)[]) =>
+    addresses.flatMap((address) => {
+      const parsed = readRecipient(address);
+      if (parsed._tag === "None" || seen.has(parsed.value.toLowerCase()))
+        return [];
+      seen.add(parsed.value.toLowerCase());
+      return [parsed.value];
+    });
+  const flatten = (addresses: Email["to"]) =>
+    (addresses ?? []).flatMap((address) =>
+      address.group
+        ? address.group.map((member) => member.address)
+        : [address.address],
+    );
+  const replyTo = flatten(email?.replyTo).filter(
+    (address) => readRecipient(address)._tag === "Some",
+  );
+  const to = add([
+    ...(replyTo.length ? replyTo : [replyRecipient(email, envelopeFrom)]),
+    ...flatten(email?.to),
+  ]);
+  const cc = add(flatten(email?.cc));
+  return { allTo: to.join(", "), cc: cc.join(", ") };
+};

@@ -7,7 +7,12 @@ import { EditorBody, mailEditor } from "./mail-editor-contract.ts";
 import {
   inboxComposeLimits,
   InboxDraft,
-  InboxMessageId,
+  MailMessageId,
+  InboxAttachment,
+  inboxAttachmentApi,
+  OutgoingAttachments,
+  outgoingAttachmentLimit,
+  attachmentBytes,
   inboxSendPath,
 } from "./inbox-contract.ts";
 import {
@@ -18,14 +23,19 @@ import {
 
 const ReplyDraft = Schema.Struct({
   ...InboxDraft.fields,
+  to: Schema.String,
   text: Schema.String,
-  originalId: InboxMessageId,
+  originalId: MailMessageId,
+  mode: Schema.optionalKey(Schema.Literals(["reply", "reply-all", "forward"])),
+  forwarded: Schema.optionalKey(Schema.Array(InboxAttachment)),
   threaded: Schema.Boolean,
 });
 
 export const Model = Schema.Struct({
   from: Schema.NullOr(Schema.String),
   body: EditorBody,
+  attachments: OutgoingAttachments,
+  loadingFiles: Schema.NullOr(Schema.String),
   reply: Schema.NullOr(ReplyDraft),
   request: Schema.NullOr(Schema.String),
   error: Schema.NullOr(Schema.String),
@@ -36,6 +46,8 @@ type Model = typeof Model.Type;
 export const initial: Model = {
   from: null,
   body: { text: "" },
+  attachments: [],
+  loadingFiles: null,
   reply: null,
   request: null,
   error: null,
@@ -49,6 +61,14 @@ export const Message = defineMessageUnion({
   Shown: {},
   Submitted: {},
   EditedBody: { body: EditorBody },
+  PickedFiles: {},
+  LoadedFiles: {
+    request: Schema.String,
+    files: OutgoingAttachments,
+    error: Schema.NullOr(Schema.String),
+  },
+  RemovedFile: { index: Schema.Number },
+  RemovedForwarded: { part: Schema.Number },
   Sent: { request: Schema.String, ...SentConfirmation },
   Failed: { request: Schema.String, error: Schema.String },
   SessionExpired: { request: Schema.String },
@@ -67,40 +87,138 @@ const Show = Mount.define("ShowInboxCompose", {
           const fields = element.querySelector("form")?.elements;
           const to = fields?.namedItem("to");
           const subject = fields?.namedItem("subject");
+          const cc = fields?.namedItem("cc");
+          if (cc instanceof HTMLInputElement) cc.value = reply.cc ?? "";
           // Seed the fields once so later renders preserve the owner's edits.
           if (to instanceof HTMLInputElement) to.value = reply.to;
           if (subject instanceof HTMLInputElement)
             subject.value = reply.subject;
         }
         element.showModal();
-        if (reply) element.querySelector<HTMLElement>(mailEditor.tag)?.focus();
+        if (reply?.mode === "forward")
+          element.querySelector<HTMLInputElement>('input[name="to"]')?.focus();
+        else if (reply)
+          element.querySelector<HTMLElement>(mailEditor.tag)?.focus();
       }
       return Message.Shown();
     }),
 });
 
+const ReadFiles = Command.define("ReadMailFiles", {
+  args: { request: Schema.String },
+  messages: [Message.LoadedFiles],
+  execute: ({ request }) =>
+    Effect.promise(async () => {
+      try {
+        const input = document.getElementById("mail-files");
+        const files =
+          input instanceof HTMLInputElement
+            ? Array.from(input.files ?? [])
+            : [];
+        if (
+          files.length > 20 ||
+          files.reduce((size, file) => size + file.size, 0) >
+            outgoingAttachmentLimit
+        )
+          throw new Error("Choose up to 20 files, totaling at most 10 MB.");
+        const encoded = await Promise.all(
+          files.map(async (file) => ({
+            filename: file.name,
+            type: file.type || "application/octet-stream",
+            content: new Uint8Array(await file.arrayBuffer()).toBase64(),
+          })),
+        );
+        if (!Schema.is(OutgoingAttachments)(encoded))
+          throw new Error(
+            "One of these files has an unsupported filename or type.",
+          );
+        if (input instanceof HTMLInputElement) input.value = "";
+        return Message.LoadedFiles({ request, files: encoded, error: null });
+      } catch (error) {
+        return Message.LoadedFiles({
+          request,
+          files: [],
+          error:
+            error instanceof Error
+              ? error.message
+              : "Could not read attachments.",
+        });
+      }
+    }),
+});
+
 const Send = Command.define("SendInboxEmail", {
-  args: { request: Schema.String, replyToId: Schema.NullOr(InboxMessageId) },
+  args: {
+    request: Schema.String,
+    reply: Schema.NullOr(ReplyDraft),
+    attachments: OutgoingAttachments,
+  },
   messages: [Message.Sent, Message.Failed, Message.SessionExpired],
-  execute: ({ request, replyToId }) =>
+  execute: ({ request, reply, attachments }) =>
     Effect.promise(async (signal) => {
       const form = document.getElementById(formId);
       const input =
         form instanceof HTMLFormElement
           ? Object.fromEntries(new FormData(form))
           : null;
-      const draft = Schema.decodeUnknownOption(InboxDraft)(input);
+      const files = [...attachments];
+      if (
+        files.length + (reply?.forwarded?.length ?? 0) > 20 ||
+        files.reduce((sum, file) => sum + attachmentBytes(file.content), 0) +
+          (reply?.forwarded ?? []).reduce((sum, file) => sum + file.size, 0) >
+          outgoingAttachmentLimit
+      )
+        return Message.Failed({
+          request,
+          error: "Attachments must total at most 10 MB and 20 files.",
+        });
+      try {
+        for (const file of reply?.forwarded ?? []) {
+          const response = await fetch(
+            inboxAttachmentApi(reply!.originalId, file.part),
+            { signal },
+          );
+          if (response.status === 401)
+            return Message.SessionExpired({ request });
+          if (!response.ok)
+            throw new Error(
+              "Could not load an original attachment. Remove it or try again.",
+            );
+          files.push({
+            filename: file.name,
+            type: file.mediaType,
+            content: new Uint8Array(await response.arrayBuffer()).toBase64(),
+          });
+        }
+      } catch {
+        return Message.Failed({
+          request,
+          error:
+            "Could not load an original attachment. Remove it or try again.",
+        });
+      }
+      if (!Schema.is(OutgoingAttachments)(files))
+        return Message.Failed({
+          request,
+          error: "Attachments must total at most 10 MB and 20 files.",
+        });
+      const draft = Schema.decodeUnknownOption(InboxDraft)({
+        ...input,
+        attachments: files,
+      });
       if (draft._tag === "None") {
         return Message.Failed({
           request,
-          error: "Enter one valid recipient, a subject, and a message.",
+          error: "Enter valid recipients, a subject, and a message.",
         });
       }
       const result = await sendInboxRequest(
         inboxSendPath,
         {
           ...draft.value,
-          ...(replyToId ? { replyToId } : {}),
+          ...(reply && reply.mode !== "forward"
+            ? { replyToId: reply.originalId }
+            : {}),
         },
         signal,
       );
@@ -135,16 +253,63 @@ export const update = (
     }),
     Closed: () => ({ model: model.request ? model : initial }),
     Shown: () => ({ model }),
+    PickedFiles: () => {
+      if (model.request || model.loadingFiles) return { model };
+      const request = crypto.randomUUID();
+      return {
+        model: { ...model, loadingFiles: request },
+        commands: [ReadFiles({ request })],
+      };
+    },
+    LoadedFiles: ({ request, files, error }) => {
+      if (model.loadingFiles !== request) return { model };
+      const attachments = [...model.attachments, ...files];
+      const valid = Schema.is(OutgoingAttachments)(attachments);
+      return {
+        model: {
+          ...model,
+          loadingFiles: null,
+          attachments: valid ? attachments : model.attachments,
+          error:
+            error ??
+            (valid
+              ? null
+              : "Attachments must total at most 10 MB and 20 files."),
+        },
+      };
+    },
+    RemovedFile: ({ index }) => ({
+      model: model.request
+        ? model
+        : {
+            ...model,
+            attachments: model.attachments.filter((_, i) => i !== index),
+          },
+    }),
+    RemovedForwarded: ({ part }) => ({
+      model:
+        model.request || !model.reply
+          ? model
+          : {
+              ...model,
+              reply: {
+                ...model.reply,
+                forwarded: model.reply.forwarded?.filter(
+                  (file) => file.part !== part,
+                ),
+              },
+            },
+    }),
     EditedBody: ({ body }) => ({
       model: model.request ? model : { ...model, body, error: null },
     }),
     Submitted: () => {
-      if (!model.from || model.request) return { model };
+      if (!model.from || model.request || model.loadingFiles) return { model };
       const request = crypto.randomUUID();
       return {
         model: { ...model, request, error: null },
         commands: [
-          Send({ request, replyToId: model.reply?.originalId ?? null }),
+          Send({ request, reply: model.reply, attachments: model.attachments }),
         ],
       };
     },
@@ -169,6 +334,7 @@ export const view = Submodel.defineView<
   Message
 >((model, h) => {
   const pending = model.request !== null;
+  const busy = pending || model.loadingFiles !== null;
   const editor = mailEditor.withMessage(h);
   return h.div(
     [h.Class("inbox-compose")],
@@ -198,13 +364,23 @@ export const view = Submodel.defineView<
               [
                 h.h2(
                   [h.Id("inbox-compose-title")],
-                  [model.reply ? "Reply" : "New email"],
+                  [
+                    model.reply?.mode === "forward"
+                      ? "Forward"
+                      : model.reply?.mode === "reply-all"
+                        ? "Reply all"
+                        : model.reply
+                          ? "Reply"
+                          : "New email",
+                  ],
                 ),
                 h.p(
                   [h.Class("inbox-compose-from")],
                   [h.strong([], ["From"]), model.from],
                 ),
-                ...(model.reply && !model.reply.threaded
+                ...(model.reply &&
+                model.reply.mode !== "forward" &&
+                !model.reply.threaded
                   ? [
                       h.p(
                         [],
@@ -231,9 +407,23 @@ export const view = Submodel.defineView<
                         h.input([
                           h.Name("to"),
                           h.Type("email"),
+                          h.Multiple(true),
                           h.Maxlength(inboxComposeLimits.to),
                           ...(!model.reply ? [h.Autofocus(true)] : []),
                           h.Required(true),
+                          h.Readonly(pending),
+                        ]),
+                      ],
+                    ),
+                    h.label(
+                      [],
+                      [
+                        "Cc",
+                        h.input([
+                          h.Name("cc"),
+                          h.Type("email"),
+                          h.Multiple(true),
+                          h.Maxlength(inboxComposeLimits.to),
                           h.Readonly(pending),
                         ]),
                       ],
@@ -266,6 +456,65 @@ export const view = Submodel.defineView<
                         ]),
                       ],
                     ),
+                    h.label(
+                      [],
+                      [
+                        "Attach files (10 MB total)",
+                        h.input([
+                          h.Id("mail-files"),
+                          h.Type("file"),
+                          h.Multiple(true),
+                          h.Disabled(busy),
+                          h.OnChange(() => Message.PickedFiles()),
+                        ]),
+                      ],
+                    ),
+                    ...(model.loadingFiles
+                      ? [h.p([h.Role("status")], ["Reading files…"])]
+                      : []),
+                    h.ul(
+                      [],
+                      [
+                        ...model.attachments.map((file, index) =>
+                          h.li(
+                            [],
+                            [
+                              file.filename,
+                              h.button(
+                                [
+                                  h.Type("button"),
+                                  h.Disabled(busy),
+                                  h.AriaLabel(`Remove ${file.filename}`),
+                                  h.OnClick(Message.RemovedFile({ index })),
+                                ],
+                                ["Remove"],
+                              ),
+                            ],
+                          ),
+                        ),
+                        ...(model.reply?.forwarded ?? []).map((file) =>
+                          h.li(
+                            [],
+                            [
+                              file.name,
+                              h.button(
+                                [
+                                  h.Type("button"),
+                                  h.Disabled(busy),
+                                  h.AriaLabel(`Remove ${file.name}`),
+                                  h.OnClick(
+                                    Message.RemovedForwarded({
+                                      part: file.part,
+                                    }),
+                                  ),
+                                ],
+                                ["Remove"],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
                     h.p([h.Role("alert")], [model.error ?? ""]),
                     h.div(
                       [h.Class("inbox-compose-actions")],
@@ -279,7 +528,7 @@ export const view = Submodel.defineView<
                           ["Cancel"],
                         ),
                         h.button(
-                          [h.Type("submit"), h.Disabled(pending)],
+                          [h.Type("submit"), h.Disabled(busy)],
                           [pending ? "Sending…" : "Send"],
                         ),
                       ],

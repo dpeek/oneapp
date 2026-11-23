@@ -1,5 +1,7 @@
 import { createAvatar } from "@oneapp/ui";
 import type { ItemType } from "./vault-item-content.ts";
+import { contactImage } from "./contact-image.ts";
+import type { PersonSummary } from "./people-contract.ts";
 import { websiteIconPath } from "./website-icon-host.ts";
 
 export const vaultItemPaths = {
@@ -57,11 +59,19 @@ export const vaultFolderPaths = [
 ] as const;
 export const vaultFolderIcon = () => vaultIcon(vaultFolderPaths);
 
-export const vaultItemIcon = (type: ItemType, hostname?: string) => {
+export const vaultItemIcon = (
+  type: ItemType,
+  hostname?: string,
+  company?: PersonSummary,
+) => {
   const element = createAvatar({
     variant: "square",
     fallback: vaultIcon(vaultItemPaths[type]),
-    src: type === 1 && hostname ? websiteIconPath(hostname) : null,
+    src:
+      type === 1
+        ? (contactImage(company).src ??
+          (hostname ? websiteIconPath(hostname) : null))
+        : null,
   });
   element.classList.add("vault-item-icon");
   return element;

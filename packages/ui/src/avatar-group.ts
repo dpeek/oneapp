@@ -39,9 +39,13 @@ export const avatarGroup = <Message>(
   avatars: ReadonlyArray<Avatar>,
   h: HtmlBuilder<Message>,
   interactiveLabel?: string,
+  limit?: number,
 ): Html => {
   const interactive = interactiveLabel !== undefined;
-  const visible = interactive ? avatars : avatars.slice(0, visibleLimit);
+  const visible = avatars.slice(
+    0,
+    limit ?? (interactive ? avatars.length : visibleLimit),
+  );
   const hidden = avatars.slice(visible.length);
   return h.div(
     [

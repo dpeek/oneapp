@@ -6,4 +6,5 @@ coverage/
 !.env.example
 .DS_Store
 .alchemy/
+.mail-snapshots/
 /apps/apple/.build/

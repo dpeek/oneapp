@@ -1,3 +1,4 @@
+import { inferSenderAppearance, type SenderHeader } from "./mail-sender.ts";
 import { addressParser } from "postal-mime";
 import type { MailPeople, MailPerson } from "../inbox-contract.ts";
 
@@ -11,12 +12,19 @@ const readAddresses = (value: string | null | undefined): MailPerson[] =>
     : [];
 
 export const mailPeople = (
-  header: (name: "from" | "to" | "cc" | "bcc") => string | null | undefined,
+  header: (
+    name: "from" | "to" | "cc" | "bcc" | SenderHeader,
+  ) => string | null | undefined,
   from: string,
   to: string,
 ): MailPeople => {
   const authors = readAddresses(header("from"));
-  const [sender] = authors.length ? authors : readAddresses(from);
+  const [author] = authors.length ? authors : readAddresses(from);
+  // A fallback may be a delivery envelope or our own outbound address; only
+  // infer organization identity from an actual visible From header.
+  const appearance =
+    authors.length && author && inferSenderAppearance(author, header);
+  const sender = author && { ...author, ...(appearance ? { appearance } : {}) };
   const members = new Map<string, MailPerson>();
   const addresses = [
     ...(sender ? [sender] : []),

@@ -1,0 +1,9 @@
+{
+  "format": "oneapp-mail-mapping",
+  "version": 1,
+  "folders": {
+    "INBOX": { "folder": "inbox", "archived": false },
+    "Sent Messages": { "folder": "sent", "archived": false },
+    "Archive": { "folder": "inbox", "archived": true }
+  }
+}

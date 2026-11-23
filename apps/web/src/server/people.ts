@@ -3,6 +3,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import {
   normalizePersonEmail,
+  ContactKind,
   peopleApiPath,
   PeopleList,
   Person,
@@ -22,7 +23,11 @@ import {
   readProfile,
   readSelfProfile,
   writeProfile,
+  suggestCompany,
 } from "./people-store.ts";
+
+import { senderIconDomain } from "./mail-sender.ts";
+import { normalizeCompanyDomain } from "../company-domains.ts";
 
 type PeopleEnv = Pick<
   WorkerEnv,
@@ -31,7 +36,10 @@ type PeopleEnv = Pick<
 
 const isId = Schema.is(PersonId);
 const queryByEmail = HttpServerRequest.schemaSearchParams(
-  Schema.Struct({ email: Schema.optionalKey(PersonEmail) }),
+  Schema.Struct({
+    email: Schema.optionalKey(PersonEmail),
+    kind: Schema.optionalKey(ContactKind),
+  }),
 );
 const requireOwner = Effect.gen(function* () {
   const auth = yield* AppAuth;
@@ -39,9 +47,9 @@ const requireOwner = Effect.gen(function* () {
 });
 const routeErrors = {
   AuthenticationRequired: () => jsonError(401, "Sign in required"),
-  UnknownError: () => jsonError(503, "People are temporarily unavailable."),
+  UnknownError: () => jsonError(503, "Contacts are temporarily unavailable."),
 };
-const notFound = () => jsonError(404, "Person not found");
+const notFound = () => jsonError(404, "Contact not found");
 
 const readPhotoBytes = (photo: string) => {
   try {
@@ -83,9 +91,31 @@ const savePerson = async (
   if (id && !current) return { status: "missing" } as const;
   if (input.revision !== current?.revision) return { status: "stale" } as const;
   const addresses = [...new Set(input.addresses.map(normalizePersonEmail))];
+  const kind = input.kind ?? current?.kind ?? "person";
+  const domains =
+    kind === "company"
+      ? [
+          ...new Set(
+            (input.domains ?? current?.domains ?? []).map(
+              normalizeCompanyDomain,
+            ),
+          ),
+        ]
+      : [];
+  if (
+    (current?.self && kind !== "person") ||
+    (kind === "person" && input.domains?.length)
+  )
+    return { status: "kind" } as const;
+  if (kind === "company" && !input.name.trim())
+    return { status: "name" } as const;
   if (!current?.self && addresses.some((email) => managed.includes(email)))
     return { status: "conflict" } as const;
-  if (!current?.self && addresses.length === 0)
+  if (
+    !current?.self &&
+    addresses.length === 0 &&
+    (kind !== "company" || domains.length === 0)
+  )
     return { status: "address" } as const;
 
   const owner = current?.id ?? crypto.randomUUID();
@@ -105,6 +135,8 @@ const savePerson = async (
       input.name,
       addresses,
       photo,
+      kind,
+      domains,
     );
     if (!revision) {
       if (uploaded) defer(removePhotoIfUnused(env, owner, uploaded));
@@ -118,6 +150,17 @@ const savePerson = async (
       profile: {
         id: owner,
         name: input.name,
+        ...(kind === "company"
+          ? {
+              kind,
+              domains,
+              iconDomain:
+                domains[0] ??
+                (addresses[0]
+                  ? senderIconDomain([...addresses].sort()[0]!)
+                  : null),
+            }
+          : {}),
         photo,
         revision,
         self: current?.self ?? false,
@@ -131,7 +174,12 @@ const savePerson = async (
     if (uploaded) defer(removePhotoIfUnused(env, owner, uploaded));
     if (
       error instanceof Error &&
-      error.message.includes("UNIQUE constraint failed: person_addresses.email")
+      (error.message.includes(
+        "UNIQUE constraint failed: person_addresses.email",
+      ) ||
+        error.message.includes(
+          "UNIQUE constraint failed: company_domains.domain",
+        ))
     )
       return { status: "conflict" } as const;
     throw error;
@@ -164,7 +212,7 @@ export const peopleRoutes = (
           if (body._tag === "None")
             return yield* jsonError(
               400,
-              "Enter a valid name, email addresses, and photo.",
+              "Enter a valid contact name, email addresses, domains, and image.",
             );
           const result = yield* Effect.tryPromise(() =>
             savePerson(env, existing ? (id ?? null) : null, body.value, defer),
@@ -185,12 +233,22 @@ export const peopleRoutes = (
             case "conflict":
               return yield* jsonError(
                 409,
-                "An email address is already linked to another person.",
+                "An email address or domain is already linked to another contact.",
               );
             case "address":
-              return yield* jsonError(400, "Add at least one email address.");
+              return yield* jsonError(
+                400,
+                "Add an email address, or a domain for a company.",
+              );
+            case "kind":
+              return yield* jsonError(
+                400,
+                "Your own profile must remain a person; domains belong to companies.",
+              );
+            case "name":
+              return yield* jsonError(400, "Enter a company name.");
             case "photo":
-              return yield* jsonError(400, "Choose a valid profile photo.");
+              return yield* jsonError(400, "Choose a valid profile image.");
           }
         }),
       );
@@ -232,7 +290,13 @@ export const peopleRoutes = (
             listPeople(env.DB, addresses),
           );
           return yield* HttpServerResponse.schemaJson(PeopleList)(
-            { people },
+            {
+              people: query.value.kind
+                ? people.filter(
+                    (person) => (person.kind ?? "person") === query.value.kind,
+                  )
+                : people,
+            },
             { headers: privateHeaders },
           );
         }
@@ -240,8 +304,13 @@ export const peopleRoutes = (
           const [match] = await matchPeople(env.DB, [email], addresses);
           return match ? readProfile(env.DB, match.person.id, addresses) : null;
         });
+        const companySuggestion = !person
+          ? yield* Effect.tryPromise(() =>
+              suggestCompany(env.DB, email, addresses),
+            )
+          : null;
         return yield* HttpServerResponse.schemaJson(PersonLookup)(
-          { person },
+          { person, ...(companySuggestion ? { companySuggestion } : {}) },
           { headers: privateHeaders },
         );
       }).pipe(Effect.catchTags(routeErrors)),

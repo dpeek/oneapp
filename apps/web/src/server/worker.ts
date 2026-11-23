@@ -38,6 +38,7 @@ import {
   notifyInbox,
   syncMailIndex,
 } from "./inbox.ts";
+import { collectMailTrash } from "./mail-trash.ts";
 import { indexMail, isMailingList } from "./mail-index.ts";
 import { mailPeople } from "./mail-people.ts";
 import { conversationMessageIds } from "./mail-reply.ts";
@@ -126,6 +127,7 @@ export default {
   async scheduled(_event: unknown, env: WorkerEnv) {
     await Promise.all([
       collectAttachments(env.DB, env.VAULT_FILES),
+      collectMailTrash(env),
       syncMailIndex(env, true).catch(() =>
         console.warn("Could not update the mail index"),
       ),

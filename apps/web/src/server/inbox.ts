@@ -1,5 +1,6 @@
 import type {
   R2Object,
+  R2Bucket,
   R2Objects,
   RateLimit,
   SendEmail,
@@ -11,6 +12,7 @@ import PostalMime, { decodeWords, type Email } from "postal-mime";
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import {
   allMailApiPath,
+  trashApiPath,
   archiveApiPath,
   Conversation,
   ConversationArchiveUpdate,
@@ -19,6 +21,8 @@ import {
   folderApiPath,
   inboxApiPath,
   InboxDraft,
+  DeletedMailCursor,
+  splitRecipients,
   InboxEntry,
   InboxMessageId,
   InboxPage,
@@ -37,11 +41,21 @@ import {
   SentEntry,
   SentPage,
   senderRuleApiPath,
+  senderAppearanceApiPath,
+  SenderAppearanceUpdate,
   SenderRule,
   sentCopyHeader,
   sentMessageHeader,
 } from "../inbox-contract.ts";
-import { mailBodyPreview } from "../inbox-display.ts";
+import {
+  hiddenMail,
+  recoverableMail,
+  visibleMail,
+  trashMail,
+  restoreMail,
+  listTrash,
+} from "./mail-trash.ts";
+import { mailPreview } from "./mail-preview.ts";
 import { jsonError, privateHeaders } from "./api-response.ts";
 import { AppAuth, ownerId, type authHttp } from "./auth.ts";
 import {
@@ -52,7 +66,6 @@ import {
   inboxUnread,
   listConversations,
   readThread,
-  removeIndexedMail,
   scanMail,
   setInboxUnread,
   setSenderRule,
@@ -64,15 +77,26 @@ import {
   mailMimeOptions as mimeOptions,
   receivedMessageLimit,
 } from "./mail-attachments.ts";
-import { sanitizeMailHtml } from "./mail-html.ts";
+import { mailHtmlPreview, type MailImageOptions } from "./mail-html-preview.ts";
 import { prepareMailBody } from "./mail-authoring.ts";
 import {
   conversationMessageIds,
   parentMessageId,
   replyHeaders,
   replyRecipient,
+  replyAllRecipients,
 } from "./mail-reply.ts";
+import {
+  setSenderAppearance,
+  withSenderAppearances,
+} from "./mail-sender-appearance.ts";
 import { mailPeople } from "./mail-people.ts";
+import {
+  describeRawMail,
+  describeStoredRawMail,
+  rawMailFormat,
+  storedMailTimestamp,
+} from "./raw-mail.ts";
 import { normalizePersonEmail } from "../people-contract.ts";
 import { managedPersonAddresses, matchPeople } from "./people-store.ts";
 import {
@@ -89,6 +113,7 @@ import {
 type InboxEnv = Pick<
   WorkerEnv,
   | "DB"
+  | "APP_ORIGIN"
   | "INBOX_EMAIL_ADDRESS"
   | "INBOX_MESSAGES"
   | "INBOX_EMAIL_FROM"
@@ -149,7 +174,7 @@ const readableMessage = (email: Email) => {
 const readBodyPreview = async (env: InboxEnv, id: string) => {
   if (isSentMessageId(id)) {
     const entry = await readSent(env.SENT_MESSAGES, id);
-    return entry ? mailBodyPreview(entry.text) : undefined;
+    return entry ? mailPreview(entry) : undefined;
   }
   // The body usually precedes attachments. A ranged read bounds list work.
   const object = await env.INBOX_MESSAGES.get(id, {
@@ -158,7 +183,7 @@ const readBodyPreview = async (env: InboxEnv, id: string) => {
   if (!object) return;
   const bytes = await object.arrayBuffer();
   const email = await PostalMime.parse(bytes, mimeOptions).catch(() => null);
-  return email ? mailBodyPreview(readableMessage(email).text) : "";
+  return email ? mailPreview(email) : "";
 };
 
 const withBodyPreviews = async <
@@ -229,7 +254,7 @@ export const inboxSubject = (header: string | null) =>
 
 const summary = (object: R2Object, subject: string) => ({
   id: object.key,
-  receivedAt: object.uploaded.getTime(),
+  receivedAt: storedMailTimestamp(object),
   from: object.customMetadata?.envelopeFrom ?? "",
   subject,
 });
@@ -265,6 +290,8 @@ const readSubject = async (bucket: InboxBucket, object: R2Object) => {
 
 const describeStoredInbox = async (bucket: InboxBucket, object: R2Object) => {
   if (!isInboxMessageId(object.key) || !object.size) return null;
+  if (object.customMetadata?.format === rawMailFormat)
+    return describeStoredRawMail(bucket, object, "inbox");
   const headers = await readHeaders(
     bucket,
     object.key,
@@ -349,10 +376,23 @@ const profilesFor = async (env: InboxEnv, addresses: string[]) =>
       )
     : [];
 
-const replyInfo = (email: Email | null, envelopeFrom: string) => {
+const replyInfo = (
+  email: Email | null,
+  envelopeFrom: string,
+  env: InboxEnv,
+) => {
   const to = email && replyRecipient(email, envelopeFrom);
   return to && email
-    ? { reply: { to, threaded: parentMessageId(email) !== undefined } }
+    ? {
+        reply: {
+          to,
+          ...replyAllRecipients(email, envelopeFrom, [
+            env.INBOX_EMAIL_ADDRESS ?? "",
+            env.INBOX_EMAIL_FROM ?? "",
+          ]),
+          threaded: parentMessageId(email) !== undefined,
+        },
+      }
     : {};
 };
 
@@ -373,12 +413,20 @@ const listMessages = async (env: InboxEnv, cursor: string | undefined) => {
     include: ["customMetadata"],
   });
   return {
-    messages: await Promise.all(
-      page.objects
-        .filter(({ key }) => isInboxMessageId(key))
-        .map(async (object) =>
-          summary(object, await readSubject(bucket, object)),
-        ),
+    messages: await visibleMail(
+      env.DB,
+      await Promise.all(
+        page.objects
+          .filter(({ key }) => isInboxMessageId(key))
+          .map(async (object) => {
+            if (object.customMetadata?.format === rawMailFormat) {
+              const mail = await describeStoredRawMail(bucket, object, "inbox");
+              if (mail)
+                return { ...summary(object, mail.subject), from: mail.from };
+            }
+            return summary(object, await readSubject(bucket, object));
+          }),
+      ),
     ),
     cursor: page.truncated ? page.cursor : null,
   };
@@ -387,6 +435,7 @@ const listMessages = async (env: InboxEnv, cursor: string | undefined) => {
 const readMessage = async (
   env: InboxEnv,
   id: string,
+  images: MailImageOptions,
 ): Promise<typeof InboxEntry.Type | null> => {
   const bucket = env.INBOX_MESSAGES;
   const object = await bucket.get(id);
@@ -394,7 +443,11 @@ const readMessage = async (
   const unread =
     (await inboxMessageUnread(env.DB, id)) ??
     object.customMetadata?.initialUnread === "1";
-  const to = object.customMetadata?.envelopeTo ?? env.INBOX_EMAIL_ADDRESS ?? "";
+  const imported = object.customMetadata?.format === rawMailFormat;
+  const to =
+    object.customMetadata?.envelopeTo ??
+    (imported ? "" : env.INBOX_EMAIL_ADDRESS) ??
+    "";
   const envelopeFrom = object.customMetadata?.envelopeFrom ?? "";
   const fallback = async (preview: "tooLarge" | "unreadable") => {
     const length = Math.min(object.size, mimeOptions.maxHeadersSize);
@@ -403,11 +456,16 @@ const readMessage = async (
       object.customMetadata?.subject ??
       headers?.email?.subject?.trim().slice(0, 200) ??
       "";
+    const mail =
+      imported && headers?.email
+        ? describeRawMail(object, headers.email, "inbox")
+        : null;
     return {
       ...summary(object, subject),
-      ...replyInfo(headers?.email ?? null, envelopeFrom),
+      ...(mail ? { from: mail.from } : {}),
+      ...replyInfo(headers?.email ?? null, envelopeFrom, env),
       people: describePeople(headers?.email ?? null, envelopeFrom, to),
-      to,
+      to: mail?.to ?? to,
       unread,
       text: "",
       preview,
@@ -427,19 +485,19 @@ const readMessage = async (
     const attachments = describeAttachments(email.attachments);
     return {
       ...summary(object, email.subject?.trim().slice(0, 200) ?? ""),
-      ...replyInfo(email, envelopeFrom),
+      ...replyInfo(email, envelopeFrom, env),
       people: describePeople(email, envelopeFrom, to),
       from: from
         ? email.from?.name
           ? `${email.from.name} <${from}>`
           : from
         : envelopeFrom,
-      to,
+      to: imported ? describeRawMail(object, email, "inbox").to : to,
       unread,
       ...(attachments.length ? { attachments } : {}),
       text: text.slice(0, textLimit),
       ...(html && html.length <= htmlLimit
-        ? { html: sanitizeMailHtml(html, email.attachments) }
+        ? await mailHtmlPreview(html, email.attachments, images)
         : {}),
       preview:
         html.length > htmlLimit || text.length > textLimit
@@ -505,11 +563,24 @@ const sendDraft = Effect.fnUntraced(function* (
   reply: SentReply | undefined,
   completeThrough: string | undefined,
 ) {
+  const { attachments, cc, ...body } = message;
   const sent = yield* Effect.tryPromise({
     try: () =>
-      binding.send(
-        reply?.headers ? { ...message, headers: reply.headers } : message,
-      ),
+      binding.send({
+        ...body,
+        to: message.to.includes(",") ? splitRecipients(message.to) : message.to,
+        ...(cc ? { cc: splitRecipients(cc) } : {}),
+        ...(attachments
+          ? {
+              attachments: attachments.map((file) => ({
+                ...file,
+                disposition: "attachment" as const,
+                content: Uint8Array.fromBase64(file.content),
+              })),
+            }
+          : {}),
+        ...(reply?.headers ? { headers: reply.headers } : {}),
+      }),
     catch: (error) =>
       typeof error === "object" && error !== null && "code" in error
         ? error.code
@@ -631,14 +702,14 @@ const sendEmail = (env: InboxEnv, defer: (work: Promise<unknown>) => void) =>
     }).pipe(
       Effect.provideService(
         HttpServerRequest.MaxBodySize,
-        ByteSize.kibibytes(256),
+        ByteSize.mebibytes(15),
       ),
       Effect.option,
     );
     if (draft._tag === "None")
       return yield* jsonError(
         400,
-        "Enter one valid recipient, a subject, and a message within the form limits.",
+        "Enter valid recipients, a subject, and a message within the form limits.",
       );
     if (
       !(yield* Effect.tryPromise(() => sender.limit.limit({ key: ownerId })))
@@ -647,6 +718,11 @@ const sendEmail = (env: InboxEnv, defer: (work: Promise<unknown>) => void) =>
       return yield* sendRateLimit();
 
     const { replyToId, ...message } = draft.value;
+    if (
+      replyToId &&
+      (yield* Effect.tryPromise(() => hiddenMail(env.DB, replyToId)))
+    )
+      return yield* notFound();
     let reply: SentReply | undefined;
     if (replyToId) {
       const original = yield* Effect.tryPromise(() =>
@@ -707,6 +783,8 @@ const sendInlineReply = (
     )
       return yield* sendRateLimit();
 
+    if (yield* Effect.tryPromise(() => hiddenMail(env.DB, id)))
+      return yield* notFound();
     const target = yield* Effect.tryPromise(() => readReplyTarget(env, id));
     if (!target) return yield* notFound();
     const draft = Schema.decodeUnknownOption(InboxDraft)({
@@ -753,7 +831,10 @@ export const inboxRoutes = (
           const page = await listSent(env.SENT_MESSAGES, query.value.cursor);
           return {
             ...page,
-            messages: await withBodyPreviews(env, page.messages),
+            messages: await withBodyPreviews(
+              env,
+              await visibleMail(env.DB, page.messages),
+            ),
           };
         });
         return yield* HttpServerResponse.schemaJson(SentPage)(
@@ -770,20 +851,51 @@ export const inboxRoutes = (
       );
     }).pipe(Effect.catchTags(inboxErrors));
 
-  const read = (folder: MailFolder, original = false) =>
+  const read = (folder: MailFolder | "trash", original = false) =>
     Effect.gen(function* () {
       if (!(yield* requireInboxOwner))
         return yield* jsonError(403, "Access denied");
+      const query = yield* HttpServerRequest.schemaSearchParams(
+        Schema.Struct({
+          images: Schema.optionalKey(Schema.Literals(["safe", "all"])),
+        }),
+      ).pipe(Effect.option);
+      if (query._tag === "None")
+        return yield* jsonError(400, "Invalid image mode");
+      if (
+        query.value.images &&
+        (yield* HttpServerRequest.HttpServerRequest).headers[
+          "x-effect-auth-csrf"
+        ] !== "1"
+      )
+        return yield* jsonError(403, "Image loading requires an app request");
+      const images: MailImageOptions = {
+        origin: env.APP_ORIGIN,
+        mode: query.value.images,
+      };
       const { id } = yield* HttpRouter.params;
-      if (folder === "sent") {
+      const available = yield* Effect.tryPromise(async () =>
+        folder === "trash"
+          ? recoverableMail(env.DB, id ?? "")
+          : !(await hiddenMail(env.DB, id ?? "")),
+      );
+      if (!available) return yield* notFound();
+      const storageFolder =
+        folder === "trash" ? (isSentMessageId(id) ? "sent" : "inbox") : folder;
+      if (storageFolder === "sent") {
         if (!isSentMessageId(id)) return yield* notFound();
         const message = yield* Effect.tryPromise(() =>
-          readSent(env.SENT_MESSAGES, id),
+          readSent(env.SENT_MESSAGES, id, images),
         );
         return message
-          ? yield* HttpServerResponse.schemaJson(SentEntry)(message, {
-              headers: privateHeaders,
-            })
+          ? yield* HttpServerResponse.schemaJson(SentEntry)(
+              (yield* Effect.tryPromise(() =>
+                withSenderAppearances(env.DB, [message]),
+              ))[0]!,
+              {
+                headers: privateHeaders,
+              },
+            )
           : yield* notFound();
       }
       if (!isInboxMessageId(id)) return yield* notFound();
@@ -793,23 +905,69 @@ export const inboxRoutes = (
         );
         return file ?? (yield* notFound());
       }
-      const message = yield* Effect.tryPromise(() => readMessage(env, id));
+      const message = yield* Effect.tryPromise(() =>
+        readMessage(env, id, images),
+      );
       return message
-        ? yield* HttpServerResponse.schemaJson(InboxEntry)(message, {
-            headers: privateHeaders,
-          })
+        ? yield* HttpServerResponse.schemaJson(InboxEntry)(
+            (yield* Effect.tryPromise(() =>
+              withSenderAppearances(env.DB, [message]),
+            ))[0]!,
+            {
+              headers: privateHeaders,
+            },
+          )
         : yield* notFound();
     }).pipe(Effect.catchTags(inboxErrors));
 
   const remove = (folder: MailFolder) => {
-    const bucket = folder === "sent" ? env.SENT_MESSAGES : env.INBOX_MESSAGES;
+    const bucket: R2Bucket =
+      folder === "sent" ? env.SENT_MESSAGES : env.INBOX_MESSAGES;
     const validId = folder === "sent" ? isSentMessageId : isInboxMessageId;
     const deleteMessage = Effect.gen(function* () {
       const { id } = yield* HttpRouter.params;
       if (!validId(id)) return yield* notFound();
-      yield* Effect.tryPromise(() => bucket.delete(id));
-      yield* Effect.tryPromise(() => removeIndexedMail(env.DB, folder, id));
-      if (folder === "inbox") yield* Effect.sync(() => defer(notifyInbox(env)));
+      if (yield* Effect.tryPromise(() => hiddenMail(env.DB, id)))
+        return HttpServerResponse.empty({
+          status: 204,
+          headers: privateHeaders,
+        });
+      const indexed = yield* Effect.tryPromise(() =>
+        env.DB.prepare("SELECT id FROM mail_index_messages WHERE id = ?")
+          .bind(id)
+          .first(),
+      );
+      if (!indexed) {
+        const object = yield* Effect.tryPromise(() => bucket.head(id));
+        if (!object) return yield* notFound();
+        const mail = yield* Effect.tryPromise(() =>
+          folder === "sent"
+            ? describeStoredSent(bucket, object)
+            : describeStoredInbox(bucket, object),
+        );
+        yield* Effect.tryPromise(() =>
+          indexMail(
+            env.DB,
+            mail ?? {
+              id,
+              folder,
+              from:
+                object.customMetadata?.envelopeFrom ??
+                object.customMetadata?.from ??
+                "",
+              to:
+                object.customMetadata?.envelopeTo ??
+                object.customMetadata?.to ??
+                "",
+              subject: object.customMetadata?.subject ?? "",
+              timestamp: storedMailTimestamp(object),
+              messageIds: [],
+            },
+          ),
+        );
+      }
+      yield* Effect.tryPromise(() => trashMail(env.DB, id));
+      yield* Effect.sync(() => defer(notifyInbox(env)));
       return HttpServerResponse.empty({ status: 204, headers: privateHeaders });
     });
     return Effect.gen(function* () {
@@ -832,15 +990,31 @@ export const inboxRoutes = (
         return yield* jsonError(403, "Access denied");
       const { id, part } = yield* HttpRouter.params;
       if (
-        !isInboxMessageId(id) ||
+        !isMailMessageId(id) ||
         typeof part !== "string" ||
         !/^(?:0|[1-9]\d{0,2})$/u.test(part)
       )
         return yield* notFound();
+      const query = yield* HttpServerRequest.schemaSearchParams(
+        Schema.Struct({ trash: Schema.optionalKey(Schema.Literal("1")) }),
+      ).pipe(Effect.option);
+      if (query._tag === "None")
+        return yield* jsonError(400, "Invalid mailbox");
+      const available = yield* Effect.tryPromise(async () =>
+        query.value.trash
+          ? recoverableMail(env.DB, id)
+          : !(await hiddenMail(env.DB, id)),
+      );
+      if (!available) return yield* notFound();
       const position = Number(part);
       if (position >= mimeOptions.maxPartCount) return yield* notFound();
       const response = yield* Effect.tryPromise(() =>
-        attachmentResponse(env.INBOX_MESSAGES, id, position, preview),
+        attachmentResponse(
+          isSentMessageId(id) ? env.SENT_MESSAGES : env.INBOX_MESSAGES,
+          id,
+          position,
+          preview,
+        ),
       );
       return response
         ? HttpServerResponse.fromWeb(response)
@@ -904,6 +1078,76 @@ export const inboxRoutes = (
     if (result === "changed") yield* Effect.sync(() => defer(notifyInbox(env)));
     return HttpServerResponse.empty({ status: 204, headers: privateHeaders });
   });
+
+  const recover = Effect.gen(function* () {
+    const { id } = yield* HttpRouter.params;
+    if (!isMailMessageId(id)) return yield* notFound();
+    const restored = yield* Effect.tryPromise(() => restoreMail(env.DB, id));
+    if (!restored) return yield* notFound();
+    defer(notifyInbox(env));
+    return HttpServerResponse.empty({ status: 204, headers: privateHeaders });
+  });
+  const recoveryRoutes = Layer.mergeAll(
+    HttpRouter.add(
+      "GET",
+      `${inboxApiPath}/trash`,
+      Effect.gen(function* () {
+        if (!(yield* requireInboxOwner))
+          return yield* jsonError(403, "Access denied");
+        const query = yield* listQuery.pipe(Effect.option);
+        if (query._tag === "None")
+          return yield* jsonError(400, "Invalid page cursor");
+        let cursor: typeof DeletedMailCursor.Type | undefined;
+        if (query.value.cursor) {
+          const decoded = yield* Effect.try(() =>
+            Schema.decodeUnknownSync(DeletedMailCursor)(
+              JSON.parse(query.value.cursor!),
+            ),
+          ).pipe(Effect.option);
+          if (decoded._tag === "None")
+            return yield* jsonError(400, "Invalid page cursor");
+          cursor = decoded.value;
+        }
+        const page = yield* Effect.tryPromise(() => listTrash(env.DB, cursor));
+        return yield* HttpServerResponse.schemaJson(ConversationPage)(
+          {
+            ...page,
+            address: env.INBOX_EMAIL_ADDRESS ?? null,
+            ...(env.INBOX_SEND && env.INBOX_EMAIL_FROM
+              ? { sender: env.INBOX_EMAIL_FROM }
+              : {}),
+            messages: page.messages.map((mail) => ({
+              ...mail,
+              latestIncomingId: mail.folder === "inbox" ? mail.id : null,
+              lastMessageAt: mail.deletedAt,
+              archived: false,
+              messageCount: 1,
+              unreadCount: 0,
+              participants: [{ address: mail.from, name: "" }],
+              profiles: [],
+            })),
+          },
+          { headers: privateHeaders },
+        );
+      }).pipe(Effect.catchTags(inboxErrors)),
+    ),
+    HttpRouter.add("GET", `${trashApiPath}/:id`, read("trash")),
+    HttpRouter.add("GET", `${trashApiPath}/:id/original`, read("trash", true)),
+    HttpRouter.add(
+      "POST",
+      `${inboxApiPath}/trash/:id/restore`,
+      Effect.gen(function* () {
+        if (!(yield* requireInboxOwner))
+          return yield* jsonError(403, "Access denied");
+        return yield* http.protect(recover);
+      }).pipe(
+        Effect.catchTags({
+          ...inboxErrors,
+          HookDenied: () => jsonError(403, "Request not allowed"),
+        }),
+      ),
+    ),
+  );
 
   const folderRoutes = (folder: MailFolder) => {
     const path = folderApiPath(folder);
@@ -1000,7 +1244,44 @@ export const inboxRoutes = (
     return HttpServerResponse.empty({ status: 204, headers: privateHeaders });
   });
 
+  const updateSenderAppearance = Effect.gen(function* () {
+    if (!(yield* isJsonRequest))
+      return yield* jsonError(415, "Expected a JSON request");
+    const body = yield* HttpServerRequest.schemaBodyJson(
+      SenderAppearanceUpdate,
+      { onExcessProperty: "error" },
+    ).pipe(
+      Effect.provideService(
+        HttpServerRequest.MaxBodySize,
+        ByteSize.kibibytes(1),
+      ),
+      Effect.option,
+    );
+    if (body._tag === "None")
+      return yield* jsonError(400, "Invalid sender appearance");
+    yield* Effect.tryPromise(() => setSenderAppearance(env.DB, body.value));
+    defer(notifyInbox(env));
+    return HttpServerResponse.empty({ status: 204, headers: privateHeaders });
+  });
+
   return Layer.mergeAll(
+    recoveryRoutes,
+    HttpRouter.add(
+      "PATCH",
+      senderAppearanceApiPath,
+      Effect.gen(function* () {
+        if (!(yield* requireInboxOwner))
+          return yield* jsonError(403, "Access denied");
+        return yield* http.protect(updateSenderAppearance);
+      }).pipe(
+        Effect.catchTags({
+          ...inboxErrors,
+          HookDenied: () => jsonError(403, "Request not allowed"),
+          UnknownError: () =>
+            jsonError(503, "Could not update sender appearance."),
+        }),
+      ),
+    ),
     folderRoutes("inbox"),
     folderRoutes("sent"),
     HttpRouter.add(

@@ -10,7 +10,7 @@ import { Effect } from "effect";
 import { Submodel } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";
 import * as Mount from "foldkit/mount";
-import { peoplePath, personPath, type Person } from "./people-contract.ts";
+import { contactsPath, contactPath, type Person } from "./people-contract.ts";
 import {
   editForm,
   Message,
@@ -24,10 +24,13 @@ type DirectoryMessage = typeof Message.Type;
 type Directory = (typeof Model.Type)["directory"];
 
 const primaryEmail = (person: Person) =>
-  person.managedAddresses[0] ?? person.addresses[0] ?? "";
+  person.managedAddresses[0] ??
+  person.addresses[0] ??
+  person.domains?.[0] ??
+  "";
 const displayName = (person: Person) =>
   person.name ||
-  (person.self ? "Your profile" : primaryEmail(person) || "Unnamed person");
+  (person.self ? "Your profile" : primaryEmail(person) || "Unnamed contact");
 
 const names = new Intl.Collator(undefined, { sensitivity: "base" });
 
@@ -71,7 +74,7 @@ const personItem = (
   return item(
     {
       key: person.id,
-      href: personPath(person.id),
+      href: contactPath(person.id),
       title: name,
       description: email && email !== name ? h.span([], [email]) : undefined,
       media: profileAvatar(h, person, email, {
@@ -94,7 +97,7 @@ const listView = (directory: Directory, h: HtmlBuilder<DirectoryMessage>) => {
   return h.section(
     [
       h.Class("workspace-list people-list"),
-      h.AriaLabel("People records"),
+      h.AriaLabel("Contacts"),
       h.Inert(directory.selected !== null),
       h.Tabindex(-1),
     ],
@@ -103,7 +106,7 @@ const listView = (directory: Directory, h: HtmlBuilder<DirectoryMessage>) => {
         [h.Class("workspace-results")],
         [
           ...(directory.listFailed
-            ? [loadError("Could not load people.", h)]
+            ? [loadError("Could not load contacts.", h)]
             : []),
           ...(records.length
             ? [
@@ -115,10 +118,10 @@ const listView = (directory: Directory, h: HtmlBuilder<DirectoryMessage>) => {
                 ),
               ]
             : loadingPeople
-              ? [loading("Loading people…", h)]
+              ? [loading("Loading contacts…", h)]
               : directory.listFailed
                 ? []
-                : [h.p([h.Class("people-list-status")], ["No people yet."])]),
+                : [h.p([h.Class("people-list-status")], ["No contacts yet."])]),
         ],
       ),
     ],
@@ -176,23 +179,30 @@ const detailView = (
                   h,
                 ),
               ],
-              person.self && person.name ? "Your profile" : undefined,
+              person.self && person.name
+                ? "Your profile"
+                : person.kind === "company"
+                  ? "Company"
+                  : undefined,
             ),
         ...addressList(h, "Account addresses", person.managedAddresses),
         ...(edit ? [] : addressList(h, "Email addresses", person.addresses)),
+        ...(edit || person.kind !== "company"
+          ? []
+          : addressList(h, "Website domains", person.domains ?? [])),
       ]
     : [
         directory.listFailed
           ? loadError("Could not load the profile.", h)
           : directory.listRequest || !records
             ? loading("Loading profile…", h)
-            : h.p([], ["Person not found."]),
+            : h.p([], ["Contact not found."]),
       ];
   return h.article(
     [
       h.Key(selected),
       h.Class("workspace-detail people-detail"),
-      h.AriaLabel("Person details"),
+      h.AriaLabel("Contact details"),
       h.Tabindex(-1),
       h.OnMount(FocusDetail()),
     ],
@@ -211,7 +221,7 @@ export const view = Submodel.defineView<Directory, DirectoryMessage>(
               headerActions: [
                 h.a(
                   [
-                    h.Href(peoplePath),
+                    h.Href(contactsPath),
                     h.Class(
                       buttonClassName({
                         variant: "ghost",
@@ -220,15 +230,27 @@ export const view = Submodel.defineView<Directory, DirectoryMessage>(
                       }),
                     ),
                     h.DataAttribute("slot", "button"),
-                    h.AriaLabel("Back to People"),
-                    h.Title("Back to People"),
+                    h.AriaLabel("Back to Contacts"),
+                    h.Title("Back to Contacts"),
                   ],
                   [backIcon(h)],
                 ),
               ],
               detail: detailView(selected, directory, h),
             }
-          : { title: "People" }),
+          : {
+              title: "Contacts",
+              headerActions: [
+                button(
+                  {
+                    size: "sm",
+                    onClick: Message.Created({ kind: "person" }),
+                    children: ["Add contact"],
+                  },
+                  h,
+                ),
+              ],
+            }),
         list: listView(directory, h),
         hasSelection: selected !== null,
       },

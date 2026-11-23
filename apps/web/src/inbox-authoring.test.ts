@@ -70,3 +70,44 @@ it("retains quick-reply formatting and the original target as new mail arrives",
   ).model;
   expect(model).toMatchObject({ ...body, target: id });
 });
+
+it("preserves forward attachments after failure and allows removing originals", () => {
+  const forward = Compose.Message.OpenedReply({
+    from: "me@example.net",
+    reply: {
+      to: "",
+      subject: "Fwd: Files",
+      text: "Original message",
+      mode: "forward",
+      originalId: id,
+      threaded: false,
+      forwarded: [
+        {
+          part: 0,
+          name: "report.pdf",
+          mediaType: "application/pdf",
+          size: 12,
+          preview: "pdf",
+        },
+      ],
+    },
+  });
+  let model = Compose.update(Compose.initial, forward).model;
+  const submitted = Compose.update(model, Compose.Message.Submitted());
+  expect(submitted.commands?.[0]?.args).toMatchObject({
+    reply: { mode: "forward", forwarded: [{ name: "report.pdf" }] },
+  });
+  model = Compose.update(
+    submitted.model,
+    Compose.Message.Failed({
+      request: submitted.model.request!,
+      error: "Offline",
+    }),
+  ).model;
+  expect(model.reply?.forwarded).toHaveLength(1);
+  model = Compose.update(
+    model,
+    Compose.Message.RemovedForwarded({ part: 0 }),
+  ).model;
+  expect(model.reply?.forwarded).toEqual([]);
+});

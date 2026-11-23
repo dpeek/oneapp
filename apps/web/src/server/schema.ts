@@ -1,10 +1,12 @@
 import { authTables } from "./database.ts";
-export { people, personAddresses } from "./people-tables.ts";
+export { mailImports, mailImportCompletions } from "./mail-import-tables.ts";
+export { people, personAddresses, companyDomains } from "./people-tables.ts";
 export {
   mailIndexKeys,
   mailIndexMessages,
   mailIndexScans,
   mailSenderRules,
+  mailSenderAvatars,
 } from "./mail-tables.ts";
 
 export {

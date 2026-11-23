@@ -1,0 +1,45 @@
+import { foldkit } from "@foldkit/vite-plugin";
+import stylex from "@stylexjs/unplugin/vite";
+import { createReadStream, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { defineConfig } from "vite";
+import { stylexOptions } from "./stylex-options.ts";
+
+const pdfPackage = JSON.parse(
+  readFileSync(new URL(import.meta.resolve("pdfjs-dist/package.json")), "utf8"),
+) as { version: string };
+const pdfWorker = fileURLToPath(
+  import.meta.resolve("pdfjs-dist/build/pdf.worker.min.mjs"),
+);
+
+export default defineConfig({
+  root: fileURLToPath(new URL("./", import.meta.url)),
+  // Development serves source files, independently of production's dist/.
+  plugins: [
+    foldkit({ devToolsMcpPort: false }),
+    stylex({ ...stylexOptions, dev: true }),
+    {
+      name: "oneapp-dev-assets",
+      configureServer(server) {
+        server.middlewares.use((request, response, next) => {
+          const pathname = request.url?.split("?")[0];
+          const asset =
+            pathname === `/pdf.worker-${pdfPackage.version}.mjs`
+              ? { path: pdfWorker, type: "text/javascript" }
+              : pathname === "/mcp-consent.css"
+                ? {
+                    path: fileURLToPath(
+                      new URL("./src/mcp-consent.css", import.meta.url),
+                    ),
+                    type: "text/css",
+                  }
+                : undefined;
+          if (!asset) return next();
+          response.setHeader("Content-Type", asset.type);
+          response.setHeader("Cache-Control", "no-cache");
+          createReadStream(asset.path).on("error", next).pipe(response);
+        });
+      },
+    },
+  ],
+});

@@ -16,7 +16,7 @@ const styles = stylex.create({
     backgroundColor: {
       default: null,
       "@media (hover: hover)": {
-        ':has(> [data-slot="item-link"]:hover, > [data-slot="item-header"] > [data-item-disclosure]:hover)':
+        ':has([data-slot="item-link"]:hover, > [data-slot="item-header"] > [data-item-disclosure]:hover)':
           controls.hover,
       },
     },
@@ -149,6 +149,8 @@ type ItemVariant = "default" | "outline";
 type ItemProps<Message> = Readonly<{
   key: string;
   href?: string;
+  // Keep interactive media and descriptions outside the stretched row link.
+  linkTitleOnly?: boolean;
   variant?: ItemVariant;
   target?: "_blank";
   media?: Html;
@@ -164,6 +166,27 @@ export const item = <Message>(
 ): Html => {
   const descriptionId = `item-description-${props.key}`;
   const { variant = "default" } = props;
+  const link = (children: Html[]) =>
+    h.a(
+      [
+        h.DataAttribute("slot", "item-link"),
+        h.Class(stylex.props(styles.link).className ?? ""),
+        h.Href(props.href!),
+        h.AriaLabel(props.title),
+        ...(props.description === undefined
+          ? []
+          : [h.AriaDescribedBy(descriptionId)]),
+        ...(props.linkAttributes ?? []),
+        ...(props.target
+          ? [h.Target(props.target), h.Rel("noopener noreferrer")]
+          : []),
+      ],
+      children,
+    );
+  const title = h.div(
+    [h.DataAttribute("slot", "item-title"), h.Class(itemClassNames.title)],
+    [props.title],
+  );
   const content = [
     ...(props.media
       ? [
@@ -182,13 +205,7 @@ export const item = <Message>(
         h.Class(itemClassNames.content),
       ],
       [
-        h.div(
-          [
-            h.DataAttribute("slot", "item-title"),
-            h.Class(itemClassNames.title),
-          ],
-          [props.title],
-        ),
+        props.href && props.linkTitleOnly ? link([title]) : title,
         ...(props.description === undefined
           ? []
           : [
@@ -204,30 +221,16 @@ export const item = <Message>(
       ],
     ),
   ];
-  const body = props.href
-    ? h.a(
-        [
-          h.DataAttribute("slot", "item-link"),
-          h.Class(stylex.props(styles.link).className ?? ""),
-          h.Href(props.href),
-          h.AriaLabel(props.title),
-          ...(props.description === undefined
-            ? []
-            : [h.AriaDescribedBy(descriptionId)]),
-          ...(props.linkAttributes ?? []),
-          ...(props.target
-            ? [h.Target(props.target), h.Rel("noopener noreferrer")]
-            : []),
-        ],
-        content,
-      )
-    : h.div(
-        [
-          h.DataAttribute("slot", "item-body"),
-          h.Class(stylex.props(styles.body).className ?? ""),
-        ],
-        content,
-      );
+  const body =
+    props.href && !props.linkTitleOnly
+      ? link(content)
+      : h.div(
+          [
+            h.DataAttribute("slot", "item-body"),
+            h.Class(stylex.props(styles.body).className ?? ""),
+          ],
+          content,
+        );
   return h.li(
     [
       h.Key(props.key),

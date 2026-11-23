@@ -43,6 +43,7 @@ export {
   sidebarItemClassName,
   unreadBadge,
 } from "./navigation.ts";
+export * as Popover from "./popover.ts";
 export * as Sheet from "./sheet.ts";
 export { spinner } from "./spinner.ts";
 export * as Tooltip from "./tooltip.ts";

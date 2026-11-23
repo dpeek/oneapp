@@ -16,6 +16,11 @@
     "deploy": "bun scripts/deploy.ts",
     "db:generate": "bun --bun drizzle-kit generate --config apps/web/drizzle.config.ts",
     "mail:seed": "bun scripts/seed-mail.ts",
+    "mail:inventory": "bun scripts/mail-inventory.ts",
+    "mail:dev": "bun scripts/mail-dev.ts",
+    "mail:sample": "bun scripts/mail-sample.ts",
+    "mail:export": "bun scripts/mail-export.ts",
+    "mail:import": "bun scripts/mail-import.ts",
     "test": "bun --bun vitest run",
     "test:watch": "bun --bun vitest",
     "verify": "bun fmt && bun check && bun run test"
@@ -31,6 +36,7 @@
     "alchemy": "2.0.0-beta.85",
     "drizzle-kit": "1.0.0-rc.5",
     "effect": "~4.1.0",
+    "imapflow": "^2.12.2",
     "vitest": "^5.1.0"
   }
 }

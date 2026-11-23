@@ -14,8 +14,18 @@ export const conversationPeople = (
   for (const message of messages) {
     for (const person of message.people?.members ?? []) {
       const key = person.address.toLowerCase();
-      if (!people.has(key) || (!people.get(key)?.name && person.name))
-        people.set(key, person);
+      const previous = people.get(key);
+      if (!previous || (!previous.name && person.name))
+        people.set(key, {
+          ...person,
+          ...(person.appearance
+            ? {}
+            : previous?.appearance
+              ? { appearance: previous.appearance }
+              : {}),
+        });
+      else if (person.appearance && !previous.appearance)
+        people.set(key, { ...previous, appearance: person.appearance });
     }
   }
   return [...people.values()];
@@ -109,10 +119,19 @@ export const splitMailQuote = (text: string) => {
 };
 
 export const mailBodyPreview = (text: string) => {
-  const content = splitMailQuote(text)
+  const content = splitMailQuote(
+    text
+      .replace(/[\u00ad\u034f\u200b\u2060]/gu, "")
+      // Preheaders use isolated joiners as invisible padding. Keep joiners
+      // inside words (e.g. Persian) and emoji sequences intact.
+      .replace(/(^|\s)[\u200c\u200d]+(?=\s|$)/gu, "$1"),
+  )
     .filter(({ quoted }) => !quoted)
     .map(({ text }) => text)
     .join(" ")
+    .replace(/[\[(<](?:https?:\/\/|www\.)[^\s]*?[\])>]/giu, "")
+    .replace(/(?:https?:\/\/|www\.)[^\s<>\[\]]+/giu, "")
+    .replace(/\[\s*\]|\(\s*\)|<\s*>/gu, "")
     .replace(/\s+/gu, " ")
     .trim();
   const limit = 200;

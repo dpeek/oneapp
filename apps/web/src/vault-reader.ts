@@ -48,6 +48,12 @@ import {
   vaultItemIcon,
   vaultItemPaths,
 } from "./vault-item-icon.ts";
+import {
+  peopleApiPath,
+  PeopleList,
+  type PersonSummary,
+} from "./people-contract.ts";
+import { companyForHostname } from "./company-domains.ts";
 import { websiteIconHostname } from "./website-icon-host.ts";
 import { identityDisplayGroups } from "./vault-identity-layout.ts";
 import { structuredDisplayGroup } from "./vault-item-layout.ts";
@@ -110,6 +116,7 @@ type UnlockedVault = {
   key: VaultKey;
   entries: ListedItem[];
   folders: ListedFolder[];
+  companies: readonly PersonSummary[];
 };
 type VaultWorkspace = {
   root: HTMLElement;
@@ -148,6 +155,7 @@ const itemSummary = (
   type: ItemType,
   iconHost: string | undefined,
   buttons: readonly HTMLButtonElement[],
+  company?: PersonSummary,
 ) => {
   const element = create("header");
   element.className = "vault-item-summary";
@@ -155,7 +163,7 @@ const itemSummary = (
   row.className = "vault-item-summary-row";
   const title = create("h2");
   title.tabIndex = -1;
-  title.append(vaultItemIcon(type, iconHost), create("span", label));
+  title.append(vaultItemIcon(type, iconHost, company), create("span", label));
   const group = createButtonGroup(buttons);
   group.setAttribute("aria-label", "Item actions");
   const actions = create("div");
@@ -319,12 +327,34 @@ const sameEditableItem = (before: Item, after: Item) =>
   before.archivedAt === after.archivedAt &&
   JSON.stringify(before.details) === JSON.stringify(after.details);
 
+const loadCompanies = async (
+  signal?: AbortSignal,
+): Promise<readonly PersonSummary[]> => {
+  // Fetch only contact data. Decrypted vault hostnames are matched locally.
+  try {
+    const response = await fetch(`${peopleApiPath}?kind=company`, {
+      cache: "no-store",
+      signal,
+    });
+    if (!response.ok) return [];
+    const result = Schema.decodeUnknownOption(PeopleList)(
+      await response.json(),
+    );
+    return result._tag === "Some"
+      ? result.value.people.filter((person) => person.kind === "company")
+      : [];
+  } catch {
+    return [];
+  }
+};
+
 const openSnapshot = async (
   snapshot: Snapshot,
   key: VaultKey,
+  signal?: AbortSignal,
 ): Promise<UnlockedVault> => {
   const { items, trash, folders, ...parameters } = snapshot;
-  const [entries, listedFolders] = await Promise.all([
+  const [entries, listedFolders, companies] = await Promise.all([
     Promise.all(
       [
         ...items.map((item) => ({ item, trashed: false })),
@@ -345,11 +375,13 @@ const openSnapshot = async (
         ),
       })),
     ),
+    loadCompanies(signal),
   ]);
   return {
     parameters,
     key,
     entries,
+    companies,
     folders: listedFolders.sort((a, b) => a.title.localeCompare(b.title)),
   };
 };
@@ -488,7 +520,7 @@ class VaultReader extends HTMLElement {
           failure = "Could not unlock the vault. Check your master password.";
           const key = await unlockVault(password, snapshot);
           signal.throwIfAborted();
-          return openSnapshot(snapshot, key);
+          return openSnapshot(snapshot, key, signal);
         },
         (vault) => {
           this.#vault = vault;
@@ -906,7 +938,13 @@ class VaultReader extends HTMLElement {
       const media = create("span");
       media.className = itemClassNames.media;
       media.dataset.slot = "item-media";
-      media.append(vaultItemIcon(entry.item.type, entry.iconHost));
+      media.append(
+        vaultItemIcon(
+          entry.item.type,
+          entry.iconHost,
+          companyForHostname(vault.companies, entry.iconHost),
+        ),
+      );
       const content = create("span");
       content.className = itemClassNames.content;
       content.dataset.slot = "item-content";
@@ -945,7 +983,11 @@ class VaultReader extends HTMLElement {
   }
 
   async #reload(vault: UnlockedVault, signal: AbortSignal) {
-    return openSnapshot(await this.#readSnapshot(vault, signal), vault.key);
+    return openSnapshot(
+      await this.#readSnapshot(vault, signal),
+      vault.key,
+      signal,
+    );
   }
 
   #refresh(done: () => void) {
@@ -1910,6 +1952,7 @@ class VaultReader extends HTMLElement {
       type,
       edit?.entry.iconHost,
       [cancel, save],
+      companyForHostname(vault.companies, edit?.entry.iconHost),
     );
     form.prepend(summary.element, error);
     this.#showPanel([form], { back: cancelEdit, editing: true });
@@ -2166,6 +2209,7 @@ class VaultReader extends HTMLElement {
       trashed
         ? [remove, archiveOrPurge]
         : [...(edit ? [edit] : []), archiveOrPurge, remove],
+      companyForHostname(this.#vault?.companies ?? [], iconHost),
     );
     const folder = this.#vault?.folders.find(
       ({ folder }) => folder.id === item.folderId,

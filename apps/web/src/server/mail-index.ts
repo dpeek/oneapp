@@ -13,12 +13,18 @@ import {
 } from "../inbox-contract.ts";
 import { conversationPeople, conversationSubject } from "../inbox-display.ts";
 import { normalizePersonEmail, PersonEmail } from "../people-contract.ts";
+import {
+  applySenderAppearance,
+  senderAppearanceRules,
+  withSenderAppearances,
+} from "./mail-sender-appearance.ts";
 import { mailPeople } from "./mail-people.ts";
 
 export type IndexedMail = ConversationMessage & {
   messageIds: readonly string[];
   originalId?: string;
   listMail?: boolean;
+  initialArchived?: boolean;
 };
 
 export const isMailingList = (listId: string | null | undefined) =>
@@ -43,7 +49,7 @@ const canonicalThread = `SELECT min(thread_id) FROM (${matchingThreads})`;
 const threadsToMerge = `WITH matched AS MATERIALIZED (${matchingThreads}),
   target AS (SELECT min(thread_id) FROM matched)`;
 
-const indexStatements = async (
+export const indexMailStatements = async (
   db: D1Database,
   mail: IndexedMail,
   reopensArchive = false,
@@ -100,7 +106,8 @@ const indexStatements = async (
         `
       INSERT INTO mail_index_messages (id, thread_id, folder, sender, recipient, subject, timestamp, unread, people, archived, list_mail)
       VALUES (?1, (SELECT thread_id FROM mail_index_keys WHERE identity = ?2), ?3, ?4, ?5, ?6, ?7, ?8, ?9,
-        CASE WHEN ?3 = 'inbox' AND ?10 = 0 THEN coalesce((
+        CASE WHEN ?3 = 'inbox' AND ?12 IS NOT NULL THEN ?12
+        WHEN ?3 = 'inbox' AND ?10 = 0 THEN coalesce((
           SELECT CASE WHEN (timestamp, id) > (?7, ?1) THEN archived ELSE 0 END
           FROM mail_index_messages
           WHERE thread_id = (SELECT thread_id FROM mail_index_keys WHERE identity = ?2)
@@ -129,6 +136,9 @@ const indexStatements = async (
         people ? JSON.stringify(people) : null,
         reopensArchive ? 1 : 0,
         listMail === undefined ? null : Number(listMail),
+        mail.initialArchived === undefined
+          ? null
+          : Number(mail.initialArchived),
       ),
     // Incoming mail and merges with an active conversation reopen the whole
     // thread. Keep that state even if the new incoming message is later deleted.
@@ -154,7 +164,7 @@ export const indexMail = async (
   mail: IndexedMail,
   options?: { reopensArchive: boolean },
 ) => {
-  await db.batch(await indexStatements(db, mail, options?.reopensArchive));
+  await db.batch(await indexMailStatements(db, mail, options?.reopensArchive));
 };
 
 export const removeIndexedMail = async (
@@ -168,7 +178,7 @@ export const removeIndexedMail = async (
       `
     INSERT INTO mail_index_messages (id, thread_id, folder, sender, recipient, subject, timestamp, deleted)
     VALUES (?1, ?1, ?2, '', '', '', 0, 1)
-    ON CONFLICT(id) DO UPDATE SET sender = '', recipient = '', subject = '', timestamp = 0, deleted = 1, unread = 0, people = NULL, body_preview = NULL
+    ON CONFLICT(id) DO UPDATE SET sender = '', recipient = '', subject = '', timestamp = 0, deleted = 1, deleted_at = NULL, unread = 0, people = NULL, body_preview = NULL
   `,
     )
     .bind(id, folder)
@@ -280,6 +290,7 @@ type IndexedThreadMember = Pick<
   "id" | "from" | "to" | "subject" | "timestamp" | "folder"
 > & {
   people: string | null;
+  unread: number;
 };
 
 const decodePeople = Schema.decodeUnknownOption(
@@ -316,7 +327,7 @@ export const listConversations = async (
            ${all ? "coalesce(incoming.archived, 0)" : "m.archived"} AS archived,
            (SELECT json_group_array(json_object(
               'id', member.id, 'from', member.sender, 'to', member.recipient, 'subject', member.subject,
-              'timestamp', member.timestamp, 'people', member.people, 'folder', member.folder
+              'timestamp', member.timestamp, 'people', member.people, 'folder', member.folder, 'unread', member.unread
             ) ORDER BY member.timestamp, member.id)
             FROM mail_index_messages member
             WHERE member.thread_id = m.thread_id AND member.deleted = 0) AS metadata,
@@ -362,13 +373,32 @@ export const listConversations = async (
       metadata: string;
       unreadCount: number;
     }>();
+  const memberSets = results.map(({ metadata }) =>
+    (JSON.parse(metadata) as IndexedThreadMember[]).map(withPeople),
+  );
+  const rules = await senderAppearanceRules(
+    db,
+    memberSets.flatMap((members) =>
+      members.flatMap(({ people }) =>
+        people.sender ? [people.sender.address] : [],
+      ),
+    ),
+  );
   const messages = results
     .slice(0, pageSize)
-    .map(({ metadata, sortAt, archived, ...row }) => {
-      const members = (JSON.parse(metadata) as IndexedThreadMember[]).map(
-        withPeople,
-      );
+    .map(({ metadata: _metadata, sortAt, archived, ...row }, index) => {
+      const members = memberSets[index]!.map((member) => ({
+        ...member,
+        people: applySenderAppearance(member.people, rules),
+      }));
       const lastMessage = members.at(-1);
+      const avatarMessage =
+        members.find(
+          (member) => member.folder === "inbox" && member.unread === 1,
+        ) ??
+        members.findLast((member) => member.folder === "inbox") ??
+        lastMessage;
+      const avatarSender = avatarMessage?.people.sender;
       const senders = new Map<string, MailPerson>();
       const folder = members.some(({ folder }) => folder === "inbox")
         ? "inbox"
@@ -391,6 +421,7 @@ export const listConversations = async (
         messageCount: members.length,
         participants: conversationPeople(members),
         senders: [...senders.values()],
+        ...(avatarSender ? { avatarSender } : {}),
       };
     });
   const last = results[pageSize - 1];
@@ -436,17 +467,20 @@ export const readThread = async (db: D1Database, id: string) => {
           } satisfies typeof SenderRule.Type,
         }
       : {}),
-    messages: results.map(
-      ({
-        unread,
-        archived: _archived,
-        senderAddress: _senderAddress,
-        senderPriority: _senderPriority,
-        ...message
-      }) => ({
-        ...withPeople(message),
-        unread: unread === 1,
-      }),
+    messages: await withSenderAppearances(
+      db,
+      results.map(
+        ({
+          unread,
+          archived: _archived,
+          senderAddress: _senderAddress,
+          senderPriority: _senderPriority,
+          ...message
+        }) => ({
+          ...withPeople(message),
+          unread: unread === 1,
+        }),
+      ),
     ),
   };
 };
@@ -505,7 +539,7 @@ export const scanMail = async (
     const { results } = await db
       .prepare(
         `SELECT id FROM mail_index_messages
-         WHERE (deleted = 1 OR (people IS NOT NULL AND (folder = 'sent' OR list_mail IS NOT NULL)))
+         WHERE (deleted <> 0 OR (people IS NOT NULL AND (folder = 'sent' OR list_mail IS NOT NULL)))
            AND id IN (SELECT value FROM json_each(?))`,
       )
       .bind(JSON.stringify(page.objects.map(({ key }) => key)))
@@ -522,7 +556,9 @@ export const scanMail = async (
     if (indexed.length)
       await db.batch(
         (
-          await Promise.all(indexed.map((mail) => indexStatements(db, mail)))
+          await Promise.all(
+            indexed.map((mail) => indexMailStatements(db, mail)),
+          )
         ).flat(),
       );
   }

@@ -1,9 +1,10 @@
 import { Schema as AuthSchema } from "@yielded/auth";
 import { Schema } from "effect";
+import { isCompanyDomain } from "./company-domains.ts";
 
 export const peopleApiPath = "/api/people";
-export const peoplePath = "/people";
-export const personPath = (id: string) => `${peoplePath}/${id}`;
+export const contactsPath = "/contacts";
+export const contactPath = (id: string) => `${contactsPath}/${id}`;
 export const selfProfilePath = `${peopleApiPath}/me`;
 export const personApiPath = (id: string) => `${peopleApiPath}/${id}`;
 export const personPhotoPath = (id: string, key: string) =>
@@ -18,15 +19,15 @@ export const profilePhotoSize = 256;
 export const PersonId = Schema.String.check(
   Schema.isPattern(/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/u),
 );
-export const PeopleRoute = Schema.Struct({ id: Schema.NullOr(PersonId) });
+export const ContactsRoute = Schema.Struct({ id: Schema.NullOr(PersonId) });
 const isPersonId = Schema.is(PersonId);
-export const peopleRouteFor = (
+export const contactsRouteFor = (
   pathname: string,
-): typeof PeopleRoute.Type | null => {
+): typeof ContactsRoute.Type | null => {
   const path = pathname.replace(/\/$/u, "");
-  if (path === peoplePath) return { id: null };
-  if (!path.startsWith(`${peoplePath}/`)) return null;
-  const id = path.slice(peoplePath.length + 1);
+  if (path === contactsPath) return { id: null };
+  if (!path.startsWith(`${contactsPath}/`)) return null;
+  const id = path.slice(contactsPath.length + 1);
   return isPersonId(id) ? { id } : null;
 };
 
@@ -38,8 +39,19 @@ export const PersonEmail = Schema.Trim.check(
   Schema.makeFilter((email) => readEmail(email)._tag === "Some"),
 );
 
+export const ContactKind = Schema.Literals(["person", "company"]);
+export const CompanyDomains = Schema.Array(
+  Schema.Trim.check(
+    Schema.isMaxLength(253),
+    Schema.makeFilter(isCompanyDomain),
+  ),
+).check(Schema.isMaxLength(20));
+
 export const PersonSummary = Schema.Struct({
   id: PersonId,
+  kind: Schema.optionalKey(ContactKind),
+  domains: Schema.optionalKey(Schema.Array(Schema.String)),
+  iconDomain: Schema.optionalKey(Schema.NullOr(Schema.String)),
   name: Schema.String,
   photo: Schema.NullOr(PersonId),
   self: Schema.Boolean,
@@ -57,6 +69,7 @@ export const PeopleList = Schema.Struct({ people: Schema.Array(Person) });
 
 export const PersonLookup = Schema.Struct({
   person: Schema.NullOr(Person),
+  companySuggestion: Schema.optionalKey(Schema.NullOr(Person)),
 });
 export const PersonMatch = Schema.Struct({
   email: Schema.String,
@@ -65,6 +78,8 @@ export const PersonMatch = Schema.Struct({
 export type PersonMatch = typeof PersonMatch.Type;
 
 export const PersonDraft = Schema.Struct({
+  kind: Schema.optionalKey(ContactKind),
+  domains: Schema.optionalKey(CompanyDomains),
   name: Schema.Trim.check(Schema.isMaxLength(personNameLimit)),
   addresses: Schema.Array(PersonEmail).check(
     Schema.isMaxLength(personAddressLimit),

@@ -1196,7 +1196,12 @@ button {
   color: var(--text);
 }
 
-.inbox-list [data-slot="item"]:has(> [aria-current="page"]) {
+.inbox-list [data-slot="item"],
+.inbox-list [data-slot="item-body"] {
+  align-items: flex-start;
+}
+
+.inbox-list [data-slot="item"]:has([aria-current="page"]) {
   background: var(--selected);
 }
 
@@ -1204,23 +1209,47 @@ button {
   grid-template-columns: minmax(0, 1fr);
 }
 
-.inbox-list [data-slot="item-title"],
-.inbox-preview-text {
+.inbox-list [data-slot="item-title"] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 400;
 }
 
 .inbox-list [data-unread] [data-slot="item-title"] {
-  font-weight: 700;
+  font-weight: 600;
 }
 
-.inbox-list
-  :is(
-    [data-slot="avatar-group"],
-    [data-slot="timestamp"],
-    [data-slot="navigation-badge"]
-  ) {
+.inbox-list :is([data-slot="avatar-group"], [data-slot="timestamp"]) {
+  position: relative;
+  z-index: 1;
+}
+
+.inbox-list-avatar {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+}
+
+.inbox-unread-indicator {
+  inline-size: 0.5rem;
+  block-size: 0.5rem;
+  flex-shrink: 0;
+  margin-block-start: 0.4375rem;
+  border-radius: 50%;
+}
+
+.inbox-unread-indicator.is-unread {
+  background: var(--accent);
+}
+
+.inbox-list-avatar .person-avatar {
+  inline-size: 2.75rem;
+  block-size: 2.75rem;
+  font-size: 1rem;
+}
+
+.inbox-list .inbox-profile-button {
   position: relative;
   z-index: 1;
 }
@@ -1244,13 +1273,16 @@ button {
 }
 
 .inbox-item-preview {
-  display: flex;
-  align-items: baseline;
-  gap: 0.75rem;
+  min-inline-size: 0;
 }
 
 .inbox-preview-text {
-  flex: 1;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: normal;
   min-inline-size: 0;
 }
 
@@ -1348,7 +1380,7 @@ button {
   list-style: none;
 }
 
-.inbox-reader button.inbox-profile-button {
+button.inbox-profile-button {
   display: grid;
   flex: none;
   place-items: center;
@@ -1358,8 +1390,12 @@ button {
   background: transparent;
 }
 
-.inbox-reader button.inbox-profile-button:hover {
+button.inbox-profile-button:hover {
   box-shadow: 0 0 0 1px var(--border);
+}
+
+button.inbox-profile-button:has([data-slot="avatar"][data-variant="square"]) {
+  border-radius: 0.5rem;
 }
 
 .inbox-message-preview,
@@ -1384,12 +1420,7 @@ button {
 }
 
 .inbox-attachments {
-  margin-block: 1rem;
-}
-
-.inbox-attachments h3 {
-  margin: 0 0 0.375rem;
-  font-size: 0.875rem;
+  inline-size: min(25rem, calc(100vw - 3rem));
 }
 
 .inbox-attachments ul {
@@ -1400,7 +1431,6 @@ button {
   border-radius: 0.5rem;
 }
 
-.inbox-attachments li,
 .inbox-attachment-dialog-header {
   display: flex;
   flex-wrap: wrap;
@@ -1409,6 +1439,9 @@ button {
 }
 
 .inbox-attachments li {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
   padding: 0.5rem 0.625rem;
 }
 
@@ -1433,12 +1466,6 @@ button {
 .inbox-attachment-caption {
   color: var(--muted);
   font-size: 0.75rem;
-}
-
-.inbox-attachments button,
-.inbox-attachment-dialog button {
-  padding: 0.375rem 0.625rem;
-  font-size: 0.875rem;
 }
 
 .inbox-attachment-dialog {
@@ -1780,4 +1807,45 @@ button {
 
 .mail-editor-link [role="alert"] {
   flex-basis: 100%;
+}
+
+.inbox-compose-dialog input[type="file"] {
+  max-width: 100%;
+}
+.inbox-compose-dialog li {
+  overflow-wrap: anywhere;
+}
+
+.mail-service-avatar {
+  border-radius: 0.375rem;
+}
+.mail-service-avatar > [data-slot="avatar"] {
+  inline-size: 100%;
+  block-size: 100%;
+  border-radius: inherit;
+}
+.mail-service-avatar [data-slot="avatar-image"] {
+  object-fit: contain;
+  padding: 0.2rem;
+}
+.inbox-list-avatar .mail-service-avatar [data-slot="avatar-image"] {
+  padding: 0.35rem;
+}
+
+.inbox [data-slot="avatar-group"] > span:has(.mail-service-avatar) {
+  border-radius: 0.375rem;
+}
+
+.company-photo-picker,
+.company-photo-picker > img[data-photo-preview] {
+  border-radius: 0.5rem;
+}
+.company-photo-picker > img[data-photo-preview] {
+  object-fit: contain;
+  background: white;
+}
+.company-suggestion {
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
 }

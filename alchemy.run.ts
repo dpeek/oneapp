@@ -39,6 +39,7 @@ const inboxAddress = (hostname: string) => `mail@${hostname}`;
 export const Web = Cloudflare.Worker(
   "Web",
   Effect.gen(function* () {
+    const { dev } = yield* Alchemy.AlchemyContext;
     const domain = yield* Config.option(Config.String("APP_DOMAIN"));
     const externalAuthSecrets = yield* Config.Boolean(
       "ONEAPP_EXTERNAL_AUTH_SECRETS",
@@ -57,26 +58,41 @@ export const Web = Cloudflare.Worker(
       });
     });
     const from = `accounts@${Option.getOrUndefined(domain)}`;
+    const assetRouting = {
+      notFoundHandling: "single-page-application" as const,
+      runWorkerFirst: [
+        "/api",
+        "/api/*",
+        "/identity/*",
+        "/icons/*",
+        "/notifications/*",
+        "/sso-connector.html",
+        "/mcp",
+        "/oauth/mcp/*",
+        "/.well-known/*",
+        "/connect/mcp",
+        forgotPasswordPage,
+        resetPasswordPage,
+      ],
+    };
     return {
-      main: "./apps/web/src/server/cloudflare-worker.ts",
-      assets: {
-        directory: "./apps/web/dist",
-        notFoundHandling: "single-page-application" as const,
-        runWorkerFirst: [
-          "/api",
-          "/api/*",
-          "/identity/*",
-          "/icons/*",
-          "/notifications/*",
-          "/sso-connector.html",
-          "/mcp",
-          "/oauth/mcp/*",
-          "/.well-known/*",
-          "/connect/mcp",
-          forgotPasswordPage,
-          resetPasswordPage,
-        ],
+      ...(dev
+        ? {
+            vite: {
+              rootDir: "./apps/web",
+              main: "./src/server/cloudflare-worker.ts",
+            },
+          }
+        : { main: "./apps/web/src/server/cloudflare-worker.ts" }),
+      dev: {
+        strictPort: true,
+        port: yield* Config.Number("ONEAPP_DEV_PORT").pipe(
+          Config.withDefault(1337),
+        ),
       },
+      assets: dev
+        ? assetRouting
+        : { ...assetRouting, directory: "./apps/web/dist" },
       compatibility: {
         date: "2026-11-01",
         flags: ["nodejs_compat", "global_fetch_strictly_public"],

@@ -1,4 +1,6 @@
 import type { R2Bucket } from "@cloudflare/workers-types";
+import { Schema } from "effect";
+import { OutgoingAttachments } from "../inbox-contract.ts";
 import PostalMime, { type Attachment } from "postal-mime";
 import {
   type InboxAttachment,
@@ -115,9 +117,23 @@ export const attachmentResponse = async (
     await object.body.cancel();
     return new Response(null, { status: 413, headers: privateHeaders });
   }
-  const raw = await object.arrayBuffer();
-  const email = await PostalMime.parse(raw, mailMimeOptions).catch(() => null);
-  const attachment = email?.attachments[part];
+  const attachments =
+    object.httpMetadata?.contentType === "application/json"
+      ? await object.json().then((value) => {
+          const record = Schema.decodeUnknownOption(
+            Schema.Struct({ attachments: OutgoingAttachments }),
+          )(value);
+          return record._tag === "Some"
+            ? record.value.attachments.map(outgoingMimeAttachment)
+            : [];
+        })
+      : (
+          await PostalMime.parse(
+            await object.arrayBuffer(),
+            mailMimeOptions,
+          ).catch(() => null)
+        )?.attachments;
+  const attachment = attachments?.[part];
   const item = attachment && attachmentPart(attachment, part);
   if (!item) return null;
   const { metadata, bytes } = item;
@@ -148,3 +164,16 @@ export const attachmentResponse = async (
     },
   });
 };
+
+const outgoingMimeAttachment = (
+  file: (typeof OutgoingAttachments.Type)[number],
+): Attachment => ({
+  filename: file.filename,
+  mimeType: file.type,
+  disposition: "attachment",
+  related: false,
+  content: Uint8Array.fromBase64(file.content),
+});
+export const describeOutgoingAttachments = (
+  files: typeof OutgoingAttachments.Type,
+) => describeAttachments(files.map(outgoingMimeAttachment));

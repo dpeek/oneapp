@@ -18,6 +18,99 @@ Run `bun fmt` to format and `bun check` to type-check. `bun run test` runs Vites
 
 After starting the local Alchemy Worker, run `bun run mail:seed` and refresh **Mail** (`/mail`). The sample mailbox includes single messages, a long thread with a sent reply and an attachment, newsletters in **Noise**, and an archived conversation. The command targets the local `dev_ui` stage by default. Use `bun run mail:seed --stage <stage>` for a different local stage. Rerunning the command preserves existing messages and their read or archive state.
 
+## iCloud mail inventory and sample import
+
+Run the read-only inventory from a terminal:
+
+```sh
+bun run mail:inventory --user 'your-login@icloud.com'
+```
+
+Enter an [Apple app-specific password](https://support.apple.com/102654) at the hidden prompt. Use the iCloud IMAP login associated with the mailbox, which may differ from a custom-domain address such as `mail@dpeek.com`. The command connects to `imap.mail.me.com:993` with TLS. It does not save the password, fetch message bodies, change flags, or write to OneApp.
+
+For a noninteractive audit, put these values in the root `.env` (already ignored by Git), set its permissions with `chmod 600 .env`, and run `bun run mail:inventory`:
+
+```dotenv
+ICLOUD_IMAP_USER=your-login@icloud.com
+ICLOUD_IMAP_PASSWORD=your-apple-app-specific-password
+```
+
+Bun loads `.env` automatically. `--user` overrides the environment login. The command uses the environment password when present and otherwise prompts in an interactive terminal. Credentials and raw server errors are never printed; connection progress and classified errors go to stderr, and the JSON report goes to stdout. These variables are used by the local inventory, sample and export commands; snapshot replay does not need iCloud credentials.
+
+The JSON report lists every folder, its special-use role and how it was identified, UIDVALIDITY, message count, raw message bytes, and unread/flagged/deleted counts. Sizes include attachments. All addresses sharing the iCloud account are included; the report does not filter by `To` address. Totals count folder copies, not deduplicated messages. Failed or changing folders are marked incomplete and produce a nonzero exit code; rerun to reconcile them.
+
+The server's `ingestRawMail` service in `apps/web/src/server/mail-import.ts` accepts original RFC 822 bytes and validated source metadata. A source identity is `(account, mailbox, UIDVALIDITY, UID)`; use a stable account identifier, including the provider. Callers explicitly map a source folder to Inbox, Archive (`folder: "inbox", archived: true`), or Sent. Preserve custom folders and source flags in the metadata until their UI mapping is decided. Do not map Trash, Junk or Drafts into Inbox automatically.
+
+The service reserves an import receipt, writes the original to R2 conditionally, and completes the receipt atomically with D1 indexing. Retrying identical source bytes resumes pending work or skips completed work, preserving subsequent OneApp read/archive/deletion changes. Different bytes for the same identity are rejected. A changed UIDVALIDITY starts a new identity namespace; cross-folder copies and reset epochs are not deduplicated by Message-ID. Original dates survive reindexing, and Sent imports retain their original MIME data and threading headers.
+
+To evaluate real mail locally, start the isolated sample stage:
+
+```sh
+bun run mail:dev
+```
+
+Keep that terminal running. `mail:dev` starts Alchemy in local mode with stage `mail_sample`, applies the migrations, and serves OneApp at the URL it prints (normally `http://localhost:1337`). It creates local sign-in credentials in `.alchemy/mail-sample.env` with permissions `600`; use its `OWNER_EMAIL` and `OWNER_PASSWORD` to sign in. It does not inherit production domain, email routing, sending, or authentication configuration.
+
+Vite serves the frontend directly from source and reloads it on edits; Alchemy also watches the Worker. No build or server restart is needed for application changes. Production builds use `apps/web/dist` independently, so running a build cannot invalidate the dev server's assets. An occupied port is reported as an error instead of silently moving the app to a different origin. The web workspace's standalone `dev` command is frontend-only; use `mail:dev` for the complete app with APIs and local bindings.
+
+In another terminal, with the iCloud credentials in the root `.env`, run:
+
+```sh
+bun run mail:sample
+```
+
+The runner selects recent mail from `INBOX`, `Sent Messages`, and `Archive`, aiming for ten messages per folder and expanding matching Message-ID/References/In-Reply-To threads across those folders. It never selects Junk, Deleted Messages or Drafts. The sample is bounded to 100 messages and 100 MiB total, with a 25 MiB per-message limit; a thread that exceeds a bound is excluded as a whole. Thread completeness is limited to the three scanned folders and usable threading headers.
+
+The first run saves the chosen UIDs, original dates, flags and folder mappings in `.alchemy/mail-import/mail_sample/plan.json`. Subsequent runs use that exact plan, check UIDVALIDITY, skip completed receipts **before downloading**, and retry unfinished messages one at a time using `BODY.PEEK[]`. The receipt and D1 index are committed together after the original bytes reach R2. Failed/missing/changed messages produce a nonzero exit code; rerun after fixing a transient error. A UIDVALIDITY change requires reviewing the source and creating a new sample plan. Each completed run writes `report.json` beside the plan. Both files are private and git-ignored; report totals count messages, while the UI groups conversations.
+
+`--stage <stage>` supports another already-initialized local Alchemy stage. The runner rejects remote resources and plans for a different account or stage. Changing the folder mapping requires a deliberate new plan; the default command does not grow the sample when new iCloud mail arrives. This is a test import, not ongoing mailbox synchronization.
+
+## Portable mailbox snapshots
+
+Export once, then replay the saved originals while changing parsing or folder mapping:
+
+```sh
+bun run mail:export --out .mail-snapshots/icloud
+bun run mail:import --snapshot .mail-snapshots/icloud --dry-run
+```
+
+Export reads all messages in `INBOX`, `Sent Messages` and `Archive`, across every address in the iCloud account. Junk, Deleted Messages and Drafts are excluded. It opens folders read-only and downloads original RFC 822 bytes with `BODY.PEEK[]` using at most three connections. No mail is sent, moved, marked read or deleted. Files are private (`600`, directories `700`) and `.mail-snapshots/` is git-ignored; snapshots contain the mailbox itself, including attachments, so keep copies private too.
+
+The version-1 format contains:
+
+| File                        | Purpose                                                                                                                       |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `inventory.json`            | Frozen folder/UID selection, UIDVALIDITY, IMAP dates, flags and expected byte sizes. No OneApp folder mapping or credentials. |
+| `messages/<source-id>.eml`  | Unchanged original MIME bytes, including attachments.                                                                         |
+| `receipts/<source-id>.json` | Per-file checksums and sizes for resuming an interrupted export.                                                              |
+| `manifest.json`             | Completion marker, inventory checksum and checksums for every original. Written only after the entire selection is saved.     |
+| `export-report.json`        | Counts and any failed source IDs from the last completed export attempt.                                                      |
+
+Source IDs hash `(account, mailbox, UIDVALIDITY, UID)`. This preserves folder copies; it does not deduplicate by Message-ID. A snapshot freezes each folder's UID range and metadata when inventoried, not one transaction across the entire mailbox. Later arrivals are excluded. Missing or changed source messages prevent completion. Rerun the same export command to verify and reuse completed files; partial files are downloaded again. Once complete, rerunning verifies the snapshot offline. Use a new output directory for a later snapshot. A hard-killed process can leave `.export.lock`; remove that lock only after confirming its recorded process has stopped.
+
+Dry-run verifies the manifest, every original's checksum and all folder mappings without connecting to iCloud or opening a destination. The default mapping is `scripts/mail/icloud-mapping.json`: Inbox → Inbox, Sent Messages → Sent, Archive → archived Inbox. Pass `--mapping <json>` to supply another mapping; each source folder needs an explicit mapping or `{ "skip": true }`.
+
+For a fresh local replay, keep this development environment running:
+
+```sh
+bun run --filter @oneapp/web build
+bun run mail:dev --stage mail_replay --port 1338
+```
+
+Then import in another terminal:
+
+```sh
+bun run mail:import --snapshot .mail-snapshots/icloud --stage mail_replay
+```
+
+Sign in at `http://localhost:1338` with the `mail@dpeek.com` credentials in `.alchemy/mail_replay.env`. No dummy mailbox is seeded. The importer requires an explicit local stage, verifies the entire snapshot before writing, and stores a per-message report in `.alchemy/mail-import/<stage>/<snapshot-id>-report.json`. Failed messages make the command exit nonzero. Repeat the command to resume; completed receipts are skipped, preserving subsequent read/archive/deletion changes. The local adapter reports messages over 25 MiB as unsupported; their originals remain in the snapshot.
+
+After every selected message has imported successfully and threading is finished, a one-time completion policy marks inactive conversations complete. A conversation qualifies when its latest incoming **or sent** message is strictly older than 30 days, none of its incoming messages is unread, and none of its messages has the source `\\Flagged` flag. The cutoff is fixed at the snapshot's `createdAt` minus 30 days, so retries and imports on another machine make the same age comparison. Deleted messages are ignored; conversations containing mail outside this import are protected. Existing complete conversations stay complete.
+
+The policy, cutoff and per-conversation reasons are recorded in D1's `mail_import_completions` table and the local import report. Decisions and archive updates commit atomically. Retrying a completed import returns its recorded decisions without changing subsequent user choices or reopening/completing conversations again. A failed or partial import never runs this step. Dry-run displays the policy; conversation decisions require the destination's completed thread index. This is an import policy, not an ongoing auto-archive rule.
+
+Folder mappings are recorded separately from the snapshot and bound to the destination. OneApp can reopen archived members while merging them into an active Inbox conversation; the final completion policy runs after those merges. The original folder metadata remains in the snapshot and import receipts. To change mappings, reevaluate completion rules or evaluate changed parsing, replay into a fresh stage. Do not edit the inventory or original files: their checksums are part of the format. The same snapshot can be copied to another machine without iCloud credentials. Production upload is not implemented yet; the next adapter needs authenticated owner access and upload limits, and can feed this same format into `ingestRawMail`. No production data is changed by these commands.
+
 ## Workspaces
 
 | Workspace        | Run or build                                                                                                                                                                       |
@@ -67,6 +160,12 @@ Set `ACCOUNT_EMAIL_ZONE_ID` to the Cloudflare DNS zone ID that owns `APP_DOMAIN`
 Set `INBOX_EMAIL_ZONE_ID` to the Cloudflare DNS zone ID that owns the `APP_DOMAIN` subdomain to receive mail at `mail@APP_DOMAIN`. Alchemy configures Email Routing for the subdomain and creates a rule for that address. After deploying, send a test email and verify that a `.eml` object appears in the stage's private `InboxMessages` R2 bucket. Each object contains the raw email, including attachments, and stores the SMTP envelope sender and recipient as object metadata.
 
 Sign in and open **Mail** (`/mail`) to browse Inbox conversations by their latest incoming message. Open a conversation to read the selected message and expand earlier emails and sent replies. Select **Back** to return to the folder’s list.
+
+**Contacts** (`/contacts`) holds people and companies. Choose **Add contact**, then select **Person** or **Company**; company contacts can have email addresses, website domains and a logo. Contact details use `/contacts/<id>`.
+
+Automatic sender appearance uses the visible From address and headers. Transactional mailbox tokens (including tagged invoices and product-prefixed no-reply addresses), delivery subdomains such as `email` and `messages`, shared mailboxes, and organization names favor a company/service icon. Public-suffix parsing distinguishes real subdomains from suffixes such as `co.uk` and private hosting tenants. Named people at institutional subdomains and personal mail providers remain personal unless stronger delivery or transactional signals apply. Named employees at company domains are not automatically companies. These are heuristics; explicit sender overrides and saved person/company contacts take precedence. Cached appearances are rebuilt from original headers when the rules change, preserving mailbox state.
+
+Mail loads remote images through the server after displaying the message. Likely tracking pixels (tiny or hidden images and known tracking URL patterns) are blocked before fetching; successful downloads are cached for seven days. The proxy hides browser credentials and the client IP, but a recipient-specific image URL can still reveal the first open. The message’s **More actions** menu offers **Load blocked images** and **Show plain text**; the latter replaces the HTML view and offers **Show formatted email** to switch back. These choices reset when you open another message. Fetches are limited to public HTTP(S) destinations, validated raster formats, 24 unique images, 1 MiB per image, 8 MiB downloaded per request, and eight seconds; HTML image embedding shares a 5 MiB budget with inline attachments. CSS background images remain blocked.
 
 The OneApp vault and Bitwarden clients request website icons from OneApp at `/icons/<hostname>/icon.png`. On a cache miss, the Worker tries the site’s HTTPS favicon and checks its homepage for icon links. It serves raster icons and caches successful lookups for seven days and misses for one hour. IP literals and private DNS addresses are blocked. The web vault shows a generic icon for protected logins and when no website icon is available. Icon requests contain the login hostname, which can appear in Cloudflare’s Worker request logs.
 

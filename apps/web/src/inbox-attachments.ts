@@ -1,3 +1,4 @@
+import { button, buttonClassName, outlineIcon } from "@oneapp/ui";
 import { Effect, Schema } from "effect";
 import { Submodel } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";
@@ -9,11 +10,11 @@ import {
   inboxAttachmentApi,
   inboxAttachmentPreviewApi,
   inboxAttachmentTextPreviewLimit,
-  InboxMessageId,
+  MailMessageId,
 } from "./inbox-contract.ts";
 
 const Location = {
-  id: InboxMessageId,
+  id: MailMessageId,
   part: AttachmentPart,
 };
 
@@ -100,11 +101,12 @@ const RenderDocument = Mount.define("RenderInboxAttachmentDocument", {
     ...Location,
     request: Schema.String,
     kind: Schema.Literals(["pdf", "text"]),
+    trash: Schema.Boolean,
   },
   messages: [Message.Ready, Message.Failed, Message.SessionExpired],
-  execute: ({ element, id, part, request, kind }) =>
+  execute: ({ element, id, part, request, kind, trash }) =>
     Effect.tryPromise(async (signal) => {
-      const response = await fetch(inboxAttachmentPreviewApi(id, part), {
+      const response = await fetch(inboxAttachmentPreviewApi(id, part, trash), {
         cache: "no-store",
         signal,
       });
@@ -135,20 +137,27 @@ const downloadLink = (
   h: HtmlBuilder<Message>,
   id: string,
   attachment: InboxAttachment,
+  trash: boolean,
 ) =>
   h.a(
     [
-      h.Href(inboxAttachmentApi(id, attachment.part)),
+      h.Href(inboxAttachmentApi(id, attachment.part, trash)),
       h.Download(attachment.name),
+      h.DataAttribute("slot", "button"),
       h.AriaLabel(`Download ${attachment.name}`),
+      h.Title(`Download ${attachment.name}`),
+      h.Class(
+        buttonClassName({ variant: "ghost", size: "icon-sm", rounded: true }),
+      ),
     ],
-    ["Download"],
+    [outlineIcon(h, ["M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"])],
   );
 
 const previewDialog = (
   h: HtmlBuilder<Message>,
   attachment: InboxAttachment,
   preview: NonNullable<State>,
+  trash: boolean,
 ) => {
   const { id, part, request, status } = preview;
   return h.dialog(
@@ -164,8 +173,19 @@ const previewDialog = (
         [h.Class("inbox-attachment-dialog-header")],
         [
           h.h3([h.Id("inbox-attachment-title")], [attachment.name]),
-          downloadLink(h, id, attachment),
-          h.button([h.Type("button"), h.OnClick(Message.Closed())], ["Close"]),
+          downloadLink(h, id, attachment, trash),
+          button(
+            {
+              variant: "ghost",
+              size: "icon-sm",
+              rounded: true,
+              ariaLabel: "Close preview",
+              attributes: [h.Title("Close preview")],
+              onClick: Message.Closed(),
+              children: [outlineIcon(h, ["M6 6l12 12M6 18 18 6"])],
+            },
+            h,
+          ),
         ],
       ),
       ...(status === "loading"
@@ -184,7 +204,7 @@ const previewDialog = (
           ? [
               h.img([
                 h.Class("inbox-attachment-image"),
-                h.Src(inboxAttachmentPreviewApi(id, part)),
+                h.Src(inboxAttachmentPreviewApi(id, part, trash)),
                 h.Alt(attachment.name),
                 h.OnLoad(Message.Ready({ request })),
                 h.OnError(Message.Failed({ request })),
@@ -201,6 +221,7 @@ const previewDialog = (
                         part,
                         request,
                         kind: attachment.preview,
+                        trash,
                       }),
                     ),
                   ],
@@ -227,20 +248,17 @@ const previewDialog = (
   );
 };
 
-export const view = Submodel.defineView<
+export const listView = Submodel.defineView<
   {
     id: string;
     attachments: readonly InboxAttachment[];
-    preview: State;
+    trash?: boolean;
   },
   Message
->(({ id, attachments, preview }, h) => {
-  const selected =
-    preview?.id === id && attachments.find(({ part }) => part === preview.part);
+>(({ id, attachments, trash = false }, h) => {
   return h.section(
     [h.Class("inbox-attachments"), h.AriaLabel("Attachments")],
     [
-      h.h3([], ["Attachments"]),
       h.ul(
         [],
         attachments.map((attachment) =>
@@ -254,26 +272,54 @@ export const view = Submodel.defineView<
                   h.span([], [fileSize(attachment.size)]),
                 ],
               ),
-              ...(attachment.preview
-                ? [
-                    h.button(
-                      [
-                        h.Type("button"),
-                        h.AriaLabel(`Preview ${attachment.name}`),
-                        h.OnClick(
-                          Message.Opened({ id, part: attachment.part }),
-                        ),
-                      ],
-                      ["Preview"],
-                    ),
-                  ]
-                : []),
-              downloadLink(h, id, attachment),
+              h.button(
+                [
+                  h.Type("button"),
+                  h.DataAttribute("slot", "button"),
+                  h.Class(
+                    buttonClassName({
+                      variant: "ghost",
+                      size: "icon-sm",
+                      rounded: true,
+                    }),
+                  ),
+                  h.AriaLabel(`Preview ${attachment.name}`),
+                  h.Title(
+                    attachment.preview
+                      ? `Preview ${attachment.name}`
+                      : "Preview unavailable for this file type",
+                  ),
+                  h.Disabled(!attachment.preview),
+                  h.OnClick(Message.Opened({ id, part: attachment.part })),
+                ],
+                [
+                  outlineIcon(h, [
+                    "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z",
+                    "M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z",
+                  ]),
+                ],
+              ),
+              downloadLink(h, id, attachment, trash),
             ],
           ),
         ),
       ),
-      ...(selected && preview ? [previewDialog(h, selected, preview)] : []),
     ],
   );
+});
+
+export const previewView = Submodel.defineView<
+  {
+    id: string;
+    attachments: readonly InboxAttachment[];
+    preview: State;
+    trash: boolean;
+  },
+  Message
+>(({ id, attachments, preview, trash }, h) => {
+  const selected =
+    preview?.id === id && attachments.find(({ part }) => part === preview.part);
+  return selected && preview
+    ? previewDialog(h, selected, preview, trash)
+    : h.empty;
 });

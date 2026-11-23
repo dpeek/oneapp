@@ -50,3 +50,31 @@ it("rejects empty sanitized bodies and plain-text expansion beyond the limit", (
     }),
   ).toBeNull();
 });
+
+it("builds reply-all with Reply-To, To and Cc, removing duplicates and our addresses", async () => {
+  const { default: PostalMime } = await import("postal-mime");
+  const { replyAllRecipients } = await import("./mail-reply.ts");
+  const mail = await PostalMime.parse(
+    [
+      "From: sender@example.net",
+      "Reply-To: desk@example.net, Other <other@example.net>",
+      "To: Owner <owner@example.net>, DESK@example.net, team@example.net",
+      "Cc: TEAM@example.net, colleague@example.net, alias@example.net",
+      "Bcc: private@example.net",
+      "",
+      "Hello",
+    ].join("\r\n"),
+  );
+  expect(
+    replyAllRecipients(mail, "bounce@example.net", [
+      "OWNER@example.net",
+      "alias@example.net",
+    ]),
+  ).toEqual({
+    allTo: "desk@example.net, other@example.net, team@example.net",
+    cc: "colleague@example.net",
+  });
+  expect(
+    replyAllRecipients(null, "sender@example.net", ["owner@example.net"]),
+  ).toEqual({ allTo: "sender@example.net", cc: "" });
+});

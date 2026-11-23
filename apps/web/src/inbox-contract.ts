@@ -9,7 +9,23 @@ export const inboxEventsPath = `${inboxApiPath}/events`;
 export const conversationsApiPath = `${inboxApiPath}/conversations`;
 export const archiveApiPath = `${inboxApiPath}/archive`;
 export const allMailApiPath = `${inboxApiPath}/all`;
+export const trashApiPath = `${inboxApiPath}/trash`;
 export const noiseApiPath = `${inboxApiPath}/noise`;
+export const senderAppearanceApiPath = `${inboxApiPath}/sender-appearance`;
+export const SenderAppearanceMode = Schema.Literals([
+  "auto",
+  "person",
+  "service",
+]);
+export const SenderAppearanceUpdate = Schema.Struct({
+  address: PersonEmail,
+  mode: SenderAppearanceMode,
+});
+export const MailAvatar = Schema.Struct({
+  kind: Schema.Literals(["person", "service"]),
+  mode: SenderAppearanceMode,
+  domain: Schema.NullOr(Schema.String),
+});
 export const senderRuleApiPath = `${inboxApiPath}/sender-rule`;
 export const conversationApi = (id: string) => `${conversationsApiPath}/${id}`;
 export const conversationArchiveApi = (id: string) =>
@@ -23,6 +39,7 @@ export const ReplyCompletion = Schema.Literals(["done", "new-mail", "failed"]);
 export const sentPath = `${mailPath}/sent`;
 export const archivePath = `${mailPath}/archive`;
 export const allMailPath = `${mailPath}/all`;
+export const trashPath = `${mailPath}/trash`;
 export const noisePath = `${mailPath}/noise`;
 export const sentApiPath = `${inboxApiPath}/sent`;
 export const inboxChanged = "inbox.changed";
@@ -34,6 +51,7 @@ export const MailboxView = Schema.Literals([
   "sent",
   "archive",
   "all",
+  "trash",
 ]);
 export type MailboxView = typeof MailboxView.Type;
 export const isInboxView = (view: MailboxView) =>
@@ -44,6 +62,7 @@ const mailboxPaths = {
   sent: sentPath,
   archive: archivePath,
   all: allMailPath,
+  trash: trashPath,
 };
 export const folderPath = (folder: MailboxView) => mailboxPaths[folder];
 export const folderApiPath = (folder: MailFolder) =>
@@ -52,7 +71,10 @@ const inboxFileSuffix = ".eml";
 const receivedRoutePrefix = "received/";
 export const mailMessagePage = (folder: MailboxView, id: string) => {
   const received = id.endsWith(inboxFileSuffix);
-  const prefix = folder === "all" && received ? receivedRoutePrefix : "";
+  const prefix =
+    (folder === "all" || folder === "trash") && received
+      ? receivedRoutePrefix
+      : "";
   const segment = received ? id.slice(0, -inboxFileSuffix.length) : id;
   return `${folderPath(folder)}/${prefix}${segment}`;
 };
@@ -61,10 +83,14 @@ export const mailMessageApi = (folder: MailFolder, id: string) =>
 export const inboxMessageApi = (id: string) => `${inboxApiPath}/${id}`;
 export const inboxOriginalApi = (id: string) =>
   `${inboxMessageApi(id)}/original`;
-export const inboxAttachmentApi = (id: string, part: number) =>
-  `${inboxMessageApi(id)}/attachments/${part}`;
-export const inboxAttachmentPreviewApi = (id: string, part: number) =>
-  `${inboxAttachmentApi(id, part)}/preview`;
+export const inboxAttachmentApi = (id: string, part: number, trash = false) =>
+  `${inboxMessageApi(id)}/attachments/${part}${trash ? "?trash=1" : ""}`;
+export const inboxAttachmentPreviewApi = (
+  id: string,
+  part: number,
+  trash = false,
+) =>
+  `${inboxMessageApi(id)}/attachments/${part}/preview${trash ? "?trash=1" : ""}`;
 export const inboxAttachmentTextPreviewLimit = 32 * 1024;
 export const inboxReadApi = (id: string) => `${inboxMessageApi(id)}/read`;
 export const inboxReplyApi = (id: string) => `${inboxMessageApi(id)}/reply`;
@@ -107,12 +133,15 @@ export const mailRouteFor = (
       return { folder, id: null };
     if (!pathname.startsWith(`${root}/`)) continue;
     const segment = pathname.slice(root.length + 1);
-    if ((folder === "sent" || folder === "all") && isSentMessageId(segment))
+    if (
+      (folder === "sent" || folder === "all" || folder === "trash") &&
+      isSentMessageId(segment)
+    )
       return { folder, id: segment };
     if (folder === "sent") continue;
 
     let id = segment;
-    if (folder === "all") {
+    if (folder === "all" || folder === "trash") {
       // Bare reverse-timestamp IDs in All mail already identify sent copies.
       if (segment.startsWith(receivedRoutePrefix))
         id = segment.slice(receivedRoutePrefix.length);
@@ -130,6 +159,7 @@ const messageFields = {
 };
 
 export const MailPerson = Schema.Struct({
+  appearance: Schema.optionalKey(MailAvatar),
   address: Schema.String,
   name: Schema.String,
 });
@@ -178,6 +208,7 @@ export const SentPage = Schema.Struct({
 export const ConversationSummary = Schema.Struct({
   ...messageFields,
   id: MailMessageId,
+  deletedAt: Schema.optionalKey(Schema.Number),
   latestIncomingId: Schema.NullOr(InboxMessageId),
   archived: Schema.Boolean,
   receivedAt: Schema.optionalKey(Schema.Number),
@@ -187,6 +218,7 @@ export const ConversationSummary = Schema.Struct({
   unreadCount: Schema.Number,
   participants: Schema.Array(MailPerson),
   senders: Schema.optionalKey(Schema.Array(MailPerson)),
+  avatarSender: Schema.optionalKey(MailPerson),
   profiles: Schema.Array(PersonMatch),
 });
 
@@ -201,7 +233,7 @@ export const MailPage = Schema.Struct({
 });
 
 export const inboxComposeLimits = {
-  to: 254,
+  to: 5_120,
   subject: 200,
   text: 32_768,
   html: 131_072,
@@ -209,15 +241,59 @@ export const inboxComposeLimits = {
 const decodeMailbox = Schema.decodeUnknownOption(AuthSchema.Email);
 
 export const ComposeRecipient = Schema.Trim.check(
-  Schema.isMaxLength(inboxComposeLimits.to),
+  Schema.isMaxLength(254),
   Schema.makeFilter((value) => decodeMailbox(value)._tag === "Some"),
+);
+
+export const splitRecipients = (value: string) =>
+  value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+const validRecipient = Schema.is(ComposeRecipient);
+export const ComposeRecipients = Schema.Trim.check(
+  Schema.isMaxLength(inboxComposeLimits.to),
+  Schema.makeFilter((value) => {
+    const recipients = value.split(",").map((part) => part.trim());
+    return recipients.length <= 20 && recipients.every(validRecipient);
+  }),
+);
+export const outgoingAttachmentLimit = 10 * 1024 * 1024;
+export const OutgoingAttachment = Schema.Struct({
+  filename: Schema.String.check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(240),
+    Schema.isPattern(/^[^/\\\p{Cc}\p{Zl}\p{Zp}]+$/u),
+  ),
+  type: Schema.String.check(
+    Schema.isPattern(/^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+$/u),
+  ),
+  content: Schema.String.check(
+    Schema.isMaxLength(4 * Math.ceil(outgoingAttachmentLimit / 3)),
+    Schema.isPattern(
+      /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u,
+    ),
+  ),
+});
+export const attachmentBytes = (content: string) =>
+  (content.length / 4) * 3 -
+  (content.endsWith("==") ? 2 : content.endsWith("=") ? 1 : 0);
+export const OutgoingAttachments = Schema.Array(OutgoingAttachment).check(
+  Schema.isMaxLength(20),
+  Schema.makeFilter(
+    (files) =>
+      files.reduce((sum, file) => sum + attachmentBytes(file.content), 0) <=
+      outgoingAttachmentLimit,
+  ),
 );
 
 export const InboxDraft = Schema.Struct({
   html: Schema.optionalKey(
     Schema.String.check(Schema.isMaxLength(inboxComposeLimits.html)),
   ),
-  to: ComposeRecipient,
+  to: ComposeRecipients,
+  cc: Schema.optionalKey(Schema.Union([ComposeRecipients, Schema.Literal("")])),
+  attachments: Schema.optionalKey(OutgoingAttachments),
   subject: Schema.Trim.check(
     Schema.isMaxLength(inboxComposeLimits.subject),
     Schema.isPattern(/^[^\p{Cc}\p{Zl}\p{Zp}]+$/u),
@@ -265,7 +341,15 @@ export const InboxAttachment = Schema.Struct({
 });
 export type InboxAttachment = typeof InboxAttachment.Type;
 
+export const MailRemoteImages = Schema.Struct({
+  available: Schema.Number,
+  blocked: Schema.Number,
+  loaded: Schema.Number,
+  unavailable: Schema.Number,
+});
+
 const previewFields = {
+  remoteImages: Schema.optionalKey(MailRemoteImages),
   text: Schema.String,
   people: Schema.optionalKey(MailPeople),
   preview: Schema.Literals(["complete", "truncated", "tooLarge", "unreadable"]),
@@ -281,6 +365,8 @@ export const InboxEntry = Schema.Struct({
   reply: Schema.optionalKey(
     Schema.Struct({
       to: Schema.String,
+      allTo: Schema.optionalKey(Schema.String),
+      cc: Schema.optionalKey(Schema.String),
       threaded: Schema.Boolean,
     }),
   ),
@@ -290,6 +376,8 @@ export const SentEntry = Schema.Struct({
   html: Schema.optionalKey(Schema.String),
   ...sentSummaryFields,
   ...previewFields,
+  cc: Schema.optionalKey(Schema.String),
+  attachments: Schema.optionalKey(Schema.Array(InboxAttachment)),
 });
 export const MailEntry = Schema.Union([InboxEntry, SentEntry]);
 
@@ -309,4 +397,18 @@ export const Conversation = Schema.Struct({
   profiles: Schema.optionalKey(Schema.Array(PersonMatch)),
   archived: Schema.optionalKey(Schema.Boolean),
   senderRule: Schema.optionalKey(SenderRule),
+});
+
+export const DeletedMailCursor = Schema.Struct({
+  deletedAt: Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0)),
+  id: MailMessageId,
+});
+export const DeletedMail = Schema.Struct({
+  ...DeletedMailCursor.fields,
+  from: Schema.String,
+  subject: Schema.String,
+});
+export const DeletedMailPage = Schema.Struct({
+  messages: Schema.Array(DeletedMail),
+  cursor: Schema.NullOr(Schema.String),
 });

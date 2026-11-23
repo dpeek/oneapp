@@ -15,8 +15,9 @@ import { defineMessageUnion } from "foldkit/message";
 import * as Mount from "foldkit/mount";
 import {
   peopleApiPath,
+  ContactKind,
   PeopleList,
-  PeopleRoute,
+  ContactsRoute,
   Person,
   personAddressLimit,
   personApiPath,
@@ -25,12 +26,15 @@ import {
   personLookupPath,
   PersonLookup,
   personNameLimit,
-  personPath,
+  contactPath,
   personPhotoPath,
   type PersonSummary,
   profilePhotoSize,
   selfProfilePath,
 } from "./people-contract.ts";
+
+import { contactImage } from "./contact-image.ts";
+import { normalizeCompanyDomain } from "./company-domains.ts";
 
 export const Model = Schema.Struct({
   self: Schema.NullOr(Person),
@@ -38,13 +42,17 @@ export const Model = Schema.Struct({
   opened: Schema.Boolean,
   address: Schema.NullOr(Schema.String),
   suggestedName: Schema.String,
+  kind: ContactKind,
+  suggestedDomains: Schema.Array(Schema.String),
+  companySuggestion: Schema.NullOr(Person),
+  creating: Schema.Boolean,
   person: Schema.NullOr(Person),
   ready: Schema.Boolean,
   loadRequest: Schema.NullOr(Schema.String),
   saveRequest: Schema.NullOr(Schema.String),
   error: Schema.NullOr(Schema.String),
   directory: Schema.Struct({
-    selected: PeopleRoute.fields.id,
+    selected: ContactsRoute.fields.id,
     records: Schema.NullOr(PeopleList.fields.people),
     listRequest: Schema.NullOr(Schema.String),
     listFailed: Schema.Boolean,
@@ -60,6 +68,10 @@ export const initial: Model = {
   opened: false,
   address: null,
   suggestedName: "",
+  kind: "person",
+  suggestedDomains: [],
+  companySuggestion: null,
+  creating: false,
   person: null,
   ready: false,
   loadRequest: null,
@@ -81,16 +93,25 @@ export const Message = defineMessageUnion({
   Opened: {
     address: Schema.NullOr(Schema.String),
     suggestedName: Schema.optionalKey(Schema.String),
+    suggestedKind: Schema.optionalKey(ContactKind),
+    suggestedDomain: Schema.optionalKey(Schema.String),
   },
+  Created: { kind: ContactKind },
+  ChangedKind: { kind: ContactKind },
+  UsedCompanySuggestion: {},
   Closed: {},
   Mounted: {},
   Retried: {},
-  Loaded: { request: Schema.String, person: Schema.NullOr(Person) },
+  Loaded: {
+    request: Schema.String,
+    person: Schema.NullOr(Person),
+    companySuggestion: Schema.optionalKey(Schema.NullOr(Person)),
+  },
   Submitted: {},
   Saved: { request: Schema.String, person: Person },
   Failed: { request: Schema.String, error: Schema.String },
   SessionExpired: { request: Schema.String },
-  VisitedDirectory: { ...PeopleRoute.fields, refresh: Schema.Boolean },
+  VisitedDirectory: { ...ContactsRoute.fields, refresh: Schema.Boolean },
   RetriedDirectory: {},
   LoadedDirectory: { request: Schema.String, ...PeopleList.fields },
   DirectoryFailed: { request: Schema.String },
@@ -125,7 +146,14 @@ const Load = Command.define("LoadPersonProfile", {
       const person = address
         ? Schema.decodeUnknownSync(PersonLookup)(value).person
         : Schema.decodeUnknownSync(Person)(value);
-      return Message.Loaded({ request, person });
+      const companySuggestion = address
+        ? Schema.decodeUnknownSync(PersonLookup)(value).companySuggestion
+        : undefined;
+      return Message.Loaded({
+        request,
+        person,
+        ...(companySuggestion ? { companySuggestion } : {}),
+      });
     }).pipe(
       Effect.catch(() =>
         Effect.succeed(
@@ -167,7 +195,7 @@ const FocusDirectory = Command.define("FocusPeopleDirectory", {
   messages: [Message.Mounted],
   execute: ({ id }) => {
     const list = ".people-workspace:not([data-panel]) .people-list";
-    return focus(`${list} [href="${personPath(id)}"]`, {
+    return focus(`${list} [href="${contactPath(id)}"]`, {
       preventScroll: true,
     }).pipe(
       Effect.catch(() => focus(list, { preventScroll: true })),
@@ -181,7 +209,7 @@ const photoTypes = ["image/jpeg", "image/png", "image/webp"];
 const isProfilePhoto = (file: File) =>
   file.size <= 10 * 1024 * 1024 && photoTypes.includes(file.type);
 
-const photoFor = async (file: File) => {
+const photoFor = async (file: File, company: boolean) => {
   if (!isProfilePhoto(file))
     throw new Error("Choose a JPEG, PNG, or WebP photo up to 10 MB.");
   const source = await createImageBitmap(file);
@@ -194,17 +222,33 @@ const photoFor = async (file: File) => {
     const side = Math.min(source.width, source.height);
     context.fillStyle = "#fff";
     context.fillRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(
-      source,
-      (source.width - side) / 2,
-      (source.height - side) / 2,
-      side,
-      side,
-      0,
-      0,
-      canvas.width,
-      canvas.height,
-    );
+    if (company) {
+      const scale = Math.min(
+        canvas.width / source.width,
+        canvas.height / source.height,
+      );
+      const width = source.width * scale,
+        height = source.height * scale;
+      context.drawImage(
+        source,
+        (canvas.width - width) / 2,
+        (canvas.height - height) / 2,
+        width,
+        height,
+      );
+    } else {
+      context.drawImage(
+        source,
+        (source.width - side) / 2,
+        (source.height - side) / 2,
+        side,
+        side,
+        0,
+        0,
+        canvas.width,
+        canvas.height,
+      );
+    }
     return canvas.toDataURL("image/jpeg", 0.86).split(",", 2)[1];
   } finally {
     source.close();
@@ -227,12 +271,13 @@ const Save = Command.define("SavePersonProfile", {
           return fail("Reopen the profile and try again.");
         const fields = new FormData(form);
         const file = fields.get("photo");
+        const kind = fields.get("kind") === "company" ? "company" : "person";
         let photo: string | null | undefined = fields.has("removePhoto")
           ? null
           : undefined;
         if (file instanceof File && file.size) {
           try {
-            photo = await photoFor(file);
+            photo = await photoFor(file, kind === "company");
           } catch {
             return fail(
               "Choose a readable JPEG, PNG, or WebP photo up to 10 MB.",
@@ -241,6 +286,14 @@ const Save = Command.define("SavePersonProfile", {
         }
         const decoded = Schema.decodeUnknownOption(PersonDraft)({
           name: fields.get("name"),
+          kind,
+          domains:
+            kind === "company"
+              ? String(fields.get("domains") ?? "")
+                  .split(/[\n,]+/u)
+                  .map(normalizeCompanyDomain)
+                  .filter(Boolean)
+              : [],
           addresses: String(fields.get("addresses") ?? "")
             .split(/[\n,]+/u)
             .map((part) => part.trim())
@@ -250,9 +303,9 @@ const Save = Command.define("SavePersonProfile", {
         });
         if (decoded._tag === "None")
           return fail(
-            "Enter a name and up to " +
+            "Enter a name, up to " +
               personAddressLimit +
-              " valid email addresses.",
+              " valid email addresses, and valid website domains for a company.",
           );
         const response = await fetch(
           person ? personApiPath(person.id) : peopleApiPath,
@@ -321,7 +374,56 @@ export const update = (
         commands: [Load({ request, address: null })],
       };
     },
-    Opened: ({ address, suggestedName }) =>
+    Created: ({ kind }) =>
+      model.opened
+        ? { model }
+        : {
+            model: {
+              ...model,
+              opened: true,
+              creating: true,
+              ready: true,
+              address: null,
+              person: null,
+              kind,
+              suggestedDomains: [],
+              suggestedName: "",
+              companySuggestion: null,
+              loadRequest: null,
+              error: null,
+            },
+          },
+    ChangedKind: ({ kind }) => {
+      if (model.saveRequest || directory.editRequest) return { model };
+      if (directory.edit?.self) return { model };
+      if (directory.edit)
+        return {
+          model: {
+            ...model,
+            directory: { ...directory, edit: { ...directory.edit, kind } },
+          },
+        };
+      if (model.person?.self) return { model };
+      return { model: { ...model, kind } };
+    },
+    UsedCompanySuggestion: () => {
+      if (!model.companySuggestion || model.saveRequest || !model.address)
+        return { model };
+      return {
+        model: {
+          ...model,
+          kind: "company",
+          person: {
+            ...model.companySuggestion,
+            addresses: [
+              ...new Set([...model.companySuggestion.addresses, model.address]),
+            ],
+          },
+          companySuggestion: null,
+        },
+      };
+    },
+    Opened: ({ address, suggestedName, suggestedKind, suggestedDomain }) =>
       model.opened
         ? { model }
         : loadDialog({
@@ -331,6 +433,8 @@ export const update = (
             directory,
             opened: true,
             address,
+            kind: suggestedKind ?? "person",
+            suggestedDomains: suggestedDomain ? [suggestedDomain] : [],
             suggestedName:
               suggestedName
                 ?.trim()
@@ -351,7 +455,7 @@ export const update = (
     Mounted: () => ({ model }),
     Retried: () =>
       model.opened && !model.loadRequest ? loadDialog(model) : { model },
-    Loaded: ({ request, person }) => {
+    Loaded: ({ request, person, companySuggestion }) => {
       if (request === model.selfRequest)
         return { model: { ...model, selfRequest: null, self: person } };
       if (request !== model.loadRequest) return { model };
@@ -361,6 +465,8 @@ export const update = (
           loadRequest: null,
           ready: true,
           person,
+          kind: person ? (person.kind ?? "person") : model.kind,
+          companySuggestion: companySuggestion ?? null,
           self: person?.self ? person : model.self,
         },
       };
@@ -505,13 +611,20 @@ const OpenDialog = Mount.define("OpenPersonProfileDialog", {
 });
 
 const PrepareForm = Mount.define("PrefillPersonProfileForm", {
-  args: { name: Schema.String, addresses: Schema.String },
+  args: {
+    name: Schema.String,
+    addresses: Schema.String,
+    domains: Schema.String,
+  },
   messages: [Message.Mounted],
-  execute: ({ element, name, addresses }) =>
+  execute: ({ element, name, addresses, domains }) =>
     Effect.sync(() => {
       if (element instanceof HTMLFormElement) {
         const nameField = element.elements.namedItem("name");
         const addressField = element.elements.namedItem("addresses");
+        const domainField = element.elements.namedItem("domains");
+        if (domainField instanceof HTMLTextAreaElement)
+          domainField.value = domains;
         if (nameField instanceof HTMLInputElement) nameField.value = name;
         if (addressField instanceof HTMLTextAreaElement)
           addressField.value = addresses;
@@ -566,7 +679,7 @@ const PreviewPhoto = Mount.define("PreviewPersonProfilePhoto", {
     ).pipe(Effect.as(Message.Mounted())),
 });
 
-const profileInitials = (name: string, address: string) => {
+export const profileInitials = (name: string, address: string) => {
   const words = (name || address.split("@", 1)[0] || "").match(
     /[\p{L}\p{N}]+/gu,
   );
@@ -598,15 +711,22 @@ export const profileAvatar = <Parent>(
   h: HtmlBuilder<Parent>,
   person: PersonSummary | null,
   address: string,
-  options: { name?: string; size?: "lg"; imageMounted: Parent },
+  options: {
+    name?: string;
+    size?: "lg";
+    imageMounted: Parent;
+    kind?: typeof ContactKind.Type;
+  },
 ) =>
   uiAvatar(
     {
       fallback: profileInitials(options.name ?? person?.name ?? "", address),
-      src: person?.photo ? personPhotoPath(person.id, person.photo) : null,
+      src: contactImage(person).src,
+      variant:
+        (options.kind ?? person?.kind) === "company" ? "square" : "round",
       imageMounted: options.imageMounted,
       size: options.size,
-      fit: "cover",
+      fit: (options.kind ?? person?.kind) === "company" ? undefined : "cover",
     },
     h,
   );
@@ -644,11 +764,15 @@ const photoPicker = (
   name: string,
   address: string,
   pending: boolean,
+  kind: typeof ContactKind.Type,
 ) => {
-  const label = person?.photo ? "Change profile photo" : "Upload profile photo";
+  const imageLabel = kind === "company" ? "company logo" : "profile photo";
+  const label = `${person?.photo ? "Change" : "Upload"} ${imageLabel}`;
   return h.label(
     [
-      h.Class("person-photo-picker"),
+      h.Class(
+        `person-photo-picker${kind === "company" ? " company-photo-picker" : ""}`,
+      ),
       h.Title(label),
       h.Inert(pending),
       h.OnMount(PreviewPhoto()),
@@ -656,6 +780,7 @@ const photoPicker = (
     [
       profileAvatar(h, person, address, {
         name,
+        kind,
         size: "lg",
         imageMounted: Message.Mounted(),
       }),
@@ -701,8 +826,12 @@ const profileForm = (
     cancel: Message;
     suggestedName?: string;
     heading?: string;
+    kind?: typeof ContactKind.Type;
+    domains?: readonly string[];
   },
 ) => {
+  const kind = options.kind ?? person?.kind ?? "person";
+  const domains = person?.domains ?? options.domains ?? [];
   const emails = person?.addresses ?? (address ? [address] : []);
   const name = person?.name || options.suggestedName || "";
   const photo = photoPicker(
@@ -711,6 +840,7 @@ const profileForm = (
     name,
     address ?? emails[0] ?? person?.managedAddresses[0] ?? "",
     pending,
+    kind,
   );
   const actions = [
     button(
@@ -736,12 +866,14 @@ const profileForm = (
   return h.form(
     [
       h.Id(options.formId),
+      h.Key(`${options.formId}-${person?.id ?? "new"}`),
       h.Class("person-fields"),
       h.OnSubmit(options.submit),
       h.OnMount(
         PrepareForm({
           name,
           addresses: emails.join("\n"),
+          domains: domains.join("\n"),
         }),
       ),
     ],
@@ -749,6 +881,27 @@ const profileForm = (
       options.heading
         ? profileHeader(h, options.heading, photo, actions)
         : photo,
+      field(
+        "Contact type",
+        h.select(
+          [
+            h.Value(kind),
+            h.Disabled(pending || Boolean(person?.self)),
+            h.OnChange((value) =>
+              Message.ChangedKind({
+                kind: value === "company" ? "company" : "person",
+              }),
+            ),
+          ],
+          [
+            h.option([h.Value("person")], ["Person"]),
+            h.option([h.Value("company")], ["Company"]),
+          ],
+        ),
+        h,
+      ),
+      // Disabled controls are excluded from FormData while a save is pending.
+      h.input([h.Type("hidden"), h.Name("kind"), h.Value(kind)]),
       field(
         "Display name",
         input(
@@ -775,13 +928,39 @@ const profileForm = (
         ),
         h,
       ),
+      h.div(
+        [h.Hidden(kind !== "company")],
+        [
+          field(
+            "Website domains",
+            textarea(
+              [
+                h.Name("domains"),
+                h.Rows(3),
+                h.Readonly(pending),
+                h.Placeholder("acme.com\nbilling.acme.co.uk"),
+              ],
+              h,
+            ),
+            h,
+          ),
+          h.p(
+            [],
+            [
+              "One domain per line. The first supplies the default favicon. Matching email addresses are suggested, never assigned automatically.",
+            ],
+          ),
+        ],
+      ),
       ...(person?.photo
         ? [
             h.label(
               [h.Class("person-photo-remove"), h.Inert(pending)],
               [
                 h.input([h.Type("checkbox"), h.Name("removePhoto")]),
-                "Remove photo",
+                kind === "company"
+                  ? "Remove logo and use favicon"
+                  : "Remove photo",
               ],
             ),
           ]
@@ -807,7 +986,13 @@ export const editForm = (
 export const view = Submodel.defineView<Model, Message>((model, h) => {
   if (!model.opened) return h.div([], []);
   const { person, address } = model;
-  const heading = person?.self || !address ? "Your profile" : "Person profile";
+  const heading = model.creating
+    ? "New contact"
+    : person?.self || !address
+      ? "Your profile"
+      : model.kind === "company"
+        ? "Company profile"
+        : "Contact profile";
   const pending = model.saveRequest !== null;
   return dialog(
     {
@@ -860,11 +1045,37 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
                     ),
                   ]
                 : []),
+              ...(!person && model.companySuggestion
+                ? [
+                    h.div(
+                      [h.Class("company-suggestion")],
+                      [
+                        h.p(
+                          [],
+                          [
+                            `This address matches ${model.companySuggestion.name}.`,
+                          ],
+                        ),
+                        button(
+                          {
+                            type: "button",
+                            disabled: pending,
+                            onClick: Message.UsedCompanySuggestion(),
+                            children: ["Add address to this company"],
+                          },
+                          h,
+                        ),
+                      ],
+                    ),
+                  ]
+                : []),
               profileForm(h, person, address, pending, {
                 formId,
                 submit: Message.Submitted(),
                 cancel: Message.Closed(),
                 suggestedName: model.suggestedName,
+                kind: model.kind,
+                domains: model.suggestedDomains,
               }),
             ]),
       ],

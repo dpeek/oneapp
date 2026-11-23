@@ -89,6 +89,7 @@ import { digest } from "./digest.ts";
 import { ensureOwner } from "./provision-owner.ts";
 import { mcpOAuth } from "./mcp-oauth.ts";
 import worker from "./worker.ts";
+import { collectMailTrash, mailRetentionMs } from "./mail-trash.ts";
 import { indexMail } from "./mail-index.ts";
 
 const email = "owner@example.net";
@@ -385,6 +386,165 @@ it("shares private people profiles across aliases and keeps account addresses li
   expect(photos.size).toBe(0);
 });
 
+it("stores companies with explicit aliases and domains without reclassifying people", async () => {
+  using sqlite = new Database(":memory:");
+  const { call, request, signIn, cookies } = await setup(sqlite);
+  const session = cookies(await signIn(password));
+  const create = (draft: object) => call(peopleApiPath, draft, session);
+  const lookup = async (address: string) =>
+    (await call(personLookupPath(address), undefined, session)).json();
+  const save = (profile: Person, draft: object) =>
+    request(personApiPath(profile.id), {
+      method: "PUT",
+      headers: {
+        cookie: session,
+        origin: "https://oneapp.example",
+        "content-type": "application/json",
+        "x-effect-auth-csrf": "1",
+      },
+      body: JSON.stringify({ revision: profile.revision, ...draft }),
+    });
+  const created = await create({
+    kind: "company",
+    name: "Acme",
+    addresses: [],
+    domains: ["ACME.COM.", "acme.com", "acme.co.uk"],
+  });
+  expect(created.status).toBe(201);
+  let company: Person = await created.json();
+  expect(company).toMatchObject({
+    kind: "company",
+    domains: ["acme.com", "acme.co.uk"],
+    iconDomain: "acme.com",
+    addresses: [],
+  });
+  expect(await lookup("accounts@acme.com")).toEqual({
+    person: null,
+    companySuggestion: company,
+  });
+  expect((await lookup("accounts@notacme.com")).person).toBeNull();
+  expect((await lookup("accounts@notacme.com")).companySuggestion).toBeFalsy();
+  const employeeResponse = await create({
+    name: "Alice",
+    addresses: ["alice@acme.com"],
+  });
+  expect(employeeResponse.status).toBe(201);
+  const employee: Person = await employeeResponse.json();
+  const employeeLookup = await lookup("alice@acme.com");
+  expect(employeeLookup.person).toEqual(employee);
+  expect(employeeLookup.companySuggestion).toBeFalsy();
+
+  const assigned = await save(company, {
+    kind: "company",
+    name: company.name,
+    addresses: ["ACCOUNTS@acme.com", "news@acme.co.uk"],
+  });
+  expect(assigned.status).toBe(200);
+  const original = company;
+  company = await assigned.json();
+  expect(company.domains).toEqual(original.domains);
+  expect(await lookup("accounts@acme.com")).toMatchObject({ person: company });
+  expect(await lookup("news@acme.co.uk")).toMatchObject({ person: company });
+  expect(
+    (
+      await save(original, {
+        name: "Stale",
+        addresses: [],
+        domains: ["stale.com"],
+      })
+    ).status,
+  ).toBe(409);
+
+  expect(
+    (
+      await save(company, {
+        name: "Conflicting alias",
+        addresses: ["alice@acme.com"],
+        domains: ["changed.com"],
+      })
+    ).status,
+  ).toBe(409);
+  expect(await lookup("accounts@acme.com")).toMatchObject({ person: company });
+  expect((await lookup("new@acme.com")).companySuggestion).toEqual(company);
+  expect(
+    (
+      await create({
+        kind: "company",
+        name: "Duplicate",
+        addresses: ["new@other.com"],
+        domains: ["acme.com"],
+      })
+    ).status,
+  ).toBe(409);
+  expect((await lookup("new@other.com")).person).toBeNull();
+  expect(
+    (
+      await create({
+        kind: "company",
+        name: "Invalid",
+        addresses: [],
+        domains: ["co.uk"],
+      })
+    ).status,
+  ).toBe(400);
+  expect(
+    (
+      await create({
+        kind: "company",
+        name: "",
+        addresses: [],
+        domains: ["other.com"],
+      })
+    ).status,
+  ).toBe(400);
+  expect(
+    (
+      await create({
+        kind: "person",
+        name: "Person",
+        addresses: ["person@other.com"],
+        domains: ["other.com"],
+      })
+    ).status,
+  ).toBe(400);
+  const self: Person = await (
+    await call(selfProfilePath, undefined, session)
+  ).json();
+  expect(
+    (
+      await save(self, {
+        kind: "company",
+        name: "Owner",
+        addresses: [],
+        domains: ["other.com"],
+      })
+    ).status,
+  ).toBe(400);
+  const companies = await (
+    await call(`${peopleApiPath}?kind=company`, undefined, session)
+  ).json();
+  expect(companies.people).toEqual([company]);
+
+  const converted = await save(company, {
+    kind: "person",
+    name: "Acme contact",
+    addresses: company.addresses,
+  });
+  expect(converted.status).toBe(200);
+  expect((await converted.json()).kind ?? "person").toBe("person");
+  expect((await lookup("new@acme.com")).companySuggestion).toBeFalsy();
+  expect(
+    (
+      await create({
+        kind: "company",
+        name: "New Acme",
+        addresses: [],
+        domains: ["acme.com"],
+      })
+    ).status,
+  ).toBe(201);
+});
+
 it("lets only the owner send plain-text mail from the configured Inbox address", async () => {
   using sqlite = new Database(":memory:");
   const from = "mail@app.example.net";
@@ -416,6 +576,7 @@ it("lets only the owner send plain-text mail from the configured Inbox address",
     } as WorkerEnv["INBOX_MESSAGES"],
     SENT_MESSAGES: {
       put,
+      head: async (id: string) => stored.get(id) ?? null,
       list: async () => ({ objects: [...stored.values()], truncated: false }),
       get: async (id: string) => {
         const object = stored.get(id);
@@ -457,8 +618,7 @@ it("lets only the owner send plain-text mail from the configured Inbox address",
     400,
   );
   expect(
-    (await approved({ ...draft, to: "bob@example.net,alice@example.net" }))
-      .status,
+    (await approved({ ...draft, to: "bob@example.net,invalid" })).status,
   ).toBe(400);
   expect(
     (await approved({ ...draft, subject: "Hello\r\nBcc: other@example.net" }))
@@ -1563,7 +1723,7 @@ it("returns sanitized HTML and CID images alongside plain text, with a bounded f
       arrayBuffer: () => response.arrayBuffer(),
     };
   });
-  const { call, signIn, cookies } = await setup(sqlite, {
+  const { call, request, signIn, cookies } = await setup(sqlite, {
     INBOX_EMAIL_ADDRESS: "mail@app.example.net",
     INBOX_MESSAGES: { get } as unknown as WorkerEnv["INBOX_MESSAGES"],
   });
@@ -1578,6 +1738,24 @@ it("returns sanitized HTML and CID images alongside plain text, with a bounded f
   expect(entry.html).toContain(`src="data:image/png;base64,${png}"`);
   expect(entry.html).not.toMatch(/tracker|script|evil/iu);
 
+  const imagesPath = `${inboxMessageApi(id)}?images=safe`;
+  expect((await call(imagesPath)).status).toBe(401);
+  expect(
+    (await call(`${inboxMessageApi(id)}?images=invalid`, undefined, session))
+      .status,
+  ).toBe(400);
+  expect(
+    (await request(imagesPath, { headers: { cookie: session } })).status,
+  ).toBe(403);
+  html =
+    '<p>News</p><img src="https://cdn.example.com/open.gif?id=recipient" width="1" height="1">';
+  const filtered = await call(imagesPath, undefined, session);
+  expect(filtered.status).toBe(200);
+  expect(filtered.headers.get("cache-control")).toBe("no-store");
+  expect(await filtered.json()).toMatchObject({
+    remoteImages: { blocked: 1, loaded: 0 },
+  });
+
   html = "<p>Too much HTML</p>".repeat(60_000);
   const fallback = await (
     await call(inboxMessageApi(id), undefined, session)
@@ -1586,7 +1764,7 @@ it("returns sanitized HTML and CID images alongside plain text, with a bounded f
   expect(fallback).not.toHaveProperty("html");
 });
 
-it("allows the owner to list, read, download, and permanently delete stored mail", async () => {
+it("allows the owner to delete and recover stored mail before automatic expiry", async () => {
   using sqlite = new Database(":memory:");
   const address = "mail@app.example.net";
   const sender = "bounces@example.net";
@@ -1636,11 +1814,12 @@ it("allows the owner to list, read, download, and permanently delete stored mail
   const remove = vi.fn(async (key: string) => {
     stored.delete(key);
   });
-  const { call, request, signIn, cookies } = await setup(sqlite, {
+  const { call, request, signIn, cookies, db } = await setup(sqlite, {
     INBOX_EMAIL_ADDRESS: address,
     INBOX_MESSAGES: {
       list,
       get,
+      head: async (id: string) => (stored.has(id) ? object(id) : null),
       delete: remove,
     } as WorkerEnv["INBOX_MESSAGES"],
   });
@@ -1715,13 +1894,11 @@ it("allows the owner to list, read, download, and permanently delete stored mail
   expect((await deleteMail(authorized, "unknown")).status).toBe(404);
   expect(remove).not.toHaveBeenCalled();
 
-  remove.mockRejectedValueOnce(new Error("R2 unavailable"));
-  expect((await deleteMail(authorized)).status).toBe(503);
-  expect(stored.has(legacy)).toBe(true);
   const deleted = await deleteMail(authorized);
   expect(deleted.status).toBe(204);
   expect(deleted.headers.get("cache-control")).toBe("no-store");
-  expect(remove).toHaveBeenLastCalledWith(legacy);
+  expect(remove).not.toHaveBeenCalled();
+  expect(stored.has(legacy)).toBe(true);
   expect((await deleteMail(authorized)).status).toBe(204);
   expect((await call(inboxMessageApi(legacy), undefined, session)).status).toBe(
     404,
@@ -1739,6 +1916,123 @@ it("allows the owner to list, read, download, and permanently delete stored mail
     cursor: null,
   });
   expect(stored.has(newest)).toBe(true);
+  const recoveryPath = `${inboxApiPath}/trash`;
+  const restorePath = `${recoveryPath}/${legacy}/restore`;
+  expect((await call(recoveryPath)).status).toBe(401);
+  const trashedMessage = `${recoveryPath}/${legacy}`;
+  expect((await call(trashedMessage)).status).toBe(401);
+  expect(
+    (await call(`${recoveryPath}/${newest}`, undefined, session)).status,
+  ).toBe(404);
+  const trashEntry = await call(trashedMessage, undefined, session);
+  expect(trashEntry.headers.get("cache-control")).toBe("no-store");
+  expect(await trashEntry.json()).toMatchObject({
+    id: legacy,
+    subject: "Coffee ☕",
+    text: "Hello there.",
+    preview: "complete",
+  });
+  expect(
+    await (await call(`${trashedMessage}/original`, undefined, session)).text(),
+  ).toBe(raw);
+
+  expect((await call(restorePath, {})).status).toBe(401);
+  expect(
+    (
+      await request(restorePath, {
+        method: "POST",
+        headers: { cookie: session, origin: authorized.origin },
+      })
+    ).status,
+  ).toBe(403);
+  expect(
+    await (await call(recoveryPath, undefined, session)).json(),
+  ).toMatchObject({ messages: [{ id: legacy, subject: "Coffee ☕" }] });
+  expect((await call(restorePath, {}, session)).status).toBe(204);
+  expect((await call(trashedMessage, undefined, session)).status).toBe(404);
+  expect((await call(inboxMessageApi(legacy), undefined, session)).status).toBe(
+    200,
+  );
+  expect(
+    await (await call(recoveryPath, undefined, session)).json(),
+  ).toMatchObject({ messages: [] });
+  expect((await deleteMail(authorized)).status).toBe(204);
+  const deletedAt = (
+    sqlite
+      .query("SELECT deleted_at FROM mail_index_messages WHERE id = ?")
+      .get(legacy) as { deleted_at: number }
+  ).deleted_at;
+  sqlite
+    .query("UPDATE mail_index_messages SET deleted_at = ? WHERE id = ?")
+    .run(Date.now() - mailRetentionMs - 1, legacy);
+  expect((await call(trashedMessage, undefined, session)).status).toBe(404);
+  expect(
+    (await call(`${trashedMessage}/original`, undefined, session)).status,
+  ).toBe(404);
+  expect((await call(restorePath, {}, session)).status).toBe(404);
+  sqlite
+    .query("UPDATE mail_index_messages SET deleted_at = ? WHERE id = ?")
+    .run(deletedAt, legacy);
+  const store = {
+    DB: db,
+    INBOX_MESSAGES: {
+      delete: remove,
+    } as unknown as WorkerEnv["INBOX_MESSAGES"],
+    SENT_MESSAGES: { delete: remove } as unknown as WorkerEnv["SENT_MESSAGES"],
+  };
+  await collectMailTrash(store, deletedAt + mailRetentionMs - 1);
+  expect(stored.has(legacy)).toBe(true);
+  remove.mockRejectedValueOnce(new Error("R2 unavailable"));
+  await expect(
+    collectMailTrash(store, deletedAt + mailRetentionMs),
+  ).rejects.toThrow("cleanup will retry");
+  expect((await call(restorePath, {}, session)).status).toBe(404);
+  expect(stored.has(legacy)).toBe(true);
+  await collectMailTrash(store, deletedAt + mailRetentionMs + 1);
+  expect(stored.has(legacy)).toBe(false);
+  expect(stored.has(newest)).toBe(true);
+  expect(
+    sqlite
+      .query(
+        "SELECT deleted, deleted_at, subject FROM mail_index_messages WHERE id = ?",
+      )
+      .get(legacy),
+  ).toEqual({ deleted: 1, deleted_at: null, subject: "" });
+  const deletedIds = Array.from(
+    { length: 101 },
+    () => `0-8200000000000-${crypto.randomUUID()}.eml`,
+  )
+    .sort()
+    .reverse();
+  const stamp = Date.now();
+  for (const id of deletedIds)
+    sqlite
+      .query(
+        "INSERT INTO mail_index_messages (id, thread_id, folder, sender, recipient, subject, timestamp, deleted, deleted_at) VALUES (?, ?, 'inbox', 'sender@example.net', '', 'Deleted', 1, 1, ?)",
+      )
+      .run(id, id, stamp);
+  const firstDeleted = (await (
+    await call(recoveryPath, undefined, session)
+  ).json()) as { messages: { id: string }[]; cursor: string };
+  expect(firstDeleted.messages).toHaveLength(100);
+  const boundaryId = firstDeleted.messages.at(-1)!.id;
+  expect(
+    (await call(`${recoveryPath}/${boundaryId}/restore`, {}, session)).status,
+  ).toBe(204);
+  const older = await (
+    await call(
+      `${recoveryPath}?cursor=${encodeURIComponent(firstDeleted.cursor)}`,
+      undefined,
+      session,
+    )
+  ).json();
+  expect(older).toMatchObject({
+    messages: [{ id: deletedIds[100] }],
+    cursor: null,
+  });
+  expect(
+    (await call(`${recoveryPath}?cursor=invalid`, undefined, session)).status,
+  ).toBe(400);
 });
 
 it("issues scoped CLI tokens and applies read and write scopes to the Links API", async () => {
@@ -4285,3 +4579,268 @@ import type {
   RateLimit,
   SendEmail,
 } from "@cloudflare/workers-types";
+
+it("sends binary attachments to multiple recipients and retains downloadable Sent copies", async () => {
+  using sqlite = new Database(":memory:");
+  const send = vi.fn(async (_message: EmailMessageBuilder) => ({
+    messageId: "files-fixture",
+  }));
+  const copies = new Map<string, string>();
+  const { call, request, signIn, cookies } = await setup(sqlite, {
+    INBOX_EMAIL_ADDRESS: "mail@app.example.net",
+    INBOX_EMAIL_FROM: "mail@app.example.net",
+    INBOX_SEND: { send } as SendEmail,
+    INBOX_SEND_LIMIT: { limit: async () => ({ success: true }) },
+    SENT_MESSAGES: {
+      put: async (id: string, json: string) => {
+        copies.set(id, json);
+        return {};
+      },
+      get: async (id: string) => {
+        const json = copies.get(id);
+        return json
+          ? {
+              size: json.length,
+              httpMetadata: { contentType: "application/json" },
+              json: async () => JSON.parse(json),
+            }
+          : null;
+      },
+    } as unknown as WorkerEnv["SENT_MESSAGES"],
+  });
+  const session = cookies(await signIn(password));
+  const attachment = {
+    filename: "data.bin",
+    type: "application/octet-stream",
+    content: "AAECA/8=",
+  };
+  const draft = {
+    to: "alice@example.net, bob@example.net",
+    cc: "other@example.net",
+    subject: "Fwd: Files",
+    text: "Here are the files.",
+    attachments: [attachment],
+  };
+  expect(
+    (
+      await call(
+        inboxSendPath,
+        { ...draft, attachments: [{ ...attachment, content: "%%%" }] },
+        session,
+      )
+    ).status,
+  ).toBe(400);
+  expect(send).not.toHaveBeenCalled();
+  const response = await call(inboxSendPath, draft, session);
+  expect(response.status).toBe(204);
+  expect(send.mock.lastCall?.[0]).toMatchObject({
+    to: ["alice@example.net", "bob@example.net"],
+    cc: ["other@example.net"],
+    attachments: [
+      {
+        filename: "data.bin",
+        disposition: "attachment",
+        content: new Uint8Array([0, 1, 2, 3, 255]),
+      },
+    ],
+  });
+  expect(send.mock.lastCall?.[0].headers).toBeUndefined();
+  const id = response.headers.get(sentMessageHeader)!;
+  const copy = await call(mailMessageApi("sent", id), undefined, session);
+  expect(await copy.json()).toMatchObject({
+    cc: draft.cc,
+    attachments: [{ name: "data.bin", size: 5, part: 0 }],
+  });
+  const path = `${inboxApiPath}/${id}/attachments/0`;
+  expect((await call(path)).status).toBe(401);
+  const download = await call(path, undefined, session);
+  expect(download.status).toBe(200);
+  expect(new Uint8Array(await download.arrayBuffer())).toEqual(
+    new Uint8Array([0, 1, 2, 3, 255]),
+  );
+  expect(download.headers.get("content-disposition")).toContain("data.bin");
+  expect((await call(`${path}/preview`, undefined, session)).status).toBe(415);
+  expect(
+    (
+      await request(mailMessageApi("sent", id), {
+        method: "DELETE",
+        headers: {
+          cookie: session,
+          origin: "https://oneapp.example",
+          "x-effect-auth-csrf": "1",
+        },
+      })
+    ).status,
+  ).toBe(204);
+  expect(
+    (await call(mailMessageApi("sent", id), undefined, session)).status,
+  ).toBe(404);
+  expect((await call(path, undefined, session)).status).toBe(404);
+  const trashPath = `${inboxApiPath}/trash/${id}`;
+  expect(
+    await (await call(trashPath, undefined, session)).json(),
+  ).toMatchObject({ id, subject: draft.subject, text: draft.text });
+  expect((await call(`${path}?trash=1`)).status).toBe(401);
+  expect(
+    new Uint8Array(
+      await (await call(`${path}?trash=1`, undefined, session)).arrayBuffer(),
+    ),
+  ).toEqual(new Uint8Array([0, 1, 2, 3, 255]));
+  expect(
+    (await call(`${path}/preview?trash=1`, undefined, session)).status,
+  ).toBe(415);
+  expect((await call(`${trashPath}/restore`, {}, session)).status).toBe(204);
+  expect((await call(`${path}?trash=1`, undefined, session)).status).toBe(404);
+  expect((await call(path, undefined, session)).status).toBe(200);
+});
+
+it("uses the oldest unread sender for conversation avatars, then the latest incoming sender", async () => {
+  using sqlite = new Database(":memory:");
+  const { db, call, signIn, cookies } = await setup(sqlite, {
+    INBOX_MESSAGES: {
+      list: async () => ({ objects: [], truncated: false }),
+      get: async () => null,
+    } as unknown as WorkerEnv["INBOX_MESSAGES"],
+    SENT_MESSAGES: {
+      list: async () => ({ objects: [], truncated: false }),
+      get: async () => null,
+    } as unknown as WorkerEnv["SENT_MESSAGES"],
+  });
+  const ids = Array.from(
+    { length: 4 },
+    () => `0-8200000000000-${crypto.randomUUID()}.eml`,
+  );
+  for (let n = 0; n < ids.length; n++)
+    await indexMail(db, {
+      id: ids[n]!,
+      folder: "inbox",
+      timestamp: n + 1,
+      from: `sender${n}@example.net`,
+      to: "owner@example.net",
+      subject: "Avatars",
+      unread: n !== 2,
+      messageIds: ["<avatars@example.net>"],
+    });
+  // Even a newer sent copy must not replace the incoming sender's avatar.
+  await indexMail(db, {
+    id: `0-8200000000000-${crypto.randomUUID()}`,
+    folder: "sent",
+    timestamp: 10,
+    from: "owner@example.net",
+    to: "sender3@example.net",
+    subject: "Re: Avatars",
+    messageIds: ["<avatars@example.net>"],
+  });
+  const session = cookies(await signIn(password));
+  const sender = async () => {
+    const response = await call(conversationsApiPath, undefined, session);
+    expect(response.status).toBe(200);
+    const page = (await response.json()) as {
+      messages: { avatarSender: { address: string } }[];
+    };
+    return page.messages[0]!.avatarSender.address;
+  };
+  expect(await sender()).toBe("sender0@example.net");
+  sqlite
+    .query("UPDATE mail_index_messages SET unread = 0 WHERE id = ?")
+    .run(ids[0]!);
+  expect(await sender()).toBe("sender1@example.net");
+  sqlite
+    .query("UPDATE mail_index_messages SET deleted = 1 WHERE id = ?")
+    .run(ids[1]!);
+  expect(await sender()).toBe("sender3@example.net");
+  sqlite.query("UPDATE mail_index_messages SET unread = 0").run();
+  expect(await sender()).toBe("sender3@example.net");
+});
+
+it("persists sender avatar overrides separately from Signal/Noise and restores automatic detection", async () => {
+  using sqlite = new Database(":memory:");
+  const { mailPeople } = await import("./mail-people.ts");
+  const { senderAppearanceApiPath } = await import("../inbox-contract.ts");
+  const { call, request, db, signIn, cookies } = await setup(sqlite, {
+    INBOX_MESSAGES: {
+      list: async () => ({ objects: [], truncated: false }),
+      get: async () => null,
+    } as unknown as WorkerEnv["INBOX_MESSAGES"],
+    SENT_MESSAGES: {
+      list: async () => ({ objects: [], truncated: false }),
+      get: async () => null,
+    } as unknown as WorkerEnv["SENT_MESSAGES"],
+  });
+  const id = `0-8200000000000-${crypto.randomUUID()}.eml`;
+  const address = "accounts@news.acme.co.uk";
+  await indexMail(db, {
+    id,
+    folder: "inbox",
+    timestamp: 1000,
+    from: "bounce@mailer.example.net",
+    to: email,
+    subject: "Receipt",
+    unread: true,
+    messageIds: [],
+    people: mailPeople(
+      (key) => (key === "from" ? `Acme <${address}>` : undefined),
+      "bounce@mailer.example.net",
+      email,
+    ),
+  });
+  const session = cookies(await signIn(password));
+  const patch = (mode: string, cookie?: string, csrf = true) =>
+    request(senderAppearanceApiPath, {
+      method: "PATCH",
+      headers: {
+        origin: "https://oneapp.example",
+        "content-type": "application/json",
+        ...(cookie ? { cookie } : {}),
+        ...(csrf ? { "x-effect-auth-csrf": "1" } : {}),
+      },
+      body: JSON.stringify({ address: address.toUpperCase(), mode }),
+    });
+  expect((await patch("person")).status).toBe(401);
+  expect((await patch("person", session, false)).status).toBe(403);
+  expect((await patch("bogus", session)).status).toBe(400);
+  const appearance = async () => {
+    const response = await call(conversationsApiPath, undefined, session);
+    expect(response.status).toBe(200);
+    const page = (await response.json()) as {
+      messages: { avatarSender: { appearance: object } }[];
+    };
+    return page.messages[0]!.avatarSender.appearance;
+  };
+  expect(await appearance()).toEqual({
+    kind: "service",
+    mode: "auto",
+    domain: "acme.co.uk",
+  });
+  expect((await patch("person", session)).status).toBe(204);
+  expect(await appearance()).toEqual({
+    kind: "person",
+    mode: "person",
+    domain: null,
+  });
+  const thread = await (
+    await call(conversationApi(id), undefined, session)
+  ).json();
+  expect(thread).toMatchObject({
+    messages: [
+      {
+        people: { sender: { appearance: { kind: "person", mode: "person" } } },
+      },
+    ],
+    senderRule: { priority: "automatic" },
+  });
+  expect(sqlite.query("SELECT * FROM mail_sender_rules").all()).toEqual([]);
+  expect((await patch("service", session)).status).toBe(204);
+  expect(await appearance()).toEqual({
+    kind: "service",
+    mode: "service",
+    domain: "acme.co.uk",
+  });
+  expect((await patch("auto", session)).status).toBe(204);
+  expect(await appearance()).toEqual({
+    kind: "service",
+    mode: "auto",
+    domain: "acme.co.uk",
+  });
+  expect(sqlite.query("SELECT * FROM mail_sender_avatars").all()).toEqual([]);
+});

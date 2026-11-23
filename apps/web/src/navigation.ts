@@ -4,14 +4,14 @@ import { Update } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import { mailPath } from "./inbox-contract.ts";
-import { peoplePath } from "./people-contract.ts";
+import { contactsPath } from "./people-contract.ts";
 import { vaultPath } from "./vault-setup-contract.ts";
 
 export const Page = Schema.Literals([
   "links",
   "mail",
   "vault",
-  "people",
+  "contacts",
   "settings",
 ]);
 type Page = typeof Page.Type;
@@ -45,9 +45,9 @@ const destinations = [
     ],
   },
   {
-    page: "people",
-    href: peoplePath,
-    label: "People",
+    page: "contacts",
+    href: contactsPath,
+    label: "Contacts",
     paths: [
       "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2m20 0v-2a4 4 0 0 0-3-3.87",
       "M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0Zm3-3.87a4 4 0 0 1 0 7.75",
@@ -76,7 +76,7 @@ export const initial: Model = {
   links: Tooltip.init({ id: "nav-links" }),
   mail: Tooltip.init({ id: "nav-mail" }),
   vault: Tooltip.init({ id: "nav-vault" }),
-  people: Tooltip.init({ id: "nav-people" }),
+  contacts: Tooltip.init({ id: "nav-contacts" }),
   settings: Tooltip.init({ id: "nav-settings" }),
 };
 

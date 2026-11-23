@@ -12,6 +12,7 @@ export const mailIndexMessages = sqliteTable(
     subject: text().notNull(),
     timestamp: integer().notNull(),
     deleted: integer().notNull().default(0),
+    deletedAt: integer("deleted_at"),
     unread: integer().notNull().default(0),
     archived: integer().notNull().default(0),
     people: text(),
@@ -19,6 +20,7 @@ export const mailIndexMessages = sqliteTable(
     bodyPreview: text("body_preview"),
   },
   (table) => [
+    index("mail_index_deleted_date").on(table.deleted, table.deletedAt),
     index("mail_index_folder_date").on(
       table.folder,
       table.deleted,
@@ -66,4 +68,9 @@ export const mailIndexScans = sqliteTable("mail_index_scans", {
 export const mailSenderRules = sqliteTable("mail_sender_rules", {
   address: text().primaryKey(),
   priority: text({ enum: ["signal", "noise"] }).notNull(),
+});
+
+export const mailSenderAvatars = sqliteTable("mail_sender_avatars", {
+  address: text().primaryKey(),
+  kind: text({ enum: ["person", "service"] }).notNull(),
 });

@@ -1,7 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import type { Attachment } from "postal-mime";
 import { mailHtmlDocument, mailHtmlSandbox } from "../inbox-html.ts";
-import { sanitizeMailHtml } from "./mail-html.ts";
+import { mailImagePlaceholder, sanitizeMailHtml } from "./mail-html.ts";
 
 const png = Uint8Array.fromBase64(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN9sAAAAASUVORK5CYII=",
@@ -102,7 +102,9 @@ it("blocks remote, relative, sender data URLs, missing CIDs and spoofed images",
       ),
       attachment("<fake>", new TextEncoder().encode("not an image")),
     ]);
-    expect(html).toBe('<img alt="Photo" />');
+    expect(html).toContain(`src="${mailImagePlaceholder}"`);
+    expect(html).toContain('alt="Photo"');
+    expect(html).not.toContain('src="' + src + '"');
   }
 });
 
@@ -113,8 +115,8 @@ it("bounds repeated inline image expansion", () => {
     attachment("large", large),
   ]);
   expect(html.length).toBeLessThan(5 * 1024 * 1024 + 1000);
-  expect(html.match(/src="data:/gu)).toHaveLength(3);
-  expect(html).toContain("Image unavailable");
+  expect(html.match(/src="data:image\/png/gu)).toHaveLength(3);
+  expect(html.split(mailImagePlaceholder)).toHaveLength(8);
 });
 
 it.each([
@@ -143,4 +145,83 @@ it("restricts the frame to embedded images and inline styles, with no script or 
   expect(mailHtmlSandbox).not.toMatch(
     /allow-scripts|allow-same-origin|allow-forms|allow-top-navigation/u,
   );
+});
+
+it("keeps receipt table alignment, backgrounds, spacing and typography", () => {
+  // Representative receipt structure, with synthetic content rather than customer data.
+  const html = sanitizeMailHtml(
+    `
+    <table width="100%" bgcolor="#f6f9fc" cellpadding="0" cellspacing="0">
+      <tr><td><table align="center" width="600" bgcolor="#ffffff"
+        style="margin:0 auto;min-width:600px;border-radius:16px">
+        <tr><td style="font-family:-apple-system, 'Helvetica Neue', sans-serif;font-size:24px;line-height:32px;text-align:center">Receipt</td></tr>
+        <tr><td style="padding:16px 24px;white-space:nowrap;text-transform:uppercase;line-height:16px">Amount paid</td></tr>
+        <tr bgcolor="#f6f9fc"><td style="border-top:1px solid #e6ebf1;border-radius:8px;vertical-align:text-bottom">$12.00</td></tr>
+        <tr><td style="height:16px;max-height:16px;font-size:1px;line-height:1px">&nbsp;</td></tr>
+      </table></td></tr>
+    </table>`,
+    [],
+  );
+  expect(html).toContain('align="center" width="600" bgcolor="#ffffff"');
+  for (const style of [
+    "margin:0 auto",
+    "min-width:600px",
+    "border-radius:16px",
+    "font-family:-apple-system, 'Helvetica Neue', sans-serif",
+    "line-height:32px",
+    "padding:16px 24px",
+    "white-space:nowrap",
+    "text-transform:uppercase",
+    "border-top:1px solid #e6ebf1",
+    "vertical-align:text-bottom",
+    "height:16px",
+  ])
+    expect(html).toContain(style);
+  expect(html).toContain('<tr bgcolor="#f6f9fc">');
+});
+
+it("keeps preheaders hidden while preserving the following visible content", () => {
+  const html = sanitizeMailHtml(
+    `
+    <table><tr><td style="display:none!important;max-height:0;max-width:0;opacity:0;overflow:hidden;visibility:hidden;font-size:1px;line-height:1px">Inbox preview only</td></tr>
+    <tr><td style="display:table-cell">Visible receipt</td></tr></table>
+    <div hidden>Hidden preview</div>`,
+    [],
+  );
+  expect(html).toContain("display:none !important");
+  expect(html).toContain(
+    "max-height:0;max-width:0;opacity:0;overflow:hidden;visibility:hidden",
+  );
+  expect(html).toContain('<td style="display:table-cell">Visible receipt</td>');
+  expect(html).toContain("<div hidden>Hidden preview</div>");
+});
+
+it("rejects CSS network requests, executable values and positioning in presentation styles", () => {
+  const html = sanitizeMailHtml(
+    `
+    <style>@font-face{font-family:evil;src:url(https://tracker.test/font)}</style>
+    <p style="font-family:url(https://tracker.test/font);line-height:expression(alert(1));margin:var(--remote);padding:calc(1px + 2px);border:1px solid url(https://tracker.test);border-image:url(https://tracker.test);background:url(https://tracker.test);background-image:image-set(url(https://tracker.test) 1x);list-style-image:url(https://tracker.test);cursor:url(https://tracker.test),auto;position:fixed;inset:0;z-index:9999;filter:url(https://tracker.test);behavior:url(evil.htc);-moz-binding:url(https://tracker.test)">Visible text</p>
+    <img style="display:block;width:96px !important;height:auto;border:0" srcset="https://tracker.test 2x" src="https://tracker.test">`,
+    [],
+  );
+  expect(html).toContain("<p>Visible text</p>");
+  expect(html).toContain(
+    "display:block;width:96px !important;height:auto;border:0;height:1px !important",
+  );
+  expect(html).not.toMatch(
+    /tracker|url\(|expression|var\(|calc\(|position|srcset|font-face|evil/iu,
+  );
+});
+
+it("uses transparent placeholders without losing image descriptions or declared dimensions", () => {
+  const html = sanitizeMailHtml(
+    '<img src="cid:missing" alt="Company logo" width="200" height="40"><img src="https://blocked.test/photo" style="width:600px;height:auto"><img style="width:320px;height:80px">',
+    [],
+  );
+  expect(html.split(mailImagePlaceholder)).toHaveLength(4);
+  expect(html).toContain('alt="Company logo" width="200" height="40"');
+  expect(html).toContain("height:40px !important");
+  expect(html).toContain("height:auto;height:1px !important");
+  expect(html).toContain("height:80px;height:80px !important");
+  expect(html).not.toMatch(/blocked.test|cid:|Image unavailable|onerror/iu);
 });

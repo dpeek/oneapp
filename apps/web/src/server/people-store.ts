@@ -4,6 +4,8 @@ import {
   type Person,
   type PersonMatch,
 } from "../people-contract.ts";
+import { senderIconDomain } from "./mail-sender.ts";
+import { companyForHostname } from "../company-domains.ts";
 import { ownerId } from "./auth.ts";
 
 type PeopleDb = D1Database;
@@ -11,10 +13,15 @@ type PersonRow = {
   id: string;
   accountId: string | null;
   name: string;
+  kind: "person" | "company";
+  domains: string;
+  iconEmail: string | null;
   photo: string | null;
   revision: string;
 };
-const fields = "id, account_id AS accountId, name, photo, revision";
+const fields = `p.id, p.account_id AS accountId, p.name, p.photo, p.revision, p.kind,
+  (SELECT json_group_array(domain ORDER BY position) FROM company_domains WHERE company_id = p.id) AS domains,
+  (SELECT email FROM person_addresses WHERE person_id = p.id ORDER BY email LIMIT 1) AS iconEmail`;
 
 export const managedPersonAddresses = async (
   db: PeopleDb,
@@ -38,7 +45,7 @@ export const managedPersonAddresses = async (
 
 const findSelf = (db: PeopleDb) =>
   db
-    .prepare(`SELECT ${fields} FROM people WHERE account_id = ?`)
+    .prepare(`SELECT ${fields} FROM people p WHERE p.account_id = ?`)
     .bind(ownerId)
     .first<PersonRow>();
 
@@ -59,6 +66,15 @@ const ensureSelf = async (db: PeopleDb) => {
 const summary = (row: PersonRow) => ({
   id: row.id,
   name: row.name,
+  ...(row.kind === "company"
+    ? {
+        kind: row.kind,
+        domains: JSON.parse(row.domains) as string[],
+        iconDomain:
+          (JSON.parse(row.domains) as string[])[0] ??
+          (row.iconEmail ? senderIconDomain(row.iconEmail) : null),
+      }
+    : {}),
   photo: row.photo,
   self: row.accountId === ownerId,
 });
@@ -95,7 +111,7 @@ export const listPeople = async (db: PeopleDb, managed: string[]) => {
   await ensureSelf(db);
   const { results } = await db
     .prepare(
-      `SELECT p.id, p.account_id AS accountId, p.name, p.photo, p.revision,
+      `SELECT ${fields},
          json_group_array(a.email ORDER BY a.email) FILTER (WHERE a.email IS NOT NULL) AS emails
        FROM people p LEFT JOIN person_addresses a ON a.person_id = p.id
        GROUP BY p.id`,
@@ -112,7 +128,7 @@ export const readProfile = async (
   managed: string[],
 ) => {
   const row = await db
-    .prepare(`SELECT ${fields} FROM people WHERE id = ?`)
+    .prepare(`SELECT ${fields} FROM people p WHERE p.id = ?`)
     .bind(id)
     .first<PersonRow>();
   return row ? describe(db, row, managed) : null;
@@ -132,7 +148,7 @@ export const matchPeople = async (
   if (!emails.length) return [];
   const { results } = await db
     .prepare(
-      `SELECT a.email, p.id, p.account_id AS accountId, p.name, p.photo, p.revision
+      `SELECT a.email, ${fields}
      FROM person_addresses a JOIN people p ON p.id = a.person_id
      WHERE a.email IN (SELECT value FROM json_each(?))`,
     )
@@ -154,6 +170,8 @@ export const writeProfile = async (
   name: string,
   addresses: string[],
   photo: string | null,
+  kind: "person" | "company" = "person",
+  domains: string[] = [],
 ) => {
   const revision = crypto.randomUUID();
   const matchesRevision =
@@ -162,14 +180,14 @@ export const writeProfile = async (
     currentRevision
       ? db
           .prepare(
-            "UPDATE people SET name = ?, photo = ?, revision = ? WHERE id = ? AND revision = ? RETURNING id",
+            "UPDATE people SET name = ?, photo = ?, revision = ?, kind = ? WHERE id = ? AND revision = ? RETURNING id",
           )
-          .bind(name, photo, revision, id, currentRevision)
+          .bind(name, photo, revision, kind, id, currentRevision)
       : db
           .prepare(
-            "INSERT INTO people (id, name, photo, revision) VALUES (?, ?, ?, ?) RETURNING id",
+            "INSERT INTO people (id, name, photo, revision, kind) VALUES (?, ?, ?, ?, ?) RETURNING id",
           )
-          .bind(id, name, photo, revision),
+          .bind(id, name, photo, revision, kind),
     db
       .prepare(
         `DELETE FROM person_addresses WHERE person_id = ?1 AND ${matchesRevision}`,
@@ -181,6 +199,31 @@ export const writeProfile = async (
        SELECT value, ?1 FROM json_each(?3) WHERE ${matchesRevision}`,
       )
       .bind(id, revision, JSON.stringify(addresses)),
+    db
+      .prepare(
+        `DELETE FROM company_domains WHERE company_id = ?1 AND ${matchesRevision}`,
+      )
+      .bind(id, revision),
+    db
+      .prepare(
+        `INSERT INTO company_domains (domain, company_id, position) SELECT value, ?1, key FROM json_each(?3) WHERE ${matchesRevision}`,
+      )
+      .bind(id, revision, JSON.stringify(domains)),
   ]);
   return saved?.results.length ? revision : null;
+};
+
+export const suggestCompany = async (
+  db: PeopleDb,
+  email: string,
+  managed: string[],
+) => {
+  if (managed.includes(normalizePersonEmail(email))) return null;
+  const companies = (await listPeople(db, managed)).filter(
+    (person) => person.kind === "company",
+  );
+  return (
+    companyForHostname(companies, email.slice(email.lastIndexOf("@") + 1)) ??
+    null
+  );
 };

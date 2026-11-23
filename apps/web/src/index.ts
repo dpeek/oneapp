@@ -51,7 +51,7 @@ import * as AppNavigation from "./navigation.ts";
 import * as PasswordRecovery from "./password-recovery.ts";
 import { forgotPasswordPage } from "./password-recovery-contract.ts";
 import * as People from "./people.ts";
-import { PeopleRoute, peopleRouteFor } from "./people-contract.ts";
+import { ContactsRoute, contactsRouteFor } from "./people-contract.ts";
 import * as PeopleDirectory from "./people-directory.ts";
 import { vaultPath } from "./vault-setup-contract.ts";
 import * as VaultSetup from "./vault-setup.ts";
@@ -61,7 +61,7 @@ import { workspace, workspaceDrawerMedia } from "./workspace.ts";
 type Page = typeof AppNavigation.Page.Type;
 const pageFor = (url: Url.Url): Page => {
   if (mailRouteFor(url.pathname)) return "mail";
-  if (peopleRouteFor(url.pathname)) return "people";
+  if (contactsRouteFor(url.pathname)) return "contacts";
   if (url.pathname === vaultPath || url.pathname === `${vaultPath}/`)
     return "vault";
   return url.pathname === "/settings" ||
@@ -81,7 +81,7 @@ const Model = Schema.Struct({
   inbox: Inbox.Model,
   people: People.Model,
   mailRoute: Schema.NullOr(MailRoute),
-  peopleRoute: Schema.NullOr(PeopleRoute),
+  peopleRoute: Schema.NullOr(ContactsRoute),
   signInNotice: Schema.NullOr(Schema.String),
   links: Schema.NullOr(LinkList),
   linkUrl: Schema.String,
@@ -439,7 +439,7 @@ const loadPage = (
       model,
       People.Message.VisitedDirectory({
         id: model.peopleRoute.id,
-        refresh: previousPage !== "people",
+        refresh: previousPage !== "contacts",
       }),
     );
   const profile = foldPeople(model, People.Message.RequestedSelf());
@@ -465,7 +465,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     inbox: Inbox.initial,
     people: People.initial,
     mailRoute: mailRouteFor(url.pathname),
-    peopleRoute: peopleRouteFor(url.pathname),
+    peopleRoute: contactsRouteFor(url.pathname),
     signInNotice: null,
     links: null,
     linkUrl: "",
@@ -503,7 +503,7 @@ const update = (
           request.url.pathname === "/settings" ||
           request.url.pathname === vaultPath ||
           mailRouteFor(request.url.pathname) ||
-          peopleRouteFor(request.url.pathname))
+          contactsRouteFor(request.url.pathname))
       ) {
         const from = foldInbox(model, Inbox.closeFolderSheet());
         if (request.url.pathname === window.location.pathname) return from;
@@ -522,7 +522,7 @@ const update = (
     ChangedUrl: ({ url }) => {
       const page = pageFor(url);
       const mailRoute = mailRouteFor(url.pathname);
-      const peopleRoute = peopleRouteFor(url.pathname);
+      const peopleRoute = contactsRouteFor(url.pathname);
       const sameRoute =
         page === model.page &&
         mailRoute?.folder === model.mailRoute?.folder &&
@@ -538,9 +538,12 @@ const update = (
                 model.page,
               ),
           ]);
-      const mailNavigation = canonicalMailNavigation(url, mailRoute);
-      return mailNavigation
-        ? { ...result, commands: [...(result.commands ?? []), mailNavigation] }
+      const canonicalNavigation = canonicalMailNavigation(url, mailRoute);
+      return canonicalNavigation
+        ? {
+            ...result,
+            commands: [...(result.commands ?? []), canonicalNavigation],
+          }
         : result;
     },
     GotNavigationMessage: ({ message }) => foldNavigation(model, message),
@@ -871,6 +874,12 @@ const update = (
           People.Message.Opened({
             address: message.address,
             suggestedName: message.name,
+            ...(message.suggestedCompany
+              ? { suggestedKind: "company" as const }
+              : {}),
+            ...(message.suggestedDomain
+              ? { suggestedDomain: message.suggestedDomain }
+              : {}),
           }),
         );
       if (message._tag === "LiveChanged" && model.page !== "mail")
@@ -896,6 +905,8 @@ const update = (
         message._tag === "SessionExpired" &&
         (message.request === model.inbox.listRequest?.id ||
           message.request === model.inbox.entryRequest ||
+          message.request === model.inbox.imageRequest ||
+          message.request === model.inbox.recovery.request ||
           message.request === model.inbox.threadRequest ||
           message.request === model.inbox.unreadRequest ||
           Object.values(model.inbox.readRequests).includes(message.request) ||
@@ -908,6 +919,20 @@ const update = (
         return update(model, Message.LoadedAccount({ account: null }));
       }
       const result = foldInbox(model, message);
+      if (
+        message._tag === "GotRecoveryMessage" &&
+        message.message._tag === "Restored" &&
+        model.inbox.recovery.request === message.message.request &&
+        model.mailRoute?.folder === "trash" &&
+        model.mailRoute.id === message.message.id
+      )
+        return {
+          ...result,
+          commands: [
+            ...(result.commands ?? []),
+            Navigate({ href: folderPath("trash"), mode: "replace" }),
+          ],
+        };
       if (
         message._tag === "ArchiveChanged" &&
         moving?.request === message.request &&
@@ -1294,13 +1319,13 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
     links: "Links",
     mail: "Mail",
     vault: "Vault",
-    people: "People",
+    contacts: "Contacts",
     settings: "Settings",
   }[model.page];
   const usesOwnHeading =
     model.page === "links" ||
     model.page === "mail" ||
-    model.page === "people" ||
+    model.page === "contacts" ||
     model.page === "settings" ||
     (model.page === "vault" && model.vaultSetup.status?.initialized === true);
   return {
@@ -1335,7 +1360,7 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
                   model: model.vaultSetup,
                   toParentMessage: toVaultSetupMessage,
                 }),
-              people: () =>
+              contacts: () =>
                 h.submodel({
                   slotId: "people-directory",
                   view: PeopleDirectory.view,

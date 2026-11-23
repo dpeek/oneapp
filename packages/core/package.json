@@ -8,7 +8,8 @@
     "./cli-auth": "./src/cli-auth.ts",
     "./extension-auth": "./src/extension-auth.ts",
     "./files": "./src/files.ts",
-    "./links": "./src/links.ts"
+    "./links": "./src/links.ts",
+    "./mail-snapshot": "./src/mail-snapshot.ts"
   },
   "dependencies": {
     "effect": "~4.1.0"

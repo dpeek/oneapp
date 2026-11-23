@@ -69,3 +69,12 @@ it("flattens a mail preview and skips reply quotes without splitting Unicode cha
   expect(mailBodyPreview("📨".repeat(200))).toBe("📨".repeat(200));
   expect(mailBodyPreview("📨".repeat(201))).toBe("📨".repeat(199) + "…");
 });
+
+it("normalizes invisible email padding and omits noisy URLs in previews", () => {
+  expect(
+    mailBodyPreview(
+      "  Hello\u00a0\u00a0\u200b\u034f\u2060there\t\n  team.\nDetails [https://example.net/track?token=abc] (https://example.net) <https://example.net> www.example.net/path\nThanks!  ",
+    ),
+  ).toBe("Hello there team. Details Thanks!");
+  expect(mailBodyPreview("👩‍💻 A soft\u00adhyphen.")).toBe("👩‍💻 A softhyphen.");
+});

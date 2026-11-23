@@ -1,5 +1,6 @@
 // Sanitized on the server, then isolated from the app as a second boundary.
 export const mailHtmlSandbox = "allow-popups allow-popups-to-escape-sandbox";
+// break-word preserves table min-content widths (e.g. prices); anywhere collapses them.
 export const mailHtmlDocument = (html: string) => `<!doctype html>
 <html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
@@ -7,7 +8,7 @@ export const mailHtmlDocument = (html: string) => `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 :root { color-scheme: light; font: 15px/1.6 system-ui, sans-serif; color: #202124; background: white; }
-body { margin: 16px; overflow-wrap: anywhere; }
+body { margin: 16px; overflow-wrap: break-word; }
 img { max-width: 100%; height: auto; }
 table { max-width: 100%; }
 pre { white-space: pre-wrap; }

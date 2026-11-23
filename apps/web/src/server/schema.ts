@@ -10,7 +10,12 @@ export {
   mailImportCompletions,
   mailImportRuns,
 } from "./mail-import-tables.ts";
-export { people, personAddresses, companyDomains } from "./people-tables.ts";
+export {
+  people,
+  personAddresses,
+  companyDomains,
+  contactDeletions,
+} from "./people-tables.ts";
 export {
   mailIndexKeys,
   mailIndexMessages,

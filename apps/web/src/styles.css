@@ -1977,8 +1977,3 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
   object-fit: contain;
   background: white;
 }
-.company-suggestion {
-  padding: 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
-}

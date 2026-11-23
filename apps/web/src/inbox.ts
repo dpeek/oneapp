@@ -1413,6 +1413,7 @@ export const update = (model: Model, message: Message): Result =>
     UpdatedProfiles: () =>
       withThread(model.folder !== "sent" ? refreshList(model) : { model }),
     ActivatedNotification: ({ action }) => {
+      if (action._tag !== "RestoreMail") return { model };
       if (model.recovery.request)
         return notify(
           { model },

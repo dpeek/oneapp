@@ -65,6 +65,7 @@ import {
   personApiPath,
   personLookupPath,
   personPhotoPath,
+  restoreContactPath,
   selfProfilePath,
   type Person,
 } from "../people-contract.ts";
@@ -95,6 +96,7 @@ import { ensureOwner } from "./provision-owner.ts";
 import { mcpOAuth } from "./mcp-oauth.ts";
 import worker from "./worker.ts";
 import { collectMailTrash, mailRetentionMs } from "./mail-trash.ts";
+import { collectDeletedContacts } from "./people.ts";
 import { indexMail, setSenderRule } from "./mail-index.ts";
 import { generateVAPIDKeys } from "web-push";
 
@@ -405,6 +407,134 @@ it("shares private people profiles across aliases and keeps account addresses li
   expect(photos.size).toBe(0);
 });
 
+it("deletes contacts immediately and restores their details with Undo", async () => {
+  using sqlite = new Database(":memory:");
+  const photos = new Set<string>();
+  const { call, request, signIn, cookies, env } = await setup(sqlite, {
+    PROFILE_PHOTOS: {
+      put: async (key: string) => photos.add(key),
+      delete: async (key: string) => void photos.delete(key),
+    } as unknown as WorkerEnv["PROFILE_PHOTOS"],
+  });
+  const session = cookies(await signIn(password));
+  const write = (
+    path: string,
+    method: "DELETE" | "POST",
+    options: { body?: object; signedIn?: boolean; csrf?: boolean } = {},
+  ) =>
+    request(path, {
+      method,
+      headers: {
+        origin: env.APP_ORIGIN,
+        ...(options.signedIn !== false ? { cookie: session } : {}),
+        ...(options.csrf !== false ? { "x-effect-auth-csrf": "1" } : {}),
+        ...(options.body ? { "content-type": "application/json" } : {}),
+      },
+      ...(options.body ? { body: JSON.stringify(options.body) } : {}),
+    });
+  const remove = (person: Person) =>
+    write(personApiPath(person.id), "DELETE", {
+      body: { revision: person.revision },
+    });
+  const list = async (): Promise<Person[]> =>
+    (await (await call(peopleApiPath, undefined, session)).json()).people;
+  const lookup = async (address: string): Promise<Person | null> =>
+    (await (await call(personLookupPath(address), undefined, session)).json())
+      .person;
+  const [self] = await list();
+  expect((await remove(self!)).status).toBe(403);
+
+  const domains = ["example.com.au", "example.com"];
+  const address = "support@example.net";
+  const create = await call(
+    peopleApiPath,
+    {
+      name: "Example Co",
+      kind: "company",
+      domains,
+      addresses: [address],
+      photo: new Uint8Array([0xff, 0xd8, 0xff, 0xff, 0xd9]).toBase64(),
+    },
+    session,
+  );
+  expect(create.status).toBe(201);
+  const company: Person = await create.json();
+  const body = { revision: company.revision };
+  expect(
+    (
+      await write(personApiPath(company.id), "DELETE", {
+        body,
+        signedIn: false,
+      })
+    ).status,
+  ).toBe(401);
+  expect(
+    (await write(personApiPath(company.id), "DELETE", { body, csrf: false }))
+      .status,
+  ).toBe(403);
+  expect(
+    (await remove({ ...company, revision: crypto.randomUUID() })).status,
+  ).toBe(409);
+
+  const deleted = await remove(company);
+  expect(deleted.status).toBe(200);
+  const { receipt } = await deleted.json();
+  const restore = restoreContactPath(receipt);
+  expect(await (await remove(company)).json()).toEqual({ receipt });
+  expect(await list()).toEqual([self]);
+  expect(await lookup(address)).toBeNull();
+  expect(await lookup("orders@mailer.example.com.au")).toBeNull();
+  expect(photos.has(company.photo!)).toBe(true);
+  expect(
+    (
+      await call(
+        personPhotoPath(company.id, company.photo!),
+        undefined,
+        session,
+      )
+    ).status,
+  ).toBe(404);
+  expect((await write(restore, "POST", { signedIn: false })).status).toBe(401);
+  expect((await write(restore, "POST", { csrf: false })).status).toBe(403);
+
+  const replacement = await call(
+    peopleApiPath,
+    {
+      kind: "company",
+      name: "Replacement",
+      domains: [domains[1]],
+      addresses: [],
+    },
+    session,
+  );
+  expect(replacement.status).toBe(201);
+  const replacementPerson: Person = await replacement.json();
+  expect((await write(restore, "POST")).status).toBe(409);
+  expect((await list()).map(({ id }) => id)).not.toContain(company.id);
+  expect(await lookup(address)).toBeNull();
+  expect((await remove(replacementPerson)).status).toBe(200);
+
+  const restored = await write(restore, "POST");
+  expect(restored.status).toBe(200);
+  const person: Person = await restored.json();
+  expect(person).toEqual({ ...company, revision: expect.any(String) });
+  expect(person.revision).not.toBe(company.revision);
+  expect(await lookup(address)).toEqual(person);
+  expect(await lookup("orders@mailer.example.com.au")).toEqual(person);
+  expect(await lookup("orders@example.com")).toEqual(person);
+  expect((await remove(company)).status).toBe(409);
+
+  const deletedAgain = await remove(person);
+  expect(deletedAgain.status).toBe(200);
+  const second = restoreContactPath((await deletedAgain.json()).receipt);
+  expect((await write(restore, "POST")).status).toBe(404);
+  sqlite.query("UPDATE contact_deletions SET expires_at = 0").run();
+  expect((await write(second, "POST")).status).toBe(404);
+  await collectDeletedContacts(env);
+  expect(photos.size).toBe(0);
+  expect(sqlite.query("SELECT id FROM contact_deletions").all()).toEqual([]);
+});
+
 it("saves per-address Noise overrides with contacts in the personal mailbox", async () => {
   using sqlite = new Database(":memory:");
   const { call, db, request, signIn, cookies } = await setup(sqlite);
@@ -481,7 +611,7 @@ it("saves per-address Noise overrides with contacts in the personal mailbox", as
   ]);
 });
 
-it("stores companies with explicit aliases and domains without reclassifying people", async () => {
+it("stores company aliases and resolves contact lookup across assigned domains", async () => {
   using sqlite = new Database(":memory:");
   const { call, request, signIn, cookies } = await setup(sqlite);
   const session = cookies(await signIn(password));
@@ -503,7 +633,7 @@ it("stores companies with explicit aliases and domains without reclassifying peo
     kind: "company",
     name: "Acme",
     addresses: [],
-    domains: ["ACME.COM.", "acme.com", "acme.co.uk"],
+    domains: ["ACME.COM.", "acme.com", "ACME.CO.UK"],
   });
   expect(created.status).toBe(201);
   let company: Person = await created.json();
@@ -513,21 +643,16 @@ it("stores companies with explicit aliases and domains without reclassifying peo
     iconDomain: "acme.com",
     addresses: [],
   });
-  expect(await lookup("accounts@acme.com")).toEqual({
-    person: null,
-    companySuggestion: company,
-  });
-  expect((await lookup("accounts@notacme.com")).person).toBeNull();
-  expect((await lookup("accounts@notacme.com")).companySuggestion).toBeFalsy();
+  expect(await lookup("accounts@acme.com")).toEqual({ person: company });
+  expect(await lookup("press@news.acme.co.uk")).toEqual({ person: company });
+  expect(await lookup("accounts@notacme.com")).toEqual({ person: null });
   const employeeResponse = await create({
     name: "Alice",
     addresses: ["alice@acme.com"],
   });
   expect(employeeResponse.status).toBe(201);
   const employee: Person = await employeeResponse.json();
-  const employeeLookup = await lookup("alice@acme.com");
-  expect(employeeLookup.person).toEqual(employee);
-  expect(employeeLookup.companySuggestion).toBeFalsy();
+  expect(await lookup("alice@acme.com")).toEqual({ person: employee });
 
   const assigned = await save(company, {
     kind: "company",
@@ -560,7 +685,7 @@ it("stores companies with explicit aliases and domains without reclassifying peo
     ).status,
   ).toBe(409);
   expect(await lookup("accounts@acme.com")).toMatchObject({ person: company });
-  expect((await lookup("new@acme.com")).companySuggestion).toEqual(company);
+  expect(await lookup("new@acme.com")).toEqual({ person: company });
   expect(
     (
       await create({
@@ -627,7 +752,7 @@ it("stores companies with explicit aliases and domains without reclassifying peo
   });
   expect(converted.status).toBe(200);
   expect((await converted.json()).kind ?? "person").toBe("person");
-  expect((await lookup("new@acme.com")).companySuggestion).toBeFalsy();
+  expect(await lookup("new@acme.com")).toEqual({ person: null });
   expect(
     (
       await create({
@@ -638,6 +763,97 @@ it("stores companies with explicit aliases and domains without reclassifying peo
       })
     ).status,
   ).toBe(201);
+});
+
+it("resolves mail profiles by exact address and the most specific assigned company domain", async () => {
+  using sqlite = new Database(":memory:");
+  const mailbox = "mail@billing.acme.com";
+  const empty = { list: async () => ({ objects: [], truncated: false }) };
+  const { call, db, signIn, cookies } = await setup(sqlite, {
+    INBOX_EMAIL_ADDRESS: mailbox,
+    INBOX_MESSAGES: {
+      ...empty,
+      get: async () => null,
+    } as unknown as WorkerEnv["INBOX_MESSAGES"],
+    SENT_MESSAGES: empty as unknown as WorkerEnv["SENT_MESSAGES"],
+  });
+  const session = cookies(await signIn(password));
+  const company = await call(
+    peopleApiPath,
+    {
+      kind: "company",
+      name: "Acme",
+      addresses: [],
+      domains: ["acme.com", "acme.co.uk"],
+    },
+    session,
+  );
+  expect(company.status).toBe(201);
+  const billing = await call(
+    peopleApiPath,
+    {
+      kind: "company",
+      name: "Acme Billing",
+      addresses: [],
+      domains: ["acmebilling.net", "billing.acme.com"],
+    },
+    session,
+  );
+  expect(billing.status).toBe(201);
+  const employee = await call(
+    peopleApiPath,
+    {
+      name: "Alice",
+      addresses: ["alice@billing.acme.com"],
+    },
+    session,
+  );
+  expect(employee.status).toBe(201);
+
+  const addresses = [
+    "orders@acme.com",
+    "support@eu.acme.com",
+    "accounts@eu.billing.acme.com",
+    "ALICE@BILLING.ACME.COM",
+    mailbox,
+    "press@acme.co.uk",
+    "press@news.acme.co.uk",
+    "orders@notacme.com",
+    "orders@acme.com.evil.net",
+  ];
+  const members = addresses.map((address) => ({ address, name: "" }));
+  const id = "0-8199999999990-00000000-0000-4000-8000-000000000000.eml";
+  await indexMail(db, {
+    id,
+    folder: "inbox",
+    from: addresses[0]!,
+    to: mailbox,
+    subject: "An update",
+    timestamp: 1000,
+    messageIds: [],
+    people: { sender: members[0]!, members },
+  });
+  const response = await call(conversationApi(id), undefined, session);
+  expect(response.status).toBe(200);
+  const { profiles } = (await response.json()) as {
+    profiles: { email: string; person: { name: string; self: boolean } }[];
+  };
+  expect(
+    Object.fromEntries(
+      profiles.map(({ email, person }) => [
+        email,
+        person.self ? "self" : person.name,
+      ]),
+    ),
+  ).toEqual({
+    "orders@acme.com": "Acme",
+    "support@eu.acme.com": "Acme",
+    "accounts@eu.billing.acme.com": "Acme Billing",
+    "alice@billing.acme.com": "Alice",
+    "press@acme.co.uk": "Acme",
+    "press@news.acme.co.uk": "Acme",
+    [mailbox]: "self",
+  });
 });
 
 it("lets only the owner send plain-text mail from the configured Inbox address", async () => {

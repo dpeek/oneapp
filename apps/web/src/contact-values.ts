@@ -113,7 +113,7 @@ export const mountContactValues = async (
     help.id = `${prefix}-help`;
     help.className = "person-value-help";
     help.textContent =
-      "The primary domain supplies the default favicon. Matching email addresses can suggest this company.";
+      "Mail matches senders at any of these domains and their subdomains. The primary domain supplies the default favicon.";
     fieldset.setAttribute("aria-describedby", help.id);
     fieldset.append(help);
   }

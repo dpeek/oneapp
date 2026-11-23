@@ -67,7 +67,7 @@ import {
   mcpOAuthLayer,
 } from "./mcp-oauth.ts";
 import { AccountPasswordPolicy } from "./password-policy.ts";
-import { peopleRoutes } from "./people.ts";
+import { collectDeletedContacts, peopleRoutes } from "./people.ts";
 import {
   passwordRecoveryRoutes,
   resetLinkRenderer,
@@ -171,7 +171,11 @@ export default {
       env.INBOX_EMAIL_FROM,
       env.MAILBOX_ALIASES,
     );
-    if (maintenance) await collectAttachments(env.DB, env.VAULT_FILES);
+    if (maintenance)
+      await Promise.all([
+        collectAttachments(env.DB, env.VAULT_FILES),
+        collectDeletedContacts(env),
+      ]);
     const { results } = await env.DB.prepare("SELECT id FROM mailboxes").all<{
       id: string;
     }>();

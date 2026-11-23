@@ -3,13 +3,20 @@ import { Schema } from "effect";
 import { Command, type Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";
 import { MailMessageId, TrashBatchId } from "./inbox-contract.ts";
+import { PersonId } from "./people-contract.ts";
 
+export const ContactUndo = Schema.Struct({
+  id: PersonId,
+  receipt: PersonId,
+  name: Schema.String,
+});
 export const Action = defineMessageUnion({
   RestoreMail: {
     id: MailMessageId,
     subject: Schema.optional(Schema.String),
     batchId: Schema.optionalKey(TrashBatchId),
   },
+  RestoreContact: ContactUndo.fields,
 });
 export type Action = typeof Action.Type;
 

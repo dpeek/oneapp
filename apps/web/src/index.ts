@@ -42,7 +42,11 @@ import * as AppNavigation from "./navigation.ts";
 import * as PasswordRecovery from "./password-recovery.ts";
 import { forgotPasswordPage } from "./password-recovery-contract.ts";
 import * as People from "./people.ts";
-import { ContactsRoute, contactsRouteFor } from "./people-contract.ts";
+import {
+  ContactsRoute,
+  contactsPath,
+  contactsRouteFor,
+} from "./people-contract.ts";
 import * as PeopleDirectory from "./people-directory.ts";
 import { vaultPath } from "./vault-setup-contract.ts";
 import * as VaultSetup from "./vault-setup.ts";
@@ -238,7 +242,16 @@ const foldNotifications = Update.foldChild({
   write: (model, notifications) => ({ ...model, notifications }),
   toParentMessage: toNotificationMessage,
   foldOutMessage: (action: Notifications.Action) => (model) =>
-    foldInbox(model, Inbox.Message.ActivatedNotification({ action })),
+    action._tag === "RestoreContact"
+      ? foldPeople(
+          model,
+          People.Message.RequestedRestore({
+            id: action.id,
+            receipt: action.receipt,
+            name: action.name,
+          }),
+        )
+      : foldInbox(model, Inbox.Message.ActivatedNotification({ action })),
 });
 const toLinksMessage = (message: Links.Message) =>
   Message.GotLinksMessage({ message });
@@ -828,22 +841,41 @@ const update = (
       const { selfRequest, loadRequest, saveRequest, directory } = model.people;
       if (
         message._tag === "SessionExpired" &&
-        [
+        ([
           selfRequest,
           loadRequest,
           saveRequest,
           directory.listRequest,
           directory.editRequest,
-        ].includes(message.request)
+          directory.deletion?.request,
+        ].includes(message.request) ||
+          Object.hasOwn(directory.restorations, message.request))
       )
         return update(model, Message.LoadedAccount({ account: null }));
       const result = foldPeople(model, message);
+      const deleted =
+        message._tag === "DeletedRecord" &&
+        message.request === directory.deletion?.request;
       if (
-        message._tag !== "Saved" ||
-        (message.request !== saveRequest &&
-          message.request !== directory.editRequest) ||
-        model.page !== "mail"
+        deleted &&
+        model.page === "contacts" &&
+        model.peopleRoute?.id === directory.deletion?.id
       )
+        return {
+          ...result,
+          commands: [
+            ...(result.commands ?? []),
+            Navigate({ href: contactsPath, mode: "replace" }),
+          ],
+        };
+      const saved =
+        message._tag === "Saved" &&
+        (message.request === saveRequest ||
+          message.request === directory.editRequest);
+      const restored =
+        message._tag === "RestoredRecord" &&
+        directory.restorations[message.request]?.id === message.person.id;
+      if (model.page !== "mail" || !(saved || deleted || restored))
         return result;
       const inbox = foldInbox(result.model, Inbox.Message.UpdatedProfiles());
       return {

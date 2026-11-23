@@ -36,3 +36,19 @@ export const companyDomains = sqliteTable(
   },
   (table) => [index("company_domains_company").on(table.companyId)],
 );
+
+export const contactDeletions = sqliteTable(
+  "contact_deletions",
+  {
+    id: text().primaryKey(),
+    receipt: text().notNull().unique(),
+    revision: text().notNull(),
+    name: text().notNull(),
+    kind: text({ enum: ["person", "company"] }).notNull(),
+    photo: text(),
+    addresses: text().notNull(),
+    domains: text().notNull(),
+    expiresAt: integer("expires_at").notNull(),
+  },
+  (table) => [index("contact_deletions_expiry").on(table.expiresAt)],
+);

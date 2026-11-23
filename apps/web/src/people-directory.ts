@@ -4,7 +4,9 @@ import {
   buttonClassName,
   item,
   itemGroup,
+  outlineIcon,
   spinner,
+  trashIconPaths,
 } from "@oneapp/ui";
 import { Effect } from "effect";
 import { Submodel } from "foldkit";
@@ -12,9 +14,11 @@ import type { HtmlBuilder } from "foldkit/html";
 import * as Mount from "foldkit/mount";
 import { contactsPath, contactPath, type Person } from "./people-contract.ts";
 import {
+  displayName,
   editForm,
   Message,
   type Model,
+  primaryEmail,
   profileAvatar,
   profileHeader,
 } from "./people.ts";
@@ -22,15 +26,6 @@ import { workspace } from "./workspace.ts";
 
 type DirectoryMessage = typeof Message.Type;
 type Directory = (typeof Model.Type)["directory"];
-
-const primaryEmail = (person: Person) =>
-  person.managedAddresses[0] ??
-  person.addresses[0] ??
-  person.domains?.[0] ??
-  "";
-const displayName = (person: Person) =>
-  person.name ||
-  (person.self ? "Your profile" : primaryEmail(person) || "Unnamed contact");
 
 const names = new Intl.Collator(undefined, { sensitivity: "base" });
 
@@ -71,12 +66,15 @@ const personItem = (
 ) => {
   const name = displayName(person);
   const email = primaryEmail(person);
+  const subtitle =
+    person.kind === "company" ? (person.domains?.[0] ?? email) : email;
   return item(
     {
       key: person.id,
       href: contactPath(person.id),
       title: name,
-      description: email && email !== name ? h.span([], [email]) : undefined,
+      description:
+        subtitle && subtitle !== name ? h.span([], [subtitle]) : undefined,
       media: profileAvatar(h, person, email, {
         imageMounted: Message.Mounted(),
       }),
@@ -153,7 +151,8 @@ const detailView = (
   directory: Directory,
   h: HtmlBuilder<DirectoryMessage>,
 ) => {
-  const { records, edit, editRequest, editError } = directory;
+  const { records, edit, editRequest, editError, deletion, listRequest } =
+    directory;
   const person = records?.find(({ id }) => id === selected);
   const content = person
     ? [
@@ -172,12 +171,34 @@ const detailView = (
                   {
                     size: "sm",
                     disabled:
-                      editRequest !== null || directory.listRequest !== null,
+                      editRequest !== null ||
+                      listRequest !== null ||
+                      deletion?.id === person.id,
                     onClick: Message.EditedRecord(),
                     children: ["Edit"],
                   },
                   h,
                 ),
+                ...(person.self
+                  ? []
+                  : [
+                      button(
+                        {
+                          variant: "ghost",
+                          size: "icon-sm",
+                          rounded: true,
+                          ariaLabel: "Delete contact",
+                          attributes: [h.Title("Delete contact")],
+                          disabled:
+                            editRequest !== null ||
+                            listRequest !== null ||
+                            deletion !== null,
+                          onClick: Message.RequestedDelete(),
+                          children: [outlineIcon(h, trashIconPaths)],
+                        },
+                        h,
+                      ),
+                    ]),
               ],
               person.self && person.name
                 ? "Your profile"

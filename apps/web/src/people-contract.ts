@@ -7,6 +7,8 @@ export const contactsPath = "/contacts";
 export const contactPath = (id: string) => `${contactsPath}/${id}`;
 export const selfProfilePath = `${peopleApiPath}/me`;
 export const personApiPath = (id: string) => `${peopleApiPath}/${id}`;
+export const restoreContactPath = (receipt: string) =>
+  `${peopleApiPath}/deletions/${receipt}/restore` as const;
 export const personPhotoPath = (id: string, key: string) =>
   `${personApiPath(id)}/photo/${key}`;
 export const personLookupPath = (email: string) =>
@@ -71,10 +73,11 @@ export const Person = Schema.Struct({
 });
 export type Person = typeof Person.Type;
 export const PeopleList = Schema.Struct({ people: Schema.Array(Person) });
+export const DeleteContactInput = Schema.Struct({ revision: PersonId });
+export const DeletedContact = Schema.Struct({ receipt: PersonId });
 
 export const PersonLookup = Schema.Struct({
   person: Schema.NullOr(Person),
-  companySuggestion: Schema.optionalKey(Schema.NullOr(Person)),
 });
 export const PersonMatch = Schema.Struct({
   email: Schema.String,

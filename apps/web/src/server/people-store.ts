@@ -1,14 +1,16 @@
 import type { D1Database } from "@cloudflare/workers-types";
+import { Schema } from "effect";
 import {
   normalizePersonEmail,
+  PersonEmail,
   type Person,
   type PersonMatch,
 } from "../people-contract.ts";
 import { senderIconDomain } from "./mail-sender.ts";
-import { companyForHostname } from "../company-domains.ts";
 import { ownerId } from "./auth.ts";
 
 type PeopleDb = D1Database;
+const isPersonEmail = Schema.is(PersonEmail);
 type PersonRow = {
   id: string;
   accountId: string | null;
@@ -168,6 +170,38 @@ export const matchPeople = async (
     const self = summary(await ensureSelf(db));
     for (const email of selfEmails) matches.set(email, self);
   }
+
+  const domainsByEmail = new Map<string, string[]>();
+  for (const email of emails) {
+    if (matches.has(email) || !isPersonEmail(email)) continue;
+    const labels = email.slice(email.lastIndexOf("@") + 1).split(".");
+    // Walk whole DNS labels from the most specific hostname to its parent domains.
+    domainsByEmail.set(
+      email,
+      labels.slice(0, -1).map((_, offset) => labels.slice(offset).join(".")),
+    );
+  }
+  if (domainsByEmail.size) {
+    const domains = [...new Set([...domainsByEmail.values()].flat())];
+    const { results: companies } = await db
+      .prepare(
+        `SELECT d.domain, ${fields}
+         FROM company_domains d JOIN people p ON p.id = d.company_id
+         WHERE p.kind = 'company'
+           AND d.domain IN (SELECT value FROM json_each(?))`,
+      )
+      .bind(JSON.stringify(domains))
+      .all<PersonRow & { domain: string }>();
+    const byDomain = new Map(
+      companies.map((row) => [row.domain, summary(row)]),
+    );
+    for (const [email, candidates] of domainsByEmail) {
+      const company = candidates
+        .map((domain) => byDomain.get(domain))
+        .find(Boolean);
+      if (company) matches.set(email, company);
+    }
+  }
   return [...matches].map(([email, person]) => ({ email, person }));
 };
 
@@ -239,17 +273,83 @@ export const writeProfile = async (
   return saved?.results.length ? revision : null;
 };
 
-export const suggestCompany = async (
+const contactUndoLifetime = 60 * 60_000;
+
+export const deleteContact = async (
   db: PeopleDb,
-  email: string,
-  managed: string[],
+  id: string,
+  revision: string,
+  now = Date.now(),
 ) => {
-  if (managed.includes(normalizePersonEmail(email))) return null;
-  const companies = (await listPeople(db, managed)).filter(
-    (person) => person.kind === "company",
-  );
-  return (
-    companyForHostname(companies, email.slice(email.lastIndexOf("@") + 1)) ??
-    null
-  );
+  // Store the snapshot before the cascading delete releases addresses and domains.
+  const [, , deleted] = await db.batch<{ receipt: string }>([
+    db
+      .prepare(
+        `INSERT INTO contact_deletions
+           (id, receipt, revision, name, kind, photo, addresses, domains, expires_at)
+         SELECT p.id, ?3, p.revision, p.name, p.kind, p.photo,
+           (SELECT json_group_array(email ORDER BY email) FROM person_addresses WHERE person_id = p.id),
+           (SELECT json_group_array(domain ORDER BY position) FROM company_domains WHERE company_id = p.id),
+           ?4
+         FROM people p WHERE p.id = ?1 AND p.revision = ?2 AND p.account_id IS NULL
+         ON CONFLICT(id) DO NOTHING`,
+      )
+      .bind(id, revision, crypto.randomUUID(), now + contactUndoLifetime),
+    db
+      .prepare(
+        `DELETE FROM people WHERE id = ?1 AND revision = ?2 AND account_id IS NULL
+           AND EXISTS (SELECT 1 FROM contact_deletions WHERE id = ?1 AND revision = ?2)`,
+      )
+      .bind(id, revision),
+    db
+      .prepare(
+        "SELECT receipt FROM contact_deletions WHERE id = ? AND revision = ? AND expires_at > ?",
+      )
+      .bind(id, revision, now),
+  ]);
+  const receipt = deleted?.results[0]?.receipt;
+  if (receipt) return { status: "ok", receipt } as const;
+  const current = await db
+    .prepare("SELECT account_id FROM people WHERE id = ?")
+    .bind(id)
+    .first<{ account_id: string | null }>();
+  if (!current) return { status: "missing" } as const;
+  return { status: current.account_id ? "protected" : "stale" } as const;
+};
+
+export const restoreContact = async (
+  db: PeopleDb,
+  receipt: string,
+  now = Date.now(),
+) => {
+  const revision = crypto.randomUUID();
+  const restored =
+    "d.receipt = ?1 AND EXISTS (SELECT 1 FROM people p WHERE p.id = d.id AND p.revision = ?2)";
+  const [result] = await db.batch<{ id: string }>([
+    db
+      .prepare(
+        `INSERT INTO people (id, name, kind, photo, revision)
+         SELECT id, name, kind, photo, ?2 FROM contact_deletions
+         WHERE receipt = ?1 AND expires_at > ?3 RETURNING id`,
+      )
+      .bind(receipt, revision, now),
+    db
+      .prepare(
+        `INSERT INTO person_addresses (email, person_id)
+         SELECT entry.value, d.id FROM contact_deletions d, json_each(d.addresses) entry
+         WHERE ${restored}`,
+      )
+      .bind(receipt, revision),
+    db
+      .prepare(
+        `INSERT INTO company_domains (domain, company_id, position)
+         SELECT entry.value, d.id, entry.key FROM contact_deletions d, json_each(d.domains) entry
+         WHERE ${restored}`,
+      )
+      .bind(receipt, revision),
+    db
+      .prepare(`DELETE FROM contact_deletions AS d WHERE ${restored}`)
+      .bind(receipt, revision),
+  ]);
+  return result?.results[0]?.id ?? null;
 };

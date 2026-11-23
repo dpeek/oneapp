@@ -19,6 +19,7 @@ import {
   ContactKind,
   PeopleList,
   ContactsRoute,
+  DeletedContact,
   Person,
   personAddressLimit,
   personApiPath,
@@ -30,11 +31,12 @@ import {
   contactPath,
   type PersonSummary,
   profilePhotoSize,
+  restoreContactPath,
   selfProfilePath,
 } from "./people-contract.ts";
 
 import { contactImage } from "./contact-image.ts";
-import { Notification } from "./notifications.ts";
+import { Action, ContactUndo, Notification } from "./notifications.ts";
 import { normalizeCompanyDomain } from "./company-domains.ts";
 
 export const Model = Schema.Struct({
@@ -45,7 +47,6 @@ export const Model = Schema.Struct({
   suggestedName: Schema.String,
   kind: ContactKind,
   suggestedDomains: Schema.Array(Schema.String),
-  companySuggestion: Schema.NullOr(Person),
   creating: Schema.Boolean,
   person: Schema.NullOr(Person),
   ready: Schema.Boolean,
@@ -61,6 +62,14 @@ export const Model = Schema.Struct({
     editRequest: Schema.NullOr(Schema.String),
     editTarget: Schema.NullOr(Person),
     editError: Schema.NullOr(Schema.String),
+    deletion: Schema.NullOr(
+      Schema.Struct({
+        request: Schema.String,
+        id: PersonId,
+        name: Schema.String,
+      }),
+    ),
+    restorations: Schema.Record(Schema.String, ContactUndo),
   }),
 });
 type Model = typeof Model.Type;
@@ -72,7 +81,6 @@ export const initial: Model = {
   suggestedName: "",
   kind: "person",
   suggestedDomains: [],
-  companySuggestion: null,
   creating: false,
   person: null,
   ready: false,
@@ -88,6 +96,8 @@ export const initial: Model = {
     editRequest: null,
     editTarget: null,
     editError: null,
+    deletion: null,
+    restorations: {},
   },
 };
 
@@ -101,14 +111,12 @@ export const Message = defineMessageUnion({
   },
   Created: { kind: ContactKind },
   ChangedKind: { kind: ContactKind },
-  UsedCompanySuggestion: {},
   Closed: {},
   Mounted: {},
   Retried: {},
   Loaded: {
     request: Schema.String,
     person: Schema.NullOr(Person),
-    companySuggestion: Schema.optionalKey(Schema.NullOr(Person)),
   },
   Submitted: {},
   Saved: { request: Schema.String, person: Person },
@@ -121,6 +129,15 @@ export const Message = defineMessageUnion({
   EditedRecord: {},
   CanceledEdit: {},
   SubmittedEdit: {},
+  RequestedDelete: {},
+  DeletedRecord: { request: Schema.String, ...DeletedContact.fields },
+  RequestedRestore: ContactUndo.fields,
+  RestoredRecord: { request: Schema.String, person: Person },
+  ContactMutationFailed: {
+    request: Schema.String,
+    error: Schema.String,
+    status: Schema.Number,
+  },
 });
 type Message = typeof Message.Type;
 export const OutMessage = defineMessageUnion({
@@ -129,6 +146,17 @@ export const OutMessage = defineMessageUnion({
 });
 export type OutMessage = typeof OutMessage.Type;
 const notificationKey = (id: string) => `contact-save:${id}`;
+const deletionKey = (id: string) => `contact-delete:${id}`;
+const undoDuration = 10_000;
+
+export const primaryEmail = (person: Person) =>
+  person.managedAddresses[0] ??
+  person.addresses[0] ??
+  person.domains?.[0] ??
+  "";
+export const displayName = (person: Person) =>
+  person.name ||
+  (person.self ? "Your profile" : primaryEmail(person) || "Unnamed contact");
 
 const formId = "person-profile-form";
 const editFormId = "person-directory-edit";
@@ -155,14 +183,7 @@ const Load = Command.define("LoadPersonProfile", {
       const person = address
         ? Schema.decodeUnknownSync(PersonLookup)(value).person
         : Schema.decodeUnknownSync(Person)(value);
-      const companySuggestion = address
-        ? Schema.decodeUnknownSync(PersonLookup)(value).companySuggestion
-        : undefined;
-      return Message.Loaded({
-        request,
-        person,
-        ...(companySuggestion ? { companySuggestion } : {}),
-      });
+      return Message.Loaded({ request, person });
     }).pipe(
       Effect.catch(() =>
         Effect.succeed(
@@ -197,6 +218,67 @@ const LoadDirectory = Command.define("LoadPeopleDirectory", {
     }).pipe(
       Effect.catch(() => Effect.succeed(Message.DirectoryFailed({ request }))),
     ),
+});
+
+const ContactMutation = defineMessageUnion({
+  Delete: { id: PersonId, revision: PersonId },
+  Restore: { receipt: PersonId },
+});
+
+const MutateContact = Command.define("MutateContact", {
+  args: { request: Schema.String, mutation: ContactMutation },
+  messages: [
+    Message.DeletedRecord,
+    Message.RestoredRecord,
+    Message.ContactMutationFailed,
+    Message.SessionExpired,
+  ],
+  execute: ({ request, mutation }) =>
+    Effect.promise(async (signal) => {
+      const deleting = mutation._tag === "Delete";
+      const error = deleting
+        ? "Could not delete the contact. Try again."
+        : "Could not restore the contact. Try Undo again.";
+      try {
+        const response = await fetch(
+          deleting
+            ? personApiPath(mutation.id)
+            : restoreContactPath(mutation.receipt),
+          {
+            method: deleting ? "DELETE" : "POST",
+            headers: {
+              "x-effect-auth-csrf": "1",
+              "content-type": "application/json",
+            },
+            ...(deleting
+              ? { body: JSON.stringify({ revision: mutation.revision }) }
+              : {}),
+            signal,
+          },
+        );
+        if (response.status === 401) return Message.SessionExpired({ request });
+        if (!response.ok) {
+          const problem = decodeError(await response.json().catch(() => null));
+          return Message.ContactMutationFailed({
+            request,
+            error: problem._tag === "Some" ? problem.value.error : error,
+            status: response.status,
+          });
+        }
+        const value: unknown = await response.json();
+        return deleting
+          ? Message.DeletedRecord({
+              request,
+              ...Schema.decodeUnknownSync(DeletedContact)(value),
+            })
+          : Message.RestoredRecord({
+              request,
+              person: Schema.decodeUnknownSync(Person)(value),
+            });
+      } catch {
+        return Message.ContactMutationFailed({ request, error, status: 0 });
+      }
+    }),
 });
 
 const FocusDirectory = Command.define("FocusPeopleDirectory", {
@@ -404,7 +486,6 @@ export const update = (
                 kind,
                 suggestedDomains: [],
                 suggestedName: "",
-                companySuggestion: null,
                 loadRequest: null,
                 error: null,
               },
@@ -421,26 +502,6 @@ export const update = (
           };
         if (model.person?.self) return { model };
         return { model: { ...model, kind } };
-      },
-      UsedCompanySuggestion: () => {
-        if (!model.companySuggestion || model.saveRequest || !model.address)
-          return { model };
-        return {
-          model: {
-            ...model,
-            kind: "company",
-            person: {
-              ...model.companySuggestion,
-              addresses: [
-                ...new Set([
-                  ...model.companySuggestion.addresses,
-                  model.address,
-                ]),
-              ],
-            },
-            companySuggestion: null,
-          },
-        };
       },
       Opened: ({ address, suggestedName, suggestedKind, suggestedDomain }) =>
         model.opened
@@ -474,7 +535,7 @@ export const update = (
       Mounted: () => ({ model }),
       Retried: () =>
         model.opened && !model.loadRequest ? loadDialog(model) : { model },
-      Loaded: ({ request, person, companySuggestion }) => {
+      Loaded: ({ request, person }) => {
         if (request === model.selfRequest)
           return { model: { ...model, selfRequest: null, self: person } };
         if (request !== model.loadRequest) return { model };
@@ -485,7 +546,6 @@ export const update = (
             ready: true,
             person,
             kind: person ? (person.kind ?? "person") : model.kind,
-            companySuggestion: companySuggestion ?? null,
             self: person?.self ? person : model.self,
           },
         };
@@ -641,6 +701,7 @@ export const update = (
           !edit ||
           directory.edit ||
           directory.editRequest ||
+          directory.deletion?.id === edit.id ||
           directory.listRequest
         )
           return { model };
@@ -676,6 +737,158 @@ export const update = (
           commands: [
             Save({ request, person: directory.edit, formId: editFormId }),
           ],
+        };
+      },
+      RequestedDelete: () => {
+        const person = directory.records?.find(
+          ({ id }) => id === directory.selected,
+        );
+        if (
+          !directoryVisible ||
+          !person ||
+          person.self ||
+          directory.edit ||
+          directory.editRequest ||
+          directory.deletion ||
+          directory.listRequest
+        )
+          return { model };
+        const request = crypto.randomUUID();
+        return {
+          model: {
+            ...model,
+            directory: {
+              ...directory,
+              deletion: { request, id: person.id, name: displayName(person) },
+            },
+          },
+          commands: [
+            MutateContact({
+              request,
+              mutation: ContactMutation.Delete({
+                id: person.id,
+                revision: person.revision,
+              }),
+            }),
+          ],
+        };
+      },
+      DeletedRecord: ({ request, receipt }) => {
+        const deletion = directory.deletion;
+        if (request !== deletion?.request) return { model };
+        const { id, name } = deletion;
+        const records =
+          directory.records?.filter((person) => person.id !== id) ?? null;
+        return {
+          model: {
+            ...model,
+            directory: {
+              ...directory,
+              records,
+              listRequest: records ? null : directory.listRequest,
+              deletion: null,
+            },
+          },
+          outMessage: OutMessage.Notify({
+            notification: {
+              key: deletionKey(id),
+              variant: "Success",
+              title: "Contact deleted.",
+              description: name,
+              durationMs: undoDuration,
+              action: Action.RestoreContact({ id, receipt, name }),
+            },
+          }),
+        };
+      },
+      RequestedRestore: ({ id, receipt, name }) => {
+        if (
+          Object.values(directory.restorations).some(
+            (undo) => undo.receipt === receipt,
+          )
+        )
+          return { model };
+        const request = crypto.randomUUID();
+        return {
+          model: {
+            ...model,
+            directory: {
+              ...directory,
+              restorations: {
+                ...directory.restorations,
+                [request]: { id, receipt, name },
+              },
+            },
+          },
+          commands: [
+            MutateContact({
+              request,
+              mutation: ContactMutation.Restore({ receipt }),
+            }),
+          ],
+          outMessage: OutMessage.DismissNotification({ key: deletionKey(id) }),
+        };
+      },
+      RestoredRecord: ({ request, person }) => {
+        const { [request]: undo, ...restorations } = directory.restorations;
+        if (!undo || undo.id !== person.id) return { model };
+        const records = directory.records
+          ? [...directory.records.filter(({ id }) => id !== person.id), person]
+          : null;
+        return {
+          model: {
+            ...model,
+            directory: {
+              ...directory,
+              records,
+              listRequest: records ? null : directory.listRequest,
+              restorations,
+            },
+          },
+          outMessage: OutMessage.Notify({
+            notification: {
+              key: deletionKey(person.id),
+              variant: "Success",
+              title: "Contact restored.",
+              description: undo.name,
+              durationMs: undoDuration,
+            },
+          }),
+        };
+      },
+      ContactMutationFailed: ({ request, error, status }) => {
+        const { [request]: undo, ...restorations } = directory.restorations;
+        const deletion =
+          request === directory.deletion?.request ? directory.deletion : null;
+        const target = undo ?? deletion;
+        if (!target) return { model };
+        const next = {
+          ...model,
+          directory: {
+            ...directory,
+            restorations,
+            deletion: deletion ? null : directory.deletion,
+          },
+        };
+        return {
+          ...(directoryVisible &&
+          (status === 404 || (deletion && status === 409))
+            ? loadDirectory(next)
+            : { model: next }),
+          outMessage: OutMessage.Notify({
+            notification: {
+              key: deletionKey(target.id),
+              variant: "Error",
+              title: error,
+              description: target.name,
+              ...(undo && (status === 0 || status === 409 || status >= 500)
+                ? {
+                    action: Action.RestoreContact(undo),
+                    durationMs: undoDuration,
+                  }
+                : {}),
+            },
+          }),
         };
       },
     },
@@ -1086,30 +1299,6 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
                       [
                         h.strong([], ["Account addresses"]),
                         h.p([], [person.managedAddresses.join(", ")]),
-                      ],
-                    ),
-                  ]
-                : []),
-              ...(!person && model.companySuggestion
-                ? [
-                    h.div(
-                      [h.Class("company-suggestion")],
-                      [
-                        h.p(
-                          [],
-                          [
-                            `This address matches ${model.companySuggestion.name}.`,
-                          ],
-                        ),
-                        button(
-                          {
-                            type: "button",
-                            disabled: pending,
-                            onClick: Message.UsedCompanySuggestion(),
-                            children: ["Add address to this company"],
-                          },
-                          h,
-                        ),
                       ],
                     ),
                   ]

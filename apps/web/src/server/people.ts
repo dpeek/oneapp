@@ -4,6 +4,8 @@ import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import {
   normalizePersonEmail,
   ContactKind,
+  DeleteContactInput,
+  DeletedContact,
   peopleApiPath,
   PeopleList,
   Person,
@@ -12,18 +14,20 @@ import {
   PersonId,
   PersonLookup,
   profilePhotoLimit,
+  restoreContactPath,
   selfProfilePath,
 } from "../people-contract.ts";
 import { jsonError, privateHeaders } from "./api-response.ts";
 import { AppAuth, ownerId, type authHttp } from "./auth.ts";
 import {
+  deleteContact,
   listPeople,
   managedPersonAddresses,
   matchPeople,
   readProfile,
   readSelfProfile,
+  restoreContact,
   writeProfile,
-  suggestCompany,
 } from "./people-store.ts";
 
 import { senderIconDomain } from "./mail-sender.ts";
@@ -61,6 +65,14 @@ const routeErrors = {
   UnknownError: () => jsonError(503, "Contacts are temporarily unavailable."),
 };
 const notFound = () => jsonError(404, "Contact not found");
+const writeErrors = {
+  ...routeErrors,
+  HookDenied: () => jsonError(403, "Request not allowed"),
+};
+const isAssignmentConflict = (error: unknown) =>
+  error instanceof Error &&
+  (error.message.includes("UNIQUE constraint failed: person_addresses.email") ||
+    error.message.includes("UNIQUE constraint failed: company_domains.domain"));
 
 const readPhotoBytes = (photo: string) => {
   try {
@@ -82,12 +94,40 @@ const readPhotoBytes = (photo: string) => {
 
 const removePhotoIfUnused = async (env: PeopleEnv, id: string, key: string) => {
   try {
-    const row = await env.DB.prepare("SELECT photo FROM people WHERE id = ?")
-      .bind(id)
-      .first<{ photo: string | null }>();
-    if (row?.photo !== key) await env.PROFILE_PHOTOS.delete(key);
+    const used = await env.DB.prepare(
+      `SELECT photo FROM people WHERE id = ?1 AND photo = ?2
+       UNION ALL
+       SELECT photo FROM contact_deletions WHERE id = ?1 AND photo = ?2 LIMIT 1`,
+    )
+      .bind(id, key)
+      .first();
+    if (!used) await env.PROFILE_PHOTOS.delete(key);
   } catch {
     console.warn("Could not clean up a profile photo");
+  }
+};
+
+export const collectDeletedContacts = async (
+  env: Pick<PeopleEnv, "DB" | "PROFILE_PHOTOS">,
+  now = Date.now(),
+) => {
+  const { results } = await env.DB.prepare(
+    `UPDATE contact_deletions SET expires_at = 0
+     WHERE id IN (
+       SELECT id FROM contact_deletions WHERE expires_at <= ? ORDER BY expires_at LIMIT 100
+     ) RETURNING receipt, photo`,
+  )
+    .bind(now)
+    .all<{ receipt: string; photo: string | null }>();
+  for (const { receipt, photo } of results) {
+    try {
+      if (photo) await env.PROFILE_PHOTOS.delete(photo);
+      await env.DB.prepare("DELETE FROM contact_deletions WHERE receipt = ?")
+        .bind(receipt)
+        .run();
+    } catch {
+      console.warn("Could not clean up a deleted contact");
+    }
   }
 };
 
@@ -219,16 +259,7 @@ const savePerson = async (
     } as const;
   } catch (error) {
     if (uploaded) defer(removePhotoIfUnused(env, owner, uploaded));
-    if (
-      error instanceof Error &&
-      (error.message.includes(
-        "UNIQUE constraint failed: person_addresses.email",
-      ) ||
-        error.message.includes(
-          "UNIQUE constraint failed: company_domains.domain",
-        ))
-    )
-      return { status: "conflict" } as const;
+    if (isAssignmentConflict(error)) return { status: "conflict" } as const;
     throw error;
   }
 };
@@ -239,6 +270,8 @@ export const peopleRoutes = (
   defer: (work: Promise<unknown>) => void,
 ) => {
   const managed = () => managedPersonAddresses(env.DB, env.INBOX_EMAIL_ADDRESS);
+  const notifyContactChange = () =>
+    defer(notifyInbox({ ...env, DB: mailDatabase(env.DB, defaultMailboxId) }));
 
   const save = (existing: boolean) =>
     Effect.gen(function* () {
@@ -304,12 +337,7 @@ export const peopleRoutes = (
           }
         }),
       );
-    }).pipe(
-      Effect.catchTags({
-        ...routeErrors,
-        HookDenied: () => jsonError(403, "Request not allowed"),
-      }),
-    );
+    }).pipe(Effect.catchTags(writeErrors));
 
   return Layer.mergeAll(
     HttpRouter.add(
@@ -356,19 +384,102 @@ export const peopleRoutes = (
           const [match] = await matchPeople(env.DB, [email], addresses);
           return match ? readProfile(env.DB, match.person.id, addresses) : null;
         });
-        const companySuggestion = !person
-          ? yield* Effect.tryPromise(() =>
-              suggestCompany(env.DB, email, addresses),
-            )
-          : null;
         return yield* HttpServerResponse.schemaJson(PersonLookup)(
-          { person, ...(companySuggestion ? { companySuggestion } : {}) },
-          { headers: privateHeaders },
+          { person },
+          {
+            headers: privateHeaders,
+          },
         );
       }).pipe(Effect.catchTags(routeErrors)),
     ),
     HttpRouter.add("POST", peopleApiPath, save(false)),
     HttpRouter.add("PUT", `${peopleApiPath}/:id`, save(true)),
+    HttpRouter.add(
+      "DELETE",
+      `${peopleApiPath}/:id`,
+      Effect.gen(function* () {
+        if (!(yield* requireOwner))
+          return yield* jsonError(403, "Access denied");
+        return yield* http.protect(
+          Effect.gen(function* () {
+            const { id } = yield* HttpRouter.params;
+            if (!isId(id)) return yield* notFound();
+            const body = yield* HttpServerRequest.schemaBodyJson(
+              DeleteContactInput,
+              { onExcessProperty: "error" },
+            ).pipe(
+              Effect.provideService(
+                HttpServerRequest.MaxBodySize,
+                ByteSize.kibibytes(1),
+              ),
+              Effect.option,
+            );
+            if (body._tag === "None")
+              return yield* jsonError(400, "Reopen the contact and try again.");
+            const result = yield* Effect.tryPromise(() =>
+              deleteContact(env.DB, id, body.value.revision),
+            );
+            switch (result.status) {
+              case "missing":
+                return yield* notFound();
+              case "protected":
+                return yield* jsonError(
+                  403,
+                  "Your own profile cannot be deleted.",
+                );
+              case "stale":
+                return yield* jsonError(
+                  409,
+                  "This contact has changed. Review it and try again.",
+                );
+              case "ok":
+                notifyContactChange();
+                return yield* HttpServerResponse.schemaJson(DeletedContact)(
+                  { receipt: result.receipt },
+                  { headers: privateHeaders },
+                );
+            }
+          }),
+        );
+      }).pipe(Effect.catchTags(writeErrors)),
+    ),
+    HttpRouter.add(
+      "POST",
+      restoreContactPath(":receipt"),
+      Effect.gen(function* () {
+        if (!(yield* requireOwner))
+          return yield* jsonError(403, "Access denied");
+        return yield* http.protect(
+          Effect.gen(function* () {
+            const { receipt } = yield* HttpRouter.params;
+            if (!isId(receipt)) return yield* notFound();
+            const person = yield* Effect.tryPromise(async () => {
+              try {
+                const id = await restoreContact(env.DB, receipt);
+                return id ? await readProfile(env.DB, id, []) : null;
+              } catch (error) {
+                if (isAssignmentConflict(error)) return "conflict" as const;
+                throw error;
+              }
+            });
+            if (person === "conflict")
+              return yield* jsonError(
+                409,
+                "An email address or domain is already linked to another contact.",
+              );
+            if (!person)
+              return yield* jsonError(
+                404,
+                "This contact is no longer available to restore.",
+              );
+            notifyContactChange();
+            return yield* HttpServerResponse.schemaJson(Person)(person, {
+              headers: privateHeaders,
+            });
+          }),
+        );
+      }).pipe(Effect.catchTags(writeErrors)),
+    ),
     HttpRouter.add(
       "GET",
       `${peopleApiPath}/:id/photo/:key`,

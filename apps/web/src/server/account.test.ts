@@ -574,6 +574,64 @@ it("lets only the owner send plain-text mail from the configured Inbox address",
   expect((await call(detail, undefined, session)).status).toBe(404);
 });
 
+it("sanitizes formatted mail before delivery and preserves its Sent copy", async () => {
+  using sqlite = new Database(":memory:");
+  const send = vi.fn(async (_message: EmailMessageBuilder) => ({
+    messageId: "formatted-fixture",
+  }));
+  const copies = new Map<string, string>();
+  const { call, signIn, cookies } = await setup(sqlite, {
+    INBOX_EMAIL_ADDRESS: "mail@app.example.net",
+    INBOX_EMAIL_FROM: "mail@app.example.net",
+    INBOX_SEND: { send } as SendEmail,
+    INBOX_SEND_LIMIT: { limit: async () => ({ success: true }) },
+    SENT_MESSAGES: {
+      put: async (id: string, json: string) => {
+        copies.set(id, json);
+        return {};
+      },
+      get: async (id: string) => {
+        const json = copies.get(id);
+        return json ? { json: async () => JSON.parse(json) } : null;
+      },
+    } as unknown as WorkerEnv["SENT_MESSAGES"],
+  });
+  const session = cookies(await signIn(password));
+  const draft = {
+    to: "person@example.net",
+    subject: "Formatted message",
+    text: "Mismatched client text",
+    html: '<p>Hello <strong>team</strong>!</p><p><a href="https://example.net">Details</a></p><img src="https://tracker.test"><script>evil()</script>',
+  };
+  for (const html of ["<script>evil()</script>", "x".repeat(131_073)]) {
+    expect(
+      (await call(inboxSendPath, { ...draft, html }, session)).status,
+    ).toBe(400);
+  }
+  expect(send).not.toHaveBeenCalled();
+  const response = await call(inboxSendPath, draft, session);
+  expect(response.status).toBe(204);
+  const delivered = send.mock.lastCall?.[0];
+  expect(delivered?.html).toBe(
+    '<p>Hello <strong>team</strong>!</p><p><a href="https://example.net">Details</a></p>',
+  );
+  expect(delivered?.text).toContain("Hello team!");
+  expect(delivered?.text).toContain("https://example.net");
+  expect(delivered?.text).not.toContain("Mismatched");
+  const id = response.headers.get(sentMessageHeader)!;
+  expect(JSON.parse(copies.get(id)!)).toMatchObject({
+    text: delivered?.text,
+    html: delivered?.html,
+  });
+  const entry = (await (
+    await call(mailMessageApi("sent", id), undefined, session)
+  ).json()) as { html: string; text: string };
+  expect(entry.text).toBe(delivered?.text);
+  expect(entry.html).toContain("<strong>team</strong>");
+  expect(entry.html).toContain('target="_blank" rel="noopener noreferrer"');
+  expect(entry.html).not.toMatch(/tracker|script|evil/iu);
+});
+
 it("threads replies from the stored message and archives the sent copy", async () => {
   using sqlite = new Database(":memory:");
   const from = "mail@app.example.net";
@@ -735,7 +793,10 @@ it("threads replies from the stored message and archives the sent copy", async (
     headers: { References: root },
   });
 
-  const quick = { text: "Quick follow-up" };
+  const quick = {
+    text: "Quick follow-up",
+    html: "<p>Quick <strong>follow-up</strong></p>",
+  };
   const inlinePath = inboxReplyApi(originalId);
   expect((await call(inlinePath, quick)).status).toBe(401);
   expect(
@@ -762,6 +823,7 @@ it("threads replies from the stored message and archives the sent copy", async (
     to: draft.to,
     subject: draft.subject,
     text: quick.text,
+    html: quick.html,
     headers,
   });
   const [sentId] = put.mock.lastCall ?? [];
@@ -1453,6 +1515,75 @@ it("serves received attachments privately and previews only supported media", as
   expect(text.headers.get("content-type")).toBe("text/plain; charset=utf-8");
   expect(await text.text()).toBe(report.slice(0, 32 * 1024));
   expect(await (await signedIn(inboxAttachmentApi(id, 2))).text()).toBe(report);
+});
+
+it("returns sanitized HTML and CID images alongside plain text, with a bounded fallback", async () => {
+  using sqlite = new Database(":memory:");
+  const id = "0-8200000000000-d92d6b0a-61b8-4776-95cf-767cf1000000.eml";
+  const png =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN9sAAAAASUVORK5CYII=";
+  let html =
+    '<p><strong>Rich body</strong></p><img src="cid:photo@mail"><img src="https://tracker.test/pixel"><script>evil()</script>';
+  const get = vi.fn(async (key: string) => {
+    if (key !== id) return null;
+    const raw = [
+      "From: sender@example.net",
+      "To: mail@app.example.net",
+      "Subject: Inline photo",
+      "Content-Type: multipart/related; boundary=related",
+      "",
+      "--related",
+      "Content-Type: multipart/alternative; boundary=alternative",
+      "",
+      "--alternative",
+      "Content-Type: text/plain",
+      "",
+      "Plain body",
+      "--alternative",
+      "Content-Type: text/html",
+      "",
+      html,
+      "--alternative--",
+      "--related",
+      "Content-Type: image/png",
+      "Content-ID: <photo@mail>",
+      "Content-Disposition: inline",
+      "Content-Transfer-Encoding: base64",
+      "",
+      png,
+      "--related--",
+      "",
+    ].join("\r\n");
+    const response = new Response(raw);
+    return {
+      key,
+      size: raw.length,
+      uploaded: new Date("2026-11-19T00:15:00.000Z"),
+      body: response.body,
+      arrayBuffer: () => response.arrayBuffer(),
+    };
+  });
+  const { call, signIn, cookies } = await setup(sqlite, {
+    INBOX_EMAIL_ADDRESS: "mail@app.example.net",
+    INBOX_MESSAGES: { get } as unknown as WorkerEnv["INBOX_MESSAGES"],
+  });
+  expect((await call(inboxMessageApi(id))).status).toBe(401);
+  expect(get).not.toHaveBeenCalled();
+  const session = cookies(await signIn(password));
+  const response = await call(inboxMessageApi(id), undefined, session);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const entry = (await response.json()) as { html: string };
+  expect(entry).toMatchObject({ text: "Plain body", preview: "complete" });
+  expect(entry.html).toContain("<strong>Rich body</strong>");
+  expect(entry.html).toContain(`src="data:image/png;base64,${png}"`);
+  expect(entry.html).not.toMatch(/tracker|script|evil/iu);
+
+  html = "<p>Too much HTML</p>".repeat(60_000);
+  const fallback = await (
+    await call(inboxMessageApi(id), undefined, session)
+  ).json();
+  expect(fallback).toMatchObject({ text: "Plain body", preview: "truncated" });
+  expect(fallback).not.toHaveProperty("html");
 });
 
 it("allows the owner to list, read, download, and permanently delete stored mail", async () => {

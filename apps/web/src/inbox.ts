@@ -22,6 +22,7 @@ import type { HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import * as Mount from "foldkit/mount";
 import * as Attachments from "./inbox-attachments.ts";
+import { mailHtmlDocument, mailHtmlSandbox } from "./inbox-html.ts";
 import * as Compose from "./inbox-compose.ts";
 import * as QuickReply from "./inbox-inline-reply.ts";
 import {
@@ -1678,6 +1679,7 @@ const deleteDialog = (h: HtmlBuilder<Message>) =>
 
 const entryContent = (model: Model, h: HtmlBuilder<Message>) => {
   const { entry } = model;
+  const html = entry && "html" in entry ? entry.html : undefined;
   return [
     ...(entry && model.readFailed === entry.id
       ? [h.p([h.Role("alert")], ["Could not update read status. Try again."])]
@@ -1696,42 +1698,65 @@ const entryContent = (model: Model, h: HtmlBuilder<Message>) => {
       : []),
     ...(entry
       ? [
-          ...(entry.text
+          ...(html
             ? [
-                h.div(
-                  [h.Class("inbox-body")],
-                  splitMailQuote(entry.text).map(({ text, quoted }, index) =>
-                    quoted
-                      ? h.details(
-                          [h.Key(String(index)), h.Class("inbox-quote")],
-                          [
-                            h.summary(
-                              [
-                                h.DataAttribute("slot", "button"),
-                                h.AriaLabel("Quoted text"),
-                                h.Title("Quoted text"),
-                                h.Class(
-                                  buttonClassName({
-                                    variant: "ghost",
-                                    size: "icon-sm",
-                                    rounded: true,
-                                  }),
-                                ),
-                              ],
-                              [ellipsisIcon(h)],
-                            ),
-                            h.blockquote([], [text]),
-                          ],
-                        )
-                      : h.div(
-                          [h.Key(String(index)), h.Class("inbox-body-part")],
-                          [text],
-                        ),
-                  ),
+                h.iframe([
+                  h.Key(`html-${entry.id}`),
+                  h.Class("inbox-html"),
+                  h.Title("Email message"),
+                  h.Sandbox(mailHtmlSandbox),
+                  h.Referrerpolicy("no-referrer"),
+                  h.Srcdoc(mailHtmlDocument(html)),
+                ]),
+                h.p(
+                  [h.Class("inbox-preview")],
+                  ["Remote images are blocked for privacy."],
                 ),
               ]
             : []),
-          ...(entry.preview !== "complete" || !entry.text
+          ...(entry.text
+            ? [
+                (html ? h.details : h.div)(
+                  [h.Class("inbox-body")],
+                  [
+                    ...(html ? [h.summary([], ["Plain text"])] : []),
+                    ...splitMailQuote(entry.text).map(
+                      ({ text, quoted }, index) =>
+                        quoted
+                          ? h.details(
+                              [h.Key(String(index)), h.Class("inbox-quote")],
+                              [
+                                h.summary(
+                                  [
+                                    h.DataAttribute("slot", "button"),
+                                    h.AriaLabel("Quoted text"),
+                                    h.Title("Quoted text"),
+                                    h.Class(
+                                      buttonClassName({
+                                        variant: "ghost",
+                                        size: "icon-sm",
+                                        rounded: true,
+                                      }),
+                                    ),
+                                  ],
+                                  [ellipsisIcon(h)],
+                                ),
+                                h.blockquote([], [text]),
+                              ],
+                            )
+                          : h.div(
+                              [
+                                h.Key(String(index)),
+                                h.Class("inbox-body-part"),
+                              ],
+                              [text],
+                            ),
+                    ),
+                  ],
+                ),
+              ]
+            : []),
+          ...(entry.preview !== "complete" || (!entry.text && !html)
             ? [
                 h.p(
                   [h.Class("inbox-preview")],

@@ -1,8 +1,8 @@
 import { Effect, Schema } from "effect";
 import { Command, Submodel, Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";
+import { mailEditor } from "./mail-editor-contract.ts";
 import {
-  inboxComposeLimits,
   InboxMessageId,
   inboxReplyApi,
   InlineReply,
@@ -19,6 +19,7 @@ export const Model = Schema.Struct({
   target: Schema.NullOr(MailMessageId),
   completeThrough: Schema.NullOr(InboxMessageId),
   text: Schema.String,
+  html: Schema.optional(Schema.String),
   request: Schema.NullOr(Schema.String),
   error: Schema.NullOr(Schema.String),
   notice: Schema.NullOr(Schema.String),
@@ -41,6 +42,7 @@ export const Message = defineMessageUnion({
     latest: MailMessageId,
     latestIncoming: Schema.NullOr(InboxMessageId),
     text: Schema.String,
+    html: Schema.optionalKey(Schema.String),
   },
   Submitted: { anchor: MailMessageId },
   Sent: { request: Schema.String, ...SentConfirmation },
@@ -80,7 +82,7 @@ export const update = (
   message: Message,
 ): Update.Return<Model, Message> =>
   Message.match<Update.Return<Model, Message>>(message, {
-    Edited: ({ anchor, latest, latestIncoming, text }) => {
+    Edited: ({ anchor, latest, latestIncoming, text, html }) => {
       const draft = model.anchor === anchor ? model : initial;
       if (draft.request) return { model };
       const target = text.trim() ? (draft.target ?? latest) : null;
@@ -89,6 +91,7 @@ export const update = (
           ...draft,
           anchor,
           text,
+          html,
           target,
           completeThrough: target
             ? draft.target
@@ -105,6 +108,7 @@ export const update = (
         return { model };
       const reply = Schema.decodeUnknownOption(InlineReply)({
         text: model.text,
+        ...(model.html !== undefined ? { html: model.html } : {}),
         ...(model.completeThrough
           ? { completeThrough: model.completeThrough }
           : {}),
@@ -144,6 +148,7 @@ export const view = Submodel.defineView<
 >(({ state, anchor, latest, latestIncoming }, h) => {
   const draft = state.anchor === anchor ? state : initial;
   const sending = draft.request !== null;
+  const editor = mailEditor.withMessage(h);
   return h.form(
     [
       h.AriaLabel("Quick reply"),
@@ -154,19 +159,18 @@ export const view = Submodel.defineView<
       h.div(
         [h.Class("inbox-inline-reply-row")],
         [
-          h.input([
-            h.Type("text"),
-            h.Name("text"),
-            h.AriaLabel("Reply"),
-            h.Placeholder("Reply..."),
-            h.Autocomplete("off"),
-            h.EnterKeyHint("send"),
-            h.Required(true),
-            h.Readonly(sending),
-            h.Maxlength(inboxComposeLimits.text),
-            h.Value(draft.text),
-            h.OnInput((text) =>
-              Message.Edited({ anchor, latest, latestIncoming, text }),
+          editor([
+            h.Name("body"),
+            h.Key(anchor),
+            editor.Label("Reply"),
+            editor.Compact(true),
+            editor.ReadOnly(sending),
+            editor.Value({
+              text: draft.text,
+              ...(draft.html !== undefined ? { html: draft.html } : {}),
+            }),
+            editor.OnBodyEdited((body) =>
+              Message.Edited({ anchor, latest, latestIncoming, ...body }),
             ),
           ]),
           ...(draft.text.trim()

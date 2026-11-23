@@ -64,6 +64,8 @@ import {
   mailMimeOptions as mimeOptions,
   receivedMessageLimit,
 } from "./mail-attachments.ts";
+import { sanitizeMailHtml } from "./mail-html.ts";
+import { prepareMailBody } from "./mail-authoring.ts";
 import {
   conversationMessageIds,
   parentMessageId,
@@ -419,7 +421,8 @@ const readMessage = async (
   const bytes = await object.arrayBuffer();
   try {
     const email = await PostalMime.parse(bytes, mimeOptions);
-    const { html, text } = readableMessage(email);
+    const { text } = readableMessage(email);
+    const html = email.html ?? "";
     const from = email.from?.address;
     const attachments = describeAttachments(email.attachments);
     return {
@@ -435,6 +438,9 @@ const readMessage = async (
       unread,
       ...(attachments.length ? { attachments } : {}),
       text: text.slice(0, textLimit),
+      ...(html && html.length <= htmlLimit
+        ? { html: sanitizeMailHtml(html, email.attachments) }
+        : {}),
       preview:
         html.length > htmlLimit || text.length > textLimit
           ? "truncated"
@@ -593,12 +599,15 @@ const deliverMail = Effect.fnUntraced(function* (
   reply: SentReply | undefined,
   completeThrough?: string,
 ) {
+  const body = prepareMailBody(message);
+  if (!body)
+    return yield* jsonError(400, "Enter a message within the form limits.");
   const work = Effect.runPromiseExit(
     sendDraft(
       sender.binding,
       env,
       defer,
-      { ...message, from: sender.from },
+      { ...message, ...body, from: sender.from },
       reply,
       completeThrough,
     ),
@@ -629,7 +638,7 @@ const sendEmail = (env: InboxEnv, defer: (work: Promise<unknown>) => void) =>
     if (draft._tag === "None")
       return yield* jsonError(
         400,
-        "Enter one valid recipient, a subject, and a plain-text message within the form limits.",
+        "Enter one valid recipient, a subject, and a message within the form limits.",
       );
     if (
       !(yield* Effect.tryPromise(() => sender.limit.limit({ key: ownerId })))
@@ -691,10 +700,7 @@ const sendInlineReply = (
       Effect.option,
     );
     if (body._tag === "None")
-      return yield* jsonError(
-        400,
-        "Enter a plain-text reply within the form limits.",
-      );
+      return yield* jsonError(400, "Enter a reply within the form limits.");
     if (
       !(yield* Effect.tryPromise(() => sender.limit.limit({ key: ownerId })))
         .success
@@ -707,6 +713,7 @@ const sendInlineReply = (
       to: target.to,
       subject: replySubject(target.subject),
       text: body.value.text,
+      ...(body.value.html !== undefined ? { html: body.value.html } : {}),
     });
     if (draft._tag === "None")
       return yield* jsonError(422, "This email has no usable reply address.");

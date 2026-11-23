@@ -38,7 +38,7 @@ const detectMediaType = (bytes: Uint8Array) => {
   return null;
 };
 
-const attachmentPart = (attachment: Attachment, part: number) => {
+export const attachmentPart = (attachment: Attachment, part: number) => {
   const { content } = attachment;
   if (typeof content === "string") return null;
   const bytes =

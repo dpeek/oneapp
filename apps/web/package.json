@@ -10,7 +10,8 @@
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261112.1",
     "@stylexjs/unplugin": "0.19.2",
-    "@types/html-to-text": "9.0.4"
+    "@types/html-to-text": "9.0.4",
+    "@types/sanitize-html": "^2.16.2"
   },
   "dependencies": {
     "@effect/sql-d1": "~4.1.0",
@@ -30,6 +31,7 @@
     "html-to-text": "10.0.1",
     "ipaddr.js": "^2.5.0",
     "pdfjs-dist": "6.5.438",
-    "postal-mime": "4.2.1"
+    "postal-mime": "4.2.1",
+    "sanitize-html": "^2.18.2"
   }
 }

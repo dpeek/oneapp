@@ -1,3 +1,4 @@
+import "./mail-editor.ts";
 import {
   authorizationFromFragment,
   bitwardenSignInQuery,

@@ -3,6 +3,7 @@ import { Effect, Schema } from "effect";
 import { Command, Submodel, Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";
 import * as Mount from "foldkit/mount";
+import { EditorBody, mailEditor } from "./mail-editor-contract.ts";
 import {
   inboxComposeLimits,
   InboxDraft,
@@ -24,6 +25,7 @@ const ReplyDraft = Schema.Struct({
 
 export const Model = Schema.Struct({
   from: Schema.NullOr(Schema.String),
+  body: EditorBody,
   reply: Schema.NullOr(ReplyDraft),
   request: Schema.NullOr(Schema.String),
   error: Schema.NullOr(Schema.String),
@@ -33,6 +35,7 @@ type Model = typeof Model.Type;
 
 export const initial: Model = {
   from: null,
+  body: { text: "" },
   reply: null,
   request: null,
   error: null,
@@ -45,6 +48,7 @@ export const Message = defineMessageUnion({
   Closed: {},
   Shown: {},
   Submitted: {},
+  EditedBody: { body: EditorBody },
   Sent: { request: Schema.String, ...SentConfirmation },
   Failed: { request: Schema.String, error: Schema.String },
   SessionExpired: { request: Schema.String },
@@ -63,17 +67,13 @@ const Show = Mount.define("ShowInboxCompose", {
           const fields = element.querySelector("form")?.elements;
           const to = fields?.namedItem("to");
           const subject = fields?.namedItem("subject");
-          const text = fields?.namedItem("text");
           // Seed the fields once so later renders preserve the owner's edits.
           if (to instanceof HTMLInputElement) to.value = reply.to;
           if (subject instanceof HTMLInputElement)
             subject.value = reply.subject;
-          if (text instanceof HTMLTextAreaElement) {
-            text.value = reply.text;
-            text.setSelectionRange(0, 0);
-          }
         }
         element.showModal();
+        if (reply) element.querySelector<HTMLElement>(mailEditor.tag)?.focus();
       }
       return Message.Shown();
     }),
@@ -129,10 +129,15 @@ export const update = (
       model: model.from ? model : { ...initial, from },
     }),
     OpenedReply: ({ from, reply }) => ({
-      model: model.from ? model : { ...initial, from, reply },
+      model: model.from
+        ? model
+        : { ...initial, from, reply, body: { text: reply.text } },
     }),
     Closed: () => ({ model: model.request ? model : initial }),
     Shown: () => ({ model }),
+    EditedBody: ({ body }) => ({
+      model: model.request ? model : { ...model, body, error: null },
+    }),
     Submitted: () => {
       if (!model.from || model.request) return { model };
       const request = crypto.randomUUID();
@@ -164,6 +169,7 @@ export const view = Submodel.defineView<
   Message
 >((model, h) => {
   const pending = model.request !== null;
+  const editor = mailEditor.withMessage(h);
   return h.div(
     [h.Class("inbox-compose")],
     [
@@ -245,17 +251,18 @@ export const view = Submodel.defineView<
                         ]),
                       ],
                     ),
-                    h.label(
+                    h.div(
                       [],
                       [
-                        "Message",
-                        h.textarea([
-                          h.Name("text"),
-                          h.Rows(8),
-                          h.Maxlength(inboxComposeLimits.text),
-                          ...(model.reply ? [h.Autofocus(true)] : []),
-                          h.Required(true),
-                          h.Readonly(pending),
+                        h.span([], ["Message"]),
+                        editor([
+                          h.Name("body"),
+                          editor.Label("Message"),
+                          editor.Value(model.body),
+                          editor.ReadOnly(pending),
+                          editor.OnBodyEdited((body) =>
+                            Message.EditedBody({ body }),
+                          ),
                         ]),
                       ],
                     ),

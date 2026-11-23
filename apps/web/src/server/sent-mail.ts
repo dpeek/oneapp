@@ -7,6 +7,7 @@ import {
 } from "./mail-reply.ts";
 import type { IndexedMail } from "./mail-index.ts";
 import { mailPeople } from "./mail-people.ts";
+import { sanitizeMailHtml } from "./mail-html.ts";
 import {
   MailMessageId,
   SentMessageId,
@@ -25,6 +26,7 @@ const SentReply = Schema.Struct({
 export type SentReply = typeof SentReply.Type;
 
 const SentRecord = Schema.Struct({
+  html: Schema.optionalKey(Schema.String),
   ...SentSummary.fields,
   text: Schema.String,
   providerMessageId: Schema.String,
@@ -133,6 +135,9 @@ export const readSent = async (bucket: R2Bucket, id: string) => {
     subject,
     sentAt,
     text,
+    ...(record.html !== undefined
+      ? { html: sanitizeMailHtml(record.html, []) }
+      : {}),
     preview: "complete" as const,
     people: mailPeople(() => undefined, from, to),
   };

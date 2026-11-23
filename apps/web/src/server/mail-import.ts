@@ -4,28 +4,8 @@ import { Schema } from "effect";
 import { indexMailStatements } from "./mail-index.ts";
 import { describeRawMail, parseRawHeaders, rawMailFormat } from "./raw-mail.ts";
 
-const Uid = Schema.Int.check(
-  Schema.isBetween({ minimum: 1, maximum: 4_294_967_295 }),
-);
-const SourceName = Schema.NonEmptyString.check(Schema.isMaxLength(1024));
-export const MailImportMetadata = Schema.Struct({
-  source: Schema.Struct({
-    account: SourceName,
-    mailbox: SourceName,
-    uidValidity: Uid,
-    uid: Uid,
-  }),
-  // Mapping is explicit: never guess a custom folder from its display name.
-  folder: Schema.Literals(["inbox", "sent"]),
-  archived: Schema.Boolean,
-  timestamp: Schema.Int.check(
-    Schema.isBetween({ minimum: 0, maximum: 9_999_999_999_999 }),
-  ),
-  flags: Schema.Array(Schema.String.check(Schema.isMaxLength(256))).check(
-    Schema.isMaxLength(100),
-  ),
-});
-export type MailImportMetadata = typeof MailImportMetadata.Type;
+import { MailImportMetadata } from "@oneapp/core/mail-import";
+export { MailImportMetadata } from "@oneapp/core/mail-import";
 
 type ImportStore = {
   DB: MailDatabase;
@@ -42,8 +22,7 @@ const decodeMetadata = Schema.decodeUnknownSync(MailImportMetadata);
 const hash = async (bytes: Uint8Array<ArrayBuffer>) =>
   new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)).toHex();
 
-// Internal service for trusted import runners. A future HTTP adapter must add
-// owner authentication, size limits and a dedicated mail-import permission.
+// Internal service: HTTP and local adapters validate authorization and limits.
 export const ingestRawMail = async (
   store: ImportStore,
   input: unknown,

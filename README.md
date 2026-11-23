@@ -109,7 +109,28 @@ After every selected message has imported successfully and threading is finished
 
 The policy, cutoff and per-conversation reasons are recorded in D1's `mail_import_completions` table and the local import report. Decisions and archive updates commit atomically. Retrying a completed import returns its recorded decisions without changing subsequent user choices or reopening/completing conversations again. A failed or partial import never runs this step. Dry-run displays the policy; conversation decisions require the destination's completed thread index. This is an import policy, not an ongoing auto-archive rule.
 
-Folder mappings are recorded separately from the snapshot and bound to the destination. OneApp can reopen archived members while merging them into an active Inbox conversation; the final completion policy runs after those merges. The original folder metadata remains in the snapshot and import receipts. To change mappings, reevaluate completion rules or evaluate changed parsing, replay into a fresh stage. Do not edit the inventory or original files: their checksums are part of the format. The same snapshot can be copied to another machine without iCloud credentials. Production upload is not implemented yet; the next adapter needs authenticated owner access and upload limits, and can feed this same format into `ingestRawMail`. No production data is changed by these commands.
+Folder mappings are recorded separately from the snapshot and bound to the destination. OneApp can reopen archived members while merging them into an active Inbox conversation; the final completion policy runs after those merges. The original folder metadata remains in the snapshot and import receipts. To change mappings, reevaluate completion rules or evaluate changed parsing, replay into a fresh destination mailbox. Do not edit the inventory or original files: their checksums are part of the format. The same snapshot can be copied to another machine without iCloud credentials.
+
+### Import through the deployed API
+
+Deploy the import adapter and its `mail_import_runs` migration before uploading. First validate the snapshot and adapter limits offline:
+
+```sh
+bun run mail:import --snapshot .mail-snapshots/icloud --server https://app.dpeek.com --mailbox personal --dry-run
+```
+
+Authorize a dedicated import credential through the browser, then upload:
+
+```sh
+bun apps/cli/src/index.ts auth login --mail-import --server https://app.dpeek.com
+bun run mail:import --snapshot .mail-snapshots/icloud --server https://app.dpeek.com --mailbox personal
+```
+
+The browser approval grants `mail:import` for 24 hours. This permission allows importing originals, reading import receipts, and completing eligible imported conversations in mailboxes owned by the signed-in owner. It grants no Links access; ordinary Links CLI credentials grant no import access. Login replaces the CLI's saved credential for that server. Use `one auth logout` (or `bun apps/cli/src/index.ts auth logout`) after importing to revoke it. An expired credential can be replaced with another import login before resuming. Automation may supply `ONEAPP_IMPORT_TOKEN` through the environment instead of the CLI credential store; do not put tokens in command arguments or commit them.
+
+The runner validates every original checksum before contacting the destination. HTTPS is required except for loopback development URLs, redirects are rejected, and the server verifies explicit mailbox ownership. The first request pins the snapshot, checksums, mapping and expected message metadata to an immutable server-side plan. Each upload must match that plan's size and checksum. The adapter currently supports 25 MiB per message, 5,000 selected messages, and a 1 MiB plan; unsupported snapshots stop before uploading.
+
+Rerun the same command after an interruption. Completed receipts skip uploads and preserve subsequent mailbox edits. Transient failures retry automatically; changed bytes or mappings stop with a conflict. Conversation completion runs only after every planned message has a matching completed receipt, and reuses the snapshot's fixed completion cutoff. Reports and destination configuration are stored in `.alchemy/mail-import/remote-<origin-sha256>/<mailbox>/`. `--server` and local `--stage` are mutually exclusive; `--dry-run` never connects to either destination.
 
 ### Mailbox ownership and identities
 

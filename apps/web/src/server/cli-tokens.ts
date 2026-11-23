@@ -1,11 +1,11 @@
 import {
+  CliScope,
   CliToken,
   CliTokenList,
   CliTokenSecret,
   cliTokensPath,
   currentCliTokenPath,
 } from "@oneapp/core/cli-auth";
-import { LinkScope } from "@oneapp/core/links";
 import { Clock, Data, Effect, Layer, Schema } from "effect";
 import { Hex } from "effect/encoding";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -15,7 +15,7 @@ import { AppAuth, type authHttp } from "./auth.ts";
 
 const isTokenSecret = Schema.is(CliTokenSecret);
 const decodeScopes = Schema.decodeUnknownOption(
-  Schema.fromJsonString(Schema.Array(LinkScope)),
+  Schema.fromJsonString(Schema.Array(CliScope)),
 );
 const digestToken = Effect.fnUntraced(function* (secret: string) {
   const bytes = new TextEncoder().encode(secret);
@@ -27,7 +27,7 @@ const digestToken = Effect.fnUntraced(function* (secret: string) {
 
 export class InvalidCliToken extends Data.TaggedError("InvalidCliToken")<{}> {}
 class InsufficientCliScope extends Data.TaggedError("InsufficientCliScope")<{
-  scope: typeof LinkScope.Type;
+  scope: typeof CliScope.Type;
 }> {}
 
 export const requireCliDigest = Effect.gen(function* () {
@@ -57,7 +57,7 @@ export const requireCliToken = Effect.gen(function* () {
 });
 
 export const requireCliScope = Effect.fnUntraced(function* (
-  scope: typeof LinkScope.Type,
+  scope: typeof CliScope.Type,
 ) {
   const token = yield* requireCliToken;
   const scopes = decodeScopes(token.scopes);

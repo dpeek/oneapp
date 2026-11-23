@@ -1,9 +1,11 @@
-import { MailboxId } from "../apps/web/src/server/mailbox.ts";
+import { openRemoteMailSink, planRemoteImport } from "./mail/remote-sink.ts";
+import { serverOrigin } from "../apps/cli/src/credentials.ts";
+import { MailboxId } from "../packages/core/src/mail-import.ts";
 import { resolve, join } from "node:path";
 import { parseArgs } from "node:util";
 import { Schema } from "effect";
 import { MailMapping } from "../packages/core/src/mail-snapshot.ts";
-import { atomicJson, withFileLock } from "./mail/files.ts";
+import { atomicJson, withFileLock, hashFile, sha256 } from "./mail/files.ts";
 import { validateSnapshot } from "./mail/snapshot.ts";
 import { mappingHash, previewMapping, replaySnapshot } from "./mail/replay.ts";
 import { openLocalMailSink } from "./mail/local-sink.ts";
@@ -16,6 +18,7 @@ const { values } = parseArgs({
   options: {
     snapshot: { type: "string", default: ".mail-snapshots/icloud" },
     stage: { type: "string" },
+    server: { type: "string" },
     mailbox: { type: "string" },
     mapping: {
       type: "string",
@@ -27,14 +30,19 @@ const { values } = parseArgs({
 });
 if (values.help) {
   console.log(
-    "bun run mail:import --snapshot <directory> --stage <local-stage> --mailbox <mailbox-id> [--mapping <json>] [--dry-run]\nValidates all original checksums before importing. Dry-run previews mappings without connecting to iCloud or opening a destination.",
+    "bun run mail:import --snapshot <directory> (--stage <local-stage> | --server <https-origin>) --mailbox <mailbox-id> [--mapping <json>] [--dry-run]\nValidates all original checksums before importing. Dry-run previews mappings without connecting to iCloud or opening a destination.",
   );
   process.exit(0);
 }
 try {
-  if (!values["dry-run"] && (!values.stage || !values.mailbox))
+  if (values.stage && values.server)
     throw new MailSampleError(
-      "Choose an explicit local --stage and --mailbox, or use --dry-run.",
+      "Choose either a local --stage or a remote --server, not both.",
+    );
+  const origin = values.server ? serverOrigin(values.server) : undefined;
+  if (!values["dry-run"] && ((!values.stage && !origin) || !values.mailbox))
+    throw new MailSampleError(
+      "Choose --stage or --server and an explicit --mailbox, or use --dry-run.",
     );
   const directory = resolve(values.snapshot);
   console.error("Validating snapshot metadata and every original checksum…");
@@ -43,9 +51,18 @@ try {
     await Bun.file(values.mapping).json(),
   );
   const preview = previewMapping(inventory, mapping);
+  const remotePlan = origin
+    ? planRemoteImport(
+        inventory,
+        manifest,
+        mapping,
+        (await hashFile(join(directory, "manifest.json"))).sha256,
+      )
+    : undefined;
   console.log(
     JSON.stringify(
       {
+        ...(origin ? { server: origin, mailboxId: values.mailbox } : {}),
         snapshotId: inventory.snapshotId,
         messages: inventory.messages.length,
         folders: preview,
@@ -56,16 +73,27 @@ try {
     ),
   );
   if (!values["dry-run"]) {
-    const stage = Schema.decodeUnknownSync(StageName)(values.stage);
+    const stage = origin
+      ? undefined
+      : Schema.decodeUnknownSync(StageName)(values.stage);
+
     const mailboxId = Schema.decodeUnknownSync(MailboxId)(values.mailbox);
     const stateDirectory = join(
       localDirectory,
       "mail-import",
-      stage,
+      origin ? `remote-${sha256(origin)}` : stage!,
       mailboxId,
     );
     await withFileLock(join(stateDirectory, ".import.lock"), async () => {
-      const platform = await openLocalMailSink(stage, mailboxId);
+      const platform =
+        origin && remotePlan
+          ? await openRemoteMailSink(
+              origin,
+              mailboxId,
+              remotePlan,
+              process.env.ONEAPP_IMPORT_TOKEN,
+            )
+          : await openLocalMailSink(stage!, mailboxId);
       try {
         const config = {
           version: 2,
@@ -81,9 +109,10 @@ try {
             JSON.stringify(config)
           )
             throw new MailSampleError(
-              "This destination was used with different mappings or source configuration. Use a fresh local stage.",
+              "This destination was used with different mappings or source configuration. Use a fresh destination mailbox.",
             );
         } else await atomicJson(configPath, config);
+        if ("begin" in platform) await platform.begin();
         const report = await replaySnapshot(
           directory,
           inventory,
@@ -96,13 +125,15 @@ try {
           },
         );
         const completion = report.complete
-          ? await platform.sink.completeImport({
-              id: `${inventory.snapshotId}:${config.mappingHash}`,
-              asOf: inventory.createdAt,
-              sourceIds: report.results
-                .filter((entry) => entry.status !== "excluded")
-                .map((entry) => entry.sourceId),
-            })
+          ? "begin" in platform
+            ? await platform.sink.completeImport()
+            : await platform.sink.completeImport({
+                id: `${inventory.snapshotId}:${config.mappingHash}`,
+                asOf: inventory.createdAt,
+                sourceIds: report.results
+                  .filter((entry) => entry.status !== "excluded")
+                  .map((entry) => entry.sourceId),
+              })
           : undefined;
         await atomicJson(
           join(stateDirectory, `${inventory.snapshotId}-report.json`),
@@ -123,7 +154,12 @@ try {
         };
         console.log(
           JSON.stringify(
-            { stage, mailboxId, ...summary, completion: completionSummary },
+            {
+              ...(origin ? { server: origin } : { stage }),
+              mailboxId,
+              ...summary,
+              completion: completionSummary,
+            },
             null,
             2,
           ),
@@ -138,7 +174,7 @@ try {
   console.error(
     error instanceof MailSampleError
       ? error.message
-      : "Snapshot import failed. Check the snapshot, mapping file and local stage; no credentials or server errors were printed.",
+      : "Snapshot import failed. Check the snapshot, mapping file and destination; no credentials or server errors were printed.",
   );
   process.exitCode = 1;
 }

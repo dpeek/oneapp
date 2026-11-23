@@ -4911,3 +4911,282 @@ it("uses mailbox aliases for Reply All and never reads another mailbox's origina
   ).toBe(404);
   expect(get.mock.calls.every(([key]) => !key.includes("/"))).toBe(true);
 });
+
+it("imports through a separately approved CLI permission with pinned plans, bounded uploads and resumable receipts", async () => {
+  const { mailImportScope, MailImportPlan } =
+    await import("@oneapp/core/mail-import");
+  const { importHash } = await import("./mail-import-runs.ts");
+  const { openRemoteMailSink } =
+    await import("../../../../scripts/mail/remote-sink.ts");
+  using sqlite = new Database(":memory:");
+  const stored = new Map<
+    string,
+    {
+      key: string;
+      size: number;
+      uploaded: Date;
+      customMetadata: Record<string, string>;
+      bytes: Uint8Array<ArrayBuffer>;
+    }
+  >();
+  let losePut = true;
+  const bucket = {
+    put: async (
+      key: string,
+      bytes: Uint8Array<ArrayBuffer>,
+      options: { customMetadata: Record<string, string> },
+    ) => {
+      if (stored.has(key)) return null;
+      const object = {
+        key,
+        size: bytes.length,
+        uploaded: new Date(),
+        customMetadata: options.customMetadata,
+        bytes: bytes.slice(),
+      };
+      stored.set(key, object);
+      if (losePut) {
+        losePut = false;
+        throw new Error("Lost storage response");
+      }
+      return object;
+    },
+    head: async (key: string) => stored.get(key) ?? null,
+  };
+  const { request, call, signIn, cookies, db } = await setup(sqlite, {
+    INBOX_MESSAGES: bucket as unknown as WorkerEnv["INBOX_MESSAGES"],
+    SENT_MESSAGES: bucket as unknown as WorkerEnv["SENT_MESSAGES"],
+  });
+  const session = cookies(await signIn(password));
+  const secret = `one_${"i".repeat(43)}`;
+  const api = (
+    path: string,
+    method = "GET",
+    body?: BodyInit,
+    contentType = "application/json",
+    token = secret,
+  ) =>
+    request(path, {
+      method,
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": contentType,
+      },
+      body,
+    });
+  const beginLogin = await api(
+    cliLoginPath,
+    "POST",
+    JSON.stringify({ label: "Mailbox import", scopes: [mailImportScope] }),
+  );
+  expect(beginLogin.status).toBe(201);
+  const approval = (await beginLogin.json()) as { id: string };
+  expect(
+    await (
+      await call(`${cliLoginPath}/${approval.id}`, undefined, session)
+    ).json(),
+  ).toMatchObject({ scopes: [mailImportScope] });
+  // A browser cannot approve a different permission than the CLI requested.
+  expect(
+    (
+      await call(
+        `${cliLoginPath}/${approval.id}`,
+        { approve: true, scopes: cliLinkScopes },
+        session,
+      )
+    ).status,
+  ).toBe(410);
+  expect(
+    (
+      await call(
+        `${cliLoginPath}/${approval.id}`,
+        { approve: true, scopes: [mailImportScope] },
+        session,
+      )
+    ).status,
+  ).toBe(204);
+  expect(
+    (await api(`${cliLoginPath}/${approval.id}/poll`, "POST")).status,
+  ).toBe(204);
+  const grant = sqlite
+    .query("SELECT expires_at, scopes FROM cli_tokens WHERE id = ?")
+    .get(approval.id) as { expires_at: number; scopes: string };
+  expect(grant.expires_at).toBeGreaterThan(Date.now());
+  expect(grant.expires_at).toBeLessThanOrEqual(Date.now() + 24 * 60 * 60_000);
+  expect((await api(linksPath)).status).toBe(403);
+  const base = "/api/mail-import/personal";
+  expect((await call(base, undefined, session)).status).toBe(401); // No ambient cookie authority.
+  expect((await api(base)).status).toBe(200);
+  expect((await api("/api/mail-import/missing")).status).toBe(404);
+  sqlite.exec(
+    "INSERT INTO accounts VALUES ('family',1,'1'); INSERT INTO mailboxes VALUES ('family','family','Family')",
+  );
+  expect((await api("/api/mail-import/family")).status).toBe(404);
+  const bytes = new TextEncoder().encode(
+    "From: sender@example.net\r\nTo: owner@example.net\r\nMessage-ID: <import@example.net>\r\n\r\nOriginal message",
+  );
+  const source = {
+    account: "icloud:test@icloud.com",
+    mailbox: "INBOX",
+    uidValidity: 1,
+    uid: 1,
+  };
+  const sourceId = await importHash(
+    JSON.stringify([
+      source.account,
+      source.mailbox,
+      source.uidValidity,
+      source.uid,
+    ]),
+  );
+  const plan = Schema.decodeUnknownSync(MailImportPlan)({
+    version: 1,
+    snapshotId: crypto.randomUUID(),
+    inventorySha256: "a".repeat(64),
+    manifestSha256: "b".repeat(64),
+    mappingHash: "c".repeat(64),
+    asOf: "2026-11-23T00:00:00.000Z",
+    sourceAccount: source.account,
+    entries: [
+      {
+        sourceId,
+        sha256: await importHash(bytes),
+        size: bytes.length,
+        metadata: {
+          source,
+          folder: "inbox",
+          archived: false,
+          timestamp: 1_600_000_000_000,
+          flags: ["\\Seen"],
+        },
+      },
+    ],
+  });
+  const run = `${base}/${plan.snapshotId}`;
+  expect(
+    (
+      await api(
+        run,
+        "PUT",
+        JSON.stringify({
+          ...plan,
+          entries: [...plan.entries, ...plan.entries],
+        }),
+      )
+    ).status,
+  ).toBe(400);
+  expect((await api(run, "PUT", JSON.stringify(plan))).status).toBe(200);
+  expect(
+    (
+      await api(
+        run,
+        "PUT",
+        JSON.stringify({ ...plan, mappingHash: "d".repeat(64) }),
+      )
+    ).status,
+  ).toBe(409);
+  expect((await api(`${run}/complete`, "POST")).status).toBe(409);
+  const upload = `${run}/${sourceId}`;
+  expect(
+    (await api(upload, "PUT", bytes.slice(1), "message/rfc822")).status,
+  ).toBe(413);
+  expect(
+    (
+      await api(
+        upload,
+        "PUT",
+        new Uint8Array(bytes.length + 1),
+        "message/rfc822",
+      )
+    ).status,
+  ).toBe(413);
+  const corrupt = bytes.slice();
+  corrupt[corrupt.length - 1] = corrupt[corrupt.length - 1]! ^ 1;
+  expect((await api(upload, "PUT", corrupt, "message/rfc822")).status).toBe(
+    422,
+  );
+  expect(
+    (await api(`${run}/${"f".repeat(64)}`, "PUT", bytes, "message/rfc822"))
+      .status,
+  ).toBe(404);
+  expect(stored.size).toBe(0);
+  let loseUploadResponse = true;
+  const transport = {
+    fetch: (async (url: string | URL | Request, init?: RequestInit) => {
+      expect(init?.redirect).toBe("error");
+      const path = new URL(String(url)).pathname;
+      const response = await request(path, init!);
+      if (
+        path === upload &&
+        init?.method === "PUT" &&
+        response.ok &&
+        loseUploadResponse
+      ) {
+        loseUploadResponse = false;
+        throw new Error("Lost successful upload response");
+      }
+      return response;
+    }) as typeof fetch,
+    sleep: async (_ms: number) => {},
+  };
+  const remote = await openRemoteMailSink(
+    "https://oneapp.example",
+    "personal",
+    plan,
+    secret,
+    transport,
+  );
+  await remote.begin();
+  expect(await remote.sink.receipt(source)).toBeNull();
+  const imported = await remote.sink.ingest(plan.entries[0]!.metadata, bytes);
+  expect(imported.status).toBe("skipped");
+  expect(stored.size).toBe(1);
+  expect(stored.get(imported.id!)?.bytes).toEqual(bytes);
+  expect((await remote.sink.receipt(source))?.completedAt).not.toBeNull();
+  expect((await remote.sink.completeImport()).completedConversations).toBe(1);
+  await db
+    .prepare(
+      "UPDATE mail_index_messages SET archived = 0, unread = 1 WHERE mailbox_id = 'personal'",
+    )
+    .run();
+  expect(
+    (await remote.sink.ingest(plan.entries[0]!.metadata, bytes)).status,
+  ).toBe("skipped");
+  expect((await remote.sink.completeImport()).completedConversations).toBe(1);
+  expect(
+    sqlite.query("SELECT archived, unread FROM mail_index_messages").get(),
+  ).toEqual({ archived: 0, unread: 1 });
+  const conflict = {
+    ...plan,
+    snapshotId: crypto.randomUUID(),
+    entries: plan.entries.map((entry) => ({
+      ...entry,
+      sha256: "f".repeat(64),
+    })),
+  };
+  expect(
+    (
+      await api(
+        `${base}/${conflict.snapshotId}`,
+        "PUT",
+        JSON.stringify(conflict),
+      )
+    ).status,
+  ).toBe(200);
+  expect((await api(`${base}/${conflict.snapshotId}/${sourceId}`)).status).toBe(
+    409,
+  );
+  expect(
+    (await api(`${base}/${conflict.snapshotId}/complete`, "POST")).status,
+  ).toBe(409);
+  sqlite
+    .query("UPDATE cli_tokens SET expires_at = ? WHERE id = ?")
+    .run(Date.now() - 1, approval.id);
+  expect((await api(base)).status).toBe(401);
+  sqlite
+    .query("UPDATE cli_tokens SET expires_at = NULL, scopes = ? WHERE id = ?")
+    .run(JSON.stringify(cliLinkScopes), approval.id);
+  expect((await api(base)).status).toBe(403);
+  sqlite.query("DELETE FROM cli_tokens WHERE id = ?").run(approval.id);
+  expect((await api(base)).status).toBe(401);
+});

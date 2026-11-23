@@ -1,4 +1,5 @@
 import {
+  CliRequestedScopes,
   CliLoginApproval,
   CliLoginId,
   cliLinkScopes,
@@ -63,9 +64,9 @@ const Load = Command.define("LoadCliLogin", {
 });
 
 const Decide = Command.define("DecideCliLogin", {
-  args: { id: CliLoginId, approve: Schema.Boolean },
+  args: { id: CliLoginId, approve: Schema.Boolean, scopes: CliRequestedScopes },
   messages: [Message.Finished, Message.Failed],
-  execute: ({ id, approve }) =>
+  execute: ({ id, approve, scopes }) =>
     Effect.tryPromise(async (signal) => {
       const response = await fetch(`${cliLoginPath}/${id}`, {
         method: "POST",
@@ -73,9 +74,7 @@ const Decide = Command.define("DecideCliLogin", {
           "x-effect-auth-csrf": "1",
           "content-type": "application/json",
         },
-        body: JSON.stringify(
-          approve ? { approve, scopes: cliLinkScopes } : { approve },
-        ),
+        body: JSON.stringify(approve ? { approve, scopes } : { approve }),
         signal,
       });
       if (response.status === 410)
@@ -111,7 +110,16 @@ export const update = (model: Model, message: Message) => {
     Decided: ({ approve }) =>
       model.pending || !model.approval || model.decision !== null
         ? { model }
-        : { model: pending, commands: [Decide({ id: model.id, approve })] },
+        : {
+            model: pending,
+            commands: [
+              Decide({
+                id: model.id,
+                approve,
+                scopes: model.approval.scopes ?? cliLinkScopes,
+              }),
+            ],
+          },
     Loaded: ({ approval }) => ({
       model: { ...model, approval, pending: false },
     }),
@@ -144,7 +152,11 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
               h.p(
                 [],
                 [
-                  `Allow ${model.approval.label} to read, save, and delete links until you revoke access.`,
+                  model.approval.scopes?.some(
+                    (scope) => scope === "mail:import",
+                  )
+                    ? `Allow ${model.approval.label} to import mail into your mailboxes and mark eligible imported conversations complete for 24 hours. This also allows reading import receipts.`
+                    : `Allow ${model.approval.label} to read, save, and delete links until you revoke access.`,
                 ],
               ),
               h.p(

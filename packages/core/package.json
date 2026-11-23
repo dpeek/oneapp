@@ -9,7 +9,8 @@
     "./extension-auth": "./src/extension-auth.ts",
     "./files": "./src/files.ts",
     "./links": "./src/links.ts",
-    "./mail-snapshot": "./src/mail-snapshot.ts"
+    "./mail-snapshot": "./src/mail-snapshot.ts",
+    "./mail-import": "./src/mail-import.ts"
   },
   "dependencies": {
     "effect": "~4.1.0"

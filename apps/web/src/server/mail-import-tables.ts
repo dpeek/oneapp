@@ -40,3 +40,17 @@ export const mailImportCompletions = sqliteTable(
   },
   (table) => [primaryKey({ columns: [table.mailboxId, table.id] })],
 );
+
+export const mailImportRuns = sqliteTable(
+  "mail_import_runs",
+  {
+    mailboxId: text("mailbox_id")
+      .notNull()
+      .references(() => mailboxes.id),
+    id: text().notNull(),
+    configuration: text().notNull(),
+    createdAt: integer("created_at").notNull(),
+    completedAt: integer("completed_at"),
+  },
+  (table) => [primaryKey({ columns: [table.mailboxId, table.id] })],
+);

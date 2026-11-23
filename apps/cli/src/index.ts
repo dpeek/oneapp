@@ -1,7 +1,10 @@
 #!/usr/bin/env bun
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { appName, defaultServerUrl } from "@oneapp/core";
-import { currentCliTokenPath } from "@oneapp/core/cli-auth";
+import {
+  cliMailImportScopes,
+  currentCliTokenPath,
+} from "@oneapp/core/cli-auth";
 import {
   Link,
   LinkId,
@@ -39,12 +42,18 @@ const login = Command.make(
       Flag.withDefault(true),
       Flag.withDescription("Open the OneApp access page"),
     ),
+    mailImport: Flag.Boolean("mail-import").pipe(
+      Flag.withDefault(false),
+      Flag.withDescription(
+        "Request mail import access for 24 hours instead of Links access",
+      ),
+    ),
     name: Flag.String("name").pipe(
       Flag.withDefault("OneApp CLI"),
       Flag.withDescription("Name to show under CLI access"),
     ),
   },
-  Effect.fnUntraced(function* ({ server, browser, name }) {
+  Effect.fnUntraced(function* ({ server, browser, name, mailImport }) {
     const origin = yield* Effect.try({
       try: () => serverOrigin(server),
       catch: () =>
@@ -52,7 +61,12 @@ const login = Command.make(
           message: "Use an HTTPS server origin, or HTTP for localhost.",
         }),
     });
-    const token = yield* browserLogin(origin, browser, name);
+    const token = yield* browserLogin(
+      origin,
+      browser,
+      name,
+      mailImport ? cliMailImportScopes : undefined,
+    );
     yield* storeCredentials(origin, token);
     yield* Console.log(`Signed in to ${origin}`);
   }),

@@ -1,6 +1,7 @@
 import {
   CliLoginApproval,
   CliTokenLabel,
+  type CliRequestedScopes,
   cliLoginQuery,
   cliLoginInterval,
   cliLoginPath,
@@ -37,6 +38,7 @@ export const browserLogin = Effect.fnUntraced(function* (
   origin: string,
   browser: boolean,
   name: string,
+  scopes?: typeof CliRequestedScopes.Type,
 ) {
   const label = name.trim();
   if (!Schema.is(CliTokenLabel)(label))
@@ -49,7 +51,7 @@ export const browserLogin = Effect.fnUntraced(function* (
   const response = yield* request(origin, token, cliLoginPath, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ label }),
+    body: JSON.stringify({ label, ...(scopes ? { scopes } : {}) }),
   });
   yield* requireSuccess(response);
   const { id, code } = yield* readResponse(CliLoginApproval, response);

@@ -1,3 +1,4 @@
+import { mailImportScope } from "./mail-import.ts";
 import { Schema } from "effect";
 import { linksReadScope, linksWriteScope } from "./links.ts";
 
@@ -13,14 +14,25 @@ export const CliTokenLabel = Schema.Trimmed.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(60),
 );
-export const CliLoginRequest = Schema.Struct({
-  label: Schema.Trim.pipe(Schema.decodeTo(CliTokenLabel)),
-});
 export const cliLinkScopes = [linksReadScope, linksWriteScope] as const;
 const CliLinkScopes = Schema.Tuple([
   Schema.Literal(linksReadScope),
   Schema.Literal(linksWriteScope),
 ]);
+export const cliMailImportScopes = [mailImportScope] as const;
+export const CliScope = Schema.Literals([
+  linksReadScope,
+  linksWriteScope,
+  mailImportScope,
+]);
+export const CliRequestedScopes = Schema.Union([
+  CliLinkScopes,
+  Schema.Tuple([Schema.Literal(mailImportScope)]),
+]);
+export const CliLoginRequest = Schema.Struct({
+  label: Schema.Trim.pipe(Schema.decodeTo(CliTokenLabel)),
+  scopes: Schema.optionalKey(CliRequestedScopes),
+});
 export const CliToken = Schema.Struct({
   id: Schema.String,
   label: CliTokenLabel,
@@ -35,9 +47,10 @@ export const CliLoginApproval = Schema.Struct({
   code: Schema.String.check(Schema.isPattern(/^[A-F0-9]{4}-[A-F0-9]{4}$/u)),
   label: CliTokenLabel,
   expiresAt: Schema.Int,
+  scopes: Schema.optionalKey(CliRequestedScopes),
 });
 export const CliLoginDecision = Schema.Union([
-  Schema.Struct({ approve: Schema.Literal(true), scopes: CliLinkScopes }),
+  Schema.Struct({ approve: Schema.Literal(true), scopes: CliRequestedScopes }),
   Schema.Struct({ approve: Schema.Literal(false) }),
 ]);
 export const cliLoginInterval = 5_000;

@@ -1,3 +1,4 @@
+import { mailImportRoutes } from "./mail-import-api.ts";
 import {
   defaultMailboxId,
   ensureDefaultMailbox,
@@ -426,6 +427,7 @@ export default {
           passwordRecoveryRoutes(http, emailTransport !== disabledEmail),
           linksRoutes(http),
           mailRoutes,
+          mailImportRoutes(env, defer),
           peopleRoutes(http, env, defer),
           vaultSetupRoutes(http, env.DB),
           vaultItemRoutes(http, env.DB),

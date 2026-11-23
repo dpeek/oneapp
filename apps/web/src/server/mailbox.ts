@@ -5,9 +5,8 @@ import { ownerId } from "./auth.ts";
 import { PersonEmail, normalizePersonEmail } from "../people-contract.ts";
 
 export const defaultMailboxId = "personal";
-export const MailboxId = Schema.String.check(
-  Schema.isPattern(/^[a-zA-Z0-9_-]{1,64}$/u),
-);
+import { MailboxId } from "@oneapp/core/mail-import";
+export { MailboxId } from "@oneapp/core/mail-import";
 export type MailDatabase = D1Database & { readonly mailboxId: string };
 
 // Scope is explicit at every mail query; this adapter does not rewrite SQL.

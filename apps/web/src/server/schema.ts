@@ -1,6 +1,14 @@
-export { mailboxes, mailboxAddresses, mailDomainRoutes } from "./mailbox-tables.ts";
+export {
+  mailboxes,
+  mailboxAddresses,
+  mailDomainRoutes,
+} from "./mailbox-tables.ts";
 import { authTables } from "./database.ts";
-export { mailImports, mailImportCompletions } from "./mail-import-tables.ts";
+export {
+  mailImports,
+  mailImportCompletions,
+  mailImportRuns,
+} from "./mail-import-tables.ts";
 export { people, personAddresses, companyDomains } from "./people-tables.ts";
 export {
   mailIndexKeys,

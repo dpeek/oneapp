@@ -1,11 +1,12 @@
 import { createStylexBunPlugin } from "@stylexjs/unplugin/bun";
-import { rename, rm } from "node:fs/promises";
+import { cp, rename, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { stylexOptions } from "./stylex-options.ts";
 
 const output = new URL("./dist/", import.meta.url);
 const stylexCss = new URL("stylex.css", output);
 await rm(output, { recursive: true, force: true });
+await cp(new URL("./public/", import.meta.url), output, { recursive: true });
 await Bun.build({
   entrypoints: [fileURLToPath(new URL("./index.html", import.meta.url))],
   outdir: fileURLToPath(output),

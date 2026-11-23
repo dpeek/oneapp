@@ -1,7 +1,7 @@
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Alchemy from "alchemy";
 import * as Output from "alchemy/Output";
-import { Config, Effect, Layer, Option } from "effect";
+import { Config, Effect, Layer, Option, Redacted } from "effect";
 import {
   forgotPasswordPage,
   resetPasswordPage,
@@ -112,9 +112,18 @@ export const Web = Cloudflare.Worker(
         traces: { enabled: true, headSamplingRate: 1, persist: true },
         issues: { enabled: true },
       },
-      crons: ["*/15 * * * *"],
+      crons: ["* * * * *"],
       env: {
         DB: Database,
+        PUSH_PUBLIC_KEY: Config.String("PUSH_PUBLIC_KEY").pipe(
+          Config.withDefault(""),
+        ),
+        PUSH_PRIVATE_KEY: Config.Redacted("PUSH_PRIVATE_KEY").pipe(
+          Config.withDefault(Redacted.make("")),
+        ),
+        PUSH_SUBJECT: Config.String("PUSH_SUBJECT").pipe(
+          Config.withDefault(""),
+        ),
         MAILBOX_ALIASES: Config.String("MAILBOX_ALIASES").pipe(
           Config.withDefault(""),
         ),

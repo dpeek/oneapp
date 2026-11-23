@@ -318,6 +318,7 @@ const describeStoredInbox = async (bucket: InboxBucket, object: R2Object) => {
     folder: "inbox" as const,
     timestamp: object.uploaded.getTime(),
     unread: object.customMetadata?.initialUnread === "1",
+    notifyIncoming: object.customMetadata?.notifyIncoming === "1",
     from,
     to,
     envelopeRecipient: object.customMetadata?.envelopeTo,
@@ -344,6 +345,16 @@ const describePeople = (email: Email | null, from: string, to: string) =>
         .join(", "),
     from,
     to,
+  );
+
+export const recoverIncomingMail = (env: InboxEnv) =>
+  scanMail(
+    env.DB,
+    "inbox",
+    env.INBOX_MESSAGES,
+    (object) => describeStoredInbox(env.INBOX_MESSAGES, object),
+    true,
+    true,
   );
 
 export const syncMailIndex = async (env: InboxEnv, reconcile = false) => {

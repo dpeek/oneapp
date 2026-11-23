@@ -4,6 +4,7 @@ export {
   mailDomainRoutes,
 } from "./mailbox-tables.ts";
 import { authTables } from "./database.ts";
+export { pushSubscriptions, mailPushOutbox } from "./push-tables.ts";
 export {
   mailImports,
   mailImportCompletions,

@@ -13,6 +13,7 @@
     "@stylexjs/unplugin": "0.19.2",
     "@types/html-to-text": "9.0.4",
     "@types/sanitize-html": "^2.16.2",
+    "@types/web-push": "^3.6.4",
     "vite": "8.3.5"
   },
   "dependencies": {
@@ -35,6 +36,7 @@
     "pdfjs-dist": "6.5.438",
     "postal-mime": "4.2.1",
     "sanitize-html": "^2.18.2",
-    "tldts": "^7.5.5"
+    "tldts": "^7.5.5",
+    "web-push": "^4.0.0"
   }
 }

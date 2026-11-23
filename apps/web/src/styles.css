@@ -10,6 +10,12 @@
   --muted: light-dark(#53576b, #b8bbcf);
   --border: light-dark(#dcdeea, #3c4055);
   --selected: light-dark(#eeecfc, #2a2845);
+  background-color: var(--surface);
+  color: var(--text);
+}
+
+body {
+  background-color: var(--surface);
 }
 
 .standalone {
@@ -35,13 +41,27 @@ dialog .notification-host {
 }
 
 .app-shell {
+  --top-safe-area: env(safe-area-inset-top, 0px);
   --nav-size: 3.75rem;
   --bottom-nav-size: 0px;
   min-height: 100svh;
   background: var(--canvas);
   color: var(--text);
   padding-inline-start: var(--nav-size);
+  padding-block-start: var(--top-safe-area);
   box-sizing: border-box;
+}
+
+/* Give iOS a solid surface behind its status bar. Controls and scrolling
+   content start below it, rather than underneath the system's edge effect. */
+.app-shell::before {
+  content: "";
+  position: fixed;
+  inset: 0 0 auto;
+  block-size: var(--top-safe-area);
+  background: var(--surface);
+  z-index: 2;
+  pointer-events: none;
 }
 
 body:has(.app-shell) {
@@ -58,7 +78,7 @@ body:has(.app-shell) {
   flex-direction: column;
   align-items: center;
   gap: 0.5rem;
-  padding-block: 1rem;
+  padding-block: calc(1rem + var(--top-safe-area)) 1rem;
   border-inline-end: 1px solid var(--border);
   background: var(--surface);
 }
@@ -171,7 +191,7 @@ oneapp-vault-reader {
     "header items detail" auto
     "filters items detail" minmax(0, 1fr)
     / var(--workspace-sidebar-width) clamp(17rem, 29vw, 32rem) minmax(0, 1fr);
-  block-size: calc(100dvh - var(--bottom-nav-size));
+  block-size: calc(100dvh - var(--bottom-nav-size) - var(--top-safe-area));
   background: var(--surface);
 }
 

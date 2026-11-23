@@ -14,6 +14,45 @@ bun run build
 
 Run `bun fmt` to format and `bun check` to type-check. `bun run test` runs Vitest on Bun with `@effect/vitest`, and `bun run test:watch` reruns tests as you edit. `bun run verify` formats files, then checks types and runs tests.
 
+## Mobile mail notifications
+
+OneApp can be installed as a PWA and receive private new-mail alerts while closed.
+To enable delivery on a deployment:
+
+1. Run `bun run push:keys` once and store the printed `PUSH_PUBLIC_KEY` and
+   `PUSH_PRIVATE_KEY` in that stage's environment. Keep the private key secret
+   and both keys stable across deployments.
+2. Set `PUSH_SUBJECT` to a contact URI such as `mailto:mail@dpeek.com`.
+3. Run `bun run deploy` to apply the migration and publish the Worker and PWA.
+4. On iPhone/iPad (iOS 16.4+), use Share → Add to Home Screen, open OneApp from
+   its icon, sign in, and choose **Settings → Notifications → Enable notifications**.
+   Supported desktop/Android browsers can also opt in.
+
+Only live incoming mail creates alerts. Imports, sent mail and read/archive
+changes do not. Alerts contain no sender, subject or message body. Tapping an
+alert opens that message in All Mail, preserving the destination through sign-in.
+The service worker caches only a static offline page; reading mail requires a
+connection.
+
+Subscriptions belong to the browser session. Signing out removes that session's
+server subscriptions and unsubscribes the current browser. Expiry, password/email
+changes and account revocation stop delivery; sign in and enable notifications
+again. Settings checks both browser permission and server registration.
+
+Push work is committed atomically with the mail index, delivered immediately,
+and retried by a one-minute cron with exponential backoff and `Retry-After`.
+Recovery scans recognize live mail from R2 metadata. Jobs expire after 24 hours;
+404/410 push endpoints are removed. A stable notification tag reduces duplicates
+if a push provider accepts a request but its response is lost. Delivery is
+at-least-once, not an exactly-once guarantee. Provider acceptance also does not
+prove that a phone displayed the alert.
+
+Before switching the primary mail address, test on the actual phone: locked and
+closed-app delivery, tapping the correct message, reauthentication, lost
+connectivity, disabling/re-enabling notifications, and confirming that imports
+produce no alerts. Automated tests cover the outbox, encryption, retry/revocation,
+registration authorization, permission handling and service-worker navigation.
+
 ## Local Mail fixtures
 
 After starting the local Alchemy Worker, run `bun run mail:seed` and refresh **Mail** (`/mail`). The sample mailbox includes single messages, a long thread with a sent reply and an attachment, newsletters in **Noise**, and an archived conversation. The command targets the local `dev_ui` stage by default. Use `bun run mail:seed --stage <stage>` for a different local stage. Rerunning the command preserves existing messages and their read or archive state.

@@ -446,8 +446,15 @@ export const changes = Stream.callback<Message>(
             delay = Math.min(delay * 2, 30_000);
           };
         };
+        const resumed = () => {
+          if (document.visibilityState !== "hidden") changed();
+        };
+        document.addEventListener("visibilitychange", resumed);
+        window.addEventListener("online", resumed);
         connect();
         return () => {
+          document.removeEventListener("visibilitychange", resumed);
+          window.removeEventListener("online", resumed);
           stopped = true;
           window.clearTimeout(retry);
           socket?.close();
@@ -2918,12 +2925,15 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
           [
             button(
               {
-                variant: "outline",
+                variant: "ghost",
+                size: "icon",
+                rounded: true,
+                ariaLabel: "Mail folders",
                 dialogId: model.folderSheet.id,
                 onClick: Message.GotFolderSheetMessage({
                   message: Sheet.Message.RequestedOpen(),
                 }),
-                children: ["Folders"],
+                children: [mailIcon(h, "M4 6h16M4 12h16M4 18h16")],
               },
               h,
             ),

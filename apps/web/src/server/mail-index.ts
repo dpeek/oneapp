@@ -20,6 +20,7 @@ import {
   withSenderAppearances,
 } from "./mail-sender-appearance.ts";
 import { mailPeople } from "./mail-people.ts";
+import { enqueueMailPush, pushLifetimeMs } from "./push-store.ts";
 
 export type IndexedMail = ConversationMessage & {
   messageIds: readonly string[];
@@ -27,6 +28,7 @@ export type IndexedMail = ConversationMessage & {
   listMail?: boolean;
   initialArchived?: boolean;
   envelopeRecipient?: string;
+  notifyIncoming?: boolean;
 };
 
 export const isMailingList = (listId: string | null | undefined) =>
@@ -158,6 +160,9 @@ export const indexMailStatements = async (
     `,
       )
       .bind(localIdentity(id)),
+    ...(mail.notifyIncoming && folder === "inbox"
+      ? [enqueueMailPush(db, id, timestamp)]
+      : []),
   ];
 };
 
@@ -525,8 +530,13 @@ export const scanMail = async (
   bucket: R2Bucket,
   describe: (object: R2Object) => Promise<IndexedMail | null>,
   reconcile: boolean,
+  incomingOnly = false,
 ) => {
-  const scanId = folder === "inbox" ? "inbox:list-mail" : "sent:people";
+  const scanId = incomingOnly
+    ? "inbox:push"
+    : folder === "inbox"
+      ? "inbox:list-mail"
+      : "sent:people";
   const state = await db
     .prepare(
       `SELECT cursor, scanned_at AS scannedAt, ready FROM mail_index_scans WHERE mailbox_id = ${mailboxSql(db)} AND folder = ?`,
@@ -545,20 +555,37 @@ export const scanMail = async (
       : null;
   const page = await bucket.list({
     limit: scanSize,
+    ...(incomingOnly ? { prefix: "0-" } : {}),
     cursor: state?.cursor ?? undefined,
     include: ["customMetadata"],
   });
-  if (page.objects.length) {
+  const cutoff = Date.now() - pushLifetimeMs;
+  const objects = incomingOnly
+    ? page.objects.filter(
+        (object) =>
+          object.customMetadata?.notifyIncoming === "1" &&
+          object.uploaded.getTime() >= cutoff,
+      )
+    : page.objects;
+  // The separate recent-mail scan cannot get stuck behind a historical import.
+  // Native incoming keys sort by reversed receipt time; stop at the push TTL.
+  const lastKey = page.objects.at(-1)?.key;
+  const beforeCutoff =
+    incomingOnly &&
+    lastKey &&
+    9_999_999_999_999 - Number(lastKey.slice(2, 15)) < cutoff;
+  const more = page.truncated && !beforeCutoff;
+  if (objects.length) {
     const { results } = await db
       .prepare(
         `SELECT id FROM mail_index_messages
          WHERE mailbox_id = ${mailboxSql(db)} AND (deleted <> 0 OR (people IS NOT NULL AND (folder = 'sent' OR list_mail IS NOT NULL)))
            AND id IN (SELECT value FROM json_each(?))`,
       )
-      .bind(JSON.stringify(page.objects.map(({ key }) => key)))
+      .bind(JSON.stringify(objects.map(({ key }) => key)))
       .all<{ id: string }>();
     const known = new Set(results.map(({ id }) => id));
-    const missing = page.objects.filter(({ key }) => !known.has(key));
+    const missing = objects.filter(({ key }) => !known.has(key));
     const indexed: IndexedMail[] = [];
     for (let offset = 0; offset < missing.length; offset += 4) {
       const messages = await Promise.all(
@@ -570,7 +597,7 @@ export const scanMail = async (
       await db.batch(
         (
           await Promise.all(
-            indexed.map((mail) => indexMailStatements(db, mail)),
+            indexed.map((mail) => indexMailStatements(db, mail, incomingOnly)),
           )
         ).flat(),
       );
@@ -585,7 +612,7 @@ export const scanMail = async (
     )
     .bind(
       scanId,
-      page.truncated ? page.cursor : null,
+      more && page.truncated ? page.cursor : null,
       Date.now(),
       state?.ready || !page.truncated ? 1 : 0,
       state?.cursor ?? null,

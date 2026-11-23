@@ -1,4 +1,9 @@
 import "./mail-editor.ts";
+import * as PushSettings from "./push-settings.ts";
+import {
+  clearPushAfterSignOut,
+  registerServiceWorker,
+} from "./push-browser.ts";
 import {
   authorizationFromFragment,
   bitwardenSignInQuery,
@@ -62,6 +67,7 @@ const Model = Schema.Struct({
   account: Schema.NullOr(Account),
   sessionCheck: Schema.Literals(["checking", "failed", "resolved"]),
   accountSettings: AccountSettings.Model,
+  pushSettings: PushSettings.Model,
   vaultSetup: VaultSetup.Model,
   inbox: Inbox.Model,
   people: People.Model,
@@ -89,6 +95,7 @@ const Message = defineMessageUnion({
   ClickedSignOut: {},
   LoadedAccount: { account: Schema.NullOr(Account) },
   GotAccountSettingsMessage: { message: AccountSettings.Message },
+  GotPushSettingsMessage: { message: PushSettings.Message },
   CompletedAccountSettingsRequest: {
     request: Schema.String,
     message: AccountSettings.Message,
@@ -116,6 +123,15 @@ const connectingMcp =
 const toAccountSettingsMessage = (
   message: typeof AccountSettings.Message.Type,
 ) => Message.GotAccountSettingsMessage({ message });
+const toPushSettingsMessage = (message: typeof PushSettings.Message.Type) =>
+  Message.GotPushSettingsMessage({ message });
+const foldPushSettings = Update.foldChild({
+  update: PushSettings.update,
+  read: (model: Model) =>
+    model.account ? Option.some(model.pushSettings) : Option.none(),
+  write: (model, pushSettings) => ({ ...model, pushSettings }),
+  toParentMessage: toPushSettingsMessage,
+});
 const toVaultSetupMessage = (message: typeof VaultSetup.Message.Type) =>
   Message.GotVaultSetupMessage({ message });
 const foldVaultSetup = Update.foldChild({
@@ -339,6 +355,7 @@ const SignOut = Command.define("SignOut", {
     Effect.gen(function* () {
       const client = yield* AuthClient;
       yield* client.auth.signOut();
+      yield* Effect.tryPromise(clearPushAfterSignOut).pipe(Effect.ignore);
       return Message.LoadedAccount({ account: null });
     }).pipe(
       Effect.provide(AuthClient.layerFetch),
@@ -418,12 +435,17 @@ const loadPage = (
     profile.model,
     ConnectedClients.Message.Requested(),
   );
+  const push = foldPushSettings(
+    clients.model,
+    PushSettings.Message.Requested(),
+  );
   return {
-    model: clients.model,
+    model: push.model,
     commands: [
       ...(notifications.commands ?? []),
       ...(profile.commands ?? []),
       ...(clients.commands ?? []),
+      ...(push.commands ?? []),
     ],
   };
 };
@@ -436,6 +458,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     account: null,
     sessionCheck: "checking",
     accountSettings: AccountSettings.initial,
+    pushSettings: PushSettings.initial,
     vaultSetup: VaultSetup.initial,
     inbox: Inbox.initial,
     people: People.initial,
@@ -552,6 +575,7 @@ const update = (
         account,
         sessionCheck: "resolved",
         accountSettings: AccountSettings.initial,
+        pushSettings: PushSettings.initial,
         vaultSetup: VaultSetup.initial,
         inbox: Inbox.initial,
         people: People.initial,
@@ -586,6 +610,7 @@ const update = (
       model.accountSettings.pending !== null
         ? update(model, Message.GotAccountSettingsMessage({ message }))
         : { model },
+    GotPushSettingsMessage: ({ message }) => foldPushSettings(model, message),
     GotAccountSettingsMessage: ({ message }) => {
       const account = model.account;
       if (!account) return { model };
@@ -1043,6 +1068,11 @@ const settingsView = (model: Model, h: HtmlBuilder<Message>) =>
                         ),
                       ]
                     : []),
+                  PushSettings.view(
+                    model.pushSettings,
+                    toPushSettingsMessage,
+                    h,
+                  ),
                   h.submodel({
                     slotId: "connected-clients",
                     view: ConnectedClients.view,
@@ -1239,6 +1269,11 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
     ),
   };
 };
+
+if (window.isSecureContext && "serviceWorker" in navigator)
+  void registerServiceWorker().catch(() => {
+    /* Settings exposes registration failures. */
+  });
 
 if (bitwardenAuthorization && !connectingBitwarden) {
   window.location.replace(bitwardenAuthorization);

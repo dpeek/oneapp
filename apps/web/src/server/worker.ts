@@ -1,4 +1,7 @@
 import { mailImportRoutes } from "./mail-import-api.ts";
+import { pushRoutes } from "./push-api.ts";
+import { deliverMailPush, type PushEnv } from "./push-delivery.ts";
+import { removeSessionPush } from "./push-store.ts";
 import {
   defaultMailboxId,
   ensureDefaultMailbox,
@@ -47,6 +50,7 @@ import {
   inboxSessionHeaders,
   inboxSubject,
   notifyInbox,
+  recoverIncomingMail,
   syncMailIndex,
 } from "./inbox.ts";
 import { collectMailTrash } from "./mail-trash.ts";
@@ -92,7 +96,8 @@ export default {
       WorkerEnv,
       "DB" | "INBOX_EMAIL_ADDRESS" | "INBOX_MESSAGES" | "INBOX_UPDATES"
     > &
-      Partial<Pick<WorkerEnv, "MAILBOX_ALIASES" | "INBOX_EMAIL_FROM">>,
+      Partial<Pick<WorkerEnv, "MAILBOX_ALIASES" | "INBOX_EMAIL_FROM">> &
+      PushEnv,
     context?: { waitUntil(promise: Promise<unknown>): void },
   ) {
     await ensureDefaultMailbox(
@@ -119,6 +124,7 @@ export default {
         envelopeTo: message.to,
         subject,
         initialUnread: "1",
+        notifyIncoming: "1",
       },
     });
     await indexMail(
@@ -132,6 +138,7 @@ export default {
         to: message.to,
         envelopeRecipient: message.to,
         unread: true,
+        notifyIncoming: true,
         listMail: isMailingList(message.headers.get("list-id")),
         people: mailPeople(
           (name) => message.headers.get(name),
@@ -142,26 +149,41 @@ export default {
       },
       { reopensArchive: true },
     ).catch(() => console.warn("Could not index incoming email"));
-    const notify = notifyInbox({ ...env, DB: db });
+    const notify = Promise.all([
+      notifyInbox({ ...env, DB: db }),
+      deliverMailPush(env).catch(() =>
+        console.warn("Could not process mail push outbox"),
+      ),
+    ]);
     if (context) context.waitUntil(notify);
     else await notify;
   },
-  async scheduled(_event: unknown, env: WorkerEnv) {
+  async scheduled(event: { scheduledTime?: number }, env: WorkerEnv) {
+    await deliverMailPush(env);
+    // Retry push and recover recent arrivals every minute; retain the existing
+    // 15-minute maintenance cadence for full scans and garbage collection.
+    const maintenance =
+      event.scheduledTime === undefined ||
+      Math.floor(event.scheduledTime / 60_000) % 15 === 0;
     await ensureDefaultMailbox(
       env.DB,
       env.INBOX_EMAIL_ADDRESS,
       env.INBOX_EMAIL_FROM,
       env.MAILBOX_ALIASES,
     );
-    await collectAttachments(env.DB, env.VAULT_FILES);
+    if (maintenance) await collectAttachments(env.DB, env.VAULT_FILES);
     const { results } = await env.DB.prepare("SELECT id FROM mailboxes").all<{
       id: string;
     }>();
     for (const { id } of results) {
       const store = { ...scopeMailStore(env, id), mailboxAddresses: [] };
-      await collectMailTrash(store);
-      await syncMailIndex(store, true);
+      await recoverIncomingMail(store);
+      if (maintenance) {
+        await collectMailTrash(store);
+        await syncMailIndex(store, true);
+      }
     }
+    await deliverMailPush(env);
   },
   async fetch(
     request: Request,
@@ -418,6 +440,7 @@ export default {
             accepted: () => emailAccepted,
             limit: (input) => env.ACCOUNT_EMAIL_LIMIT.limit(input),
           }),
+          pushRoutes(http, env),
           emailChangeRoutes(
             http,
             secret,
@@ -472,7 +495,15 @@ export default {
         url.searchParams.set("scope", mcpLinkScopes.join(" "));
         return await app.handler(new Request(url, request));
       }
-      return await app.handler(request);
+      const signingOut =
+        path === "/api/auth/signOut" && request.method === "POST";
+      const signingOutSession = signingOut
+        ? await verifyBrowserSession()
+        : null;
+      const response = await app.handler(request);
+      if (response.ok && signingOutSession)
+        await removeSessionPush(env.DB, signingOutSession.sessionId);
+      return response;
     } finally {
       await app.dispose();
     }

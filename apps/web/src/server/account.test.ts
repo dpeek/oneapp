@@ -93,6 +93,7 @@ import { mcpOAuth } from "./mcp-oauth.ts";
 import worker from "./worker.ts";
 import { collectMailTrash, mailRetentionMs } from "./mail-trash.ts";
 import { indexMail, setSenderRule } from "./mail-index.ts";
+import { generateVAPIDKeys } from "web-push";
 
 const email = "owner@example.net";
 const password = "p".repeat(43);
@@ -109,6 +110,9 @@ const setup = async (
       | "INBOX_EMAIL_FROM"
       | "SENT_MESSAGES"
       | "PROFILE_PHOTOS"
+      | "PUSH_PUBLIC_KEY"
+      | "PUSH_PRIVATE_KEY"
+      | "PUSH_SUBJECT"
     >
   > & { INBOX_SEND?: SendEmail; INBOX_SEND_LIMIT?: RateLimit },
 ) => {
@@ -248,6 +252,7 @@ const setup = async (
     env.MAILBOX_ALIASES,
   );
   return {
+    env,
     call,
     db: mailDatabase(env.DB, "personal"),
     request,
@@ -5266,4 +5271,165 @@ it("imports through a separately approved CLI permission with pinned plans, boun
   expect((await api(base)).status).toBe(403);
   sqlite.query("DELETE FROM cli_tokens WHERE id = ?").run(approval.id);
   expect((await api(base)).status).toBe(401);
+});
+
+it("registers push for the signed-in mailbox, checks status, validates destinations, and removes it on logout", async () => {
+  using sqlite = new Database(":memory:");
+  const vapid = generateVAPIDKeys();
+  const receiver = generateVAPIDKeys();
+  const { call, request, signIn, cookies } = await setup(sqlite, {
+    PUSH_PUBLIC_KEY: vapid.publicKey,
+    PUSH_PRIVATE_KEY: vapid.privateKey,
+    PUSH_SUBJECT: "mailto:mail@example.com",
+  });
+  const input = {
+    endpoint: "https://web.push.apple.com/test-device",
+    keys: {
+      p256dh: receiver.publicKey,
+      auth: Buffer.alloc(16, 1).toString("base64url"),
+    },
+  };
+  expect((await call("/api/push")).status).toBe(401);
+  expect((await call("/api/push/subscription", input)).status).toBe(401);
+  const cookie = cookies(await signIn(password));
+  expect(await (await call("/api/push", undefined, cookie)).json()).toEqual({
+    publicKey: vapid.publicKey,
+  });
+  expect(
+    (
+      await call(
+        "/api/push/subscription",
+        input,
+        cookie,
+        "https://attacker.example",
+      )
+    ).status,
+  ).toBe(403);
+  expect(
+    (
+      await request("/api/push/subscription", {
+        method: "POST",
+        headers: {
+          cookie,
+          origin: "https://oneapp.example",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(input),
+      })
+    ).status,
+  ).toBe(403);
+  for (const endpoint of [
+    "http://web.push.apple.com/token",
+    "https://127.0.0.1/private",
+    "https://web.push.apple.com.attacker.test/token",
+    "https://user:password@web.push.apple.com/token",
+    "https://web.push.apple.com:444/token",
+  ]) {
+    expect(
+      (await call("/api/push/subscription", { ...input, endpoint }, cookie))
+        .status,
+    ).toBe(400);
+  }
+  expect(
+    (
+      await call(
+        "/api/push/subscription",
+        { ...input, keys: { ...input.keys, auth: "invalid" } },
+        cookie,
+      )
+    ).status,
+  ).toBe(400);
+  expect(
+    (
+      await call(
+        "/api/push/subscription",
+        { ...input, keys: { ...input.keys, p256dh: "B" + "A".repeat(86) } },
+        cookie,
+      )
+    ).status,
+  ).toBe(400);
+  expect((await call("/api/push/subscription", input, cookie)).status).toBe(
+    204,
+  );
+  expect((await call("/api/push/subscription", input, cookie)).status).toBe(
+    204,
+  );
+  expect(
+    sqlite.query("SELECT mailbox_id FROM push_subscriptions").all(),
+  ).toEqual([{ mailbox_id: "personal" }]);
+  expect(
+    await (
+      await call("/api/push/status", { endpoint: input.endpoint }, cookie)
+    ).json(),
+  ).toEqual({ enabled: true });
+  expect((await call("/api/auth/signOut", {}, cookie)).status).toBe(200);
+  expect(sqlite.query("SELECT id FROM push_subscriptions").all()).toHaveLength(
+    0,
+  );
+  expect((await call("/api/push/subscription", input, cookie)).status).toBe(
+    401,
+  );
+});
+
+it("keeps push subscriptions isolated across devices and resets pending alerts when re-enabling in a new session", async () => {
+  using sqlite = new Database(":memory:");
+  const vapid = generateVAPIDKeys();
+  const { call, request, signIn, cookies, db } = await setup(sqlite, {
+    PUSH_PUBLIC_KEY: vapid.publicKey,
+    PUSH_PRIVATE_KEY: vapid.privateKey,
+    PUSH_SUBJECT: "mailto:mail@example.com",
+  });
+  const first = cookies(await signIn(password));
+  const second = cookies(await signIn(password));
+  const input = {
+    endpoint: "https://web.push.apple.com/first",
+    keys: {
+      p256dh: generateVAPIDKeys().publicKey,
+      auth: Buffer.alloc(16, 1).toString("base64url"),
+    },
+  };
+  await call("/api/push/subscription", input, first);
+  await call(
+    "/api/push/subscription",
+    { ...input, endpoint: "https://web.push.apple.com/second" },
+    second,
+  );
+  await indexMail(db, {
+    id: "incoming",
+    folder: "inbox",
+    from: "sender@example.com",
+    to: "mail@example.com",
+    subject: "test",
+    timestamp: Date.now() + 1,
+    unread: true,
+    messageIds: [],
+    notifyIncoming: true,
+  });
+  expect(sqlite.query("SELECT * FROM mail_push_outbox").all()).toHaveLength(2);
+  expect(
+    await (
+      await call("/api/push/status", { endpoint: input.endpoint }, second)
+    ).json(),
+  ).toEqual({ enabled: false });
+  const renewed = cookies(await signIn(password));
+  await call("/api/push/subscription", input, renewed);
+  expect(sqlite.query("SELECT * FROM mail_push_outbox").all()).toHaveLength(1);
+  await call("/api/auth/signOut", {}, first);
+  expect(sqlite.query("SELECT * FROM push_subscriptions").all()).toHaveLength(
+    2,
+  );
+  const removed = await request("/api/push/subscription", {
+    method: "DELETE",
+    headers: {
+      cookie: renewed,
+      origin: "https://oneapp.example",
+      "x-effect-auth-csrf": "1",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ endpoint: input.endpoint }),
+  });
+  expect(removed.status).toBe(204);
+  expect(sqlite.query("SELECT endpoint FROM push_subscriptions").all()).toEqual(
+    [{ endpoint: "https://web.push.apple.com/second" }],
+  );
 });

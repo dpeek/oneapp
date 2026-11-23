@@ -1,6 +1,8 @@
 import { Dialog } from "@foldkit/ui";
 import * as stylex from "@stylexjs/stylex";
 import type { Html, HtmlBuilder } from "foldkit/html";
+import { buttonClassName } from "./button.ts";
+import { outlineIcon } from "./icons.ts";
 import { controls } from "./tokens.stylex.ts";
 
 export const { Model, Message, init, update } = Dialog;
@@ -93,7 +95,22 @@ export const sheet = <ParentMessage>(
                           ],
                           [props.title],
                         ),
-                        h.button([...closeButton, ...initialFocus], ["Close"]),
+                        h.button(
+                          [
+                            ...closeButton,
+                            ...initialFocus,
+                            h.AriaLabel("Close menu"),
+                            h.DataAttribute("slot", "button"),
+                            h.Class(
+                              buttonClassName({
+                                variant: "ghost",
+                                size: "icon",
+                                rounded: true,
+                              }),
+                            ),
+                          ],
+                          [outlineIcon(h, ["M6 6l12 12M6 18L18 6"])],
+                        ),
                       ],
                     ),
                     props.content,

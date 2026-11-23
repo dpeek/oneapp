@@ -15,6 +15,7 @@
     "build": "bun run --parallel --filter './apps/*' build",
     "deploy": "bun scripts/deploy.ts",
     "db:generate": "bun --bun drizzle-kit generate --config apps/web/drizzle.config.ts",
+    "push:keys": "bun apps/web/push-keys.ts",
     "mail:seed": "bun scripts/seed-mail.ts",
     "mail:inventory": "bun scripts/mail-inventory.ts",
     "mail:dev": "bun scripts/mail-dev.ts",

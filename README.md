@@ -47,7 +47,16 @@ Create a private, Git-ignored `.env.preview` from `.env.example` and set its per
 bun --env-file=.env.preview run deploy --stage preview
 ```
 
-The deploy script uses the named `cf` profile locally. For CI, supply `CLOUDFLARE_API_TOKEN` and omit `CLOUDFLARE_AUTH_PROFILE`. A fresh stage gets its own Worker and database. `OWNER_EMAIL` and `OWNER_PASSWORD` are required only for the first provisioning of a database. Subsequent deploys use the existing owner in D1, including any email or password changes made in Settings. Use separate credentials for separate stages. Keep `.alchemy/state` private and available for subsequent deploys from the same checkout. It contains deployment secrets.
+The deploy script uses the named `cf` profile locally. For CI, supply `CLOUDFLARE_API_TOKEN` and omit `CLOUDFLARE_AUTH_PROFILE`. A fresh stage gets its own Worker and database. `OWNER_EMAIL` and `OWNER_PASSWORD` are required only for the first provisioning of a database. Subsequent deploys use the existing owner in D1, including any email or password changes made in Settings. Use separate credentials for separate stages. Local `alchemy dev` sessions keep their emulator state in `.alchemy/state`. Cloud deployments share encrypted state in the account’s Cloudflare `alchemy-state-store` Worker. The store uses a Durable Object and Cloudflare Secrets Store. Run deploys to the same stage one at a time; this version’s Cloudflare store does not provide a deployment-wide lock. Keep `.alchemy/` private: it caches state-store credentials. A fresh checkout uses the same remote state after authenticating to the same Cloudflare account.
+
+Use the same authentication wrapper for Alchemy maintenance commands:
+
+```sh
+bun --env-file=.env.preview scripts/alchemy.ts state list OneApp/preview
+bun --env-file=.env.preview scripts/alchemy.ts plan --stage preview
+```
+
+The existing `preview` stage has been recovered from live resource identities and moved to remote state. Do not restore its old `.alchemy/state` files over the remote store. For a new Cloudflare account, provision the store once with `bun --env-file=.env.preview scripts/alchemy.ts state bootstrap` before CI deployment. CI needs access to the state-store Worker and Secrets Store in addition to the application resources; set `CI=true` so missing state infrastructure fails rather than being provisioned implicitly. [Alchemy’s state-store documentation](https://alchemy.run/state-store/) describes credentials and bootstrap behavior.
 
 The main deployment uses `APP_DOMAIN=app.dpeek.com`. Alchemy attaches the hostname to the Worker, and Cloudflare manages DNS and TLS. Stages with a custom domain serve traffic on that domain. Stages without one use their `workers.dev` URL.
 

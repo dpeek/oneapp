@@ -1,7 +1,7 @@
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Alchemy from "alchemy";
 import * as Output from "alchemy/Output";
-import { Config, Effect, Option } from "effect";
+import { Config, Effect, Layer, Option } from "effect";
 import {
   forgotPasswordPage,
   resetPasswordPage,
@@ -171,7 +171,11 @@ export default Alchemy.Stack(
   "OneApp",
   {
     providers: Cloudflare.providers(),
-    state: Alchemy.localState(),
+    state: Layer.unwrap(
+      Effect.map(Alchemy.AlchemyContext, ({ dev }) =>
+        dev ? Alchemy.localState() : Cloudflare.state(),
+      ),
+    ),
   },
   Effect.gen(function* () {
     const inbox = yield* inboxRouting;

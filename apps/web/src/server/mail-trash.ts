@@ -48,7 +48,7 @@ export const visibleMail = async <T extends { id: string }>(
 export const trashMail = (db: MailDatabase, id: string, now = Date.now()) =>
   db
     .prepare(
-      `UPDATE mail_index_messages SET deleted = 1, deleted_at = ? WHERE mailbox_id = ${mailboxSql(db)} AND id = ? AND deleted = 0`,
+      `UPDATE mail_index_messages SET deleted = 1, deleted_at = ?, trash_batch = NULL WHERE mailbox_id = ${mailboxSql(db)} AND id = ? AND deleted = 0`,
     )
     .bind(now, id)
     .run();
@@ -60,11 +60,38 @@ export const restoreMail = async (
 ) => {
   const result = await db
     .prepare(
-      `UPDATE mail_index_messages SET deleted = 0, deleted_at = NULL WHERE mailbox_id = ${mailboxSql(db)} AND id = ? AND deleted = 1 AND deleted_at > ? RETURNING id`,
+      `UPDATE mail_index_messages SET deleted = 0, deleted_at = NULL, trash_batch = NULL WHERE mailbox_id = ${mailboxSql(db)} AND id = ? AND deleted = 1 AND deleted_at > ? RETURNING id`,
     )
     .bind(id, now - mailRetentionMs)
     .first();
   return Boolean(result);
+};
+
+export const trashConversation = async (db: MailDatabase, id: string) => {
+  const mailbox = mailboxSql(db);
+  const batchId = crypto.randomUUID();
+  const { results } = await db
+    .prepare(
+      `UPDATE mail_index_messages SET deleted = 1, deleted_at = ?, trash_batch = ?
+       WHERE mailbox_id = ${mailbox} AND deleted = 0 AND thread_id = (
+         SELECT thread_id FROM mail_index_messages WHERE mailbox_id = ${mailbox} AND id = ?
+       ) RETURNING id`,
+    )
+    .bind(Date.now(), batchId, id)
+    .all<{ id: string }>();
+  return { batchId, ids: results.map(({ id }) => id) };
+};
+
+export const restoreTrashBatch = async (db: MailDatabase, batchId: string) => {
+  const { results } = await db
+    .prepare(
+      `UPDATE mail_index_messages SET deleted = 0, deleted_at = NULL, trash_batch = NULL
+       WHERE mailbox_id = ${mailboxSql(db)} AND trash_batch = ? AND deleted = 1 AND deleted_at > ?
+       RETURNING id`,
+    )
+    .bind(batchId, Date.now() - mailRetentionMs)
+    .all<{ id: string }>();
+  return { ids: results.map(({ id }) => id) };
 };
 
 export const listTrash = async (

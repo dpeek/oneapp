@@ -28,7 +28,6 @@ import {
   PersonLookup,
   personNameLimit,
   contactPath,
-  personPhotoPath,
   type PersonSummary,
   profilePhotoSize,
   selfProfilePath,
@@ -778,21 +777,6 @@ export const profileInitials = (name: string, address: string) => {
       .toLocaleUpperCase() || "?"
   );
 };
-
-export const avatar = <Message>(
-  h: HtmlBuilder<Message>,
-  person: PersonSummary | null | undefined,
-  address: string,
-  suggestedName?: string,
-) =>
-  h.span(
-    [h.Class("person-avatar"), h.AriaHidden(true)],
-    [
-      person?.photo
-        ? h.img([h.Src(personPhotoPath(person.id, person.photo)), h.Alt("")])
-        : profileInitials(person?.name || suggestedName || "", address),
-    ],
-  );
 
 export const profileAvatar = <Parent>(
   h: HtmlBuilder<Parent>,

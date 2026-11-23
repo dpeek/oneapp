@@ -1,0 +1,2 @@
+ALTER TABLE `mail_index_messages` ADD `trash_batch` text;--> statement-breakpoint
+CREATE INDEX `mail_index_trash_batch` ON `mail_index_messages` (`mailbox_id`,`trash_batch`) WHERE trash_batch IS NOT NULL;

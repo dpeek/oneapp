@@ -913,7 +913,10 @@ const update = (
         model.inbox.recovery.request === message.message.request &&
         model.inbox.recovery.restoring === message.message.id &&
         model.mailRoute?.folder === "trash" &&
-        model.mailRoute.id === message.message.id
+        model.mailRoute.id &&
+        (message.message.members?.ids ?? [message.message.id]).includes(
+          model.mailRoute.id,
+        )
       )
         return {
           ...result,
@@ -953,8 +956,10 @@ const update = (
         message._tag === "DeletedEntry" &&
         deleting?.request === message.request &&
         deleting.id === message.id &&
-        model.mailRoute &&
-        model.mailRoute.id === message.id
+        Boolean(deleting.conversationView) === Boolean(message.conversation) &&
+        model.mailRoute?.id &&
+        model.mailRoute.folder !== "trash" &&
+        (message.conversation?.ids ?? [message.id]).includes(model.mailRoute.id)
       ) {
         return {
           ...result,

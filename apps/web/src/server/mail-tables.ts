@@ -25,6 +25,7 @@ export const mailIndexMessages = sqliteTable(
     timestamp: integer().notNull(),
     deleted: integer().notNull().default(0),
     deletedAt: integer("deleted_at"),
+    trashBatch: text("trash_batch"),
     unread: integer().notNull().default(0),
     archived: integer().notNull().default(0),
     people: text(),
@@ -38,6 +39,9 @@ export const mailIndexMessages = sqliteTable(
       table.deleted,
       table.deletedAt,
     ),
+    index("mail_index_trash_batch")
+      .on(table.mailboxId, table.trashBatch)
+      .where(sql`trash_batch IS NOT NULL`),
     index("mail_index_folder_date").on(
       table.mailboxId,
       table.folder,

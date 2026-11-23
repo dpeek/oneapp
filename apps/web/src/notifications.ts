@@ -2,10 +2,14 @@ import { Toast } from "@oneapp/ui";
 import { Schema } from "effect";
 import { Command, type Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";
-import { MailMessageId } from "./inbox-contract.ts";
+import { MailMessageId, TrashBatchId } from "./inbox-contract.ts";
 
 export const Action = defineMessageUnion({
-  RestoreMail: { id: MailMessageId, subject: Schema.optional(Schema.String) },
+  RestoreMail: {
+    id: MailMessageId,
+    subject: Schema.optional(Schema.String),
+    batchId: Schema.optionalKey(TrashBatchId),
+  },
 });
 export type Action = typeof Action.Type;
 

@@ -10,6 +10,9 @@ export const conversationsApiPath = `${inboxApiPath}/conversations`;
 export const archiveApiPath = `${inboxApiPath}/archive`;
 export const allMailApiPath = `${inboxApiPath}/all`;
 export const trashApiPath = `${inboxApiPath}/trash`;
+export const trashBatchApiPath = `${trashApiPath}/batches`;
+export const trashBatchRestoreApi = (batchId: string) =>
+  `${trashBatchApiPath}/${batchId}/restore`;
 export const noiseApiPath = `${inboxApiPath}/noise`;
 export const noiseSendersApiPath = `${inboxApiPath}/noise-senders`;
 export const NoiseSenders = Schema.Struct({
@@ -120,6 +123,14 @@ export const SentMessageId = Schema.String.check(
   Schema.isPattern(/^0-\d{13}-[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/u),
 );
 export const MailMessageId = Schema.Union([InboxMessageId, SentMessageId]);
+export const TrashBatchId = Schema.String.check(Schema.isUUID(4));
+export const TrashBatchMembers = Schema.Struct({
+  ids: Schema.Array(MailMessageId),
+});
+export const TrashedConversation = Schema.Struct({
+  ...TrashBatchMembers.fields,
+  batchId: TrashBatchId,
+});
 
 const isInboxMessageId = Schema.is(InboxMessageId);
 const isSentMessageId = Schema.is(SentMessageId);

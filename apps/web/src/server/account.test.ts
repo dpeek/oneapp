@@ -47,6 +47,9 @@ import {
   sentApiPath,
   sentCopyHeader,
   sentMessageHeader,
+  trashApiPath,
+  trashBatchRestoreApi,
+  TrashedConversation,
 } from "../inbox-contract.ts";
 import {
   codexClientId,
@@ -1856,6 +1859,105 @@ it("returns sanitized HTML and CID images alongside plain text, with a bounded f
   ).json();
   expect(fallback).toMatchObject({ text: "Plain body", preview: "truncated" });
   expect(fallback).not.toHaveProperty("html");
+});
+
+it("trashes a conversation across Inbox and Sent and restores only that deletion batch", async () => {
+  using sqlite = new Database(":memory:");
+  const { call, db, request, signIn, cookies } = await setup(sqlite);
+  const session = cookies(await signIn(password));
+  const id = (n: number) =>
+    `0-8199999999990-00000000-0000-4000-8000-00000000000${n}`;
+  const [anchor, sent, alreadyTrashed, arrival] = [
+    `${id(1)}.eml`,
+    id(2),
+    `${id(3)}.eml`,
+    `${id(4)}.eml`,
+  ];
+  const message = {
+    from: "alex@example.net",
+    to: email,
+    subject: "A conversation",
+    timestamp: 10,
+    messageIds: ["<conversation@example.net>"],
+  };
+  await indexMail(db, {
+    ...message,
+    id: anchor,
+    folder: "inbox",
+    unread: true,
+    initialArchived: true,
+  });
+  await indexMail(db, { ...message, id: sent, folder: "sent", timestamp: 11 });
+  await indexMail(db, {
+    ...message,
+    id: alreadyTrashed,
+    folder: "inbox",
+    timestamp: 1,
+  });
+  sqlite.exec(`INSERT INTO mailboxes (id, owner_account_id, name)
+    SELECT 'work', owner_account_id, 'Work' FROM mailboxes WHERE id = 'personal'`);
+  await indexMail(mailDatabase(db, "work"), {
+    ...message,
+    id: anchor,
+    folder: "inbox",
+  });
+  const headers = {
+    cookie: session,
+    origin: "https://oneapp.example",
+    "x-effect-auth-csrf": "1",
+  };
+  const remove = (path: string, authorized: HeadersInit = headers) =>
+    request(path, { method: "DELETE", headers: authorized });
+  expect((await remove(inboxMessageApi(alreadyTrashed))).status).toBe(204);
+  expect((await remove(conversationApi(anchor), {})).status).toBe(401);
+  expect(
+    (
+      await remove(conversationApi(anchor), {
+        cookie: session,
+        origin: headers.origin,
+      })
+    ).status,
+  ).toBe(403);
+  const deleted = await remove(conversationApi(anchor));
+  expect(deleted.status).toBe(200);
+  const batch = Schema.decodeUnknownSync(TrashedConversation)(
+    await deleted.json(),
+  );
+  expect(new Set(batch.ids)).toEqual(new Set([anchor, sent]));
+  expect((await remove(conversationApi(anchor))).status).toBe(404);
+  const trash = await (await call(trashApiPath, undefined, session)).json();
+  expect(new Set(trash.messages.map(({ id }: { id: string }) => id))).toEqual(
+    new Set([anchor, sent, alreadyTrashed]),
+  );
+
+  await indexMail(db, {
+    ...message,
+    id: arrival,
+    folder: "inbox",
+    timestamp: 12,
+  });
+  const restorePath = trashBatchRestoreApi(batch.batchId);
+  const restored = await call(restorePath, {}, session);
+  expect(restored.status).toBe(200);
+  expect(new Set((await restored.json()).ids)).toEqual(new Set([anchor, sent]));
+  const state = (id: string, mailbox = "personal") =>
+    sqlite
+      .query(
+        "SELECT deleted, archived, unread FROM mail_index_messages WHERE mailbox_id = ? AND id = ?",
+      )
+      .get(mailbox, id);
+  expect(state(anchor)).toEqual({ deleted: 0, archived: 1, unread: 1 });
+  expect(state(sent)).toMatchObject({ deleted: 0 });
+  expect(state(alreadyTrashed)).toMatchObject({ deleted: 1 });
+  expect(state(arrival)).toMatchObject({ deleted: 0 });
+  expect(state(anchor, "work")).toMatchObject({ deleted: 0 });
+
+  expect((await remove(conversationApi(anchor))).status).toBe(200);
+  expect(await (await call(restorePath, {}, session)).json()).toEqual({
+    ids: [],
+  });
+  expect(state(anchor)).toMatchObject({ deleted: 1 });
+  expect(state(arrival)).toMatchObject({ deleted: 1 });
 });
 
 it("allows the owner to delete and recover stored mail before automatic expiry", async () => {

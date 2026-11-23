@@ -14,6 +14,10 @@ import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import {
   allMailApiPath,
   trashApiPath,
+  trashBatchApiPath,
+  TrashBatchId,
+  TrashBatchMembers,
+  TrashedConversation,
   archiveApiPath,
   Conversation,
   ConversationArchiveUpdate,
@@ -55,7 +59,9 @@ import {
   recoverableMail,
   visibleMail,
   trashMail,
+  trashConversation,
   restoreMail,
+  restoreTrashBatch,
   listTrash,
 } from "./mail-trash.ts";
 import { mailPreview } from "./mail-preview.ts";
@@ -1118,6 +1124,17 @@ export const inboxRoutes = (
     defer(notifyInbox(env));
     return HttpServerResponse.empty({ status: 204, headers: privateHeaders });
   });
+  const recoverBatch = Effect.gen(function* () {
+    const { batchId } = yield* HttpRouter.params;
+    if (!Schema.is(TrashBatchId)(batchId)) return yield* notFound();
+    const restored = yield* Effect.tryPromise(() =>
+      restoreTrashBatch(env.DB, batchId),
+    );
+    if (restored.ids.length) defer(notifyInbox(env));
+    return yield* HttpServerResponse.schemaJson(TrashBatchMembers)(restored, {
+      headers: privateHeaders,
+    });
+  });
   const recoveryRoutes = Layer.mergeAll(
     HttpRouter.add(
       "GET",
@@ -1164,6 +1181,20 @@ export const inboxRoutes = (
     ),
     HttpRouter.add("GET", `${trashApiPath}/:id`, read("trash")),
     HttpRouter.add("GET", `${trashApiPath}/:id/original`, read("trash", true)),
+    HttpRouter.add(
+      "POST",
+      `${trashBatchApiPath}/:batchId/restore`,
+      Effect.gen(function* () {
+        if (!(yield* requireInboxOwner))
+          return yield* jsonError(403, "Access denied");
+        return yield* http.protect(recoverBatch);
+      }).pipe(
+        Effect.catchTags({
+          ...inboxErrors,
+          HookDenied: () => jsonError(403, "Request not allowed"),
+        }),
+      ),
+    ),
     HttpRouter.add(
       "POST",
       `${inboxApiPath}/trash/:id/restore`,
@@ -1390,6 +1421,36 @@ export const inboxRoutes = (
           HookDenied: () => jsonError(403, "Request not allowed"),
           UnknownError: () =>
             jsonError(503, "Could not update Archive. Try again."),
+        }),
+      ),
+    ),
+    HttpRouter.add(
+      "DELETE",
+      `${conversationsApiPath}/:id`,
+      Effect.gen(function* () {
+        if (!(yield* requireInboxOwner))
+          return yield* jsonError(403, "Access denied");
+        return yield* http.protect(
+          Effect.gen(function* () {
+            const { id } = yield* HttpRouter.params;
+            if (!isMailMessageId(id)) return yield* notFound();
+            const deleted = yield* Effect.tryPromise(() =>
+              trashConversation(env.DB, id),
+            );
+            if (!deleted.ids.length) return yield* notFound();
+            defer(notifyInbox(env));
+            return yield* HttpServerResponse.schemaJson(TrashedConversation)(
+              deleted,
+              { headers: privateHeaders },
+            );
+          }),
+        );
+      }).pipe(
+        Effect.catchTags({
+          ...inboxErrors,
+          HookDenied: () => jsonError(403, "Request not allowed"),
+          UnknownError: () =>
+            jsonError(503, "Could not delete this conversation. Try again."),
         }),
       ),
     ),

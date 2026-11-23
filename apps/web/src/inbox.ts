@@ -11,10 +11,12 @@ import {
   marker,
   navigationLinks,
   noiseIconPath,
+  outlineIcon,
   Sheet,
   Popover,
   spinner,
   timestamp,
+  trashIconPaths,
 } from "@oneapp/ui";
 import { Effect, Option, Queue, Schema, Stream } from "effect";
 import { Command, Submodel, Update } from "foldkit";
@@ -68,6 +70,7 @@ import {
   mailMessagePage,
   noiseApiPath,
   trashApiPath,
+  TrashedConversation,
   replySubject,
   SentEntry,
   sentApiPath,
@@ -199,6 +202,7 @@ export const Model = Schema.Struct({
       subject: Schema.optional(Schema.String),
       request: Schema.String,
       folder: MailFolder,
+      conversationView: Schema.optionalKey(MailboxView),
     }),
   ),
   archiveRequest: Schema.NullOr(ArchiveRequest),
@@ -278,7 +282,12 @@ export const Message = defineMessageUnion({
   RequestedReplyAll: {},
   RequestedForward: {},
   DownloadStarted: {},
-  DeletedEntry: { id: MailMessageId, request: Schema.String },
+  RequestedConversationDelete: { id: MailMessageId },
+  DeletedEntry: {
+    id: MailMessageId,
+    request: Schema.String,
+    conversation: Schema.optionalKey(TrashedConversation),
+  },
   DeleteFailed: { request: Schema.String },
   GotConversationMenuMessage: { message: DropdownMenu.Message },
   GotMessageMenuMessage: { message: DropdownMenu.Message },
@@ -339,7 +348,8 @@ const dismissNotification = (
   outMessage: OutMessage.DismissNotification({ key }),
 });
 const archiveKey = (id: string) => `mail-archive:${id}`;
-const deleteKey = (id: string) => `mail-delete:${id}`;
+const deleteKey = (id: string, conversation = false) =>
+  conversation ? `mail-conversation-delete:${id}` : `mail-delete:${id}`;
 const readKey = (id: string) => `mail-read:${id}`;
 const priorityKey = (address: string) => `mail-sender-priority:${address}`;
 const appearanceKey = (address: string) => `mail-sender-appearance:${address}`;
@@ -737,20 +747,33 @@ const LoadImages = Command.define("LoadMailImages", {
 });
 
 const DeleteEntry = Command.define("DeleteInboxEntry", {
-  args: { request: Schema.String, id: MailMessageId, folder: MailFolder },
+  args: {
+    request: Schema.String,
+    ...MessageLocation.fields,
+    conversationView: Schema.optionalKey(MailboxView),
+  },
   messages: [
     Message.DeletedEntry,
     Message.DeleteFailed,
     Message.SessionExpired,
   ],
-  execute: ({ request, id, folder }) =>
+  execute: ({ request, id, folder, conversationView }) =>
     Effect.tryPromise(async (signal) => {
-      const response = await fetch(mailMessageApi(folder, id), {
-        method: "DELETE",
-        headers: { "x-effect-auth-csrf": "1" },
-        signal,
-      });
+      const response = await fetch(
+        conversationView ? conversationApi(id) : mailMessageApi(folder, id),
+        {
+          method: "DELETE",
+          headers: { "x-effect-auth-csrf": "1" },
+          signal,
+        },
+      );
       if (response.status === 401) return Message.SessionExpired({ request });
+      if (conversationView && response.ok) {
+        const conversation = Schema.decodeUnknownSync(TrashedConversation)(
+          await response.json(),
+        );
+        return Message.DeletedEntry({ id, request, conversation });
+      }
       return response.status === 204
         ? Message.DeletedEntry({ id, request })
         : Message.DeleteFailed({ request });
@@ -1364,13 +1387,21 @@ export const update = (model: Model, message: Message): Result =>
         model.recovery.restoring
       )
         return notify(result, {
-          key: deleteKey(model.recovery.restoring),
+          key: deleteKey(
+            model.recovery.restoring,
+            Boolean(model.recovery.batchId),
+          ),
           variant: "Error",
-          title: "Could not restore this message. Try Undo again.",
+          title: model.recovery.batchId
+            ? "Could not restore this conversation. Try Undo again."
+            : "Could not restore this message. Try Undo again.",
           description: model.recovery.subject,
           action: Action.RestoreMail({
             id: model.recovery.restoring,
             subject: model.recovery.subject,
+            ...(model.recovery.batchId
+              ? { batchId: model.recovery.batchId }
+              : {}),
           }),
         });
       if (
@@ -1380,7 +1411,9 @@ export const update = (model: Model, message: Message): Result =>
       )
         return result;
       const restoredSelection =
-        model.folder === "trash" && model.active?.id === message.id;
+        model.folder === "trash" &&
+        model.active &&
+        (message.members?.ids ?? [message.id]).includes(model.active.id);
       const next = restoredSelection
         ? {
             ...result.model,
@@ -1399,7 +1432,7 @@ export const update = (model: Model, message: Message): Result =>
           model: refreshed.model,
           commands: [...(result.commands ?? []), ...(refreshed.commands ?? [])],
         },
-        deleteKey(message.id),
+        deleteKey(message.id, Boolean(model.recovery.batchId)),
       );
     },
     GotComposeMessage: ({ message }) => {
@@ -1472,7 +1505,7 @@ export const update = (model: Model, message: Message): Result =>
         return notify(
           { model },
           {
-            key: deleteKey(action.id),
+            key: deleteKey(action.id, Boolean(action.batchId)),
             variant: "Info",
             title:
               "Another restore is still running. Try Undo again when it finishes.",
@@ -1482,7 +1515,11 @@ export const update = (model: Model, message: Message): Result =>
         );
       return foldRecovery(
         model,
-        Recovery.Message.Restore({ id: action.id, subject: action.subject }),
+        Recovery.Message.Restore({
+          id: action.id,
+          subject: action.subject,
+          ...(action.batchId ? { batchId: action.batchId } : {}),
+        }),
       );
     },
     ArchiveChanged: ({ request }) => {
@@ -1668,19 +1705,52 @@ export const update = (model: Model, message: Message): Result =>
       );
     },
     DownloadStarted: () => ({ model }),
-    DeletedEntry: ({ id, request }) => {
+    RequestedConversationDelete: ({ id }) => {
       if (
-        request !== model.deleteRequest?.request ||
-        id !== model.deleteRequest.id
+        model.deleteRequest ||
+        model.selected ||
+        model.folder === "sent" ||
+        model.folder === "trash"
       )
         return { model };
+      const row = model.list?.messages.find((message) => message.id === id);
+      if (!row || "sentAt" in row) return { model };
+      const deletion = {
+        id,
+        folder: messageFolder(id),
+        conversationView: model.folder,
+        subject: conversationSubject([row]),
+        request: crypto.randomUUID(),
+      };
+      return {
+        model: { ...model, deleteRequest: deletion },
+        commands: [DeleteEntry(deletion)],
+      };
+    },
+    DeletedEntry: ({ id, request, conversation }) => {
+      const deletion = model.deleteRequest;
+      if (
+        request !== deletion?.request ||
+        id !== deletion.id ||
+        Boolean(deletion.conversationView) !== Boolean(conversation)
+      )
+        return { model };
+      const removed = new Set(
+        model.folder === "trash" ? [] : (conversation?.ids ?? [id]),
+      );
+      const selectedRemoved =
+        model.selected !== null && removed.has(model.selected);
       const list = model.list && {
         ...model.list,
-        messages: model.list.messages.filter((message) => message.id !== id),
+        messages: model.list.messages.filter(
+          (message) => !removed.has(message.id),
+        ),
       };
       const thread = model.thread && {
         ...model.thread,
-        messages: model.thread.messages.filter((message) => message.id !== id),
+        messages: model.thread.messages.filter(
+          (message) => !removed.has(message.id),
+        ),
       };
       const next: Model = {
         ...model,
@@ -1689,11 +1759,11 @@ export const update = (model: Model, message: Message): Result =>
         threadRequest: null,
         listRequest: null,
         deleteRequest: null,
-        ...(model.active?.id === id
+        ...(model.active && removed.has(model.active.id)
           ? {
               messageMenu: initial.messageMenu,
               active:
-                model.selected && model.selected !== id
+                model.selected && !selectedRemoved
                   ? {
                       id: model.selected,
                       folder: messageFolder(model.selected),
@@ -1712,22 +1782,37 @@ export const update = (model: Model, message: Message): Result =>
       };
       const entry = next.entry ? { model: next } : loadEntry(next);
       const updatedList = loadList(entry.model, null);
+      const deletedIndex =
+        conversation &&
+        model.selected === null &&
+        model.folder === deletion.conversationView
+          ? (model.list?.messages.findIndex((message) => message.id === id) ??
+            -1)
+          : -1;
+      const focusTarget = list?.messages[deletedIndex] ?? list?.messages.at(-1);
       const command = {
         model: updatedList.model,
-        commands: [...(entry.commands ?? []), ...(updatedList.commands ?? [])],
+        commands: [
+          ...(entry.commands ?? []),
+          ...(updatedList.commands ?? []),
+          ...(deletedIndex === -1
+            ? []
+            : [FocusList({ id: focusTarget?.id ?? id })]),
+        ],
       };
       // Overlapping reads may have received a snapshot from before the deletion.
       return notify(
-        withUnread(model.selected === id ? command : withThread(command)),
+        withUnread(selectedRemoved ? command : withThread(command)),
         {
-          key: deleteKey(id),
+          key: deleteKey(id, Boolean(conversation)),
           variant: "Success",
-          title: "Email deleted.",
-          description: model.deleteRequest.subject,
+          title: conversation ? "Conversation deleted." : "Email deleted.",
+          description: deletion.subject,
           durationMs: 10_000,
           action: Action.RestoreMail({
             id,
-            subject: model.deleteRequest.subject,
+            subject: deletion.subject,
+            ...(conversation ? { batchId: conversation.batchId } : {}),
           }),
         },
       );
@@ -1738,7 +1823,10 @@ export const update = (model: Model, message: Message): Result =>
         : notify(
             { model: { ...model, deleteRequest: null } },
             {
-              key: deleteKey(model.deleteRequest.id),
+              key: deleteKey(
+                model.deleteRequest.id,
+                Boolean(model.deleteRequest.conversationView),
+              ),
               description: model.deleteRequest.subject,
               variant: "Error",
               title:
@@ -1977,6 +2065,7 @@ const messageItem = (
     model.selected === message.id ||
     (model.folder !== "sent" &&
       model.thread?.messages.some(({ id }) => id === message.id));
+  const date = timestamp(sent ? message.sentAt : message.lastMessageAt, now, h);
   return item(
     {
       key: message.id,
@@ -2009,7 +2098,30 @@ const messageItem = (
           ? [h.DataAttribute("unread", ""), h.AriaLabel(`Unread: ${subject}`)]
           : []),
       ],
-      action: timestamp(sent ? message.sentAt : message.lastMessageAt, now, h),
+      action:
+        sent || model.folder === "trash"
+          ? date
+          : h.div(
+              [h.Class("inbox-row-actions")],
+              [
+                date,
+                button(
+                  {
+                    variant: "ghost",
+                    size: "icon-sm",
+                    rounded: true,
+                    ariaLabel: `Delete conversation: ${subject}`,
+                    attributes: [h.Title("Delete conversation")],
+                    disabled: model.deleteRequest !== null,
+                    onClick: Message.RequestedConversationDelete({
+                      id: message.id,
+                    }),
+                    children: [outlineIcon(h, trashIconPaths)],
+                  },
+                  h,
+                ),
+              ],
+            ),
       description: h.div(
         [h.Class("inbox-item-details")],
         [
@@ -2412,7 +2524,8 @@ const profileAvatar = (
     ? h.button(
         [
           h.Type("button"),
-          h.Class("inbox-profile-button"),
+          h.DataAttribute("slot", "button"),
+          h.Class("inbox-profile-avatar"),
           h.Title(tooltip),
           h.AriaLabel(editLabel),
           h.OnClick(
@@ -2433,7 +2546,12 @@ const profileAvatar = (
         [picture],
       )
     : h.span(
-        [h.Title(tooltip), h.Role("img"), h.AriaLabel(tooltip)],
+        [
+          h.Class("inbox-profile-avatar"),
+          h.Title(tooltip),
+          h.Role("img"),
+          h.AriaLabel(tooltip),
+        ],
         [picture],
       );
 };

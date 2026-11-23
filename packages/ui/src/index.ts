@@ -23,6 +23,7 @@ export {
 export {
   backIcon,
   ellipsisIcon,
+  noiseIconPath,
   outlineIcon,
   plusIcon,
   trashIconPaths,
@@ -36,7 +37,7 @@ export {
   itemGroup,
 } from "./item.ts";
 export { marker } from "./marker.ts";
-export { createNativeSelect } from "./native-select.ts";
+export { createNativeSelect, nativeSelect } from "./native-select.ts";
 export {
   navigationLinks,
   sidebarClassNames,

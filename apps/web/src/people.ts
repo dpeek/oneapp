@@ -5,7 +5,7 @@ import {
   dialog,
   field,
   input,
-  textarea,
+  nativeSelect,
 } from "@oneapp/ui";
 import { Effect, Schema } from "effect";
 import { Command, Submodel, Update } from "foldkit";
@@ -13,6 +13,7 @@ import { focus } from "foldkit/dom";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import * as Mount from "foldkit/mount";
+import { mountContactValues } from "./contact-values.ts";
 import {
   peopleApiPath,
   ContactKind,
@@ -281,6 +282,7 @@ const Save = Command.define("SavePersonProfile", {
         const fields = new FormData(form);
         const file = fields.get("photo");
         const kind = fields.get("kind") === "company" ? "company" : "person";
+        const noiseChanges = fields.get("noiseChanges");
         let photo: string | null | undefined = fields.has("removePhoto")
           ? null
           : undefined;
@@ -298,15 +300,18 @@ const Save = Command.define("SavePersonProfile", {
           kind,
           domains:
             kind === "company"
-              ? String(fields.get("domains") ?? "")
-                  .split(/[\n,]+/u)
-                  .map(normalizeCompanyDomain)
+              ? fields
+                  .getAll("domains")
+                  .map((domain) => normalizeCompanyDomain(String(domain)))
                   .filter(Boolean)
               : [],
-          addresses: String(fields.get("addresses") ?? "")
-            .split(/[\n,]+/u)
-            .map((part) => part.trim())
+          addresses: fields
+            .getAll("addresses")
+            .map((address) => String(address).trim())
             .filter(Boolean),
+          ...(noiseChanges
+            ? { noiseChanges: JSON.parse(String(noiseChanges)) }
+            : {}),
           ...(person ? { revision: person.revision } : {}),
           ...(photo === undefined ? {} : { photo }),
         });
@@ -689,24 +694,28 @@ const OpenDialog = Mount.define("OpenPersonProfileDialog", {
 });
 
 const PrepareForm = Mount.define("PrefillPersonProfileForm", {
-  args: {
-    name: Schema.String,
-    addresses: Schema.String,
-    domains: Schema.String,
-  },
+  args: { name: Schema.String },
   messages: [Message.Mounted],
-  execute: ({ element, name, addresses, domains }) =>
+  execute: ({ element, name }) =>
     Effect.sync(() => {
       if (element instanceof HTMLFormElement) {
         const nameField = element.elements.namedItem("name");
-        const addressField = element.elements.namedItem("addresses");
-        const domainField = element.elements.namedItem("domains");
-        if (domainField instanceof HTMLTextAreaElement)
-          domainField.value = domains;
         if (nameField instanceof HTMLInputElement) nameField.value = name;
-        if (addressField instanceof HTMLTextAreaElement)
-          addressField.value = addresses;
       }
+      return Message.Mounted();
+    }),
+});
+
+const MountContactValues = Mount.define("MountContactValues", {
+  args: {
+    name: Schema.Literals(["addresses", "domains"]),
+    values: Schema.Array(Schema.String),
+  },
+  messages: [Message.Mounted],
+  execute: ({ element, name, values }) =>
+    Effect.promise(async (signal) => {
+      if (element instanceof HTMLFieldSetElement)
+        await mountContactValues(element, name, values, signal);
       return Message.Mounted();
     }),
 });
@@ -947,35 +956,26 @@ const profileForm = (
       h.Key(`${options.formId}-${person?.id ?? "new"}`),
       h.Class("person-fields"),
       h.OnSubmit(options.submit),
-      h.OnMount(
-        PrepareForm({
-          name,
-          addresses: emails.join("\n"),
-          domains: domains.join("\n"),
-        }),
-      ),
+      h.OnMount(PrepareForm({ name })),
     ],
     [
       options.heading
         ? profileHeader(h, options.heading, photo, actions)
         : photo,
-      field(
-        "Contact type",
-        h.select(
-          [
-            h.Value(kind),
-            h.Disabled(pending || Boolean(person?.self)),
-            h.OnChange((value) =>
-              Message.ChangedKind({
-                kind: value === "company" ? "company" : "person",
-              }),
-            ),
+      nativeSelect(
+        {
+          label: "Contact type",
+          options: [
+            { value: "person", label: "Person" },
+            { value: "company", label: "Company" },
           ],
-          [
-            h.option([h.Value("person")], ["Person"]),
-            h.option([h.Value("company")], ["Company"]),
-          ],
-        ),
+          value: kind,
+          disabled: pending || Boolean(person?.self),
+          onChange: (value) =>
+            Message.ChangedKind({
+              kind: value === "company" ? "company" : "person",
+            }),
+        },
         h,
       ),
       // Disabled controls are excluded from FormData while a save is pending.
@@ -993,42 +993,25 @@ const profileForm = (
         ),
         h,
       ),
-      field(
-        "Email addresses",
-        textarea(
-          [
-            h.Name("addresses"),
-            h.Rows(3),
-            h.Readonly(pending),
-            h.Placeholder("One address per line"),
-          ],
-          h,
-        ),
-        h,
-      ),
-      h.div(
-        [h.Hidden(kind !== "company")],
+      h.fieldset(
         [
-          field(
-            "Website domains",
-            textarea(
-              [
-                h.Name("domains"),
-                h.Rows(3),
-                h.Readonly(pending),
-                h.Placeholder("acme.com\nbilling.acme.co.uk"),
-              ],
-              h,
-            ),
-            h,
-          ),
-          h.p(
-            [],
-            [
-              "One domain per line. The first supplies the default favicon. Matching email addresses are suggested, never assigned automatically.",
-            ],
-          ),
+          h.Id(`${options.formId}-addresses`),
+          h.Class("person-value-fields"),
+          h.Inert(pending),
+          h.OnMount(MountContactValues({ name: "addresses", values: emails })),
         ],
+        [],
+      ),
+      h.fieldset(
+        [
+          h.Id(`${options.formId}-domains`),
+          h.Class("person-value-fields"),
+          h.Hidden(kind !== "company"),
+          h.Disabled(kind !== "company"),
+          h.Inert(pending),
+          h.OnMount(MountContactValues({ name: "domains", values: domains })),
+        ],
+        [],
       ),
       ...(person?.photo
         ? [

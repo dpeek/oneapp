@@ -10,6 +10,7 @@ import {
   itemGroup,
   marker,
   navigationLinks,
+  noiseIconPath,
   Sheet,
   Popover,
   spinner,
@@ -192,7 +193,6 @@ export const Model = Schema.Struct({
   showPlainText: Schema.Boolean,
   attachmentPreview: Attachments.State,
   attachmentPopover: Popover.Model,
-  deleteTarget: Schema.NullOr(MessageLocation),
   deleteRequest: Schema.NullOr(
     Schema.Struct({
       id: MailMessageId,
@@ -241,7 +241,6 @@ export const initial: Model = {
   showPlainText: false,
   attachmentPreview: null,
   attachmentPopover: Popover.init({ id: "mail-attachments" }),
-  deleteTarget: null,
   deleteRequest: null,
   archiveRequest: null,
   senderRuleRequest: null,
@@ -279,8 +278,6 @@ export const Message = defineMessageUnion({
   RequestedReplyAll: {},
   RequestedForward: {},
   DownloadStarted: {},
-  CanceledDelete: {},
-  ConfirmedDelete: {},
   DeletedEntry: { id: MailMessageId, request: Schema.String },
   DeleteFailed: { request: Schema.String },
   GotConversationMenuMessage: { message: DropdownMenu.Message },
@@ -511,16 +508,6 @@ const FocusMessageSummary = Command.define("FocusInboxMessageSummary", {
     focus(`.inbox-reader [data-thread-message-id="${CSS.escape(id)}"]`, {
       preventScroll: true,
     }).pipe(Effect.ignore, Effect.as(Message.FocusUpdated())),
-});
-
-const ShowDeleteDialog = Mount.define("ShowInboxDeleteDialog", {
-  messages: [Message.FocusUpdated],
-  execute: ({ element }) =>
-    Effect.sync(() => {
-      if (element instanceof HTMLDialogElement && !element.open)
-        element.showModal();
-      return Message.FocusUpdated();
-    }),
 });
 
 const ObserveListEnd = Mount.defineStream("ObserveInboxListEnd", {
@@ -1237,9 +1224,20 @@ const foldMessageMenu = Update.foldChild({
           : { model };
       if (model.folder === "trash" && value !== "download") return { model };
       if (value === "delete") {
-        return model.deleteRequest
-          ? { model }
-          : { model: { ...model, deleteTarget: active } };
+        if (model.deleteRequest) return { model };
+        const deletion = {
+          ...active,
+          subject:
+            model.thread?.messages.find(({ id }) => id === active.id)
+              ?.subject ||
+            (entry?.id === active.id ? entry.subject : undefined) ||
+            "(no subject)",
+          request: crypto.randomUUID(),
+        };
+        return {
+          model: { ...model, deleteRequest: deletion },
+          commands: [DeleteEntry(deletion)],
+        };
       }
       if (active.folder !== "inbox") return { model };
       if (value === "download") {
@@ -1291,7 +1289,7 @@ export const update = (model: Model, message: Message): Result =>
             };
       const next =
         base.selected === id
-          ? { ...base, deleteTarget: null }
+          ? base
           : {
               ...base,
               selected: id,
@@ -1311,7 +1309,6 @@ export const update = (model: Model, message: Message): Result =>
               showPlainText: false,
               attachmentPreview: null,
               attachmentPopover: Popover.init({ id: "mail-attachments" }),
-              deleteTarget: null,
             };
       const previous = id === null ? base.selected : null;
       const list = id && next.list ? { model: next } : loadList(next, null);
@@ -1664,25 +1661,6 @@ export const update = (model: Model, message: Message): Result =>
       );
     },
     DownloadStarted: () => ({ model }),
-    CanceledDelete: () => ({ model: { ...model, deleteTarget: null } }),
-    ConfirmedDelete: () => {
-      if (!model.deleteTarget || model.deleteRequest) return { model };
-      const deletion = {
-        ...model.deleteTarget,
-        subject:
-          model.thread?.messages.find(({ id }) => id === model.deleteTarget?.id)
-            ?.subject ||
-          (model.entry?.id === model.deleteTarget.id
-            ? model.entry.subject
-            : undefined) ||
-          "(no subject)",
-        request: crypto.randomUUID(),
-      };
-      return {
-        model: { ...model, deleteTarget: null, deleteRequest: deletion },
-        commands: [DeleteEntry(deletion)],
-      };
-    },
     DeletedEntry: ({ id, request }) => {
       if (
         request !== model.deleteRequest?.request ||
@@ -1739,6 +1717,7 @@ export const update = (model: Model, message: Message): Result =>
           variant: "Success",
           title: "Email deleted.",
           description: model.deleteRequest.subject,
+          durationMs: 10_000,
           action: Action.RestoreMail({
             id,
             subject: model.deleteRequest.subject,
@@ -2218,47 +2197,6 @@ const previewNotice = {
   unreadable: "This message could not be previewed.",
 };
 
-const deleteDialog = (h: HtmlBuilder<Message>) =>
-  h.dialog(
-    [
-      h.Class("inbox-delete-dialog"),
-      h.AriaLabelledBy("inbox-delete-title"),
-      h.AriaDescribedBy("inbox-delete-description"),
-      h.OnMount(ShowDeleteDialog()),
-      h.OnCancel(Message.CanceledDelete()),
-    ],
-    [
-      h.h2([h.Id("inbox-delete-title")], ["Delete this email?"]),
-      h.p(
-        [h.Id("inbox-delete-description")],
-        [
-          "You can recover it for 30 days. After that, it and its attachments are permanently removed automatically.",
-        ],
-      ),
-      h.div(
-        [h.Class("inbox-delete-actions")],
-        [
-          h.button(
-            [
-              h.Type("button"),
-              h.Autofocus(true),
-              h.OnClick(Message.CanceledDelete()),
-            ],
-            ["Cancel"],
-          ),
-          h.button(
-            [
-              h.Type("button"),
-              h.Class("inbox-delete-button"),
-              h.OnClick(Message.ConfirmedDelete()),
-            ],
-            ["Delete"],
-          ),
-        ],
-      ),
-    ],
-  );
-
 const entryContent = (model: Model, h: HtmlBuilder<Message>) => {
   const { entry } = model;
   const html = !model.showPlainText ? entry?.html : undefined;
@@ -2540,7 +2478,7 @@ const conversationActions = (model: Model, h: HtmlBuilder<Message>) => {
         action: "noise",
         label: "Sender → Noise",
         disabled: pending || rule.priority === "noise",
-        icon: mailIcon(h, "M3 10v4m4-7v10m5-14v18m5-14v10m4-7v4"),
+        icon: mailIcon(h, noiseIconPath),
       },
     );
     if (rule.priority !== "automatic") {
@@ -2721,7 +2659,6 @@ const entryView = (
   const content = h.div(
     [h.Class("inbox-reader-content")],
     [
-      ...(model.deleteTarget ? [deleteDialog(h)] : []),
       ...(!model.thread &&
       model.threadRequest &&
       !model.entryRequest &&

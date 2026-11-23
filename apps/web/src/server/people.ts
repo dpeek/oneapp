@@ -28,10 +28,21 @@ import {
 
 import { senderIconDomain } from "./mail-sender.ts";
 import { normalizeCompanyDomain } from "../company-domains.ts";
+import { notifyInbox } from "./inbox.ts";
+import {
+  defaultMailboxId,
+  ensureDefaultMailbox,
+  mailDatabase,
+} from "./mailbox.ts";
 
 type PeopleEnv = Pick<
   WorkerEnv,
-  "DB" | "PROFILE_PHOTOS" | "INBOX_EMAIL_ADDRESS"
+  | "DB"
+  | "PROFILE_PHOTOS"
+  | "INBOX_EMAIL_ADDRESS"
+  | "INBOX_EMAIL_FROM"
+  | "MAILBOX_ALIASES"
+  | "INBOX_UPDATES"
 >;
 
 const isId = Schema.is(PersonId);
@@ -118,6 +129,30 @@ const savePerson = async (
   )
     return { status: "address" } as const;
 
+  const noiseChanges = (input.noiseChanges ?? []).map(({ address, noise }) => ({
+    address: normalizePersonEmail(address),
+    noise,
+  }));
+  if (
+    noiseChanges.some(
+      ({ address }) =>
+        !addresses.includes(address) || managed.includes(address),
+    ) ||
+    new Set(noiseChanges.map(({ address }) => address)).size !==
+      noiseChanges.length
+  )
+    return { status: "noise-address" } as const;
+  const mailbox = noiseChanges.length
+    ? mailDatabase(env.DB, defaultMailboxId)
+    : null;
+  if (mailbox)
+    await ensureDefaultMailbox(
+      env.DB,
+      env.INBOX_EMAIL_ADDRESS,
+      env.INBOX_EMAIL_FROM,
+      env.MAILBOX_ALIASES,
+    );
+
   const owner = current?.id ?? crypto.randomUUID();
   const bytes = input.photo ? readPhotoBytes(input.photo) : null;
   if (input.photo && !bytes) return { status: "photo" } as const;
@@ -137,6 +172,17 @@ const savePerson = async (
       photo,
       kind,
       domains,
+      mailbox
+        ? {
+            mailboxId: mailbox.mailboxId,
+            on: noiseChanges
+              .filter(({ noise }) => noise)
+              .map(({ address }) => address),
+            off: noiseChanges
+              .filter(({ noise }) => !noise)
+              .map(({ address }) => address),
+          }
+        : undefined,
     );
     if (!revision) {
       if (uploaded) defer(removePhotoIfUnused(env, owner, uploaded));
@@ -144,6 +190,7 @@ const savePerson = async (
     }
     if (current?.photo && current.photo !== photo)
       defer(removePhotoIfUnused(env, owner, current.photo));
+    if (mailbox) defer(notifyInbox({ ...env, DB: mailbox }));
     const managedAddresses = current?.self ? managed : [];
     return {
       status: "ok",
@@ -239,6 +286,11 @@ export const peopleRoutes = (
               return yield* jsonError(
                 400,
                 "Add an email address, or a domain for a company.",
+              );
+            case "noise-address":
+              return yield* jsonError(
+                400,
+                "Choose Noise for an email address on this contact.",
               );
             case "kind":
               return yield* jsonError(

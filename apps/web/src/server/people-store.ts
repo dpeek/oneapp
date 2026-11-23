@@ -180,6 +180,7 @@ export const writeProfile = async (
   photo: string | null,
   kind: "person" | "company" = "person",
   domains: string[] = [],
+  noise?: { mailboxId: string; on: string[]; off: string[] },
 ) => {
   const revision = crypto.randomUUID();
   const matchesRevision =
@@ -217,6 +218,23 @@ export const writeProfile = async (
         `INSERT INTO company_domains (domain, company_id, position) SELECT value, ?1, key FROM json_each(?3) WHERE ${matchesRevision}`,
       )
       .bind(id, revision, JSON.stringify(domains)),
+    ...(noise
+      ? [
+          db
+            .prepare(
+              `DELETE FROM mail_sender_rules WHERE mailbox_id = ?4 AND priority = 'noise'
+               AND address IN (SELECT value FROM json_each(?3)) AND ${matchesRevision}`,
+            )
+            .bind(id, revision, JSON.stringify(noise.off), noise.mailboxId),
+          db
+            .prepare(
+              `INSERT INTO mail_sender_rules (mailbox_id, address, priority)
+               SELECT ?4, value, 'noise' FROM json_each(?3) WHERE ${matchesRevision}
+               ON CONFLICT(mailbox_id, address) DO UPDATE SET priority = excluded.priority`,
+            )
+            .bind(id, revision, JSON.stringify(noise.on), noise.mailboxId),
+        ]
+      : []),
   ]);
   return saved?.results.length ? revision : null;
 };

@@ -487,6 +487,15 @@ export const readThread = async (db: MailDatabase, id: string) => {
   };
 };
 
+export const readNoiseSenders = async (db: MailDatabase) => {
+  const { results } = await db
+    .prepare(
+      `SELECT address FROM mail_sender_rules WHERE mailbox_id = ${mailboxSql(db)} AND priority = 'noise' ORDER BY address`,
+    )
+    .all<{ address: string }>();
+  return { addresses: results.map(({ address }) => address) };
+};
+
 export const setSenderRule = (
   db: MailDatabase,
   { address, priority }: typeof SenderRule.Type,

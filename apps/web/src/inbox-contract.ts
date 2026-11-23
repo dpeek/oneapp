@@ -11,6 +11,10 @@ export const archiveApiPath = `${inboxApiPath}/archive`;
 export const allMailApiPath = `${inboxApiPath}/all`;
 export const trashApiPath = `${inboxApiPath}/trash`;
 export const noiseApiPath = `${inboxApiPath}/noise`;
+export const noiseSendersApiPath = `${inboxApiPath}/noise-senders`;
+export const NoiseSenders = Schema.Struct({
+  addresses: Schema.Array(PersonEmail),
+});
 export const senderAppearanceApiPath = `${inboxApiPath}/sender-appearance`;
 export const SenderAppearanceMode = Schema.Literals([
   "auto",

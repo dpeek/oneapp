@@ -36,6 +36,8 @@ import {
   type MailFolder,
   MailMessageId,
   noiseApiPath,
+  NoiseSenders,
+  noiseSendersApiPath,
   type ReplyCompletion,
   replyCompletionHeader,
   replySubject,
@@ -66,6 +68,7 @@ import {
   conversationCursor,
   inboxUnread,
   listConversations,
+  readNoiseSenders,
   readThread,
   scanMail,
   setInboxUnread,
@@ -1331,6 +1334,20 @@ export const inboxRoutes = (
     ),
     HttpRouter.add("GET", conversationsApiPath, listThreads("inbox")),
     HttpRouter.add("GET", noiseApiPath, listThreads("noise")),
+    HttpRouter.add(
+      "GET",
+      noiseSendersApiPath,
+      Effect.gen(function* () {
+        if (!(yield* requireInboxOwner))
+          return yield* jsonError(403, "Access denied");
+        const senders = yield* Effect.tryPromise(() =>
+          readNoiseSenders(env.DB),
+        );
+        return yield* HttpServerResponse.schemaJson(NoiseSenders)(senders, {
+          headers: privateHeaders,
+        });
+      }).pipe(Effect.catchTags(inboxErrors)),
+    ),
     HttpRouter.add("GET", archiveApiPath, listThreads("archive")),
     HttpRouter.add("GET", allMailApiPath, listThreads("all")),
     HttpRouter.add(

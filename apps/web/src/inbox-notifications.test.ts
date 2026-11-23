@@ -1,5 +1,5 @@
 import { expect, it } from "@effect/vitest";
-import { Option } from "effect";
+import { Duration, Option } from "effect";
 import { vi } from "vitest";
 vi.mock("@oneapp/ui", async () => {
   const { Menu, Dialog, Popover } = await import(
@@ -169,6 +169,11 @@ it("reports reply failures and success after navigation while retaining the orig
 it("routes each delete Undo to its original message after navigation and a later delete, only once", () => {
   let notifications = applyOutcome(deletion(first, "delete-one").outMessage);
   const firstToast = notifications.toast.entries[0]!.id;
+  expect(
+    Duration.toMillis(
+      Option.getOrThrow(notifications.toast.entries[0]!.maybeDuration),
+    ),
+  ).toBe(10_000);
   notifications = applyOutcome(
     deletion(second, "delete-two").outMessage,
     notifications,
@@ -321,11 +326,11 @@ it("rejects wrong delete targets and clears action payloads across sign-out gene
   ).toBeUndefined();
 });
 
-it("captures the deleted subject before navigation and preserves it through Undo failures", () => {
+it("starts deletion from the message menu and preserves the subject through navigation and Undo failure", () => {
   const submitted = Inbox.update(
     {
       ...Inbox.initial,
-      deleteTarget: { id: first, folder: "inbox" },
+      active: { id: first, folder: "inbox" },
       thread: {
         messages: [
           {
@@ -339,8 +344,15 @@ it("captures the deleted subject before navigation and preserves it through Undo
         ],
       },
     },
-    Inbox.Message.ConfirmedDelete(),
+    menuAction("delete"),
   );
+  expect(submitted.commands).toContainEqual(
+    expect.objectContaining({
+      args: expect.objectContaining({ id: first, folder: "inbox" }),
+    }),
+  );
+  const duplicate = Inbox.update(submitted.model, menuAction("delete"));
+  expect(duplicate.model.deleteRequest).toBe(submitted.model.deleteRequest);
   const deleted = Inbox.update(
     { ...submitted.model, selected: second, thread: null },
     Inbox.Message.DeletedEntry({

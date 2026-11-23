@@ -41,6 +41,7 @@ import {
   inboxUnreadPath,
   mailMessageApi,
   noiseApiPath,
+  noiseSendersApiPath,
   replyCompletionHeader,
   senderRuleApiPath,
   sentApiPath,
@@ -91,7 +92,7 @@ import { ensureOwner } from "./provision-owner.ts";
 import { mcpOAuth } from "./mcp-oauth.ts";
 import worker from "./worker.ts";
 import { collectMailTrash, mailRetentionMs } from "./mail-trash.ts";
-import { indexMail } from "./mail-index.ts";
+import { indexMail, setSenderRule } from "./mail-index.ts";
 
 const email = "owner@example.net";
 const password = "p".repeat(43);
@@ -394,6 +395,82 @@ it("shares private people profiles across aliases and keeps account addresses li
   expect((await call(photoPath, undefined, session)).status).toBe(404);
   await finishWork();
   expect(photos.size).toBe(0);
+});
+
+it("saves per-address Noise overrides with contacts in the personal mailbox", async () => {
+  using sqlite = new Database(":memory:");
+  const { call, db, request, signIn, cookies } = await setup(sqlite);
+  const session = cookies(await signIn(password));
+  const updates = "updates@example.net";
+  const billing = "billing@example.net";
+  await setSenderRule(db, { address: billing, priority: "signal" });
+  sqlite.exec(`INSERT INTO mailboxes (id, owner_account_id, name)
+    SELECT 'work', owner_account_id, 'Work' FROM mailboxes WHERE id = 'personal'`);
+  await setSenderRule(mailDatabase(db, "work"), {
+    address: updates,
+    priority: "signal",
+  });
+  expect((await call(noiseSendersApiPath)).status).toBe(401);
+
+  const create = await call(
+    peopleApiPath,
+    {
+      name: "Example",
+      addresses: [billing, updates],
+      noiseChanges: [{ address: updates.toUpperCase(), noise: true }],
+    },
+    session,
+  );
+  expect(create.status).toBe(201);
+  const person: Person = await create.json();
+  const noiseSenders = async () => {
+    const response = await call(noiseSendersApiPath, undefined, session);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    return response.json();
+  };
+  expect(await noiseSenders()).toEqual({ addresses: [updates] });
+  const save = (revision: string, noiseChanges: object[]) =>
+    request(personApiPath(person.id), {
+      method: "PUT",
+      headers: {
+        cookie: session,
+        origin: "https://oneapp.example",
+        "content-type": "application/json",
+        "x-effect-auth-csrf": "1",
+      },
+      body: JSON.stringify({
+        revision,
+        name: person.name,
+        addresses: person.addresses,
+        noiseChanges,
+      }),
+    });
+  expect(
+    (
+      await save(person.revision, [
+        { address: "other@example.net", noise: true },
+      ])
+    ).status,
+  ).toBe(400);
+  const cleared = await save(person.revision, [
+    { address: updates, noise: false },
+  ]);
+  expect(cleared.status).toBe(200);
+  expect(await noiseSenders()).toEqual({ addresses: [] });
+  expect(
+    (await save(person.revision, [{ address: updates, noise: true }])).status,
+  ).toBe(409);
+  expect(
+    sqlite
+      .query(
+        "SELECT mailbox_id, address, priority FROM mail_sender_rules ORDER BY mailbox_id, address",
+      )
+      .all(),
+  ).toEqual([
+    { mailbox_id: "personal", address: billing, priority: "signal" },
+    { mailbox_id: "work", address: updates, priority: "signal" },
+  ]);
 });
 
 it("stores companies with explicit aliases and domains without reclassifying people", async () => {

@@ -1,5 +1,7 @@
 import type { HtmlBuilder } from "foldkit/html";
 
+export const noiseIconPath = "M3 10v4m4-7v10m5-14v18m5-14v10m4-7v4";
+
 export const trashIconPaths = [
   "M3 6h18M9 6V4h6v2m4 0-1 14H6L5 6m5 4v6m4-6v6",
 ] as const;

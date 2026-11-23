@@ -14,6 +14,7 @@ export const personLookupPath = (email: string) =>
 
 export const personNameLimit = 100;
 export const personAddressLimit = 20;
+export const companyDomainLimit = 20;
 export const profilePhotoLimit = 256 * 1024;
 export const profilePhotoSize = 256;
 export const PersonId = Schema.String.check(
@@ -40,12 +41,16 @@ export const PersonEmail = Schema.Trim.check(
 );
 
 export const ContactKind = Schema.Literals(["person", "company"]);
+export const ContactNoiseChange = Schema.Struct({
+  address: PersonEmail,
+  noise: Schema.Boolean,
+});
 export const CompanyDomains = Schema.Array(
   Schema.Trim.check(
     Schema.isMaxLength(253),
     Schema.makeFilter(isCompanyDomain),
   ),
-).check(Schema.isMaxLength(20));
+).check(Schema.isMaxLength(companyDomainLimit));
 
 export const PersonSummary = Schema.Struct({
   id: PersonId,
@@ -83,6 +88,11 @@ export const PersonDraft = Schema.Struct({
   name: Schema.Trim.check(Schema.isMaxLength(personNameLimit)),
   addresses: Schema.Array(PersonEmail).check(
     Schema.isMaxLength(personAddressLimit),
+  ),
+  noiseChanges: Schema.optionalKey(
+    Schema.Array(ContactNoiseChange).check(
+      Schema.isMaxLength(personAddressLimit),
+    ),
   ),
   revision: Schema.optionalKey(PersonId),
   photo: Schema.optionalKey(

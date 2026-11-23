@@ -818,7 +818,6 @@ oneapp-vault-reader {
   justify-content: flex-end;
 }
 
-.inbox-delete-dialog,
 .inbox-compose-dialog,
 .inbox-attachment-dialog {
   box-sizing: border-box;
@@ -832,17 +831,12 @@ oneapp-vault-reader {
   color: var(--text);
 }
 
-:is(
-  .inbox-delete-dialog,
-  .inbox-compose-dialog,
-  .inbox-attachment-dialog
-)::backdrop {
+:is(.inbox-compose-dialog, .inbox-attachment-dialog)::backdrop {
   background: rgb(10 11 18 / 65%);
 }
 
 :root:has(
   :is(
-    .inbox-delete-dialog,
     .inbox-compose-dialog,
     .inbox-attachment-dialog,
     dialog[data-slot="dialog"]
@@ -923,6 +917,77 @@ oneapp-vault-reader {
   display: flex;
   align-items: center;
   gap: 0.375rem;
+}
+
+.person-value-fields {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.person-value-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-block-end: 0.25rem;
+}
+
+.person-value-list {
+  display: grid;
+  gap: 0.375rem;
+}
+
+.person-value-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.25rem 0.375rem;
+}
+
+.person-value-actions {
+  display: flex;
+  gap: 0.125rem;
+}
+
+.person-noise-toggle[aria-pressed="true"] {
+  color: var(--accent);
+  background-color: var(--selected);
+}
+
+.person-value-label,
+.person-value-error {
+  grid-column: 1 / -1;
+  font-size: 0.8125rem;
+}
+
+.person-value-label-hidden {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.person-value-error {
+  margin: 0;
+}
+
+.person-value-row [aria-invalid="true"] {
+  border-color: light-dark(#a42020, #ff9797);
+}
+
+.person-value-help,
+.person-value-status {
+  margin: 0.375rem 0 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.person-value-fields :is(.person-value-error, .person-value-status):empty {
+  display: none;
 }
 
 .person-actions {
@@ -1494,21 +1559,6 @@ button.inbox-profile-button:has([data-slot="avatar"][data-variant="square"]) {
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-
-.inbox-reader button.inbox-delete-button {
-  color: light-dark(#a42020, #ff9797);
-}
-
-.inbox-delete-dialog h2 {
-  margin-block: 0 0.75rem;
-}
-
-.inbox-delete-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 0.5rem;
 }
 
 .inbox-compose {

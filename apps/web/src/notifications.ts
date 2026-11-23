@@ -15,6 +15,7 @@ export const Notification = Schema.Struct({
   variant: Toast.Variant,
   title: Schema.String,
   description: Schema.optional(Schema.String),
+  durationMs: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
   action: Schema.optional(Action),
 });
 export type Notification = typeof Notification.Type;
@@ -55,6 +56,9 @@ export const show = (
   const input = {
     ...notification,
     ...(notification.action ? { actionLabel: "Undo" } : {}),
+    ...(notification.durationMs === undefined
+      ? {}
+      : { sticky: false, duration: notification.durationMs }),
   };
   // Replacing an actionable outcome must also remove its old action and details.
   const replace =

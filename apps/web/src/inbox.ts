@@ -78,9 +78,6 @@ import {
   SentPage,
   SenderPriority,
   SenderRule,
-  SenderAppearanceUpdate,
-  SenderAppearanceMode,
-  senderAppearanceApiPath,
   senderRuleApiPath,
 } from "./inbox-contract.ts";
 import {
@@ -141,14 +138,10 @@ type ConversationAction = "archive" | typeof SenderPriority.Type;
 type MessageAction =
   | "toggleUnread"
   | "download"
-  | "delete"
   | "restore"
   | "loadBlockedImages"
   | "retryImages"
-  | "togglePlainText"
-  | "avatarAuto"
-  | "avatarPerson"
-  | "avatarService";
+  | "togglePlainText";
 const conversationMenu = DropdownMenu.create<ConversationAction>();
 const messageMenu = DropdownMenu.create<MessageAction>();
 
@@ -207,9 +200,6 @@ export const Model = Schema.Struct({
   ),
   archiveRequest: Schema.NullOr(ArchiveRequest),
   senderRuleRequest: Schema.NullOr(SenderRuleRequest),
-  appearanceRequest: Schema.NullOr(
-    Schema.Struct({ request: Schema.String, ...SenderAppearanceUpdate.fields }),
-  ),
   compose: Compose.Model,
   recovery: Recovery.Model,
   quickReply: QuickReply.Model,
@@ -248,7 +238,6 @@ export const initial: Model = {
   deleteRequest: null,
   archiveRequest: null,
   senderRuleRequest: null,
-  appearanceRequest: null,
   compose: Compose.initial,
   recovery: Recovery.initial,
   quickReply: QuickReply.initial,
@@ -282,6 +271,7 @@ export const Message = defineMessageUnion({
   RequestedReplyAll: {},
   RequestedForward: {},
   DownloadStarted: {},
+  RequestedMessageDelete: { id: MailMessageId },
   RequestedConversationDelete: { id: MailMessageId },
   DeletedEntry: {
     id: MailMessageId,
@@ -295,8 +285,6 @@ export const Message = defineMessageUnion({
   ArchiveChanged: { request: Schema.String },
   ArchiveFailed: { request: Schema.String, error: Schema.String },
   AvatarMounted: {},
-  AppearanceSaved: { request: Schema.String },
-  AppearanceFailed: { request: Schema.String },
   SenderRuleSaved: { request: Schema.String },
   SenderRuleFailed: { request: Schema.String },
   LoadedList: {
@@ -352,7 +340,6 @@ const deleteKey = (id: string, conversation = false) =>
   conversation ? `mail-conversation-delete:${id}` : `mail-delete:${id}`;
 const readKey = (id: string) => `mail-read:${id}`;
 const priorityKey = (address: string) => `mail-sender-priority:${address}`;
-const appearanceKey = (address: string) => `mail-sender-appearance:${address}`;
 const sent = (
   result: Update.Return<Model, Message>,
   key: string,
@@ -821,35 +808,6 @@ const SaveArchive = Command.define("SaveConversationArchive", {
     ),
 });
 
-const SaveAppearance = Command.define("SaveMailSenderAppearance", {
-  args: { request: Schema.String, ...SenderAppearanceUpdate.fields },
-  messages: [
-    Message.AppearanceSaved,
-    Message.AppearanceFailed,
-    Message.SessionExpired,
-  ],
-  execute: ({ request, address, mode }) =>
-    Effect.promise(async (signal) => {
-      try {
-        const response = await fetch(senderAppearanceApiPath, {
-          method: "PATCH",
-          signal,
-          headers: {
-            "content-type": "application/json",
-            "x-effect-auth-csrf": "1",
-          },
-          body: JSON.stringify({ address, mode }),
-        });
-        if (response.status === 401) return Message.SessionExpired({ request });
-        return response.ok
-          ? Message.AppearanceSaved({ request })
-          : Message.AppearanceFailed({ request });
-      } catch {
-        return Message.AppearanceFailed({ request });
-      }
-    }),
-});
-
 const SaveSenderRule = Command.define("SaveMailSenderRule", {
   args: SenderRuleRequest.fields,
   messages: [
@@ -1202,37 +1160,6 @@ const foldMessageMenu = Update.foldChild({
     (model) => {
       const { active, entry } = model;
       if (!active) return { model };
-      if (
-        value === "avatarAuto" ||
-        value === "avatarPerson" ||
-        value === "avatarService"
-      ) {
-        const sender = entry?.people?.sender;
-        if (
-          !sender ||
-          !isPersonEmail(sender.address) ||
-          model.appearanceRequest
-        )
-          return { model };
-        const mode: typeof SenderAppearanceMode.Type =
-          value === "avatarAuto"
-            ? "auto"
-            : value === "avatarPerson"
-              ? "person"
-              : "service";
-        const change = {
-          request: crypto.randomUUID(),
-          address: sender.address,
-          mode,
-        };
-        return {
-          model: {
-            ...model,
-            appearanceRequest: change,
-          },
-          commands: [SaveAppearance(change)],
-        };
-      }
       if (value === "togglePlainText")
         return entry?.html
           ? { model: { ...model, showPlainText: !model.showPlainText } }
@@ -1253,22 +1180,6 @@ const foldMessageMenu = Update.foldChild({
             )
           : { model };
       if (model.folder === "trash" && value !== "download") return { model };
-      if (value === "delete") {
-        if (model.deleteRequest) return { model };
-        const deletion = {
-          ...active,
-          subject:
-            model.thread?.messages.find(({ id }) => id === active.id)
-              ?.subject ||
-            (entry?.id === active.id ? entry.subject : undefined) ||
-            "(no subject)",
-          request: crypto.randomUUID(),
-        };
-        return {
-          model: { ...model, deleteRequest: deletion },
-          commands: [DeleteEntry(deletion)],
-        };
-      }
       if (active.folder !== "inbox") return { model };
       if (value === "download") {
         return {
@@ -1281,7 +1192,9 @@ const foldMessageMenu = Update.foldChild({
           ],
         };
       }
-      return entry?.id === active.id && "receivedAt" in entry
+      return value === "toggleUnread" &&
+        entry?.id === active.id &&
+        "receivedAt" in entry
         ? setUnread(model, entry.id, !entryUnread(model), true)
         : { model };
     },
@@ -1311,7 +1224,6 @@ export const update = (model: Model, message: Message): Result =>
               deleteRequest: model.deleteRequest,
               archiveRequest: model.archiveRequest,
               senderRuleRequest: model.senderRuleRequest,
-              appearanceRequest: model.appearanceRequest,
               unreadCount: model.unreadCount,
               unreadRequest: model.unreadRequest,
               unreadRefreshQueued: model.unreadRefreshQueued,
@@ -1567,37 +1479,6 @@ export const update = (model: Model, message: Message): Result =>
       );
     },
     AvatarMounted: () => ({ model }),
-    AppearanceSaved: ({ request }) => {
-      const change = model.appearanceRequest;
-      if (change?.request !== request) return { model };
-      const entry = loadEntry({
-        ...model,
-        appearanceRequest: null,
-        entryRequest: null,
-      });
-      const result = withThread(refreshList(entry.model));
-      return dismissNotification(
-        {
-          model: result.model,
-          commands: [...(entry.commands ?? []), ...(result.commands ?? [])],
-        },
-        appearanceKey(change.address),
-      );
-    },
-    AppearanceFailed: ({ request }) => {
-      const change = model.appearanceRequest;
-      if (change?.request !== request) return { model };
-      return notify(
-        { model: { ...model, appearanceRequest: null } },
-        {
-          key: appearanceKey(change.address),
-          variant: "Error",
-          title:
-            "Could not update sender appearance. Try again from Message actions.",
-          description: change.address,
-        },
-      );
-    },
     SenderRuleSaved: ({ request }) => {
       const change = model.senderRuleRequest;
       if (change?.request !== request) return { model };
@@ -1705,6 +1586,24 @@ export const update = (model: Model, message: Message): Result =>
       );
     },
     DownloadStarted: () => ({ model }),
+    RequestedMessageDelete: ({ id }) => {
+      const { active, entry } = model;
+      if (active?.id !== id || model.deleteRequest || model.folder === "trash")
+        return { model };
+      const deletion = {
+        ...active,
+        subject:
+          model.thread?.messages.find((message) => message.id === id)
+            ?.subject ||
+          (entry?.id === id ? entry.subject : undefined) ||
+          "(no subject)",
+        request: crypto.randomUUID(),
+      };
+      return {
+        model: { ...model, deleteRequest: deletion },
+        commands: [DeleteEntry(deletion)],
+      };
+    },
     RequestedConversationDelete: ({ id }) => {
       if (
         model.deleteRequest ||
@@ -2239,7 +2138,7 @@ const listView = (model: Model, h: HtmlBuilder<Message>) => {
       h.div(
         [h.Key(folder), h.Class("workspace-results")],
         [
-          ...(listRequest?.cursor === null
+          ...(list === null && listRequest?.cursor === null
             ? [listLoading("Loading messages…", h)]
             : []),
           ...(listError?.cursor === null
@@ -2430,37 +2329,6 @@ const entryContent = (model: Model, h: HtmlBuilder<Message>) => {
                   },
                   toParentMessage: toAttachmentMessage,
                 }),
-              ]
-            : []),
-          ...(model.folder !== "trash" && model.list?.sender
-            ? [
-                h.div(
-                  [h.Class("inbox-toolbar-actions")],
-                  [
-                    ...("receivedAt" in entry && entry.reply
-                      ? [
-                          h.button(
-                            [
-                              h.Type("button"),
-                              h.OnClick(Message.RequestedReply()),
-                            ],
-                            ["Reply"],
-                          ),
-                          h.button(
-                            [
-                              h.Type("button"),
-                              h.OnClick(Message.RequestedReplyAll()),
-                            ],
-                            ["Reply all"],
-                          ),
-                        ]
-                      : []),
-                    h.button(
-                      [h.Type("button"), h.OnClick(Message.RequestedForward())],
-                      ["Forward"],
-                    ),
-                  ],
-                ),
               ]
             : []),
         ]
@@ -2658,30 +2526,10 @@ const attachmentActions = (model: Model, h: HtmlBuilder<Message>) => {
   );
 };
 
-const messageActions = (model: Model, h: HtmlBuilder<Message>) => {
+const messageOverflow = (model: Model, h: HtmlBuilder<Message>) => {
   const { active, entry } = model;
   if (!active) return h.empty;
   const items: DropdownMenu.Item<MessageAction>[] = [];
-  const sender = entry?.id === active.id ? entry.people?.sender : null;
-  if (sender && isPersonEmail(sender.address)) {
-    const selected = sender.appearance?.mode ?? "auto";
-    for (const [mode, action, label] of [
-      ["auto", "avatarAuto", "Sender avatar → Auto"],
-      ["person", "avatarPerson", "Sender avatar → Person"],
-      ["service", "avatarService", "Sender avatar → Service"],
-    ] as const)
-      items.push({
-        action,
-        label,
-        icon: mailIcon(
-          h,
-          mode === "service"
-            ? "M4 4h16v16H4z"
-            : "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z",
-        ),
-        disabled: model.appearanceRequest !== null || mode === selected,
-      });
-  }
 
   if (entry?.id === active.id && entry.html) {
     items.push({
@@ -2736,17 +2584,7 @@ const messageActions = (model: Model, h: HtmlBuilder<Message>) => {
       disabled: model.recovery.request !== null,
       icon: mailIcon(h, "M9 14 4 9l5-5M4 9h10a5 5 0 0 1 0 10"),
     });
-  else
-    items.push({
-      action: "delete",
-      label: "Delete message",
-      disabled: model.deleteRequest !== null,
-      destructive: true,
-      icon: mailIcon(
-        h,
-        "M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0-1 14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1L5 6m5 4v7m4-7v7",
-      ),
-    });
+  if (!items.length) return h.empty;
   return messageMenu.view(
     {
       model: model.messageMenu,
@@ -2756,6 +2594,82 @@ const messageActions = (model: Model, h: HtmlBuilder<Message>) => {
       items,
     },
     h,
+  );
+};
+
+const messageHeaderActions = (model: Model, h: HtmlBuilder<Message>) => {
+  const { active, entry } = model;
+  if (!active) return h.empty;
+  const inTrash = model.folder === "trash";
+  const canForward = !inTrash && model.list?.sender && entry?.id === active.id;
+  const canReply = canForward && "receivedAt" in entry && entry.reply;
+  const composeAction = (
+    label: string,
+    paths: readonly string[],
+    onClick: Message,
+  ) =>
+    button(
+      {
+        variant: "ghost",
+        size: "icon-sm",
+        rounded: true,
+        ariaLabel: label,
+        attributes: [h.Title(label)],
+        onClick,
+        children: [outlineIcon(h, paths)],
+      },
+      h,
+    );
+
+  return h.div(
+    [h.Class("inbox-message-tools")],
+    [
+      attachmentActions(model, h),
+      ...(canReply
+        ? [
+            composeAction(
+              "Reply",
+              ["m10 7-5 5 5 5", "M5 12h9a5 5 0 0 1 5 5v2"],
+              Message.RequestedReply(),
+            ),
+            composeAction(
+              "Reply all",
+              ["M7 7l-5 5 5 5", "m12 7-5 5 5 5", "M7 12h9a5 5 0 0 1 5 5v2"],
+              Message.RequestedReplyAll(),
+            ),
+          ]
+        : []),
+      ...(canForward
+        ? [
+            composeAction(
+              "Forward",
+              ["m14 7 5 5-5 5", "M19 12h-9a5 5 0 0 0-5 5v2"],
+              Message.RequestedForward(),
+            ),
+          ]
+        : []),
+      ...(inTrash
+        ? []
+        : [
+            button(
+              {
+                variant: "ghost",
+                size: "icon-sm",
+                rounded: true,
+                ariaLabel: "Delete message",
+                attributes: [
+                  h.Title("Delete message"),
+                  h.DataAttribute("message-delete", ""),
+                ],
+                disabled: model.deleteRequest !== null,
+                onClick: Message.RequestedMessageDelete({ id: active.id }),
+                children: [outlineIcon(h, trashIconPaths)],
+              },
+              h,
+            ),
+          ]),
+      messageOverflow(model, h),
+    ],
   );
 };
 
@@ -2888,12 +2802,7 @@ const entryView = (
                         : []),
                     ],
                     trailing: [
-                      ...(expanded
-                        ? [
-                            attachmentActions(model, h),
-                            messageActions(model, h),
-                          ]
-                        : []),
+                      ...(expanded ? [messageHeaderActions(model, h)] : []),
                       timestamp(messageTime, now, h),
                     ],
                     ...(grouped
@@ -3037,7 +2946,14 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
                 h,
               ),
             ]
-          : []),
+          : [
+              h.span(
+                [h.Class("inbox-refresh-indicator")],
+                model.list !== null && model.listRequest?.cursor === null
+                  ? [spinner("Refreshing messages…", h)]
+                  : [],
+              ),
+            ]),
         h.div(
           [h.Class("workspace-drawer-trigger")],
           [

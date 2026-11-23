@@ -326,7 +326,7 @@ it("rejects wrong delete targets and clears action payloads across sign-out gene
   ).toBeUndefined();
 });
 
-it("starts deletion from the message menu and preserves the subject through navigation and Undo failure", () => {
+it("deletes the active message and preserves its subject through navigation and Undo failure", () => {
   const submitted = Inbox.update(
     {
       ...Inbox.initial,
@@ -344,14 +344,17 @@ it("starts deletion from the message menu and preserves the subject through navi
         ],
       },
     },
-    menuAction("delete"),
+    Inbox.Message.RequestedMessageDelete({ id: first }),
   );
   expect(submitted.commands).toContainEqual(
     expect.objectContaining({
       args: expect.objectContaining({ id: first, folder: "inbox" }),
     }),
   );
-  const duplicate = Inbox.update(submitted.model, menuAction("delete"));
+  const duplicate = Inbox.update(
+    submitted.model,
+    Inbox.Message.RequestedMessageDelete({ id: first }),
+  );
   expect(duplicate.model.deleteRequest).toBe(submitted.model.deleteRequest);
   const deleted = Inbox.update(
     { ...submitted.model, selected: second, thread: null },
@@ -536,57 +539,35 @@ it("silently clears an explicit read failure when reopening successfully marks t
   );
 });
 
-it.each(["priority", "appearance"] as const)(
-  "keeps sender %s failures tied to the original sender after navigation and successful retries quiet",
-  (kind) => {
-    const pending = Inbox.update(
-      reader(),
-      kind === "priority" ? priorityAction : menuAction("avatarPerson"),
-    );
-    const request = (
-      kind === "priority"
-        ? pending.model.senderRuleRequest
-        : pending.model.appearanceRequest
-    )!.request;
-    const failedMessage =
-      kind === "priority"
-        ? Inbox.Message.SenderRuleFailed({ request })
-        : Inbox.Message.AppearanceFailed({ request });
-    const savedMessage =
-      kind === "priority"
-        ? Inbox.Message.SenderRuleSaved({ request })
-        : Inbox.Message.AppearanceSaved({ request });
-    const navigated = Inbox.update(
-      pending.model,
-      Inbox.Message.Opened({ folder: "archive", id: second }),
-    ).model;
-    const failed = Inbox.update(navigated, failedMessage);
-    expect(notification(failed.outMessage)).toMatchObject({
-      variant: "Error",
-      description: "alex@example.com",
-    });
-    expect(notification(failed.outMessage).title).toContain(kind);
-    expect(failed.model.selected).toBe(second);
-    expect(
-      Inbox.update(failed.model, failedMessage).outMessage,
-    ).toBeUndefined();
-    expect(Inbox.update(failed.model, savedMessage).outMessage).toBeUndefined();
-    expect(
-      Inbox.update(Inbox.initial, failedMessage).outMessage,
-    ).toBeUndefined();
-    expect(
-      Inbox.update(Inbox.initial, savedMessage).outMessage,
-    ).toBeUndefined();
-    const saved = Inbox.update(navigated, savedMessage);
-    expect(applyOutcome(saved.outMessage).toast.entries).toEqual([]);
-    const queue = applyOutcome(failed.outMessage);
-    expect(
-      applyOutcome(saved.outMessage, queue).toast.entries[0]?.animation
-        .transitionState,
-    ).toBe("LeaveStart");
-    expect(saved.model.selected).toBe(second);
-  },
-);
+it("keeps sender priority failures tied to the original sender after navigation and successful retries quiet", () => {
+  const pending = Inbox.update(reader(), priorityAction);
+  const request = pending.model.senderRuleRequest!.request;
+  const failedMessage = Inbox.Message.SenderRuleFailed({ request });
+  const savedMessage = Inbox.Message.SenderRuleSaved({ request });
+  const navigated = Inbox.update(
+    pending.model,
+    Inbox.Message.Opened({ folder: "archive", id: second }),
+  ).model;
+  const failed = Inbox.update(navigated, failedMessage);
+  expect(notification(failed.outMessage)).toMatchObject({
+    variant: "Error",
+    description: "alex@example.com",
+  });
+  expect(notification(failed.outMessage).title).toContain("priority");
+  expect(failed.model.selected).toBe(second);
+  expect(Inbox.update(failed.model, failedMessage).outMessage).toBeUndefined();
+  expect(Inbox.update(failed.model, savedMessage).outMessage).toBeUndefined();
+  expect(Inbox.update(Inbox.initial, failedMessage).outMessage).toBeUndefined();
+  expect(Inbox.update(Inbox.initial, savedMessage).outMessage).toBeUndefined();
+  const saved = Inbox.update(navigated, savedMessage);
+  expect(applyOutcome(saved.outMessage).toast.entries).toEqual([]);
+  const queue = applyOutcome(failed.outMessage);
+  expect(
+    applyOutcome(saved.outMessage, queue).toast.entries[0]?.animation
+      .transitionState,
+  ).toBe("LeaveStart");
+  expect(saved.model.selected).toBe(second);
+});
 
 it("tracks independent read-status requests and leaves unrelated errors untouched", () => {
   const firstPending = Inbox.update(reader(), menuAction("toggleUnread")).model;

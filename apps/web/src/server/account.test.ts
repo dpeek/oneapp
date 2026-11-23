@@ -1,3 +1,4 @@
+import { ensureDefaultMailbox, mailDatabase } from "./mailbox.ts";
 import { expect, it, vi } from "@effect/vitest";
 import {
   cliLinkScopes,
@@ -100,6 +101,7 @@ const setup = async (
   inbox?: Partial<
     Pick<
       WorkerEnv,
+      | "MAILBOX_ALIASES"
       | "INBOX_MESSAGES"
       | "INBOX_EMAIL_ADDRESS"
       | "INBOX_UPDATES"
@@ -136,6 +138,8 @@ const setup = async (
     { bytes: Uint8Array<ArrayBuffer>; customMetadata: { sha256: string } }
   >();
   const env = {
+    INBOX_MESSAGES: {},
+    SENT_MESSAGES: {},
     ...inbox,
     VAULT_FILES: {
       put: async (
@@ -236,9 +240,15 @@ const setup = async (
       .map((header) => header.split(";")[0])
       .join("; ");
 
+  await ensureDefaultMailbox(
+    env.DB,
+    env.INBOX_EMAIL_ADDRESS,
+    env.INBOX_EMAIL_FROM,
+    env.MAILBOX_ALIASES,
+  );
   return {
     call,
-    db: env.DB,
+    db: mailDatabase(env.DB, "personal"),
     request,
     objects,
     finishWork: () => Promise.all(deliveries),
@@ -1522,6 +1532,7 @@ it("only upgrades Inbox sockets for a same-origin owner session", async () => {
     origin: "https://oneapp.example",
     "x-oneapp-inbox-session-id": "forged",
     "x-oneapp-inbox-security-revision": "forged",
+    "x-oneapp-inbox-mailbox": "family",
   };
   expect((await request(inboxEventsPath, { headers })).status).toBe(401);
   expect(
@@ -1554,6 +1565,7 @@ it("only upgrades Inbox sockets for a same-origin owner session", async () => {
   expect(session).not.toBeNull();
   expect(forwarded.get("upgrade")).toBe("websocket");
   expect(forwarded.has("cookie")).toBe(false);
+  expect(forwarded.get("x-oneapp-inbox-mailbox")).toBe("personal");
   expect(forwarded.get("x-oneapp-inbox-session-id")).toBe(session?.id);
   expect(forwarded.get("x-oneapp-inbox-security-revision")).toBe(
     session?.revision,
@@ -4843,4 +4855,59 @@ it("persists sender avatar overrides separately from Signal/Noise and restores a
     domain: "acme.co.uk",
   });
   expect(sqlite.query("SELECT * FROM mail_sender_avatars").all()).toEqual([]);
+});
+
+it("uses mailbox aliases for Reply All and never reads another mailbox's originals", async () => {
+  using sqlite = new Database(":memory:");
+  const id = "0-8199999999990-00000000-0000-4000-8000-000000000000.eml";
+  const privateId = "0-8199999999991-00000000-0000-4000-8000-000000000000.eml";
+  const raw = new TextEncoder().encode(
+    [
+      "From: sender@example.net",
+      "To: mail@dpeek.com, david@winterpeek.com, delivered@dpeek.com",
+      "Cc: other@example.net",
+      "Subject: Multiple identities",
+      "",
+      "Hello",
+    ].join("\r\n"),
+  );
+  const get = vi.fn(async (key: string) => {
+    if (key !== id && key !== `mailboxes/work/${privateId}`) return null;
+    return {
+      key,
+      size: raw.length,
+      uploaded: new Date(),
+      customMetadata: {
+        envelopeFrom: "sender@example.net",
+        envelopeTo: "delivered@dpeek.com",
+      },
+      arrayBuffer: async () => raw.buffer,
+      body: new Response(raw).body,
+    };
+  });
+  const { call, signIn, cookies } = await setup(sqlite, {
+    INBOX_EMAIL_ADDRESS: "mail@app.example.net",
+    MAILBOX_ALIASES: "mail@dpeek.com,david@winterpeek.com",
+    INBOX_MESSAGES: { get } as unknown as WorkerEnv["INBOX_MESSAGES"],
+  });
+  const session = cookies(await signIn(password));
+  expect(
+    await (await call(inboxMessageApi(id), undefined, session)).json(),
+  ).toMatchObject({
+    reply: {
+      to: "sender@example.net",
+      allTo: "sender@example.net",
+      cc: "other@example.net",
+    },
+  });
+  expect(
+    (await call(inboxMessageApi(privateId), undefined, session)).status,
+  ).toBe(404);
+  expect(
+    (await call(inboxOriginalApi(privateId), undefined, session)).status,
+  ).toBe(404);
+  expect(
+    (await call(inboxAttachmentApi(privateId, 0), undefined, session)).status,
+  ).toBe(404);
+  expect(get.mock.calls.every(([key]) => !key.includes("/"))).toBe(true);
 });

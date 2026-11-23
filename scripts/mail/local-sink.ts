@@ -1,3 +1,4 @@
+import type { MailSample } from "../mail-sample-worker.ts";
 import {
   D1,
   DurableObjectNamespace,
@@ -8,12 +9,9 @@ import { join } from "node:path";
 import { localDirectory, localMailResources } from "./local.ts";
 import { MailSampleError } from "./errors.ts";
 import type { SnapshotSink } from "./replay.ts";
-import type {
-  CompletionRequest,
-  completeImportedConversations,
-} from "../../apps/web/src/server/mail-import-completion.ts";
+import type { CompletionRequest } from "../../apps/web/src/server/mail-import-completion.ts";
 
-export const openLocalMailSink = async (stage: string) => {
+export const openLocalMailSink = async (stage: string, mailboxId: string) => {
   const resources = await localMailResources(stage);
   const { outputs } = await Bun.build({
     entrypoints: [join(import.meta.dir, "..", "mail-sample-worker.ts")],
@@ -26,12 +24,7 @@ export const openLocalMailSink = async (stage: string) => {
     throw new MailSampleError("Could not bundle the local import worker.");
   const platform = await getPlatformProxy<{
     MAIL_IMPORT: {
-      getByName(name: string): SnapshotSink & {
-        ready(): Promise<boolean>;
-        completeImport(
-          request: CompletionRequest,
-        ): ReturnType<typeof completeImportedConversations>;
-      };
+      getByName(name: string): MailSample;
     };
   }>({
     name: "oneapp-snapshot-import",
@@ -56,7 +49,21 @@ export const openLocalMailSink = async (stage: string) => {
     durableObjectNamespaces: [{ className: "MailSample", sql: false }],
   });
   try {
-    const sink = platform.env.MAIL_IMPORT.getByName(stage);
+    const remote = platform.env.MAIL_IMPORT.getByName(`${stage}:${mailboxId}`);
+    const sink = {
+      ready: () => remote.ready(mailboxId),
+      receipt: (source: Parameters<SnapshotSink["receipt"]>[0]) =>
+        remote.receipt(mailboxId, source),
+      completed: (source: Parameters<SnapshotSink["receipt"]>[0]) =>
+        remote.completed(mailboxId, source),
+      ingest: (
+        metadata: Parameters<SnapshotSink["ingest"]>[0],
+        raw: Uint8Array<ArrayBuffer>,
+      ) => remote.ingest(mailboxId, metadata, raw),
+      completeImport: (request: CompletionRequest) =>
+        remote.completeImport(mailboxId, request),
+      totals: () => remote.totals(mailboxId),
+    };
     await sink.ready();
     return { sink, resources, dispose: platform.dispose };
   } catch {

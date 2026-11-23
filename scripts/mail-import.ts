@@ -1,3 +1,4 @@
+import { MailboxId } from "../apps/web/src/server/mailbox.ts";
 import { resolve, join } from "node:path";
 import { parseArgs } from "node:util";
 import { Schema } from "effect";
@@ -15,6 +16,7 @@ const { values } = parseArgs({
   options: {
     snapshot: { type: "string", default: ".mail-snapshots/icloud" },
     stage: { type: "string" },
+    mailbox: { type: "string" },
     mapping: {
       type: "string",
       default: join(import.meta.dir, "mail", "icloud-mapping.json"),
@@ -25,14 +27,14 @@ const { values } = parseArgs({
 });
 if (values.help) {
   console.log(
-    "bun run mail:import --snapshot <directory> --stage <local-stage> [--mapping <json>] [--dry-run]\nValidates all original checksums before importing. Dry-run previews mappings without connecting to iCloud or opening a destination.",
+    "bun run mail:import --snapshot <directory> --stage <local-stage> --mailbox <mailbox-id> [--mapping <json>] [--dry-run]\nValidates all original checksums before importing. Dry-run previews mappings without connecting to iCloud or opening a destination.",
   );
   process.exit(0);
 }
 try {
-  if (!values["dry-run"] && !values.stage)
+  if (!values["dry-run"] && (!values.stage || !values.mailbox))
     throw new MailSampleError(
-      "Choose an explicit local --stage, or use --dry-run.",
+      "Choose an explicit local --stage and --mailbox, or use --dry-run.",
     );
   const directory = resolve(values.snapshot);
   console.error("Validating snapshot metadata and every original checksum…");
@@ -55,12 +57,19 @@ try {
   );
   if (!values["dry-run"]) {
     const stage = Schema.decodeUnknownSync(StageName)(values.stage);
-    const stateDirectory = join(localDirectory, "mail-import", stage);
+    const mailboxId = Schema.decodeUnknownSync(MailboxId)(values.mailbox);
+    const stateDirectory = join(
+      localDirectory,
+      "mail-import",
+      stage,
+      mailboxId,
+    );
     await withFileLock(join(stateDirectory, ".import.lock"), async () => {
-      const platform = await openLocalMailSink(stage);
+      const platform = await openLocalMailSink(stage, mailboxId);
       try {
         const config = {
-          version: 1,
+          version: 2,
+          mailboxId,
           account: inventory.source.account,
           mappingHash: mappingHash(mapping),
           resources: platform.resources,
@@ -114,7 +123,7 @@ try {
         };
         console.log(
           JSON.stringify(
-            { stage, ...summary, completion: completionSummary },
+            { stage, mailboxId, ...summary, completion: completionSummary },
             null,
             2,
           ),

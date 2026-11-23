@@ -6,7 +6,7 @@ import type {
 import resvgModule from "@resvg/resvg-wasm/index_bg.wasm";
 import { DurableObject } from "cloudflare:workers";
 import { inboxChanged } from "../inbox-contract.ts";
-import { ownerId } from "./auth.ts";
+
 import { createSvgRasterizer } from "./bitwarden/website-icon-svg.ts";
 import { inboxSessionHeaders, type InboxSocketSession } from "./inbox.ts";
 import worker from "./worker.ts";
@@ -31,12 +31,15 @@ export class InboxUpdates extends DurableObject<{ DB: D1Database }> {
   fetch(request: CloudflareRequest) {
     const sessionId = request.headers.get(inboxSessionHeaders.id);
     const revision = request.headers.get(inboxSessionHeaders.revision);
-    if (!sessionId || !revision) return new Response(null, { status: 403 });
+    const mailboxId = request.headers.get(inboxSessionHeaders.mailbox);
+    if (!sessionId || !revision || !mailboxId)
+      return new Response(null, { status: 403 });
 
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1]);
     pair[1].serializeAttachment({
       sessionId,
+      mailboxId,
       securityRevision: revision,
     } satisfies InboxSocketSession);
     return new Response(null, { status: 101, webSocket: pair[0] });
@@ -52,6 +55,7 @@ export class InboxUpdates extends DurableObject<{ DB: D1Database }> {
     const sessionIds = new Set(
       clients.flatMap(({ session }) => (session ? [session.sessionId] : [])),
     );
+    const mailboxId = clients[0]?.session?.mailboxId ?? "";
     const now = Date.now();
     // Check the current session before disclosing even the timing of new mail.
     const { results } = await this.env.DB.prepare(
@@ -59,12 +63,13 @@ export class InboxUpdates extends DurableObject<{ DB: D1Database }> {
       SELECT s.session_id AS sessionId, s.security_revision AS securityRevision
       FROM oneapp_auth_sessions s
       JOIN accounts a ON a.id = s.subject_id AND a.security_revision = s.security_revision
-      WHERE a.id = ? AND a.active = 1
+      JOIN mailboxes b ON b.owner_account_id = a.id
+      WHERE b.id = ? AND a.active = 1
         AND s.expires_at > ? AND s.absolute_expires_at > ?
         AND s.session_id IN (SELECT value FROM json_each(?))
     `,
     )
-      .bind(ownerId, now, now, JSON.stringify([...sessionIds]))
+      .bind(mailboxId, now, now, JSON.stringify([...sessionIds]))
       .all<InboxSocketSession>();
     const active = new Map(
       results.map(({ sessionId, securityRevision }) => [
@@ -78,6 +83,7 @@ export class InboxUpdates extends DurableObject<{ DB: D1Database }> {
       try {
         if (
           session &&
+          session.mailboxId === mailboxId &&
           active.get(session.sessionId) === session.securityRevision
         )
           socket.send(inboxChanged);

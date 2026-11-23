@@ -1,42 +1,43 @@
-import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
+import { mailboxSql, type MailDatabase } from "./mailbox.ts";
+import type { R2Bucket } from "@cloudflare/workers-types";
 import { removeIndexedMail } from "./mail-index.ts";
 import type { DeletedMailCursor, MailFolder } from "../inbox-contract.ts";
 
 export const mailRetentionMs = 30 * 24 * 60 * 60 * 1000;
 type Store = {
-  DB: D1Database;
+  DB: MailDatabase;
   INBOX_MESSAGES: R2Bucket;
   SENT_MESSAGES: R2Bucket;
 };
 
-export const hiddenMail = async (db: D1Database, id: string) =>
+export const hiddenMail = async (db: MailDatabase, id: string) =>
   Boolean(
     await db
       .prepare(
-        "SELECT id FROM mail_index_messages WHERE id = ? AND deleted <> 0",
+        `SELECT id FROM mail_index_messages WHERE mailbox_id = ${mailboxSql(db)} AND id = ? AND deleted <> 0`,
       )
       .bind(id)
       .first(),
   );
 
-export const recoverableMail = async (db: D1Database, id: string) =>
+export const recoverableMail = async (db: MailDatabase, id: string) =>
   Boolean(
     await db
       .prepare(
-        "SELECT id FROM mail_index_messages WHERE id = ? AND deleted = 1 AND deleted_at > ?",
+        `SELECT id FROM mail_index_messages WHERE mailbox_id = ${mailboxSql(db)} AND id = ? AND deleted = 1 AND deleted_at > ?`,
       )
       .bind(id, Date.now() - mailRetentionMs)
       .first(),
   );
 
 export const visibleMail = async <T extends { id: string }>(
-  db: D1Database,
+  db: MailDatabase,
   messages: readonly T[],
 ) => {
   if (!messages.length) return [];
   const { results } = await db
     .prepare(
-      "SELECT id FROM mail_index_messages WHERE deleted <> 0 AND id IN (SELECT value FROM json_each(?))",
+      `SELECT id FROM mail_index_messages WHERE mailbox_id = ${mailboxSql(db)} AND deleted <> 0 AND id IN (SELECT value FROM json_each(?))`,
     )
     .bind(JSON.stringify(messages.map(({ id }) => id)))
     .all<{ id: string }>();
@@ -44,22 +45,22 @@ export const visibleMail = async <T extends { id: string }>(
   return messages.filter(({ id }) => !hidden.has(id));
 };
 
-export const trashMail = (db: D1Database, id: string, now = Date.now()) =>
+export const trashMail = (db: MailDatabase, id: string, now = Date.now()) =>
   db
     .prepare(
-      "UPDATE mail_index_messages SET deleted = 1, deleted_at = ? WHERE id = ? AND deleted = 0",
+      `UPDATE mail_index_messages SET deleted = 1, deleted_at = ? WHERE mailbox_id = ${mailboxSql(db)} AND id = ? AND deleted = 0`,
     )
     .bind(now, id)
     .run();
 
 export const restoreMail = async (
-  db: D1Database,
+  db: MailDatabase,
   id: string,
   now = Date.now(),
 ) => {
   const result = await db
     .prepare(
-      "UPDATE mail_index_messages SET deleted = 0, deleted_at = NULL WHERE id = ? AND deleted = 1 AND deleted_at > ? RETURNING id",
+      `UPDATE mail_index_messages SET deleted = 0, deleted_at = NULL WHERE mailbox_id = ${mailboxSql(db)} AND id = ? AND deleted = 1 AND deleted_at > ? RETURNING id`,
     )
     .bind(id, now - mailRetentionMs)
     .first();
@@ -67,13 +68,13 @@ export const restoreMail = async (
 };
 
 export const listTrash = async (
-  db: D1Database,
+  db: MailDatabase,
   cursor?: typeof DeletedMailCursor.Type,
 ) => {
   const { results } = await db
     .prepare(
       `SELECT id, folder, sender AS "from", subject, deleted_at AS deletedAt FROM mail_index_messages
-    WHERE deleted = 1 AND deleted_at > ? AND (deleted_at, id) < (?, ?)
+    WHERE mailbox_id = ${mailboxSql(db)} AND deleted = 1 AND deleted_at > ? AND (deleted_at, id) < (?, ?)
     ORDER BY deleted_at DESC, id DESC LIMIT 101`,
     )
     .bind(
@@ -104,8 +105,8 @@ export const collectMailTrash = async (env: Store, now = Date.now()) => {
   // object deletions retain their claim and are retried on the next cron run.
   const { results } = await env.DB.prepare(
     `UPDATE mail_index_messages SET deleted = 2
-    WHERE id IN (SELECT id FROM mail_index_messages WHERE
-      (deleted = 1 AND deleted_at <= ?) OR deleted = 2 LIMIT 100)
+    WHERE mailbox_id = ${mailboxSql(env.DB)} AND id IN (SELECT id FROM mail_index_messages WHERE mailbox_id = ${mailboxSql(env.DB)} AND
+      ((deleted = 1 AND deleted_at <= ?) OR deleted = 2) LIMIT 100)
     RETURNING id, folder`,
   )
     .bind(now - mailRetentionMs)

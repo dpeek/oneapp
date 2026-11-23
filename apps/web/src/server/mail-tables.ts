@@ -1,10 +1,22 @@
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import {
+  index,
+  integer,
+  primaryKey,
+  sqliteTable,
+  text,
+} from "drizzle-orm/sqlite-core";
+import { mailboxes } from "./mailbox-tables.ts";
 import { sql } from "drizzle-orm";
 
 export const mailIndexMessages = sqliteTable(
   "mail_index_messages",
   {
-    id: text().primaryKey(),
+    mailboxId: text("mailbox_id")
+      .notNull()
+      .default("personal")
+      .references(() => mailboxes.id),
+    id: text().notNull(),
+    envelopeRecipient: text("envelope_recipient"),
     threadId: text("thread_id").notNull(),
     folder: text().notNull(),
     sender: text().notNull(),
@@ -20,14 +32,21 @@ export const mailIndexMessages = sqliteTable(
     bodyPreview: text("body_preview"),
   },
   (table) => [
-    index("mail_index_deleted_date").on(table.deleted, table.deletedAt),
+    primaryKey({ columns: [table.mailboxId, table.id] }),
+    index("mail_index_deleted_date").on(
+      table.mailboxId,
+      table.deleted,
+      table.deletedAt,
+    ),
     index("mail_index_folder_date").on(
+      table.mailboxId,
       table.folder,
       table.deleted,
       table.timestamp,
       table.id,
     ),
     index("mail_index_thread_folder_date").on(
+      table.mailboxId,
       table.threadId,
       table.folder,
       table.deleted,
@@ -35,16 +54,16 @@ export const mailIndexMessages = sqliteTable(
       table.id,
     ),
     index("mail_index_unread")
-      .on(table.threadId)
+      .on(table.mailboxId, table.threadId)
       .where(sql`folder = 'inbox' AND deleted = 0 AND unread = 1`),
     index("mail_index_inbox_archive_date")
-      .on(table.archived, table.timestamp, table.id)
+      .on(table.mailboxId, table.archived, table.timestamp, table.id)
       .where(sql`folder = 'inbox' AND deleted = 0`),
     index("mail_index_all_date")
-      .on(table.timestamp, table.id)
+      .on(table.mailboxId, table.timestamp, table.id)
       .where(sql`deleted = 0`),
     index("mail_index_all_thread_date")
-      .on(table.threadId, table.timestamp, table.id)
+      .on(table.mailboxId, table.threadId, table.timestamp, table.id)
       .where(sql`deleted = 0`),
   ],
 );
@@ -52,25 +71,56 @@ export const mailIndexMessages = sqliteTable(
 export const mailIndexKeys = sqliteTable(
   "mail_index_keys",
   {
-    identity: text().primaryKey(),
+    mailboxId: text("mailbox_id")
+      .notNull()
+      .default("personal")
+      .references(() => mailboxes.id),
+    identity: text().notNull(),
     threadId: text("thread_id").notNull(),
   },
-  (table) => [index("mail_index_keys_thread").on(table.threadId)],
+  (table) => [
+    primaryKey({ columns: [table.mailboxId, table.identity] }),
+    index("mail_index_keys_thread").on(table.mailboxId, table.threadId),
+  ],
 );
 
-export const mailIndexScans = sqliteTable("mail_index_scans", {
-  folder: text().primaryKey(),
-  cursor: text(),
-  scannedAt: integer("scanned_at").notNull(),
-  ready: integer().notNull().default(0),
-});
+export const mailIndexScans = sqliteTable(
+  "mail_index_scans",
+  {
+    mailboxId: text("mailbox_id")
+      .notNull()
+      .default("personal")
+      .references(() => mailboxes.id),
+    folder: text().notNull(),
+    cursor: text(),
+    scannedAt: integer("scanned_at").notNull(),
+    ready: integer().notNull().default(0),
+  },
+  (table) => [primaryKey({ columns: [table.mailboxId, table.folder] })],
+);
 
-export const mailSenderRules = sqliteTable("mail_sender_rules", {
-  address: text().primaryKey(),
-  priority: text({ enum: ["signal", "noise"] }).notNull(),
-});
+export const mailSenderRules = sqliteTable(
+  "mail_sender_rules",
+  {
+    mailboxId: text("mailbox_id")
+      .notNull()
+      .default("personal")
+      .references(() => mailboxes.id),
+    address: text().notNull(),
+    priority: text({ enum: ["signal", "noise"] }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.mailboxId, table.address] })],
+);
 
-export const mailSenderAvatars = sqliteTable("mail_sender_avatars", {
-  address: text().primaryKey(),
-  kind: text({ enum: ["person", "service"] }).notNull(),
-});
+export const mailSenderAvatars = sqliteTable(
+  "mail_sender_avatars",
+  {
+    mailboxId: text("mailbox_id")
+      .notNull()
+      .default("personal")
+      .references(() => mailboxes.id),
+    address: text().notNull(),
+    kind: text({ enum: ["person", "service"] }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.mailboxId, table.address] })],
+);

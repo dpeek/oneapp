@@ -56,7 +56,7 @@ Vite serves the frontend directly from source and reloads it on edits; Alchemy a
 In another terminal, with the iCloud credentials in the root `.env`, run:
 
 ```sh
-bun run mail:sample
+bun run mail:sample --mailbox personal
 ```
 
 The runner selects recent mail from `INBOX`, `Sent Messages`, and `Archive`, aiming for ten messages per folder and expanding matching Message-ID/References/In-Reply-To threads across those folders. It never selects Junk, Deleted Messages or Drafts. The sample is bounded to 100 messages and 100 MiB total, with a 25 MiB per-message limit; a thread that exceeds a bound is excluded as a whole. Thread completeness is limited to the three scanned folders and usable threading headers.
@@ -100,16 +100,28 @@ bun run mail:dev --stage mail_replay --port 1338
 Then import in another terminal:
 
 ```sh
-bun run mail:import --snapshot .mail-snapshots/icloud --stage mail_replay
+bun run mail:import --snapshot .mail-snapshots/icloud --stage mail_replay --mailbox personal
 ```
 
-Sign in at `http://localhost:1338` with the `mail@dpeek.com` credentials in `.alchemy/mail_replay.env`. No dummy mailbox is seeded. The importer requires an explicit local stage, verifies the entire snapshot before writing, and stores a per-message report in `.alchemy/mail-import/<stage>/<snapshot-id>-report.json`. Failed messages make the command exit nonzero. Repeat the command to resume; completed receipts are skipped, preserving subsequent read/archive/deletion changes. The local adapter reports messages over 25 MiB as unsupported; their originals remain in the snapshot.
+Sign in at `http://localhost:1338` with the `mail@dpeek.com` credentials in `.alchemy/mail_replay.env`. No dummy mailbox is seeded. The importer requires an explicit local stage and destination `--mailbox`, verifies the entire snapshot before writing, and stores a per-message report in `.alchemy/mail-import/<stage>/<mailbox>/<snapshot-id>-report.json`. Failed messages make the command exit nonzero. Repeat the command to resume; completed receipts are skipped, preserving subsequent read/archive/deletion changes. The local adapter reports messages over 25 MiB as unsupported; their originals remain in the snapshot.
 
 After every selected message has imported successfully and threading is finished, a one-time completion policy marks inactive conversations complete. A conversation qualifies when its latest incoming **or sent** message is strictly older than 30 days, none of its incoming messages is unread, and none of its messages has the source `\\Flagged` flag. The cutoff is fixed at the snapshot's `createdAt` minus 30 days, so retries and imports on another machine make the same age comparison. Deleted messages are ignored; conversations containing mail outside this import are protected. Existing complete conversations stay complete.
 
 The policy, cutoff and per-conversation reasons are recorded in D1's `mail_import_completions` table and the local import report. Decisions and archive updates commit atomically. Retrying a completed import returns its recorded decisions without changing subsequent user choices or reopening/completing conversations again. A failed or partial import never runs this step. Dry-run displays the policy; conversation decisions require the destination's completed thread index. This is an import policy, not an ongoing auto-archive rule.
 
 Folder mappings are recorded separately from the snapshot and bound to the destination. OneApp can reopen archived members while merging them into an active Inbox conversation; the final completion policy runs after those merges. The original folder metadata remains in the snapshot and import receipts. To change mappings, reevaluate completion rules or evaluate changed parsing, replay into a fresh stage. Do not edit the inventory or original files: their checksums are part of the format. The same snapshot can be copied to another machine without iCloud credentials. Production upload is not implemented yet; the next adapter needs authenticated owner access and upload limits, and can feed this same format into `ingestRawMail`. No production data is changed by these commands.
+
+### Mailbox ownership and identities
+
+Mail belongs to a mailbox, and each mailbox has an explicit owning account. The initial mailbox is `personal`; the migration assigns existing messages, threading keys, preferences, scans and import receipts to it without changing message IDs or original bytes. The browser still selects this mailbox and requires the existing single owner. Other app features are not yet isolated for multiple users.
+
+Mail queries and operations use a `MailDatabase` with an explicit mailbox ID. Import identity is `(destination mailbox, source ID)`, so replaying the same snapshot into another mailbox creates an independent copy. The original snapshot remains destination-independent. Local import reports and mapping configuration live under `.alchemy/mail-import/<stage>/<mailbox>/`. Legacy receipts migrate into `personal` and still prevent duplicate imports.
+
+`mailbox_addresses` stores owned identities with separate `can_receive` and `can_send` permissions. Login emails do not become mail identities automatically. On first use, the configured receiving/sending address is bootstrapped into `personal`. Optional `MAILBOX_ALIASES` adds comma-separated owned addresses with receiving permission but no send-as permission. Existing rows are never overwritten by bootstrap. Reply All excludes mailbox identities, including aliases; outgoing mail requires both mailbox permission and support from the configured transport.
+
+Exact address routing takes precedence over `mail_domain_routes` catch-all entries, including when an exact address has receiving disabled. Routing records do not provision DNS or Cloudflare Email Routing. Domain administration, family account provisioning, transport setup, address management UI, and choosing among multiple mailboxes remain future work.
+
+The personal mailbox retains its original R2 keys, including legacy timestamp keys. Additional mailboxes use `mailboxes/<mailbox-id>/` prefixes. Bucket adapters restrict listing, reads, attachments, writes and deletion to that namespace. WebSocket updates and background scans/cleanup are also mailbox-scoped. New deliveries preserve their envelope recipient separately; historical imports leave it unknown when the original export does not supply it.
 
 ## Workspaces
 

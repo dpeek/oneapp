@@ -60,7 +60,11 @@ const child = Bun.spawn(
   ],
   {
     cwd: join(import.meta.dir, ".."),
-    env: { ...env, ONEAPP_DEV_PORT: String(port) },
+    env: {
+      ...env,
+      ONEAPP_DEV_PORT: String(port),
+      MAILBOX_ALIASES: "mail@dpeek.com",
+    },
     stdin: "inherit",
     stdout: "inherit",
     stderr: "inherit",

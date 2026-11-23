@@ -1,3 +1,10 @@
+import { ownerId } from "../apps/web/src/server/auth.ts";
+import {
+  ensureDefaultMailbox,
+  requireMailbox,
+  scopeMailStore,
+  mailboxSql,
+} from "../apps/web/src/server/mailbox.ts";
 import { DurableObject } from "cloudflare:workers";
 import type { WorkerEnv } from "../alchemy.run.ts";
 import {
@@ -12,23 +19,35 @@ import {
 export class MailSample extends DurableObject<
   Pick<WorkerEnv, "DB" | "INBOX_MESSAGES" | "SENT_MESSAGES">
 > {
-  async ready() {
-    await this.env.DB.prepare(
-      "SELECT source_id FROM mail_imports LIMIT 1",
-    ).all();
+  private async store(mailboxId: string) {
+    await ensureDefaultMailbox(this.env.DB);
+    await requireMailbox(this.env.DB, mailboxId, ownerId);
+    return scopeMailStore(this.env, mailboxId);
+  }
+
+  async ready(mailboxId: string) {
+    const { DB } = await this.store(mailboxId);
+    await DB.prepare(
+      "SELECT source_id FROM mail_imports WHERE mailbox_id = ? LIMIT 1",
+    )
+      .bind(mailboxId)
+      .all();
     return true;
   }
 
-  async completeImport(request: CompletionRequest) {
-    return completeImportedConversations(this.env.DB, request);
+  async completeImport(mailboxId: string, request: CompletionRequest) {
+    return completeImportedConversations(
+      (await this.store(mailboxId)).DB,
+      request,
+    );
   }
 
-  async completed(source: MailImportMetadata["source"]) {
-    const row = await this.receipt(source);
+  async completed(mailboxId: string, source: MailImportMetadata["source"]) {
+    const row = await this.receipt(mailboxId, source);
     return row?.completedAt != null ? row.id : null;
   }
 
-  async receipt(source: MailImportMetadata["source"]) {
+  async receipt(mailboxId: string, source: MailImportMetadata["source"]) {
     const key = new Uint8Array(
       await crypto.subtle.digest(
         "SHA-256",
@@ -42,9 +61,10 @@ export class MailSample extends DurableObject<
         ),
       ),
     ).toHex();
-    return this.env.DB.prepare(
+    const { DB } = await this.store(mailboxId);
+    return DB.prepare(
       `SELECT message_id AS id, sha256, metadata, completed_at AS completedAt
-      FROM mail_imports WHERE source_id = ?`,
+      FROM mail_imports WHERE mailbox_id = ${mailboxSql(DB)} AND source_id = ?`,
     )
       .bind(key)
       .first<{
@@ -55,18 +75,23 @@ export class MailSample extends DurableObject<
       }>();
   }
 
-  async ingest(metadata: MailImportMetadata, raw: Uint8Array<ArrayBuffer>) {
+  async ingest(
+    mailboxId: string,
+    metadata: MailImportMetadata,
+    raw: Uint8Array<ArrayBuffer>,
+  ) {
     try {
-      return await ingestRawMail(this.env, metadata, raw);
+      return await ingestRawMail(await this.store(mailboxId), metadata, raw);
     } catch {
       return { status: "failed" as const };
     }
   }
 
-  async totals() {
-    return this.env.DB.prepare(
+  async totals(mailboxId: string) {
+    const { DB } = await this.store(mailboxId);
+    return DB.prepare(
       `SELECT folder, count(*) AS messages, sum(unread) AS unread
-      FROM mail_index_messages WHERE deleted = 0 GROUP BY folder`,
+      FROM mail_index_messages WHERE mailbox_id = ${mailboxSql(DB)} AND deleted = 0 GROUP BY folder`,
     ).all();
   }
 }

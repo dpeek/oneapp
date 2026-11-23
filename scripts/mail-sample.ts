@@ -1,9 +1,5 @@
-import {
-  D1,
-  DurableObjectNamespace,
-  R2Bucket,
-} from "@alchemy.run/cloudflare-runtime/core/bindings";
-import { getPlatformProxy } from "@alchemy.run/cloudflare-runtime/core/platform-proxy";
+import { openLocalMailSink } from "./mail/local-sink.ts";
+import { MailboxId } from "../apps/web/src/server/mailbox.ts";
 import { mkdir, chmod, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -18,19 +14,19 @@ import {
   SamplePlan,
   sampleFolders,
   sampleLimits,
-  type SampleSink,
 } from "./mail/sample.ts";
 
 const { values } = parseArgs({
   args: process.argv.slice(2),
   options: {
     stage: { type: "string", default: "mail_sample" },
+    mailbox: { type: "string" },
     help: { type: "boolean" },
   },
 });
 if (values.help) {
   console.log(
-    "bun run mail:sample [--stage mail_sample]\nRequires a running local Alchemy stage and ICLOUD_IMAP_USER / ICLOUD_IMAP_PASSWORD in .env.\nSelects recent messages and related threads from Inbox, Sent Messages and Archive; at most 100 messages / 100 MiB. Reuses the saved plan on rerun.",
+    "bun run mail:sample --mailbox <mailbox-id> [--stage mail_sample]\nRequires a running local Alchemy stage and ICLOUD_IMAP_USER / ICLOUD_IMAP_PASSWORD in .env.\nSelects recent messages and related threads from Inbox, Sent Messages and Archive; at most 100 messages / 100 MiB. Reuses the saved plan on rerun.",
   );
   process.exit(0);
 }
@@ -38,59 +34,25 @@ if (values.help) {
 let phase = "local storage";
 try {
   const resources = await localMailResources(values.stage);
+  const mailboxId = Schema.decodeUnknownSync(MailboxId)(values.mailbox);
   const credentials = inventoryCredentials(undefined, process.env);
   if (!credentials.user || !credentials.password)
     throw new MailSampleError(
       "Set ICLOUD_IMAP_USER and ICLOUD_IMAP_PASSWORD in .env.",
     );
   const account = `icloud:${credentials.user.toLowerCase()}`;
-  const directory = join(localDirectory, "mail-import", values.stage);
+  const directory = join(
+    localDirectory,
+    "mail-import",
+    values.stage,
+    mailboxId,
+  );
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await chmod(directory, 0o700);
   const planPath = join(directory, "plan.json");
-  const { outputs } = await Bun.build({
-    entrypoints: [join(import.meta.dir, "mail-sample-worker.ts")],
-    target: "browser",
-    external: ["cloudflare:*", "node:*"],
-    minify: true,
-  });
-  const bundle = outputs[0];
-  if (!bundle) throw new MailSampleError("Could not bundle the sample worker.");
-  type Sink = SampleSink & {
-    ready(): Promise<boolean>;
-    totals(): Promise<unknown>;
-  };
-  const platform = await getPlatformProxy<{
-    MAIL_SAMPLE: { getByName(name: string): Sink };
-  }>({
-    name: "oneapp-mail-sample",
-    compatibilityDate: "2026-11-01",
-    persist: { directory: join(localDirectory, "local") },
-    bindings: [
-      R2Bucket.local({ binding: "INBOX_MESSAGES", id: resources.inbox }),
-      R2Bucket.local({ binding: "SENT_MESSAGES", id: resources.sent }),
-      D1.local({ binding: "DB", id: resources.database }),
-      DurableObjectNamespace.local({
-        binding: "MAIL_SAMPLE",
-        className: "MailSample",
-      }),
-    ],
-    modules: [
-      {
-        name: "mail-sample.mjs",
-        type: "ESModule",
-        content: await bundle.text(),
-      },
-    ],
-    durableObjectNamespaces: [{ className: "MailSample", sql: false }],
-  });
+  const platform = await openLocalMailSink(values.stage, mailboxId);
   try {
-    const sink = platform.env.MAIL_SAMPLE.getByName(values.stage);
-    await sink.ready().catch(() => {
-      throw new MailSampleError(
-        "The local import schema is unavailable. Restart bun run mail:dev to apply migrations.",
-      );
-    });
+    const sink = platform.sink;
     phase = "iCloud connection";
     await using client = new ImapFlow({
       host: "imap.mail.me.com",

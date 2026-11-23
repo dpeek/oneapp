@@ -1,4 +1,5 @@
-import type { D1Database, R2Bucket, R2Object } from "@cloudflare/workers-types";
+import { mailboxSql, type MailDatabase } from "./mailbox.ts";
+import type { R2Bucket, R2Object } from "@cloudflare/workers-types";
 import { Schema } from "effect";
 import {
   InboxMessageId,
@@ -25,6 +26,7 @@ export type IndexedMail = ConversationMessage & {
   originalId?: string;
   listMail?: boolean;
   initialArchived?: boolean;
+  envelopeRecipient?: string;
 };
 
 export const isMailingList = (listId: string | null | undefined) =>
@@ -32,7 +34,7 @@ export const isMailingList = (listId: string | null | undefined) =>
 
 const indexedSender =
   "lower(trim(coalesce(json_extract(m.people, '$.sender.address'), m.sender)))";
-const senderPriority = `SELECT priority FROM mail_sender_rules WHERE address = ${indexedSender}`;
+const senderPriority = `SELECT priority FROM mail_sender_rules WHERE mailbox_id = m.mailbox_id AND address = ${indexedSender}`;
 const isPersonEmail = Schema.is(PersonEmail);
 
 const localIdentity = (id: string) => `mail:${id}`;
@@ -44,16 +46,15 @@ const hashMessageId = async (id: string) => {
   return `rfc:${new Uint8Array(bytes).toHex()}`;
 };
 
-const matchingThreads = `SELECT thread_id FROM mail_index_keys WHERE identity IN (SELECT value FROM json_each(?1))`;
-const canonicalThread = `SELECT min(thread_id) FROM (${matchingThreads})`;
-const threadsToMerge = `WITH matched AS MATERIALIZED (${matchingThreads}),
-  target AS (SELECT min(thread_id) FROM matched)`;
-
 export const indexMailStatements = async (
-  db: D1Database,
+  db: MailDatabase,
   mail: IndexedMail,
   reopensArchive = false,
 ) => {
+  const scope = mailboxSql(db);
+  const matchingThreads = `SELECT thread_id FROM mail_index_keys WHERE mailbox_id = ${scope} AND identity IN (SELECT value FROM json_each(?1))`;
+  const canonicalThread = `SELECT min(thread_id) FROM (${matchingThreads})`;
+  const threadsToMerge = `WITH matched AS MATERIALIZED (${matchingThreads}), target AS (SELECT min(thread_id) FROM matched)`;
   const {
     id,
     folder,
@@ -78,8 +79,8 @@ export const indexMailStatements = async (
     db
       .prepare(
         `
-      INSERT OR IGNORE INTO mail_index_keys (identity, thread_id)
-      SELECT value, coalesce((${canonicalThread}), ?2) FROM json_each(?1)
+      INSERT OR IGNORE INTO mail_index_keys (mailbox_id, identity, thread_id)
+      SELECT ${mailboxSql(db)}, value, coalesce((${canonicalThread}), ?2) FROM json_each(?1)
     `,
       )
       .bind(aliases, id),
@@ -88,7 +89,7 @@ export const indexMailStatements = async (
         `
       ${threadsToMerge}
       UPDATE mail_index_messages SET thread_id = (SELECT * FROM target)
-      WHERE thread_id IN matched AND thread_id <> (SELECT * FROM target)
+      WHERE mailbox_id = ${mailboxSql(db)} AND thread_id IN matched AND thread_id <> (SELECT * FROM target)
     `,
       )
       .bind(aliases),
@@ -97,25 +98,25 @@ export const indexMailStatements = async (
         `
       ${threadsToMerge}
       UPDATE mail_index_keys SET thread_id = (SELECT * FROM target)
-      WHERE thread_id IN matched AND thread_id <> (SELECT * FROM target)
+      WHERE mailbox_id = ${mailboxSql(db)} AND thread_id IN matched AND thread_id <> (SELECT * FROM target)
     `,
       )
       .bind(aliases),
     db
       .prepare(
         `
-      INSERT INTO mail_index_messages (id, thread_id, folder, sender, recipient, subject, timestamp, unread, people, archived, list_mail)
-      VALUES (?1, (SELECT thread_id FROM mail_index_keys WHERE identity = ?2), ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+      INSERT INTO mail_index_messages (mailbox_id, envelope_recipient, id, thread_id, folder, sender, recipient, subject, timestamp, unread, people, archived, list_mail)
+      VALUES (${mailboxSql(db)}, ?13, ?1, (SELECT thread_id FROM mail_index_keys WHERE mailbox_id = ${mailboxSql(db)} AND identity = ?2), ?3, ?4, ?5, ?6, ?7, ?8, ?9,
         CASE WHEN ?3 = 'inbox' AND ?12 IS NOT NULL THEN ?12
         WHEN ?3 = 'inbox' AND ?10 = 0 THEN coalesce((
           SELECT CASE WHEN (timestamp, id) > (?7, ?1) THEN archived ELSE 0 END
           FROM mail_index_messages
-          WHERE thread_id = (SELECT thread_id FROM mail_index_keys WHERE identity = ?2)
+          WHERE mailbox_id = ${mailboxSql(db)} AND thread_id = (SELECT thread_id FROM mail_index_keys WHERE mailbox_id = ${mailboxSql(db)} AND identity = ?2)
             AND folder = 'inbox' AND deleted = 0
           ORDER BY timestamp DESC, id DESC LIMIT 1
         ), 0) ELSE 0 END, ?11
       )
-      ON CONFLICT(id) DO UPDATE SET
+      ON CONFLICT(mailbox_id, id) DO UPDATE SET
         people = coalesce(mail_index_messages.people, excluded.people),
         list_mail = coalesce(mail_index_messages.list_mail, excluded.list_mail)
       WHERE mail_index_messages.deleted = 0 AND (
@@ -139,6 +140,7 @@ export const indexMailStatements = async (
         mail.initialArchived === undefined
           ? null
           : Number(mail.initialArchived),
+        mail.envelopeRecipient ?? null,
       ),
     // Incoming mail and merges with an active conversation reopen the whole
     // thread. Keep that state even if the new incoming message is later deleted.
@@ -146,11 +148,11 @@ export const indexMailStatements = async (
       .prepare(
         `
       UPDATE mail_index_messages AS member SET archived = 0
-      WHERE thread_id = (SELECT thread_id FROM mail_index_keys WHERE identity = ?)
+      WHERE mailbox_id = ${mailboxSql(db)} AND thread_id = (SELECT thread_id FROM mail_index_keys WHERE mailbox_id = ${mailboxSql(db)} AND identity = ?)
         AND folder = 'inbox' AND deleted = 0 AND archived = 1
         AND EXISTS (
           SELECT 1 FROM mail_index_messages active
-          WHERE active.thread_id = member.thread_id AND active.folder = 'inbox'
+          WHERE active.mailbox_id = member.mailbox_id AND active.thread_id = member.thread_id AND active.folder = 'inbox'
             AND active.deleted = 0 AND active.archived = 0
         )
     `,
@@ -160,7 +162,7 @@ export const indexMailStatements = async (
 };
 
 export const indexMail = async (
-  db: D1Database,
+  db: MailDatabase,
   mail: IndexedMail,
   options?: { reopensArchive: boolean },
 ) => {
@@ -168,7 +170,7 @@ export const indexMail = async (
 };
 
 export const removeIndexedMail = async (
-  db: D1Database,
+  db: MailDatabase,
   folder: MailFolder,
   id: string,
 ) => {
@@ -176,9 +178,9 @@ export const removeIndexedMail = async (
   await db
     .prepare(
       `
-    INSERT INTO mail_index_messages (id, thread_id, folder, sender, recipient, subject, timestamp, deleted)
-    VALUES (?1, ?1, ?2, '', '', '', 0, 1)
-    ON CONFLICT(id) DO UPDATE SET sender = '', recipient = '', subject = '', timestamp = 0, deleted = 1, deleted_at = NULL, unread = 0, people = NULL, body_preview = NULL
+    INSERT INTO mail_index_messages (mailbox_id, id, thread_id, folder, sender, recipient, subject, timestamp, deleted)
+    VALUES (${mailboxSql(db)}, ?1, ?1, ?2, '', '', '', 0, 1)
+    ON CONFLICT(mailbox_id, id) DO UPDATE SET sender = '', recipient = '', envelope_recipient = NULL, subject = '', timestamp = 0, deleted = 1, deleted_at = NULL, unread = 0, people = NULL, body_preview = NULL
   `,
     )
     .bind(id, folder)
@@ -190,24 +192,24 @@ const isMailId = Schema.is(MailMessageId);
 const pageSize = 20;
 const scanSize = 12;
 
-export const inboxUnread = async (db: D1Database) => {
+export const inboxUnread = async (db: MailDatabase) => {
   const row = await db
     .prepare(
       `
     SELECT count(*) AS unreadCount FROM mail_index_messages
-    WHERE folder = 'inbox' AND deleted = 0 AND unread = 1 AND archived = 0
+    WHERE mailbox_id = ${mailboxSql(db)} AND folder = 'inbox' AND deleted = 0 AND unread = 1 AND archived = 0
   `,
     )
     .first<{ unreadCount: number }>();
   return { unreadCount: row?.unreadCount ?? 0 };
 };
 
-export const inboxMessageUnread = async (db: D1Database, id: string) => {
+export const inboxMessageUnread = async (db: MailDatabase, id: string) => {
   const row = await db
     .prepare(
       `
     SELECT unread FROM mail_index_messages
-    WHERE id = ? AND folder = 'inbox' AND deleted = 0
+    WHERE mailbox_id = ${mailboxSql(db)} AND id = ? AND folder = 'inbox' AND deleted = 0
   `,
     )
     .bind(id)
@@ -216,7 +218,7 @@ export const inboxMessageUnread = async (db: D1Database, id: string) => {
 };
 
 export const setInboxUnread = async (
-  db: D1Database,
+  db: MailDatabase,
   id: string,
   unread: boolean,
 ) => {
@@ -224,7 +226,7 @@ export const setInboxUnread = async (
     .prepare(
       `
     UPDATE mail_index_messages SET unread = ?2
-    WHERE id = ?1 AND folder = 'inbox' AND deleted = 0 AND unread <> ?2
+    WHERE mailbox_id = ${mailboxSql(db)} AND id = ?1 AND folder = 'inbox' AND deleted = 0 AND unread <> ?2
     RETURNING id
   `,
     )
@@ -235,14 +237,14 @@ export const setInboxUnread = async (
 };
 
 export const setThreadArchived = async (
-  db: D1Database,
+  db: MailDatabase,
   id: string,
   archived: boolean,
   anchorId = id,
 ) => {
   const newestIncoming = `
     SELECT id, archived FROM mail_index_messages
-    WHERE thread_id = (SELECT thread_id FROM mail_index_keys WHERE identity = ?1)
+    WHERE mailbox_id = ${mailboxSql(db)} AND thread_id = (SELECT thread_id FROM mail_index_keys WHERE mailbox_id = ${mailboxSql(db)} AND identity = ?1)
       AND folder = 'inbox' AND deleted = 0
     ORDER BY timestamp DESC, id DESC LIMIT 1
   `;
@@ -251,7 +253,7 @@ export const setThreadArchived = async (
     .prepare(
       `
     UPDATE mail_index_messages SET archived = ?2
-    WHERE thread_id = (SELECT thread_id FROM mail_index_keys WHERE identity = ?1)
+    WHERE mailbox_id = ${mailboxSql(db)} AND thread_id = (SELECT thread_id FROM mail_index_keys WHERE mailbox_id = ${mailboxSql(db)} AND identity = ?1)
       AND folder = 'inbox' AND deleted = 0 AND archived <> ?2
       AND (?2 = 0 OR ?3 = (SELECT id FROM (${newestIncoming})))
     RETURNING id
@@ -314,7 +316,7 @@ const withPeople = <
 };
 
 export const listConversations = async (
-  db: D1Database,
+  db: MailDatabase,
   cursor: NonNullable<ReturnType<typeof conversationCursor>>,
   view: ConversationView,
 ) => {
@@ -330,26 +332,26 @@ export const listConversations = async (
               'timestamp', member.timestamp, 'people', member.people, 'folder', member.folder, 'unread', member.unread
             ) ORDER BY member.timestamp, member.id)
             FROM mail_index_messages member
-            WHERE member.thread_id = m.thread_id AND member.deleted = 0) AS metadata,
+            WHERE member.mailbox_id = m.mailbox_id AND member.thread_id = m.thread_id AND member.deleted = 0) AS metadata,
            (SELECT count(*) FROM mail_index_messages member
-            WHERE member.thread_id = m.thread_id AND member.folder = 'inbox'
+            WHERE member.mailbox_id = m.mailbox_id AND member.thread_id = m.thread_id AND member.folder = 'inbox'
               AND member.deleted = 0 AND member.unread = 1) AS unreadCount
     FROM mail_index_messages m
     ${
       all
-        ? `LEFT JOIN mail_index_messages incoming ON incoming.id = (
+        ? `LEFT JOIN mail_index_messages incoming ON incoming.mailbox_id = m.mailbox_id AND incoming.id = (
       SELECT member.id FROM mail_index_messages member
-      WHERE member.thread_id = m.thread_id AND member.folder = 'inbox' AND member.deleted = 0
+      WHERE member.mailbox_id = m.mailbox_id AND member.thread_id = m.thread_id AND member.folder = 'inbox' AND member.deleted = 0
       ORDER BY member.timestamp DESC, member.id DESC LIMIT 1
     )`
         : ""
     }
-    WHERE m.deleted = 0 ${all ? "" : "AND m.folder = 'inbox' AND m.archived = ?4"}
+    WHERE m.mailbox_id = ${mailboxSql(db)} AND m.deleted = 0 ${all ? "" : "AND m.folder = 'inbox' AND m.archived = ?4"}
       ${isInboxView(view) ? `AND coalesce((${senderPriority}), CASE WHEN m.list_mail = 1 THEN 'noise' ELSE 'signal' END) = ?5` : ""}
       AND (?1 IS NULL OR (m.timestamp, m.id) < (?1, ?2))
       AND NOT EXISTS (
         SELECT 1 FROM mail_index_messages newer
-        WHERE newer.thread_id = m.thread_id AND newer.deleted = 0
+        WHERE newer.mailbox_id = m.mailbox_id AND newer.thread_id = m.thread_id AND newer.deleted = 0
           ${all ? "" : "AND newer.folder = 'inbox'"}
           AND (newer.timestamp, newer.id) > (m.timestamp, m.id)
       )
@@ -432,7 +434,7 @@ export const listConversations = async (
   };
 };
 
-export const readThread = async (db: D1Database, id: string) => {
+export const readThread = async (db: MailDatabase, id: string) => {
   const { results } = await db
     .prepare(
       `
@@ -440,7 +442,7 @@ export const readThread = async (db: D1Database, id: string) => {
            CASE WHEN m.folder = 'inbox' THEN ${indexedSender} END AS senderAddress,
            CASE WHEN m.folder = 'inbox' THEN (${senderPriority}) END AS senderPriority
     FROM mail_index_messages m
-    WHERE thread_id = (SELECT thread_id FROM mail_index_keys WHERE identity = ?)
+    WHERE mailbox_id = ${mailboxSql(db)} AND thread_id = (SELECT thread_id FROM mail_index_keys WHERE mailbox_id = ${mailboxSql(db)} AND identity = ?)
       AND deleted = 0
     ORDER BY timestamp, id
   `,
@@ -486,20 +488,22 @@ export const readThread = async (db: D1Database, id: string) => {
 };
 
 export const setSenderRule = (
-  db: D1Database,
+  db: MailDatabase,
   { address, priority }: typeof SenderRule.Type,
 ) => {
   const sender = normalizePersonEmail(address);
   return priority === "automatic"
     ? db
-        .prepare("DELETE FROM mail_sender_rules WHERE address = ?")
+        .prepare(
+          `DELETE FROM mail_sender_rules WHERE mailbox_id = ${mailboxSql(db)} AND address = ?`,
+        )
         .bind(sender)
         .run()
     : db
         .prepare(
           `
-        INSERT INTO mail_sender_rules (address, priority) VALUES (?, ?)
-        ON CONFLICT(address) DO UPDATE SET priority = excluded.priority
+        INSERT INTO mail_sender_rules (mailbox_id, address, priority) VALUES (${mailboxSql(db)}, ?, ?)
+        ON CONFLICT(mailbox_id, address) DO UPDATE SET priority = excluded.priority
       `,
         )
         .bind(sender, priority)
@@ -507,7 +511,7 @@ export const setSenderRule = (
 };
 
 export const scanMail = async (
-  db: D1Database,
+  db: MailDatabase,
   folder: MailFolder,
   bucket: R2Bucket,
   describe: (object: R2Object) => Promise<IndexedMail | null>,
@@ -516,7 +520,7 @@ export const scanMail = async (
   const scanId = folder === "inbox" ? "inbox:list-mail" : "sent:people";
   const state = await db
     .prepare(
-      "SELECT cursor, scanned_at AS scannedAt, ready FROM mail_index_scans WHERE folder = ?",
+      `SELECT cursor, scanned_at AS scannedAt, ready FROM mail_index_scans WHERE mailbox_id = ${mailboxSql(db)} AND folder = ?`,
     )
     .bind(scanId)
     .first<{ cursor: string | null; scannedAt: number; ready: number }>();
@@ -526,7 +530,7 @@ export const scanMail = async (
     folder === "inbox" && !state?.ready
       ? await db
           .prepare(
-            "SELECT ready FROM mail_index_scans WHERE folder = 'inbox:people'",
+            `SELECT ready FROM mail_index_scans WHERE mailbox_id = ${mailboxSql(db)} AND folder = 'inbox:people'`,
           )
           .first<{ ready: number }>()
       : null;
@@ -539,7 +543,7 @@ export const scanMail = async (
     const { results } = await db
       .prepare(
         `SELECT id FROM mail_index_messages
-         WHERE (deleted <> 0 OR (people IS NOT NULL AND (folder = 'sent' OR list_mail IS NOT NULL)))
+         WHERE mailbox_id = ${mailboxSql(db)} AND (deleted <> 0 OR (people IS NOT NULL AND (folder = 'sent' OR list_mail IS NOT NULL)))
            AND id IN (SELECT value FROM json_each(?))`,
       )
       .bind(JSON.stringify(page.objects.map(({ key }) => key)))
@@ -565,8 +569,8 @@ export const scanMail = async (
   await db
     .prepare(
       `
-    INSERT INTO mail_index_scans (folder, cursor, scanned_at, ready) VALUES (?1, ?2, ?3, ?4)
-    ON CONFLICT(folder) DO UPDATE SET cursor = excluded.cursor, scanned_at = excluded.scanned_at, ready = excluded.ready
+    INSERT INTO mail_index_scans (mailbox_id, folder, cursor, scanned_at, ready) VALUES (${mailboxSql(db)}, ?1, ?2, ?3, ?4)
+    ON CONFLICT(mailbox_id, folder) DO UPDATE SET cursor = excluded.cursor, scanned_at = excluded.scanned_at, ready = excluded.ready
     WHERE mail_index_scans.cursor IS ?5 AND mail_index_scans.scanned_at = ?6
   `,
     )

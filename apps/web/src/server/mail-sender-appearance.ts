@@ -1,4 +1,4 @@
-import type { D1Database } from "@cloudflare/workers-types";
+import { mailboxSql, type MailDatabase } from "./mailbox.ts";
 import type {
   MailPeople,
   MailPerson,
@@ -9,13 +9,13 @@ import { senderIconDomain } from "./mail-sender.ts";
 
 type Kind = "person" | "service";
 export const senderAppearanceRules = async (
-  db: D1Database,
+  db: MailDatabase,
   addresses: readonly string[],
 ) => {
   if (!addresses.length) return new Map<string, Kind>();
   const { results } = await db
     .prepare(
-      "SELECT address, kind FROM mail_sender_avatars WHERE address IN (SELECT value FROM json_each(?))",
+      `SELECT address, kind FROM mail_sender_avatars WHERE mailbox_id = ${mailboxSql(db)} AND address IN (SELECT value FROM json_each(?))`,
     )
     .bind(JSON.stringify([...new Set(addresses.map(normalizePersonEmail))]))
     .all<{ address: string; kind: Kind }>();
@@ -49,7 +49,7 @@ export const applySenderAppearance = (
 };
 
 export const withSenderAppearances = async <T extends { people?: MailPeople }>(
-  db: D1Database,
+  db: MailDatabase,
   messages: readonly T[],
 ): Promise<T[]> => {
   const rules = await senderAppearanceRules(
@@ -66,17 +66,19 @@ export const withSenderAppearances = async <T extends { people?: MailPeople }>(
 };
 
 export const setSenderAppearance = (
-  db: D1Database,
+  db: MailDatabase,
   { address, mode }: typeof SenderAppearanceUpdate.Type,
 ) =>
   mode === "auto"
     ? db
-        .prepare("DELETE FROM mail_sender_avatars WHERE address = ?")
+        .prepare(
+          `DELETE FROM mail_sender_avatars WHERE mailbox_id = ${mailboxSql(db)} AND address = ?`,
+        )
         .bind(normalizePersonEmail(address))
         .run()
     : db
         .prepare(
-          "INSERT INTO mail_sender_avatars (address, kind) VALUES (?, ?) ON CONFLICT(address) DO UPDATE SET kind = excluded.kind",
+          `INSERT INTO mail_sender_avatars (mailbox_id, address, kind) VALUES (${mailboxSql(db)}, ?, ?) ON CONFLICT(mailbox_id, address) DO UPDATE SET kind = excluded.kind`,
         )
         .bind(normalizePersonEmail(address), mode)
         .run();

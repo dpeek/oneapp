@@ -1,5 +1,7 @@
+import { mailboxes } from "./mailbox-tables.ts";
 import {
   integer,
+  primaryKey,
   sqliteTable,
   text,
   uniqueIndex,
@@ -8,18 +10,33 @@ import {
 export const mailImports = sqliteTable(
   "mail_imports",
   {
-    sourceId: text("source_id").primaryKey(),
+    mailboxId: text("mailbox_id")
+      .notNull()
+      .default("personal")
+      .references(() => mailboxes.id),
+    sourceId: text("source_id").notNull(),
     messageId: text("message_id").notNull(),
     sha256: text().notNull(),
     metadata: text().notNull(),
     completedAt: integer("completed_at"),
   },
-  (table) => [uniqueIndex("mail_imports_message").on(table.messageId)],
+  (table) => [
+    primaryKey({ columns: [table.mailboxId, table.sourceId] }),
+    uniqueIndex("mail_imports_message").on(table.mailboxId, table.messageId),
+  ],
 );
 
-export const mailImportCompletions = sqliteTable("mail_import_completions", {
-  id: text().primaryKey(),
-  policy: text().notNull(),
-  decisions: text().notNull(),
-  completedAt: integer("completed_at"),
-});
+export const mailImportCompletions = sqliteTable(
+  "mail_import_completions",
+  {
+    mailboxId: text("mailbox_id")
+      .notNull()
+      .default("personal")
+      .references(() => mailboxes.id),
+    id: text().notNull(),
+    policy: text().notNull(),
+    decisions: text().notNull(),
+    completedAt: integer("completed_at"),
+  },
+  (table) => [primaryKey({ columns: [table.mailboxId, table.id] })],
+);

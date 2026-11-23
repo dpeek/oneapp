@@ -1,3 +1,4 @@
+import { mailboxSql, type MailDatabase } from "./mailbox.ts";
 import type {
   R2Object,
   R2Bucket,
@@ -112,22 +113,27 @@ import {
 
 type InboxEnv = Pick<
   WorkerEnv,
-  | "DB"
   | "APP_ORIGIN"
   | "INBOX_EMAIL_ADDRESS"
   | "INBOX_MESSAGES"
   | "INBOX_EMAIL_FROM"
   | "INBOX_UPDATES"
   | "SENT_MESSAGES"
-> & { INBOX_SEND?: SendEmail; INBOX_SEND_LIMIT?: RateLimit };
+> & {
+  DB: MailDatabase;
+  mailboxAddresses: readonly string[];
+  INBOX_SEND?: SendEmail;
+  INBOX_SEND_LIMIT?: RateLimit;
+};
 type InboxBucket = InboxEnv["INBOX_MESSAGES"];
 
 export const notifyInbox = async ({
   INBOX_UPDATES,
-}: Pick<WorkerEnv, "INBOX_UPDATES">) => {
+  DB,
+}: Pick<WorkerEnv, "INBOX_UPDATES"> & { DB: MailDatabase }) => {
   if (!INBOX_UPDATES) return;
   try {
-    await INBOX_UPDATES.getByName(ownerId).publish();
+    await INBOX_UPDATES.getByName(DB.mailboxId).publish();
   } catch {
     console.warn("Could not notify Inbox subscribers");
   }
@@ -136,11 +142,13 @@ export const notifyInbox = async ({
 export const inboxSessionHeaders = {
   id: "x-oneapp-inbox-session-id",
   revision: "x-oneapp-inbox-security-revision",
+  mailbox: "x-oneapp-inbox-mailbox",
 };
 
 export type InboxSocketSession = {
   sessionId: string;
   securityRevision: string;
+  mailboxId: string;
 };
 
 const isInboxMessageId = Schema.is(InboxMessageId);
@@ -198,7 +206,7 @@ const withBodyPreviews = async <
   const { results }: { results: { id: string; bodyPreview: string }[] } =
     await env.DB.prepare(
       `SELECT id, body_preview AS bodyPreview FROM mail_index_messages
-     WHERE deleted = 0 AND body_preview IS NOT NULL
+     WHERE mailbox_id = ${mailboxSql(env.DB)} AND deleted = 0 AND body_preview IS NOT NULL
        AND id IN (SELECT value FROM json_each(?))`,
     )
       .bind(JSON.stringify(ids))
@@ -227,7 +235,7 @@ const withBodyPreviews = async <
     return [
       env.DB.prepare(
         `UPDATE mail_index_messages SET body_preview = ?
-         WHERE id = ? AND deleted = 0 AND body_preview IS NULL`,
+         WHERE mailbox_id = ${mailboxSql(env.DB)} AND id = ? AND deleted = 0 AND body_preview IS NULL`,
       ).bind(bodyPreview, id),
     ];
   });
@@ -309,6 +317,7 @@ const describeStoredInbox = async (bucket: InboxBucket, object: R2Object) => {
     unread: object.customMetadata?.initialUnread === "1",
     from,
     to,
+    envelopeRecipient: object.customMetadata?.envelopeTo,
     people: describePeople(email, from, to),
     listMail: isMailingList(
       email?.headers.find(({ key }) => key === "list-id")?.value,
@@ -380,6 +389,7 @@ const replyInfo = (
   email: Email | null,
   envelopeFrom: string,
   env: InboxEnv,
+  envelopeRecipient?: string,
 ) => {
   const to = email && replyRecipient(email, envelopeFrom);
   return to && email
@@ -387,8 +397,8 @@ const replyInfo = (
         reply: {
           to,
           ...replyAllRecipients(email, envelopeFrom, [
-            env.INBOX_EMAIL_ADDRESS ?? "",
-            env.INBOX_EMAIL_FROM ?? "",
+            ...env.mailboxAddresses,
+            ...(envelopeRecipient ? [envelopeRecipient] : []),
           ]),
           threaded: parentMessageId(email) !== undefined,
         },
@@ -463,7 +473,12 @@ const readMessage = async (
     return {
       ...summary(object, subject),
       ...(mail ? { from: mail.from } : {}),
-      ...replyInfo(headers?.email ?? null, envelopeFrom, env),
+      ...replyInfo(
+        headers?.email ?? null,
+        envelopeFrom,
+        env,
+        object.customMetadata?.envelopeTo,
+      ),
       people: describePeople(headers?.email ?? null, envelopeFrom, to),
       to: mail?.to ?? to,
       unread,
@@ -485,7 +500,7 @@ const readMessage = async (
     const attachments = describeAttachments(email.attachments);
     return {
       ...summary(object, email.subject?.trim().slice(0, 200) ?? ""),
-      ...replyInfo(email, envelopeFrom, env),
+      ...replyInfo(email, envelopeFrom, env, object.customMetadata?.envelopeTo),
       people: describePeople(email, envelopeFrom, to),
       from: from
         ? email.from?.name
@@ -933,7 +948,9 @@ export const inboxRoutes = (
           headers: privateHeaders,
         });
       const indexed = yield* Effect.tryPromise(() =>
-        env.DB.prepare("SELECT id FROM mail_index_messages WHERE id = ?")
+        env.DB.prepare(
+          `SELECT id FROM mail_index_messages WHERE mailbox_id = ${mailboxSql(env.DB)} AND id = ?`,
+        )
           .bind(id)
           .first(),
       );

@@ -59,6 +59,7 @@ export const describeRawMail = (
     folder,
     from,
     to,
+    envelopeRecipient: object.customMetadata?.envelopeTo,
     subject: email.subject?.trim().slice(0, 200) ?? "",
     timestamp: storedMailTimestamp(object),
     unread: object.customMetadata?.initialUnread === "1",

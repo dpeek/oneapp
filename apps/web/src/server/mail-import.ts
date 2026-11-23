@@ -1,4 +1,5 @@
-import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
+import { mailboxSql, type MailDatabase } from "./mailbox.ts";
+import type { R2Bucket } from "@cloudflare/workers-types";
 import { Schema } from "effect";
 import { indexMailStatements } from "./mail-index.ts";
 import { describeRawMail, parseRawHeaders, rawMailFormat } from "./raw-mail.ts";
@@ -27,7 +28,7 @@ export const MailImportMetadata = Schema.Struct({
 export type MailImportMetadata = typeof MailImportMetadata.Type;
 
 type ImportStore = {
-  DB: D1Database;
+  DB: MailDatabase;
   INBOX_MESSAGES: R2Bucket;
   SENT_MESSAGES: R2Bucket;
 };
@@ -64,13 +65,13 @@ export const ingestRawMail = async (
   const headers = await parseRawHeaders(raw);
   await store.DB.prepare(
     `INSERT OR IGNORE INTO mail_imports
-    (source_id, message_id, sha256, metadata) VALUES (?, ?, ?, ?)`,
+    (mailbox_id, source_id, message_id, sha256, metadata) VALUES (${mailboxSql(store.DB)}, ?, ?, ?, ?)`,
   )
     .bind(sourceId, candidate, sha256, JSON.stringify(metadata))
     .run();
   const receipt = await store.DB.prepare(
     `SELECT message_id AS messageId, sha256, metadata,
-    completed_at AS completedAt FROM mail_imports WHERE source_id = ?`,
+    completed_at AS completedAt FROM mail_imports WHERE mailbox_id = ${mailboxSql(store.DB)} AND source_id = ?`,
   )
     .bind(sourceId)
     .first<Receipt>();
@@ -109,7 +110,7 @@ export const ingestRawMail = async (
   await store.DB.batch([
     ...(await indexMailStatements(store.DB, mail)),
     store.DB.prepare(
-      "UPDATE mail_imports SET completed_at = ? WHERE source_id = ?",
+      `UPDATE mail_imports SET completed_at = ? WHERE mailbox_id = ${mailboxSql(store.DB)} AND source_id = ?`,
     ).bind(Date.now(), sourceId),
   ]);
   return { id: receipt.messageId, status: "imported" as const };

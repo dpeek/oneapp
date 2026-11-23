@@ -34,11 +34,19 @@ export const managedPersonAddresses = async (
     )
     .bind(ownerId)
     .all<{ value: string }>();
+  const identities = await db
+    .prepare(
+      "SELECT address FROM mailbox_addresses a JOIN mailboxes b ON b.id = a.mailbox_id WHERE b.owner_account_id = ?",
+    )
+    .bind(ownerId)
+    .all<{ address: string }>();
   return [
     ...new Set(
-      [mailbox, ...results.map(({ value }) => value)].flatMap((email) =>
-        email ? [normalizePersonEmail(email)] : [],
-      ),
+      [
+        mailbox,
+        ...identities.results.map(({ address }) => address),
+        ...results.map(({ value }) => value),
+      ].flatMap((email) => (email ? [normalizePersonEmail(email)] : [])),
     ),
   ];
 };

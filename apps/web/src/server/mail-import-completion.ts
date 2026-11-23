@@ -1,4 +1,4 @@
-import type { D1Database } from "@cloudflare/workers-types";
+import { mailboxSql, type MailDatabase } from "./mailbox.ts";
 
 export const importCompletionPolicy = (asOf: string) => {
   const timestamp = Date.parse(asOf);
@@ -33,7 +33,7 @@ type Decision = {
 // completion receipt. A retry returns the original decisions without writing
 // conversation state again, including after subsequent user edits or new mail.
 export const completeImportedConversations = async (
-  db: D1Database,
+  db: MailDatabase,
   request: CompletionRequest,
 ) => {
   const policy = importCompletionPolicy(request.asOf);
@@ -43,7 +43,9 @@ export const completeImportedConversations = async (
   const selection = JSON.stringify(sourceIds);
   const configuration = JSON.stringify({ ...policy, sourceIds });
   const existing = await db
-    .prepare("SELECT policy FROM mail_import_completions WHERE id = ?")
+    .prepare(
+      `SELECT policy FROM mail_import_completions WHERE mailbox_id = ${mailboxSql(db)} AND id = ?`,
+    )
     .bind(request.id)
     .first<{ policy: string }>();
   if (existing && existing.policy !== configuration)
@@ -53,8 +55,8 @@ export const completeImportedConversations = async (
   const ready = await db
     .prepare(
       `SELECT count(*) AS count FROM mail_imports i
-    JOIN mail_index_messages m ON m.id = i.message_id
-    WHERE i.source_id IN (SELECT value FROM json_each(?)) AND i.completed_at IS NOT NULL`,
+    JOIN mail_index_messages m ON m.mailbox_id = i.mailbox_id AND m.id = i.message_id
+    WHERE i.mailbox_id = ${mailboxSql(db)} AND i.source_id IN (SELECT value FROM json_each(?)) AND i.completed_at IS NOT NULL`,
     )
     .bind(selection)
     .first<{ count: number }>();
@@ -66,7 +68,7 @@ export const completeImportedConversations = async (
   await db.batch([
     db
       .prepare(
-        `INSERT OR IGNORE INTO mail_import_completions (id, policy, decisions)
+        `INSERT OR IGNORE INTO mail_import_completions (mailbox_id, id, policy, decisions)
       WITH selected AS (SELECT value AS source_id FROM json_each(?1)),
       threads AS (
         SELECT m.thread_id AS threadId, max(m.timestamp) AS latest,
@@ -76,14 +78,14 @@ export const completeImportedConversations = async (
           max(CASE WHEN m.folder = 'inbox' AND m.archived = 0 THEN 1 ELSE 0 END) AS active,
           json_group_array(m.id) FILTER (WHERE m.folder = 'inbox') AS messageIds
         FROM mail_index_messages m
-        LEFT JOIN mail_imports i ON i.message_id = m.id
+        LEFT JOIN mail_imports i ON i.mailbox_id = m.mailbox_id AND i.message_id = m.id
         LEFT JOIN selected s ON s.source_id = i.source_id
-        WHERE m.deleted = 0
+        WHERE m.mailbox_id = ${mailboxSql(db)} AND m.deleted = 0
         GROUP BY m.thread_id
         HAVING max(CASE WHEN s.source_id IS NOT NULL THEN 1 ELSE 0 END) = 1
           AND max(CASE WHEN m.folder = 'inbox' THEN 1 ELSE 0 END) = 1
       )
-      SELECT ?3, ?4, json_group_array(json_object(
+      SELECT ${mailboxSql(db)}, ?3, ?4, json_group_array(json_object(
         'threadId', threadId, 'latest', latest, 'messageIds', json(messageIds),
         'reason', CASE WHEN active = 0 THEN 'already-complete'
           WHEN whollyImported = 0 THEN 'outside-import'
@@ -96,23 +98,23 @@ export const completeImportedConversations = async (
     db
       .prepare(
         `UPDATE mail_index_messages SET archived = 1
-      WHERE folder = 'inbox' AND deleted = 0 AND archived = 0 AND id IN (
+      WHERE mailbox_id = ${mailboxSql(db)} AND folder = 'inbox' AND deleted = 0 AND archived = 0 AND id IN (
         SELECT member.value FROM mail_import_completions r,
           json_each(r.decisions) decision, json_each(decision.value, '$.messageIds') member
-        WHERE r.id = ?1 AND r.policy = ?2 AND r.completed_at IS NULL
+        WHERE r.mailbox_id = ${mailboxSql(db)} AND r.id = ?1 AND r.policy = ?2 AND r.completed_at IS NULL
           AND json_extract(decision.value, '$.reason') = 'inactive-read-unflagged'
       )`,
       )
       .bind(request.id, configuration),
     db
       .prepare(
-        "UPDATE mail_import_completions SET completed_at = ? WHERE id = ? AND policy = ? AND completed_at IS NULL",
+        `UPDATE mail_import_completions SET completed_at = ? WHERE mailbox_id = ${mailboxSql(db)} AND id = ? AND policy = ? AND completed_at IS NULL`,
       )
       .bind(Date.now(), request.id, configuration),
   ]);
   const receipt = await db
     .prepare(
-      "SELECT policy, decisions, completed_at AS completedAt FROM mail_import_completions WHERE id = ?",
+      `SELECT policy, decisions, completed_at AS completedAt FROM mail_import_completions WHERE mailbox_id = ${mailboxSql(db)} AND id = ?`,
     )
     .bind(request.id)
     .first<{ policy: string; decisions: string; completedAt: number | null }>();

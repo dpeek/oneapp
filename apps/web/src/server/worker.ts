@@ -1,3 +1,13 @@
+import {
+  defaultMailboxId,
+  ensureDefaultMailbox,
+  requireMailbox,
+  resolveMailRecipient,
+  mailDatabase,
+  mailboxBucket,
+  scopeMailStore,
+  mailboxIdentities,
+} from "./mailbox.ts";
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import type { ForwardableEmailMessage } from "@cloudflare/workers-types";
 import { cliLoginPath } from "@oneapp/core/cli-auth";
@@ -80,18 +90,28 @@ export default {
     env: Pick<
       WorkerEnv,
       "DB" | "INBOX_EMAIL_ADDRESS" | "INBOX_MESSAGES" | "INBOX_UPDATES"
-    >,
+    > &
+      Partial<Pick<WorkerEnv, "MAILBOX_ALIASES" | "INBOX_EMAIL_FROM">>,
     context?: { waitUntil(promise: Promise<unknown>): void },
   ) {
-    if (message.to.toLowerCase() !== env.INBOX_EMAIL_ADDRESS) {
+    await ensureDefaultMailbox(
+      env.DB,
+      env.INBOX_EMAIL_ADDRESS,
+      env.INBOX_EMAIL_FROM,
+      env.MAILBOX_ALIASES,
+    );
+    const mailboxId = await resolveMailRecipient(env.DB, message.to);
+    if (!mailboxId) {
       message.setReject("Unknown recipient");
       return;
     }
 
+    const db = mailDatabase(env.DB, mailboxId);
+    const bucket = mailboxBucket(env.INBOX_MESSAGES, mailboxId);
     const raw = message.raw.pipeThrough(new FixedLengthStream(message.rawSize));
     const id = inboxMessageKey();
     const subject = inboxSubject(message.headers.get("subject"));
-    const stored = await env.INBOX_MESSAGES.put(id, raw, {
+    const stored = await bucket.put(id, raw, {
       httpMetadata: { contentType: "message/rfc822" },
       customMetadata: {
         envelopeFrom: message.from,
@@ -101,7 +121,7 @@ export default {
       },
     });
     await indexMail(
-      env.DB,
+      db,
       {
         id,
         folder: "inbox",
@@ -109,6 +129,7 @@ export default {
         subject,
         from: message.from,
         to: message.to,
+        envelopeRecipient: message.to,
         unread: true,
         listMail: isMailingList(message.headers.get("list-id")),
         people: mailPeople(
@@ -120,18 +141,26 @@ export default {
       },
       { reopensArchive: true },
     ).catch(() => console.warn("Could not index incoming email"));
-    const notify = notifyInbox(env);
+    const notify = notifyInbox({ ...env, DB: db });
     if (context) context.waitUntil(notify);
     else await notify;
   },
   async scheduled(_event: unknown, env: WorkerEnv) {
-    await Promise.all([
-      collectAttachments(env.DB, env.VAULT_FILES),
-      collectMailTrash(env),
-      syncMailIndex(env, true).catch(() =>
-        console.warn("Could not update the mail index"),
-      ),
-    ]);
+    await ensureDefaultMailbox(
+      env.DB,
+      env.INBOX_EMAIL_ADDRESS,
+      env.INBOX_EMAIL_FROM,
+      env.MAILBOX_ALIASES,
+    );
+    await collectAttachments(env.DB, env.VAULT_FILES);
+    const { results } = await env.DB.prepare("SELECT id FROM mailboxes").all<{
+      id: string;
+    }>();
+    for (const { id } of results) {
+      const store = { ...scopeMailStore(env, id), mailboxAddresses: [] };
+      await collectMailTrash(store);
+      await syncMailIndex(store, true);
+    }
   },
   async fetch(
     request: Request,
@@ -293,14 +322,25 @@ export default {
           return new Response(null, { status: 401, headers: privateHeaders });
         if (session.subjectId !== ownerId)
           return new Response(null, { status: 403, headers: privateHeaders });
+        await ensureDefaultMailbox(
+          env.DB,
+          env.INBOX_EMAIL_ADDRESS,
+          env.INBOX_EMAIL_FROM,
+          env.MAILBOX_ALIASES,
+        );
+        await requireMailbox(env.DB, defaultMailboxId, session.subjectId);
         // Return the native response so its WebSocket survives the upgrade.
-        return await env.INBOX_UPDATES.getByName(ownerId).fetch(request.url, {
-          headers: {
-            upgrade: "websocket",
-            [inboxSessionHeaders.id]: session.sessionId,
-            [inboxSessionHeaders.revision]: session.securityRevision,
+        return await env.INBOX_UPDATES.getByName(defaultMailboxId).fetch(
+          request.url,
+          {
+            headers: {
+              upgrade: "websocket",
+              [inboxSessionHeaders.mailbox]: defaultMailboxId,
+              [inboxSessionHeaders.id]: session.sessionId,
+              [inboxSessionHeaders.revision]: session.securityRevision,
+            },
           },
-        });
+        );
       } catch {
         return new Response(null, { status: 503, headers: privateHeaders });
       }
@@ -330,6 +370,41 @@ export default {
         );
       }
     }
+    let mailRoutes: ReturnType<typeof inboxRoutes> = Layer.empty;
+    if (path.startsWith("/api/inbox")) {
+      await ensureDefaultMailbox(
+        env.DB,
+        env.INBOX_EMAIL_ADDRESS,
+        env.INBOX_EMAIL_FROM,
+        env.MAILBOX_ALIASES,
+      );
+      const store = scopeMailStore(env, defaultMailboxId);
+      const identities = await mailboxIdentities(store.DB);
+      mailRoutes = inboxRoutes(
+        http,
+        {
+          ...store,
+          // Permission in the mailbox and support from the sending transport
+          // must both be present. Aliases never imply send-as permission.
+          INBOX_EMAIL_FROM: identities.some(
+            (identity) =>
+              identity.address === env.INBOX_EMAIL_FROM &&
+              identity.canSend === 1,
+          )
+            ? env.INBOX_EMAIL_FROM
+            : undefined,
+          INBOX_EMAIL_ADDRESS:
+            identities.find(
+              (identity) =>
+                identity.address === env.INBOX_EMAIL_ADDRESS &&
+                identity.canReceive === 1,
+            )?.address ??
+            identities.find((identity) => identity.canReceive === 1)?.address,
+          mailboxAddresses: identities.map((identity) => identity.address),
+        },
+        defer,
+      );
+    }
     const app = HttpRouter.toWebHandler(
       Layer.mergeAll(
         health,
@@ -350,7 +425,7 @@ export default {
           ),
           passwordRecoveryRoutes(http, emailTransport !== disabledEmail),
           linksRoutes(http),
-          inboxRoutes(http, env, defer),
+          mailRoutes,
           peopleRoutes(http, env, defer),
           vaultSetupRoutes(http, env.DB),
           vaultItemRoutes(http, env.DB),

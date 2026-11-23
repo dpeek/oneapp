@@ -115,6 +115,9 @@ export const Web = Cloudflare.Worker(
       crons: ["*/15 * * * *"],
       env: {
         DB: Database,
+        MAILBOX_ALIASES: Config.String("MAILBOX_ALIASES").pipe(
+          Config.withDefault(""),
+        ),
         VAULT_FILES: VaultFiles,
         INBOX_MESSAGES: InboxMessages,
         SENT_MESSAGES: SentMessages,

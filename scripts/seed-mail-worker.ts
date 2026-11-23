@@ -1,3 +1,9 @@
+import {
+  ensureDefaultMailbox,
+  scopeMailStore,
+  mailboxSql,
+  type MailDatabase,
+} from "../apps/web/src/server/mailbox.ts";
 import { DurableObject } from "cloudflare:workers";
 import { Effect } from "effect";
 import type { WorkerEnv } from "../alchemy.run.ts";
@@ -17,10 +23,16 @@ const key = (number: number, timestamp: number) =>
   `0-${9_999_999_999_999 - timestamp}-286dd67a-8a58-47f6-acc3-${String(number).padStart(12, "0")}`;
 const messageId = (number: number) =>
   `<oneapp-mail-fixture-${number}@example.test>`;
-type MailStore = Pick<WorkerEnv, "DB" | "INBOX_MESSAGES" | "SENT_MESSAGES">;
+type MailStore = Pick<WorkerEnv, "INBOX_MESSAGES" | "SENT_MESSAGES"> & {
+  DB: MailDatabase;
+};
 
 const indexed = (DB: MailStore["DB"], id: string) =>
-  DB.prepare("SELECT 1 FROM mail_index_messages WHERE id = ?").bind(id).first();
+  DB.prepare(
+    `SELECT 1 FROM mail_index_messages WHERE mailbox_id = ${mailboxSql(DB)} AND id = ?`,
+  )
+    .bind(id)
+    .first();
 
 type Incoming = {
   number: number;
@@ -232,8 +244,11 @@ const seedMail = async (env: MailStore) => {
   return added;
 };
 
-export class SeedMail extends DurableObject<MailStore> {
-  run() {
-    return seedMail(this.env);
+export class SeedMail extends DurableObject<
+  Pick<WorkerEnv, "DB" | "INBOX_MESSAGES" | "SENT_MESSAGES">
+> {
+  async run() {
+    await ensureDefaultMailbox(this.env.DB);
+    return seedMail(scopeMailStore(this.env, "personal"));
   }
 }

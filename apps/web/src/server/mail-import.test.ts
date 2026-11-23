@@ -1,3 +1,23 @@
+import {
+  senderAppearanceRules,
+  setSenderAppearance,
+} from "./mail-sender-appearance.ts";
+import {
+  trashMail,
+  restoreMail,
+  listTrash,
+  collectMailTrash,
+  mailRetentionMs,
+} from "./mail-trash.ts";
+import {
+  ensureDefaultMailbox,
+  mailDatabase,
+  mailboxBucket,
+  mailboxIdentities,
+  requireMailbox,
+  resolveMailRecipient,
+  scopeMailStore,
+} from "./mailbox.ts";
 import { expect, it } from "@effect/vitest";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import type { D1Database, R2Bucket, R2Object } from "@cloudflare/workers-types";
@@ -12,6 +32,10 @@ import {
   removeIndexedMail,
   setInboxUnread,
   setThreadArchived,
+  inboxUnread,
+  listConversations,
+  setSenderRule,
+  scanMail,
 } from "./mail-index.ts";
 import { describeStoredRawMail, storedMailTimestamp } from "./raw-mail.ts";
 import {
@@ -106,6 +130,9 @@ const bucket = () => {
         json: async () => JSON.parse(new TextDecoder().decode(bytes)),
       };
     },
+    delete: async (ids: string | string[]) => {
+      for (const id of Array.isArray(ids) ? ids : [ids]) objects.delete(id);
+    },
     list: async () => ({
       objects: [...objects.values()].map(({ object }) => object),
       truncated: false,
@@ -146,10 +173,14 @@ const setup = async (sqlite: Database) => {
         return results;
       })(),
   } as unknown as D1Database;
+  sqlite.exec(
+    "INSERT INTO accounts (id, active, security_revision) VALUES ('owner', 1, '1')",
+  );
+  await ensureDefaultMailbox(DB);
   const inbox = bucket();
   const sent = bucket();
   return {
-    DB,
+    DB: mailDatabase(DB, "personal"),
     INBOX_MESSAGES: inbox.api,
     SENT_MESSAGES: sent.api,
     inbox,
@@ -481,4 +512,189 @@ it("refreshes cached sender heuristics from original mail without resetting mail
     archived: 1,
     timestamp: metadata.timestamp,
   });
+});
+
+it("isolates identical imported messages, conversations, preferences and completion by mailbox", async () => {
+  using sqlite = new Database(":memory:");
+  const personal = await setup(sqlite);
+  sqlite.exec(
+    "INSERT INTO mailboxes (id, owner_account_id, name) VALUES ('work', 'owner', 'Work')",
+  );
+  const work = scopeMailStore(personal, "work");
+  const input = { ...metadata, archived: false, flags: [] };
+  const first = await ingestRawMail(personal, input, raw());
+  const second = await ingestRawMail(work, input, raw());
+  expect(first.id).toBe(second.id);
+  expect(second.status).toBe("imported");
+  expect((await ingestRawMail(work, input, raw())).status).toBe("skipped");
+  expect(personal.inbox.objects.size).toBe(2);
+  expect(await work.INBOX_MESSAGES.head(first.id)).not.toBeNull();
+  expect(
+    (await work.INBOX_MESSAGES.list()).objects.map((object) => object.key),
+  ).toEqual([first.id]);
+  expect(
+    (
+      await mailboxBucket(personal.INBOX_MESSAGES, "personal").list()
+    ).objects.map((object) => object.key),
+  ).toEqual([first.id]);
+  await expect(work.INBOX_MESSAGES.get(`../${first.id}`)).rejects.toThrow(
+    "Invalid mail object key",
+  );
+
+  const later = await ingestRawMail(
+    work,
+    {
+      ...input,
+      source: { ...input.source, uid: 8 },
+      timestamp: input.timestamp + 1000,
+    },
+    raw("reply", "root"),
+  );
+  expect((await readThread(personal.DB, first.id)).messages).toHaveLength(1);
+  expect((await readThread(work.DB, first.id)).messages).toHaveLength(2);
+  expect((await readThread(personal.DB, later.id)).messages).toHaveLength(0);
+  expect(
+    (await listConversations(personal.DB, { timestamp: null, id: "" }, "all"))
+      .messages,
+  ).toHaveLength(1);
+  expect(
+    (await listConversations(work.DB, { timestamp: null, id: "" }, "all"))
+      .messages[0]?.messageCount,
+  ).toBe(2);
+
+  await setInboxUnread(personal.DB, first.id, false);
+  expect((await inboxUnread(personal.DB)).unreadCount).toBe(0);
+  expect((await inboxUnread(work.DB)).unreadCount).toBe(2);
+  await setSenderRule(personal.DB, {
+    address: "alice@example.com",
+    priority: "noise",
+  });
+  expect(
+    (await listConversations(personal.DB, { timestamp: null, id: "" }, "noise"))
+      .messages,
+  ).toHaveLength(1);
+  expect(
+    (await listConversations(work.DB, { timestamp: null, id: "" }, "noise"))
+      .messages,
+  ).toHaveLength(0);
+  await setSenderAppearance(personal.DB, {
+    address: "alice@example.com",
+    mode: "service",
+  });
+  expect(
+    (await senderAppearanceRules(personal.DB, ["alice@example.com"])).get(
+      "alice@example.com",
+    ),
+  ).toBe("service");
+  expect(
+    (await senderAppearanceRules(work.DB, ["alice@example.com"])).size,
+  ).toBe(0);
+
+  const sourceId = (await personal.DB.prepare(
+    "SELECT source_id AS id FROM mail_imports WHERE mailbox_id = 'personal'",
+  ).first<{ id: string }>())!.id;
+  const request = {
+    id: "same-run",
+    asOf: "2026-11-23T00:00:00Z",
+    sourceIds: [sourceId],
+  };
+  expect(
+    (await completeImportedConversations(personal.DB, request))
+      .completedConversations,
+  ).toBe(1);
+  expect((await readThread(work.DB, first.id)).archived).toBe(false);
+  expect(
+    (await completeImportedConversations(work.DB, request))
+      .completedConversations,
+  ).toBe(0);
+  expect(
+    sqlite.query("SELECT count(*) AS n FROM mail_import_completions").get(),
+  ).toEqual({ n: 2 });
+
+  const deletedAt = Date.now();
+  await trashMail(personal.DB, first.id, deletedAt);
+  expect((await listTrash(work.DB)).messages).toHaveLength(0);
+  expect((await listTrash(personal.DB)).messages).toHaveLength(1);
+  expect(await restoreMail(work.DB, first.id)).toBe(false);
+  await collectMailTrash(personal, deletedAt + mailRetentionMs + 1);
+  expect(await personal.INBOX_MESSAGES.head(first.id)).toBeNull();
+  expect(await work.INBOX_MESSAGES.head(first.id)).not.toBeNull();
+  expect((await readThread(work.DB, first.id)).messages).toHaveLength(2);
+});
+
+it("scopes index rebuilds and scan checkpoints to each mailbox storage namespace", async () => {
+  using sqlite = new Database(":memory:");
+  const personal = await setup(sqlite);
+  sqlite.exec(
+    "INSERT INTO mailboxes (id, owner_account_id, name) VALUES ('work', 'owner', 'Work')",
+  );
+  const work = scopeMailStore(personal, "work");
+  const { id } = await ingestRawMail(work, metadata, raw());
+  const scan = (store: typeof work) =>
+    scanMail(
+      store.DB,
+      "inbox",
+      store.INBOX_MESSAGES,
+      (object) => describeStoredRawMail(store.INBOX_MESSAGES, object, "inbox"),
+      true,
+    );
+  sqlite.exec("DELETE FROM mail_index_messages; DELETE FROM mail_index_keys;");
+  await scan(scopeMailStore(personal, "personal"));
+  expect((await readThread(personal.DB, id)).messages).toHaveLength(0);
+  await scan(work);
+  expect((await readThread(work.DB, id)).messages).toHaveLength(1);
+  expect(
+    sqlite
+      .query("SELECT mailbox_id FROM mail_index_scans ORDER BY mailbox_id")
+      .all(),
+  ).toEqual([{ mailbox_id: "personal" }, { mailbox_id: "work" }]);
+});
+
+it("keeps mailbox identities independent of login and resolves exact routes before catch-all", async () => {
+  using sqlite = new Database(":memory:");
+  const store = await setup(sqlite);
+  await ensureDefaultMailbox(
+    store.DB,
+    "mail@app.example",
+    "mail@app.example",
+    "mail@dpeek.com,david@winterpeek.com",
+  );
+  expect(
+    (await mailboxIdentities(store.DB)).map((identity) => identity.address),
+  ).toEqual(["david@winterpeek.com", "mail@app.example", "mail@dpeek.com"]);
+  expect(
+    (await mailboxIdentities(store.DB)).find(
+      (identity) => identity.address === "mail@dpeek.com",
+    )?.canSend,
+  ).toBe(0);
+  sqlite.exec(
+    "INSERT INTO accounts (id, active, security_revision) VALUES ('family', 1, '1'); INSERT INTO mailboxes (id, owner_account_id, name) VALUES ('family', 'family', 'Personal'); INSERT INTO mailbox_addresses VALUES ('family@winterpeek.com', 'family', 1, 0); INSERT INTO mail_domain_routes VALUES ('winterpeek.com', 'personal');",
+  );
+  expect(await resolveMailRecipient(store.DB, "DAVID@WINTERPEEK.COM")).toBe(
+    "personal",
+  );
+  expect(await resolveMailRecipient(store.DB, "family@winterpeek.com")).toBe(
+    "family",
+  );
+  expect(
+    await resolveMailRecipient(store.DB, "unassigned@winterpeek.com"),
+  ).toBe("personal");
+  expect(await resolveMailRecipient(store.DB, "mail@unrelated.com")).toBeNull();
+  sqlite.exec(
+    "UPDATE mailbox_addresses SET can_receive = 0 WHERE address = 'family@winterpeek.com'",
+  );
+  expect(
+    await resolveMailRecipient(store.DB, "family@winterpeek.com"),
+  ).toBeNull();
+  await expect(requireMailbox(store.DB, "family", "owner")).rejects.toThrow(
+    "unavailable",
+  );
+  await expect(requireMailbox(store.DB, "personal", "family")).rejects.toThrow(
+    "unavailable",
+  );
+  expect((await requireMailbox(store.DB, "personal", "owner")).id).toBe(
+    "personal",
+  );
+  await ensureDefaultMailbox(store.DB, "mail@app.example", "mail@app.example");
+  expect(await mailboxIdentities(store.DB)).toHaveLength(3);
 });

@@ -1,4 +1,4 @@
-import { Sheet, Tokenizer } from "@oneapp/ui";
+import { MultiCombobox, Popover, Sheet, Tokenizer } from "@oneapp/ui";
 import { Effect, Option, Schema } from "effect";
 import { Command, Update } from "foldkit";
 import { focus } from "foldkit/dom";
@@ -6,7 +6,6 @@ import { defineMessageUnion } from "foldkit/message";
 import { ItemId, Tag, TagCreate, tagsApi } from "./items-contract.ts";
 import { createTagPrefix, searchTags } from "./tag-picker.ts";
 import {
-  activeTaskStatuses,
   Task,
   taskApi,
   TaskCreate,
@@ -19,6 +18,12 @@ import {
   taskTagLimit,
   TaskView,
 } from "./tasks-contract.ts";
+import {
+  emptyFilters,
+  Filters,
+  StatusFilter,
+  toggleFilter,
+} from "./tasks-filters.ts";
 
 const Draft = Schema.Struct({
   ...TaskUpdate.fields,
@@ -46,9 +51,12 @@ const Operation = Schema.Union([
   Schema.TaggedStruct("AddTag", { id: ItemId, input: TagCreate }),
 ]);
 type Operation = typeof Operation.Type;
-const StatusFilter = Schema.NullOr(
-  Schema.Literals(["all", ...activeTaskStatuses]),
-);
+const FilterCategory = Schema.Literals(["status", "priority", "tags"]);
+export const filterOptionsId = "task-filter-options";
+const filterPopover = Popover.init({ id: "task-filters" });
+const filterTags = MultiCombobox.init("task-filter-tags");
+const closedFilterOptions = { filterCategory: null, filterTags };
+const closedFilterMenu = { filterPopover, ...closedFilterOptions };
 const Sort = Schema.Literals(["updated", "priority", "due"]);
 const Field = Schema.Literals([
   "title",
@@ -65,8 +73,10 @@ export const Model = Schema.Struct({
   selectedId: Schema.NullOr(ItemId),
   editor: Schema.NullOr(Editor),
   creation: Schema.NullOr(Creation),
-  statusFilter: StatusFilter,
-  tagFilter: Schema.NullOr(ItemId),
+  filterPopover: Popover.Model,
+  filterCategory: Schema.NullOr(FilterCategory),
+  filterTags: MultiCombobox.Model,
+  filters: Filters,
   sort: Sort,
   request: Schema.NullOr(
     Schema.Struct({ id: Schema.String, operation: Operation }),
@@ -81,8 +91,8 @@ export const initial: Model = {
   selectedId: null,
   editor: null,
   creation: null,
-  statusFilter: "all",
-  tagFilter: null,
+  ...closedFilterMenu,
+  filters: emptyFilters,
   sort: "updated",
   request: null,
   error: null,
@@ -99,8 +109,12 @@ export const Message = defineMessageUnion({
   Created: {},
   EditedField: { field: Field, value: Schema.String },
   ToggledCompletion: { id: ItemId },
-  SetStatusFilter: { value: Schema.String },
-  SetTagFilter: { value: Schema.String },
+  GotFilterPopoverMessage: { message: Popover.Message },
+  OpenedFilterCategory: { category: FilterCategory },
+  ToggledStatusFilter: { value: StatusFilter },
+  ToggledPriorityFilter: { value: TaskPriority },
+  GotFilterTagsMessage: { message: MultiCombobox.Message },
+  ClearedFilters: {},
   SetSort: { value: Schema.String },
   GotTagPickerMessage: { id: ItemId, message: Tokenizer.Message },
   RemovedTag: { id: ItemId },
@@ -131,6 +145,53 @@ const foldFolderSheet = Update.foldChild({
   write: (model, folderSheet) => ({ ...model, folderSheet }),
   toParentMessage: toFolderSheetMessage,
   foldOutMessage: () => (model) => ({ model }),
+});
+
+export const toFilterPopoverMessage = (message: typeof Popover.Message.Type) =>
+  Message.GotFilterPopoverMessage({ message });
+
+const foldFilterPopover = Update.foldChild({
+  update: Popover.update,
+  read: (model: Model) => Option.some(model.filterPopover),
+  write: (model, filterPopover) => ({ ...model, filterPopover }),
+  toParentMessage: toFilterPopoverMessage,
+  foldOutMessage: (out) => (model) => ({
+    model: out._tag === "Closed" ? { ...model, ...closedFilterOptions } : model,
+  }),
+});
+
+export const toFilterTagsMessage = (
+  message: typeof MultiCombobox.Message.Type,
+) => Message.GotFilterTagsMessage({ message });
+
+const foldFilterTags = Update.foldChild({
+  update: MultiCombobox.update,
+  read: (model: Model) =>
+    model.filterCategory === "tags"
+      ? Option.some(model.filterTags)
+      : Option.none(),
+  write: (model, filterTags) => ({ ...model, filterTags }),
+  toParentMessage: toFilterTagsMessage,
+  foldOutMessage: (out) => (model) => ({
+    model:
+      out._tag === "Selected"
+        ? {
+            ...model,
+            filters: {
+              ...model.filters,
+              tagIds: toggleFilter(model.filters.tagIds, out.value),
+            },
+          }
+        : model,
+  }),
+});
+
+const FocusFilterOptions = Command.define("FocusTaskFilterOptions", {
+  messages: [Message.FocusUpdated],
+  execute: focus(`#${filterOptionsId} input`, { preventScroll: true }).pipe(
+    Effect.ignore,
+    Effect.as(Message.FocusUpdated()),
+  ),
 });
 
 const FocusList = Command.define("FocusTaskList", {
@@ -388,14 +449,19 @@ export const update = (
           id !== model.selectedId || view !== model.view
             ? {
                 ...model,
+                ...closedFilterMenu,
                 view,
                 selectedId: id,
                 editor: null,
                 creation: null,
                 error: null,
               }
-            : refresh && model.creation
-              ? { ...model, creation: null, error: null }
+            : refresh
+              ? {
+                  ...model,
+                  ...closedFilterMenu,
+                  ...(model.creation ? { creation: null, error: null } : {}),
+                }
               : model;
         const task = selectedTask(next);
         const opened =
@@ -502,16 +568,38 @@ export const update = (
           },
         });
       },
-      SetStatusFilter: ({ value }) => {
-        const statusFilter = value || null;
+      GotFilterPopoverMessage: ({ message }) =>
+        foldFilterPopover(model, message),
+      OpenedFilterCategory: ({ category }) => {
+        if (!model.filterPopover.isOpen) return { model };
+        const filterCategory =
+          model.filterCategory === category ? null : category;
         return {
-          model: Schema.is(StatusFilter)(statusFilter)
-            ? { ...model, statusFilter }
-            : model,
+          model: { ...model, filterCategory, filterTags },
+          ...(filterCategory ? { commands: [FocusFilterOptions()] } : {}),
         };
       },
-      SetTagFilter: ({ value }) => ({
-        model: { ...model, tagFilter: Schema.is(ItemId)(value) ? value : null },
+      ToggledStatusFilter: ({ value }) => ({
+        model: {
+          ...model,
+          filters: {
+            ...model.filters,
+            statuses: toggleFilter(model.filters.statuses, value),
+          },
+        },
+      }),
+      ToggledPriorityFilter: ({ value }) => ({
+        model: {
+          ...model,
+          filters: {
+            ...model.filters,
+            priorities: toggleFilter(model.filters.priorities, value),
+          },
+        },
+      }),
+      GotFilterTagsMessage: ({ message }) => foldFilterTags(model, message),
+      ClearedFilters: () => ({
+        model: { ...model, filters: emptyFilters, filterTags },
       }),
       SetSort: ({ value }) => ({
         model: Schema.is(Sort)(value) ? { ...model, sort: value } : model,

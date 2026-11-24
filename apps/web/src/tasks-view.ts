@@ -1,13 +1,16 @@
 import {
   backIcon,
+  badge,
   button,
   buttonClassName,
   dialog,
   field,
   input,
+  MultiCombobox,
   navigationLinks,
   nativeSelect,
   outlineIcon,
+  Popover,
   Sheet,
   textarea,
   Tokenizer,
@@ -15,22 +18,27 @@ import {
 import { Effect } from "effect";
 import { Mount, Submodel } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";
-import { tagNameLimit, type Tag } from "./items-contract.ts";
+import { tagNameKey, tagNameLimit, type Tag } from "./items-contract.ts";
 import {
   activeTaskStatuses,
   type Task,
   taskDescriptionLimit,
   taskListPath,
   taskPath,
+  taskPriorities,
   taskTagLimit,
   taskTitleLimit,
   type TaskView,
 } from "./tasks-contract.ts";
+import { matchesTaskFilters, taskFilterCount } from "./tasks-filters.ts";
 import {
+  filterOptionsId,
   hasEdits,
   Message,
   selectedTask,
   tagSearch,
+  toFilterPopoverMessage,
+  toFilterTagsMessage,
   toFolderSheetMessage,
   writingCreation,
   type Editor,
@@ -58,13 +66,7 @@ const statusOptions = Object.entries(statusLabels).map(([value, label]) => ({
   value,
   label,
 }));
-const statusFilterOptions = [
-  { value: "all", label: "All statuses" },
-  ...(["", ...activeTaskStatuses] as const).map((value) => ({
-    value,
-    label: statusLabels[value],
-  })),
-];
+const filterLabels = { status: "Status", priority: "Priority", tags: "Tags" };
 const viewLabels = { active: "Active", completed: "Completed" };
 const priorityOptions = Object.entries(priorityLabels).map(
   ([value, label]) => ({ value, label }),
@@ -81,13 +83,7 @@ const timestamp = new Intl.DateTimeFormat(undefined, {
 });
 const sortedTasks = (tasks: readonly Task[], model: Model) =>
   tasks
-    .filter(
-      (task) =>
-        (model.view === "completed" ||
-          model.statusFilter === "all" ||
-          task.status === model.statusFilter) &&
-        (model.tagFilter === null || task.tagIds.includes(model.tagFilter)),
-    )
+    .filter((task) => matchesTaskFilters(task, model))
     .sort((left, right) => {
       if (model.sort === "priority") {
         const order =
@@ -194,6 +190,143 @@ const taskRow = (
   );
 };
 
+const filterCheckbox = (
+  label: string,
+  checked: boolean,
+  message: Message,
+  h: HtmlBuilder<Message>,
+) =>
+  h.label(
+    [h.Key(label), h.Class("task-filter-choice")],
+    [
+      h.input([
+        h.Type("checkbox"),
+        h.Checked(checked),
+        h.OnChange(() => message),
+      ]),
+      label,
+    ],
+  );
+
+const taskFilterOptions = (
+  model: Model,
+  tags: readonly Tag[],
+  h: HtmlBuilder<Message>,
+) => {
+  const { filterCategory, filters, filterTags } = model;
+  if (!filterCategory) return h.empty;
+  const tagQuery = tagNameKey(filterTags.inputValue);
+  const options = {
+    status: () =>
+      [null, ...activeTaskStatuses].map((value) =>
+        filterCheckbox(
+          statusLabels[value ?? ""],
+          filters.statuses.includes(value),
+          Message.ToggledStatusFilter({ value }),
+          h,
+        ),
+      ),
+    priority: () =>
+      [null, ...taskPriorities].map((value) =>
+        filterCheckbox(
+          priorityLabels[value ?? ""],
+          filters.priorities.includes(value),
+          Message.ToggledPriorityFilter({ value }),
+          h,
+        ),
+      ),
+    tags: () => [
+      MultiCombobox.view(
+        {
+          model: filterTags,
+          label: "Search tags",
+          placeholder: "Search tags…",
+          emptyMessage: tagQuery ? "No matching tags." : "No tags yet.",
+          items: tags.filter(({ name }) => tagNameKey(name).includes(tagQuery)),
+          selectedValues: filters.tagIds,
+          toParentMessage: toFilterTagsMessage,
+        },
+        h,
+      ),
+    ],
+  };
+  return h.div(
+    [
+      h.Key(filterCategory),
+      h.Id(filterOptionsId),
+      h.Class("task-filter-options"),
+      h.Role("group"),
+      h.AriaLabel(`${filterLabels[filterCategory]} filters`),
+    ],
+    options[filterCategory](),
+  );
+};
+
+const taskFilters = (
+  model: Model,
+  tags: readonly Tag[],
+  h: HtmlBuilder<Message>,
+) => {
+  const count = taskFilterCount(model);
+  const categories =
+    model.view === "active"
+      ? (["status", "priority", "tags"] as const)
+      : (["priority", "tags"] as const);
+  return Popover.view(
+    {
+      model: model.filterPopover,
+      label: "Filters",
+      triggerLabel: count ? `Filters, ${count} selected` : "Filters",
+      triggerButton: { variant: "outline", size: "sm" },
+      trigger: h.span(
+        [h.Class("task-filter-trigger")],
+        [
+          outlineIcon(h, ["M4 7h16M7 12h10m-7 5h4"]),
+          "Filters",
+          ...(count ? [badge(String(count), h)] : []),
+        ],
+      ),
+      placement: "bottom-start",
+      panelClassName: "task-filter-popover",
+      content: h.div(
+        [h.Class("task-filter-panels")],
+        [
+          h.div(
+            [h.Class("task-filter-categories")],
+            [
+              ...categories.map((category) => {
+                const expanded = model.filterCategory === category;
+                return h.button(
+                  [
+                    h.Key(category),
+                    h.Type("button"),
+                    h.Class("task-filter-category"),
+                    h.AriaExpanded(expanded),
+                    ...(expanded ? [h.AriaControls(filterOptionsId)] : []),
+                    h.OnClick(Message.OpenedFilterCategory({ category })),
+                  ],
+                  [filterLabels[category], outlineIcon(h, ["m9 18 6-6-6-6"])],
+                );
+              }),
+              h.button(
+                [
+                  h.Type("button"),
+                  h.Class("task-filter-clear"),
+                  h.OnClick(Message.ClearedFilters()),
+                ],
+                ["Clear filters"],
+              ),
+            ],
+          ),
+          taskFilterOptions(model, tags, h),
+        ],
+      ),
+      toParentMessage: toFilterPopoverMessage,
+    },
+    h,
+  );
+};
+
 const taskList = (
   model: Model,
   tags: ReadonlyArray<Tag>,
@@ -219,31 +352,7 @@ const taskList = (
       h.div(
         [h.Class("task-list-toolbar task-list-filters")],
         [
-          ...(view === "active"
-            ? [
-                nativeSelect(
-                  {
-                    label: "Status filter",
-                    value: model.statusFilter ?? "",
-                    options: statusFilterOptions,
-                    onChange: (value) => Message.SetStatusFilter({ value }),
-                  },
-                  h,
-                ),
-              ]
-            : []),
-          nativeSelect(
-            {
-              label: "Tag filter",
-              value: model.tagFilter ?? "",
-              options: [
-                { value: "", label: "All tags" },
-                ...tags.map((tag) => ({ value: tag.id, label: tag.name })),
-              ],
-              onChange: (value) => Message.SetTagFilter({ value }),
-            },
-            h,
-          ),
+          taskFilters(model, tags, h),
           nativeSelect(
             {
               label: "Sort by",
@@ -302,7 +411,7 @@ const taskFields = (
   return [
     field(
       "Title",
-      input(
+      input<Message>(
         [
           h.Type("text"),
           h.Value(draft.title),
@@ -343,7 +452,7 @@ const taskFields = (
         ),
         field(
           "Due date",
-          input(
+          input<Message>(
             [
               h.Type("date"),
               h.Value(draft.dueOn ?? ""),
@@ -360,7 +469,7 @@ const taskFields = (
     ),
     field(
       "Description (Markdown)",
-      textarea(
+      textarea<Message>(
         [
           h.Value(draft.description),
           h.Maxlength(taskDescriptionLimit),

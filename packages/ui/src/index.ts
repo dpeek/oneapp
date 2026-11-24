@@ -6,6 +6,7 @@ import type { Document, HtmlBuilder } from "foldkit/html";
 export { avatar, createAvatar } from "./avatar.ts";
 export { actionBar } from "./action-bar.ts";
 export { avatarGroup } from "./avatar-group.ts";
+export { badge } from "./badge.ts";
 export { button, buttonClassName } from "./button.ts";
 export { buttonGroup, createButtonGroup } from "./button-group.ts";
 export * as CalendarPicker from "./calendar-picker.ts";
@@ -40,6 +41,7 @@ export {
   itemGroup,
 } from "./item.ts";
 export { marker } from "./marker.ts";
+export * as MultiCombobox from "./multi-combobox.ts";
 export { createNativeSelect, nativeSelect } from "./native-select.ts";
 export {
   navigationLinks,

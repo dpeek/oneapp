@@ -39,9 +39,8 @@ export const activeTaskStatuses = [
 export const TaskStatus = Schema.NullOr(
   Schema.Literals([...activeTaskStatuses, "completed", "canceled"]),
 );
-export const TaskPriority = Schema.NullOr(
-  Schema.Literals(["low", "medium", "high", "urgent"]),
-);
+export const taskPriorities = ["low", "medium", "high", "urgent"] as const;
+export const TaskPriority = Schema.NullOr(Schema.Literals(taskPriorities));
 
 export const taskTitleLimit = 200;
 export const taskDescriptionLimit = 20_000;

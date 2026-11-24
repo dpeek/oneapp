@@ -29,9 +29,13 @@ export const view = <ParentMessage>(
   props: {
     model: typeof Model.Type;
     label: string;
+    triggerLabel?: string;
     disabled?: boolean;
     trigger: Html;
+    triggerButton?: Parameters<typeof buttonClassName>[0];
     content: Html;
+    placement?: "bottom-start" | "bottom-end";
+    panelClassName?: string;
     toParentMessage: (message: typeof Message.Type) => ParentMessage;
   },
   h: HtmlBuilder<ParentMessage>,
@@ -41,8 +45,8 @@ export const view = <ParentMessage>(
     model: props.model,
     view: Popover.view,
     viewInputs: {
-      anchor: { placement: "bottom-end", gap: 4 },
-      ariaLabel: props.label,
+      anchor: { placement: props.placement ?? "bottom-end", gap: 4 },
+      ariaLabel: props.triggerLabel ?? props.label,
       toView: ({ button, panel, backdrop, isVisible }) =>
         h.div(
           [h.Class(stylex.props(styles.root).className ?? "")],
@@ -51,15 +55,22 @@ export const view = <ParentMessage>(
               [
                 ...button,
                 h.DataAttribute("slot", "button"),
+                h.AriaHasPopup("dialog"),
+                // The portaled backdrop paints before the trigger at this layer.
+                ...(isVisible
+                  ? [h.Style({ position: "relative", zIndex: "49" })]
+                  : []),
                 h.Title(props.label),
                 h.Disabled(props.disabled ?? false),
                 h.Class(
                   [
-                    buttonClassName({
-                      variant: "ghost",
-                      size: "icon-sm",
-                      rounded: true,
-                    }),
+                    buttonClassName(
+                      props.triggerButton ?? {
+                        variant: "ghost",
+                        size: "icon-sm",
+                        rounded: true,
+                      },
+                    ),
                     stylex.props(styles.button).className,
                   ].join(" "),
                 ),
@@ -80,7 +91,14 @@ export const view = <ParentMessage>(
                       ...panel,
                       h.Role("dialog"),
                       h.AriaLabel(props.label),
-                      h.Class(stylex.props(styles.panel).className ?? ""),
+                      h.Class(
+                        [
+                          stylex.props(styles.panel).className,
+                          props.panelClassName,
+                        ]
+                          .filter(Boolean)
+                          .join(" "),
+                      ),
                     ],
                     [props.content],
                   ),

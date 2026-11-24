@@ -1,6 +1,7 @@
 import { Temporal } from "@js-temporal/polyfill";
 import {
   button,
+  CalendarPicker,
   ColorPicker,
   dialog,
   DropdownMenu,
@@ -11,9 +12,12 @@ import {
   Sheet,
   sidebarClassNames,
   sidebarItemClassName,
+  toggleGroup,
+  toolbar,
 } from "@oneapp/ui";
 import { Effect, Option, Schema } from "effect";
 import { Command, Mount, Submodel, Update } from "foldkit";
+import { defaultEnglishLocale } from "foldkit/calendar";
 import type { HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import {
@@ -41,11 +45,18 @@ import {
   calendarDays,
   calendarWeekStart,
 } from "./calendar-time.ts";
-import { workspace } from "./workspace.ts";
+import {
+  calendarSlotTimes,
+  calendarTimelineDay,
+  minutesInDay,
+  slotMinutes,
+} from "./calendar-timeline.ts";
+import { workspace, workspaceDrawerMedia } from "./workspace.ts";
 
+const Surface = Schema.Literals(["sidebar", "sheet"]);
 const MenuTarget = Schema.Struct({
   calendarId: CalendarId,
-  surface: Schema.Literals(["sidebar", "sheet"]),
+  surface: Surface,
 });
 type MenuTarget = typeof MenuTarget.Type;
 const menuId = ({ calendarId, surface }: MenuTarget) =>
@@ -84,8 +95,17 @@ const RequestState = Schema.Struct({
   ]),
 });
 
+const ScheduleView = Schema.Literals(["day", "week"]);
+const Slot = Schema.Struct({ day: Schema.String, minute: Schema.Number });
+
 export const Model = Schema.Struct({
-  start: Schema.String,
+  date: Schema.String,
+  view: ScheduleView,
+  datePickers: Schema.Struct({
+    sidebar: CalendarPicker.Model,
+    sheet: CalendarPicker.Model,
+  }),
+  slotFocus: Schema.NullOr(Slot),
   zone: Schema.String,
   week: Schema.NullOr(CalendarWeek),
   calendars: Schema.Array(CalendarSummary),
@@ -105,28 +125,51 @@ export const Model = Schema.Struct({
 type Model = typeof Model.Type;
 
 const today = () => Temporal.Now.plainDateISO();
-export const initial = (): Model => ({
-  start: calendarWeekStart(today()),
-  zone: Temporal.Now.timeZoneId(),
-  week: null,
-  calendars: [],
-  visible: null,
-  folderSheet: Sheet.init({ id: "calendar-folders" }),
-  menus: {},
-  calendarEditor: null,
-  request: null,
-  selected: null,
-  editor: null,
-  confirmDelete: false,
-  importing: null,
-  preview: null,
-  error: null,
-  notice: null,
-});
+const pickerDate = ({
+  year,
+  month,
+  day,
+}: Temporal.PlainDate): CalendarPicker.CalendarDate => ({ year, month, day });
+const weekStart = (date: string) => calendarWeekStart(calendarDate(date));
+export const initial = (): Model => {
+  const date = today();
+  const picker = (surface: typeof Surface.Type) =>
+    CalendarPicker.init({
+      id: `calendar-date-${surface}`,
+      today: pickerDate(date),
+      locale: { ...defaultEnglishLocale, firstDayOfWeek: "Monday" },
+    });
+  return {
+    date: date.toString(),
+    view: globalThis.matchMedia?.(workspaceDrawerMedia).matches
+      ? "day"
+      : "week",
+    datePickers: { sidebar: picker("sidebar"), sheet: picker("sheet") },
+    slotFocus: null,
+    zone: Temporal.Now.timeZoneId(),
+    week: null,
+    calendars: [],
+    visible: null,
+    folderSheet: Sheet.init({ id: "calendar-folders" }),
+    menus: {},
+    calendarEditor: null,
+    request: null,
+    selected: null,
+    editor: null,
+    confirmDelete: false,
+    importing: null,
+    preview: null,
+    error: null,
+    notice: null,
+  };
+};
 
 export const Message = defineMessageUnion({
   Opened: { id: Schema.NullOr(CalendarId), refresh: Schema.Boolean },
-  ShiftedWeek: { days: Schema.Number },
+  ShiftedPeriod: { direction: Schema.Literals([-1, 1]) },
+  ChangedView: { view: ScheduleView },
+  SelectedDate: { date: Schema.String },
+  GotDatePicker: { surface: Surface, message: CalendarPicker.Message },
   JumpedToToday: {},
   Retried: {},
   GotFolderSheetMessage: { message: Sheet.Message },
@@ -137,7 +180,8 @@ export const Message = defineMessageUnion({
   GotColorPicker: { message: ColorPicker.Message },
   SavedCalendar: {},
   OpenedEvent: { event: CalendarOccurrence },
-  NewEvent: { day: Schema.String },
+  NewEvent: { day: Schema.String, minute: Schema.NullOr(Schema.Number) },
+  FocusedSlot: { slot: Slot },
   EditEvent: { series: Schema.Boolean },
   ChangedFrequency: { frequency: Schema.NullOr(CalendarFrequency) },
   ChangedRepeatEnd: { until: Schema.String },
@@ -405,6 +449,20 @@ const FocusPanel = Mount.define("FocusCalendarPanel", {
     }),
 });
 
+const ScrollTimeline = Mount.define("ScrollCalendarTimeline", {
+  args: { minute: Schema.Number },
+  messages: [Message.Focused],
+  execute: ({ element, minute }) =>
+    Effect.sync(() => {
+      if (element instanceof HTMLElement) {
+        const hours = element.querySelector<HTMLElement>(".calendar-hours");
+        if (hours)
+          element.scrollTop = (hours.offsetHeight * minute) / minutesInDay;
+      }
+      return Message.Focused();
+    }),
+});
+
 const closedPanel = {
   selected: null,
   editor: null,
@@ -416,16 +474,36 @@ const closedPanel = {
 
 const load = (
   model: Model,
-): Update.ReturnWithOutMessage<Model, Message, OutMessage> => {
+): Update.ReturnWithOutMessage<Model, Message, never> => {
   const id = crypto.randomUUID();
   return {
     model: { ...model, error: null, request: { id, kind: "load" } },
-    commands: [LoadWeek({ id, start: model.start, zone: model.zone })],
+    commands: [
+      LoadWeek({ id, start: weekStart(model.date), zone: model.zone }),
+    ],
   };
 };
 
-const navigateWeek = (model: Model, start: string) =>
-  load({ ...model, ...closedPanel, week: null, start, notice: null });
+const navigateDate = (model: Model, date: string) => {
+  const focus = (picker: typeof CalendarPicker.Model.Type) =>
+    CalendarPicker.dropToDays(
+      CalendarPicker.focusDate(picker, pickerDate(calendarDate(date))),
+    );
+  const next = {
+    ...model,
+    ...closedPanel,
+    date,
+    datePickers: {
+      sidebar: focus(model.datePickers.sidebar),
+      sheet: focus(model.datePickers.sheet),
+    },
+    slotFocus: null,
+    notice: null,
+  };
+  if (weekStart(date) !== weekStart(model.date))
+    return load({ ...next, week: null });
+  return !next.week && !next.request ? load(next) : { model: next };
+};
 
 const busy = (model: Model) =>
   model.request !== null && model.request.kind !== "load";
@@ -532,6 +610,31 @@ const updateFolderSheet = (
   return Update.combine(model, [...menuSteps, foldFolderSheet(message)]);
 };
 
+const foldDatePicker = Update.foldChildAt({
+  update: CalendarPicker.update,
+  readAt: (model: Model, surface: typeof Surface.Type) =>
+    Option.some(model.datePickers[surface]),
+  writeAt: (model, surface, picker) => ({
+    ...model,
+    datePickers: { ...model.datePickers, [surface]: picker },
+  }),
+  toParentMessage: (surface, message) =>
+    Message.GotDatePicker({ surface, message }),
+  foldOutMessage:
+    (surface) =>
+    (out): Update.Step<Model, Message> =>
+    (model) => {
+      if (out._tag !== "SelectedDate") return { model };
+      const date = Temporal.PlainDate.from(out.date).toString();
+      return surface === "sheet"
+        ? Update.combine(model, [
+            (model) => navigateDate(model, date),
+            (model) => updateFolderSheet(model, Sheet.Message.RequestedClose()),
+          ])
+        : navigateDate(model, date);
+    },
+});
+
 const beginImport = (model: Model, ics: string | null) => {
   if (!model.importing) return { model };
   const id = crypto.randomUUID();
@@ -562,14 +665,26 @@ export const update = (
           ? load(next)
           : { model: next };
       },
-      ShiftedWeek: ({ days }) =>
+      ShiftedPeriod: ({ direction }) =>
         busy(model)
           ? { model }
-          : navigateWeek(model, calendarDays(model.start, days)),
+          : navigateDate(
+              model,
+              calendarDays(
+                model.date,
+                direction * (model.view === "week" ? 7 : 1),
+              ),
+            ),
+      ChangedView: ({ view }) =>
+        busy(model) || model.view === view
+          ? { model }
+          : { model: { ...model, view, slotFocus: null } },
+      SelectedDate: ({ date }) =>
+        busy(model) ? { model } : navigateDate(model, date),
+      GotDatePicker: ({ surface, message }) =>
+        busy(model) ? { model } : foldDatePicker(model, surface, message),
       JumpedToToday: () =>
-        busy(model)
-          ? { model }
-          : navigateWeek(model, calendarWeekStart(today())),
+        busy(model) ? { model } : navigateDate(model, today().toString()),
       Retried: () =>
         busy(model) ? { model } : load({ ...model, ...closedPanel }),
       GotFolderSheetMessage: ({ message }) => updateFolderSheet(model, message),
@@ -611,7 +726,7 @@ export const update = (
       },
       OpenedEvent: ({ event }) =>
         busy(model) ? { model } : openPanel(model, { selected: event }),
-      NewEvent: ({ day }) =>
+      NewEvent: ({ day, minute }) =>
         busy(model)
           ? { model }
           : openPanel(model, {
@@ -627,13 +742,15 @@ export const update = (
                   location: "",
                   description: "",
                   allDay: false,
-                  start: `${day}T09:00`,
-                  end: `${day}T10:00`,
+                  ...(minute === null
+                    ? { start: `${day}T09:00`, end: `${day}T10:00` }
+                    : calendarSlotTimes(day, minute, model.zone)),
                   timeZone: model.zone,
                   reminder: false,
                 },
               },
             }),
+      FocusedSlot: ({ slot }) => ({ model: { ...model, slotFocus: slot } }),
       EditEvent: ({ series }) => {
         const event = model.selected;
         const draft = series ? event?.series?.draft : event?.draft;
@@ -837,25 +954,6 @@ const localDate = (iso: string, timeZone: string) =>
     .toPlainDate()
     .toString();
 
-const eventsForDay = (
-  events: readonly CalendarOccurrence[],
-  day: string,
-  zone: string,
-) => {
-  const midnight = calendarDate(day).toZonedDateTime(zone).toInstant();
-  const next = calendarDate(calendarDays(day, 1))
-    .toZonedDateTime(zone)
-    .toInstant();
-  return events.filter((event) =>
-    event.allDay
-      ? event.start <= day && event.end > day
-      : Temporal.Instant.compare(event.start, next) < 0 &&
-        (Temporal.Instant.compare(event.end, midnight) > 0 ||
-          (event.start === event.end &&
-            Temporal.Instant.compare(event.start, midnight) >= 0)),
-  );
-};
-
 type H = HtmlBuilder<Message>;
 
 const blankCalendar = {
@@ -934,6 +1032,19 @@ const calendarNavigation = (
   return h.nav(
     [h.AriaLabel("Calendar navigation")],
     [
+      CalendarPicker.view(
+        {
+          model: model.datePickers[surface],
+          selectedDate: pickerDate(calendarDate(model.date)),
+          weekStart:
+            model.view === "week"
+              ? pickerDate(calendarDate(weekStart(model.date)))
+              : null,
+          toParentMessage: (message) =>
+            Message.GotDatePicker({ surface, message }),
+        },
+        h,
+      ),
       ...(surface === "sidebar"
         ? [
             h.div(
@@ -1507,14 +1618,361 @@ const importView = (id: string, model: Model, h: H) => {
   );
 };
 
+const viewChoices = [
+  { value: "day", label: "Day" },
+  { value: "week", label: "Week" },
+] as const;
+
+const scheduleToolbar = (model: Model, days: readonly string[], h: H) => {
+  const first = days[0]!;
+  const last = days.at(-1)!;
+  const crossYear = calendarDate(first).year !== calendarDate(last).year;
+  const period = (day: string) =>
+    plain(day, {
+      month: "short",
+      day: "numeric",
+      ...(crossYear ? { year: "numeric" } : {}),
+    });
+  const title =
+    model.view === "day"
+      ? plain(first, {
+          weekday: "long",
+          month: "long",
+          day: "numeric",
+          year: "numeric",
+        })
+      : `${period(first)} – ${period(last)}${crossYear ? "" : ` · ${calendarDate(last).year}`}`;
+  const disabled = busy(model);
+  const shift = (direction: -1 | 1) =>
+    button(
+      {
+        variant: "ghost",
+        size: "icon-sm",
+        disabled,
+        ariaLabel: `${direction === -1 ? "Previous" : "Next"} ${model.view}`,
+        onClick: Message.ShiftedPeriod({ direction }),
+        children: [
+          outlineIcon(h, [
+            direction === -1 ? "m15 18-6-6 6-6" : "m9 18 6-6-6-6",
+          ]),
+        ],
+      },
+      h,
+    );
+  return toolbar(
+    {
+      label: "Schedule controls",
+      start: [h.h2([h.AriaLive("polite")], [title])],
+      end: [
+        h.div(
+          [h.Class("calendar-period-controls")],
+          [
+            shift(-1),
+            button(
+              {
+                variant: "ghost",
+                size: "sm",
+                disabled,
+                onClick: Message.JumpedToToday(),
+                children: ["Today"],
+              },
+              h,
+            ),
+            shift(1),
+          ],
+        ),
+        toggleGroup(
+          {
+            label: "Calendar view",
+            value: model.view,
+            items: viewChoices,
+            disabled,
+            onToggle: (view) => Message.ChangedView({ view }),
+          },
+          h,
+        ),
+      ],
+    },
+    h,
+  );
+};
+
+const hours = Array.from({ length: 24 }, (_, hour) => hour * 60);
+const timeAt = new Intl.DateTimeFormat(undefined, {
+  hour: "numeric",
+  minute: "2-digit",
+  timeZone: "UTC",
+});
+const timeLabel = (minute: number) =>
+  timeAt.format(Date.UTC(2000, 0, 1, 0, minute));
+const slotId = ({ day, minute }: typeof Slot.Type) =>
+  `calendar-slot-${day}-${minute}`;
+const percent = (minute: number) => `${(minute * 100) / minutesInDay}%`;
+
+const schedule = (
+  model: Model,
+  days: readonly string[],
+  events: readonly CalendarOccurrence[],
+  current: string,
+  h: H,
+) => {
+  const timeline = days.map((day) => ({
+    day,
+    ...calendarTimelineDay(events, day, model.zone),
+  }));
+  const focusedDay = timeline.find(({ day }) => day === model.date)!;
+  const focus = model.slotFocus ?? {
+    day: model.date,
+    minute:
+      focusedDay.slots.find((minute) => minute >= 9 * 60) ??
+      focusedDay.slots[0],
+  };
+  const start = Math.min(
+    8 * 60,
+    ...timeline.flatMap(({ timed }) =>
+      timed.slice(0, 1).map((item) => item.start),
+    ),
+  );
+  const disabled = busy(model);
+
+  const eventButton = (
+    event: CalendarOccurrence,
+    time: string,
+    accessibleTime: string,
+    placement?: { start: number; end: number; lane: number; lanes: number },
+  ) => {
+    const name = calendarName(model, event.calendarId);
+    const label = [event.title, accessibleTime, name].join(", ");
+    return h.button(
+      [
+        h.Key(`${event.id}:${event.occurrence}`),
+        h.Type("button"),
+        h.Class("calendar-event"),
+        h.DataAttribute("slot", "calendar-event"),
+        h.AriaLabel(label),
+        h.Title(label),
+        h.Style({
+          "--calendar-event-color":
+            calendarFor(model, event.calendarId)?.color ?? defaultCalendarColor,
+          ...(placement
+            ? {
+                "--event-top": percent(placement.start),
+                "--event-height": percent(placement.end - placement.start),
+                "--event-offset": `${(placement.lane * 100) / placement.lanes}%`,
+                "--event-width": `${100 / placement.lanes}%`,
+              }
+            : {}),
+        }),
+        h.Disabled(disabled),
+        h.OnClick(Message.OpenedEvent({ event })),
+      ],
+      [
+        h.span([h.Class("calendar-event-title")], [event.title]),
+        ...(time ? [h.span([h.Class("calendar-event-time")], [time])] : []),
+      ],
+    );
+  };
+
+  return h.div(
+    [
+      h.Class("calendar-timeline-scroll"),
+      h.OnMount(
+        ScrollTimeline({
+          minute: Math.max(6 * 60, Math.floor(start / 60) * 60),
+        }),
+      ),
+      h.AriaLabel(model.view === "week" ? "Week schedule" : "Day schedule"),
+      h.Role("region"),
+    ],
+    [
+      h.div(
+        [
+          h.Class("calendar-timeline"),
+          h.DataAttribute("view", model.view),
+          h.Style({ "--calendar-days": String(days.length) }),
+        ],
+        [
+          h.div(
+            [h.Class("calendar-timeline-header")],
+            [
+              ...(model.view === "week"
+                ? [
+                    h.div(
+                      [h.Class("calendar-timeline-row calendar-dates")],
+                      [
+                        h.span(
+                          [h.Class("calendar-time-gutter"), h.AriaHidden(true)],
+                          [],
+                        ),
+                        ...days.map((day) => {
+                          const date = calendarDate(day);
+                          return h.button(
+                            [
+                              h.Key(day),
+                              h.Type("button"),
+                              h.DataAttribute("slot", "calendar-date"),
+                              h.DataAttribute(
+                                "selected",
+                                String(day === model.date),
+                              ),
+                              ...(day === current
+                                ? [h.AriaCurrent("date")]
+                                : []),
+                              h.AriaPressed(String(day === model.date)),
+                              h.AriaLabel(plain(day, { dateStyle: "full" })),
+                              h.Disabled(disabled),
+                              h.OnClick(Message.SelectedDate({ date: day })),
+                            ],
+                            [
+                              h.span([], [plain(day, { weekday: "short" })]),
+                              h.span(
+                                [h.Class("calendar-date-number")],
+                                [date.day.toString()],
+                              ),
+                            ],
+                          );
+                        }),
+                      ],
+                    ),
+                  ]
+                : []),
+              h.div(
+                [h.Class("calendar-timeline-row calendar-all-day")],
+                [
+                  h.span([h.Class("calendar-time-gutter")], ["All day"]),
+                  ...timeline.map(({ day, allDay }) =>
+                    h.div(
+                      [h.Key(day), h.Class("calendar-all-day-events")],
+                      allDay.map((event) =>
+                        eventButton(
+                          event,
+                          "",
+                          `All day, ${plain(day, { dateStyle: "full" })}`,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          h.div(
+            [h.Class("calendar-timeline-row calendar-hours")],
+            [
+              h.div(
+                [
+                  h.Class("calendar-time-gutter calendar-axis"),
+                  h.AriaHidden(true),
+                ],
+                hours.map((minute) =>
+                  h.span(
+                    [h.Style({ top: percent(minute) })],
+                    [timeLabel(minute)],
+                  ),
+                ),
+              ),
+              ...timeline.map(({ day, timed, slots }, dayIndex) => {
+                const dateLabel = plain(day, { dateStyle: "full" });
+                return h.div(
+                  [
+                    h.Key(day),
+                    h.Class("calendar-time-column"),
+                    h.AriaLabel(dateLabel),
+                    h.Role("group"),
+                  ],
+                  [
+                    ...slots.map((minute, index) => {
+                      const slot = { day, minute };
+                      return h.button(
+                        [
+                          h.Key(String(minute)),
+                          h.Id(slotId(slot)),
+                          h.Type("button"),
+                          h.DataAttribute("slot", "calendar-time-slot"),
+                          h.AriaLabel(
+                            `New event, ${dateLabel}, ${timeLabel(minute)}`,
+                          ),
+                          h.Style({
+                            top: percent(minute),
+                            height: percent(slotMinutes),
+                          }),
+                          h.Tabindex(
+                            focus.day === day && focus.minute === minute
+                              ? 0
+                              : -1,
+                          ),
+                          h.Disabled(disabled),
+                          h.OnClick(Message.NewEvent(slot)),
+                          h.OnKeyDownFocus((key) => {
+                            const column =
+                              timeline[
+                                dayIndex + (key === "ArrowLeft" ? -1 : 1)
+                              ];
+                            const target =
+                              key === "ArrowUp"
+                                ? slots[index - 1]
+                                : key === "ArrowDown"
+                                  ? slots[index + 1]
+                                  : key === "Home"
+                                    ? slots[0]
+                                    : key === "End"
+                                      ? slots.at(-1)
+                                      : undefined;
+                            const otherDay =
+                              (key === "ArrowLeft" || key === "ArrowRight") &&
+                              column;
+                            const adjacent = otherDay
+                              ? (column.slots.find(
+                                  (value) => value >= minute,
+                                ) ?? column.slots.at(-1))
+                              : undefined;
+                            const next =
+                              adjacent !== undefined && column
+                                ? { day: column.day, minute: adjacent }
+                                : target !== undefined
+                                  ? { day, minute: target }
+                                  : null;
+                            return next
+                              ? Option.some({
+                                  focusSelector: `#${slotId(next)}`,
+                                  message: Message.FocusedSlot({ slot: next }),
+                                })
+                              : Option.none();
+                          }),
+                        ],
+                        [],
+                      );
+                    }),
+                    ...timed.map((item) => {
+                      const event = item.event;
+                      const start = clock(event.start, model.zone);
+                      const end = clock(event.end, model.zone);
+                      return eventButton(
+                        event,
+                        item.continues ? "Continues" : start,
+                        `${dateLabel}, ${item.continues ? "continues until " + end : start + " – " + end}`,
+                        item,
+                      );
+                    }),
+                  ],
+                );
+              }),
+            ],
+          ),
+        ],
+      ),
+    ],
+  );
+};
+
 export const view = Submodel.defineView<Model, Message>((model, h) => {
   const current = today().toString();
-  const days = Array.from({ length: 7 }, (_, offset) =>
-    calendarDays(model.start, offset),
-  );
-  const period = (day: string) =>
-    plain(day, { month: "short", day: "numeric" });
-  const eventDate = days.includes(current) ? current : model.start;
+  const days =
+    model.view === "day"
+      ? [model.date]
+      : Array.from({ length: 7 }, (_, offset) =>
+          calendarDays(weekStart(model.date), offset),
+        );
   const disabled = busy(model);
   const calendars = calendarChoices(model);
   const selectedCalendar = calendars.find(
@@ -1524,7 +1982,6 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
     model.week?.events.filter(
       (event) => !model.visible || event.calendarId === model.visible,
     ) ?? [];
-  const showCalendarNames = calendars.length > 1 && !model.visible;
   const missing =
     model.week !== null && model.visible !== null && !selectedCalendar;
   const list = h.div(
@@ -1557,51 +2014,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
       ...(model.editor ? [eventEditorView(model, h)] : []),
       ...(model.importing ? [importView(model.importing, model, h)] : []),
       ...(missing ? [h.p([h.Role("alert")], ["Calendar not found."])] : []),
-      h.div(
-        [h.Class("calendar-toolbar")],
-        [
-          h.h2(
-            [],
-            [
-              `${period(model.start)} – ${period(days[6]!)} · ${calendarDate(days[6]!).year}`,
-            ],
-          ),
-          h.div(
-            [h.Class("calendar-actions")],
-            [
-              button(
-                {
-                  variant: "outline",
-                  disabled,
-                  ariaLabel: "Previous week",
-                  onClick: Message.ShiftedWeek({ days: -7 }),
-                  children: ["‹"],
-                },
-                h,
-              ),
-              button(
-                {
-                  variant: "outline",
-                  disabled,
-                  onClick: Message.JumpedToToday(),
-                  children: ["Today"],
-                },
-                h,
-              ),
-              button(
-                {
-                  variant: "outline",
-                  disabled,
-                  ariaLabel: "Next week",
-                  onClick: Message.ShiftedWeek({ days: 7 }),
-                  children: ["›"],
-                },
-                h,
-              ),
-            ],
-          ),
-        ],
-      ),
+      scheduleToolbar(model, days, h),
       ...(!model.week && model.request?.kind === "load"
         ? [h.p([h.Role("status")], ["Loading calendar…"])]
         : []),
@@ -1614,118 +2027,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
           ]
         : []),
       ...(model.week && !missing
-        ? [
-            ...(events.length === 0
-              ? [h.p([h.Class("calendar-empty")], ["No events this week."])]
-              : []),
-            h.div(
-              [h.Class("calendar-week"), h.AriaLabel("Week schedule")],
-              days.map((day) => {
-                const dayEvents = eventsForDay(events, day, model.zone);
-                return h.section(
-                  [
-                    h.Class("calendar-day"),
-                    h.DataAttribute(
-                      "empty",
-                      dayEvents.length ? "false" : "true",
-                    ),
-                    h.DataAttribute(
-                      "today",
-                      day === current ? "true" : "false",
-                    ),
-                  ],
-                  [
-                    h.h3(
-                      [],
-                      [
-                        h.span([], [plain(day, { weekday: "short" })]),
-                        h.span([], [calendarDate(day).day.toString()]),
-                        h.span(
-                          [h.Class("calendar-day-mobile")],
-                          [
-                            plain(day, {
-                              weekday: "long",
-                              month: "long",
-                              day: "numeric",
-                            }),
-                          ],
-                        ),
-                      ],
-                    ),
-                    ...(dayEvents.length
-                      ? [
-                          h.ul(
-                            [],
-                            dayEvents.map((event) =>
-                              h.li(
-                                [],
-                                [
-                                  h.button(
-                                    [
-                                      h.Type("button"),
-                                      h.Class("calendar-event"),
-                                      h.Style({
-                                        "--calendar-event-color":
-                                          calendarFor(model, event.calendarId)
-                                            ?.color ?? defaultCalendarColor,
-                                      }),
-                                      h.Disabled(disabled),
-                                      h.OnClick(Message.OpenedEvent({ event })),
-                                      h.DataAttribute(
-                                        "all-day",
-                                        event.allDay ? "true" : "false",
-                                      ),
-                                    ],
-                                    [
-                                      h.span(
-                                        [h.Class("calendar-event-time")],
-                                        [
-                                          event.allDay
-                                            ? "All day"
-                                            : localDate(
-                                                  event.start,
-                                                  model.zone,
-                                                ) === day
-                                              ? clock(event.start, model.zone)
-                                              : "Continues",
-                                        ],
-                                      ),
-                                      h.span(
-                                        [h.Class("calendar-event-summary")],
-                                        [
-                                          h.span([], [event.title]),
-                                          ...(showCalendarNames
-                                            ? [
-                                                h.span(
-                                                  [
-                                                    h.Class(
-                                                      "calendar-event-time",
-                                                    ),
-                                                  ],
-                                                  [
-                                                    calendarName(
-                                                      model,
-                                                      event.calendarId,
-                                                    ),
-                                                  ],
-                                                ),
-                                              ]
-                                            : []),
-                                        ],
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ]
-                      : []),
-                  ],
-                );
-              }),
-            ),
-          ]
+        ? [schedule(model, days, events, current, h)]
         : []),
     ],
   );
@@ -1759,7 +2061,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
           {
             size: "sm",
             disabled: disabled || (model.visible !== null && !selectedCalendar),
-            onClick: Message.NewEvent({ day: eventDate }),
+            onClick: Message.NewEvent({ day: model.date, minute: null }),
             children: ["New event"],
           },
           h,

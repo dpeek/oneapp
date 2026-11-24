@@ -8,6 +8,7 @@ export { actionBar } from "./action-bar.ts";
 export { avatarGroup } from "./avatar-group.ts";
 export { button, buttonClassName } from "./button.ts";
 export { buttonGroup, createButtonGroup } from "./button-group.ts";
+export * as CalendarPicker from "./calendar-picker.ts";
 export * as ColorPicker from "./color-picker.ts";
 export { dialog } from "./dialog.ts";
 export * as DropdownMenu from "./dropdown-menu.ts";
@@ -48,6 +49,7 @@ export {
 export * as Popover from "./popover.ts";
 export * as Sheet from "./sheet.ts";
 export { spinner } from "./spinner.ts";
+export { toolbar, toggleGroup } from "./toolbar.ts";
 export * as Tooltip from "./tooltip.ts";
 export * as Toast from "./toast.ts";
 export { timestamp } from "./timestamp.ts";

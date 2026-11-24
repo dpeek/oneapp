@@ -1997,7 +1997,8 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
 }
 
 .calendar-nav-header h2,
-.calendar p {
+.calendar p,
+.calendar-event-popover :is(h2, p) {
   margin: 0;
 }
 
@@ -2036,17 +2037,11 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
   white-space: nowrap;
 }
 
-.calendar h2 {
-  margin: 0;
-  font-size: 1.125rem;
-}
-
 .calendar-import-preview {
   display: grid;
   gap: 0.75rem;
 }
 
-.calendar-panel,
 .calendar-error {
   display: grid;
   justify-items: start;
@@ -2058,6 +2053,30 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
   border-radius: 0.75rem;
   background: var(--surface);
   overflow-wrap: anywhere;
+}
+
+.calendar-event-popover {
+  position: absolute;
+  z-index: 50;
+  display: grid;
+  align-content: start;
+  gap: 0.5rem;
+  inline-size: min(20rem, calc(100vw - 1rem));
+  box-sizing: border-box;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--popover);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 15%);
+  overflow-wrap: anywhere;
+}
+
+.calendar-event-popover:not([data-placement]) {
+  visibility: hidden;
+}
+
+.calendar-event-popover h2 {
+  font-size: 1rem;
 }
 
 .calendar-form-dates {
@@ -2349,7 +2368,7 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
   cursor: pointer;
 }
 
-.calendar-event:hover:not(:disabled) {
+.calendar-event:is(:hover:not(:disabled), [aria-expanded="true"]) {
   border-color: var(--calendar-event-color);
 }
 

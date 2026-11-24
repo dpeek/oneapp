@@ -9,13 +9,14 @@ import {
   nativeSelect,
   outlineIcon,
   plusIcon,
+  Popover,
   Sheet,
   sidebarClassNames,
   sidebarItemClassName,
   toggleGroup,
   toolbar,
 } from "@oneapp/ui";
-import { Effect, Option, Schema } from "effect";
+import { Effect, Option, Queue, Schema, Stream } from "effect";
 import { Command, Mount, Submodel, Update } from "foldkit";
 import { defaultEnglishLocale } from "foldkit/calendar";
 import type { HtmlBuilder } from "foldkit/html";
@@ -97,6 +98,10 @@ const RequestState = Schema.Struct({
 
 const ScheduleView = Schema.Literals(["day", "week"]);
 const Slot = Schema.Struct({ day: Schema.String, minute: Schema.Number });
+const SelectedEvent = Schema.Struct({
+  anchorId: Schema.String,
+  event: CalendarOccurrence,
+});
 
 export const Model = Schema.Struct({
   date: Schema.String,
@@ -114,7 +119,7 @@ export const Model = Schema.Struct({
   menus: Schema.Record(Schema.String, DropdownMenu.Model),
   calendarEditor: Schema.NullOr(CalendarEditor),
   request: Schema.NullOr(RequestState),
-  selected: Schema.NullOr(CalendarOccurrence),
+  selected: Schema.NullOr(SelectedEvent),
   editor: Schema.NullOr(Editor),
   confirmDelete: Schema.Boolean,
   importing: Schema.NullOr(CalendarId),
@@ -179,7 +184,8 @@ export const Message = defineMessageUnion({
   ChangedName: { name: Schema.String },
   GotColorPicker: { message: ColorPicker.Message },
   SavedCalendar: {},
-  OpenedEvent: { event: CalendarOccurrence },
+  OpenedEvent: SelectedEvent.fields,
+  ClosedEventDetails: { anchorId: Schema.String },
   NewEvent: { day: Schema.String, minute: Schema.NullOr(Schema.Number) },
   FocusedSlot: { slot: Slot },
   EditEvent: { series: Schema.Boolean },
@@ -440,13 +446,58 @@ const OpenCalendarDialog = Mount.define("OpenCalendarDialog", {
     }),
 });
 
-const FocusPanel = Mount.define("FocusCalendarPanel", {
+const FocusEvent = Command.define("FocusCalendarEvent", {
+  args: { anchorId: Schema.String },
   messages: [Message.Focused],
-  execute: ({ element }) =>
+  execute: ({ anchorId }) =>
     Effect.sync(() => {
-      if (element instanceof HTMLElement) element.focus();
+      document.getElementById(anchorId)?.focus({ preventScroll: true });
       return Message.Focused();
     }),
+});
+
+const MountEventDetails = Mount.defineStream("MountCalendarEventDetails", {
+  args: { anchorId: Schema.String },
+  messages: [Message.ClosedEventDetails],
+  execute: ({ element, anchorId }) =>
+    Stream.callback<typeof Message.ClosedEventDetails.Type>((queue) =>
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          const cleanup = Popover.anchorSetup(element, {
+            buttonId: anchorId,
+            anchor: { placement: "bottom-start", gap: 6, padding: 8 },
+            interceptTab: false,
+            focusAfterPosition: true,
+          });
+          const dismiss = (event: Event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            Queue.offerUnsafe(queue, Message.ClosedEventDetails({ anchorId }));
+          };
+          const clickOutside = (event: MouseEvent) => {
+            const target = event.target;
+            if (
+              target instanceof Element &&
+              !element.contains(target) &&
+              !target.closest('[data-slot="calendar-event"]')
+            ) {
+              dismiss(event);
+            }
+          };
+          const pressEscape = (event: KeyboardEvent) => {
+            if (event.key === "Escape") dismiss(event);
+          };
+          document.addEventListener("click", clickOutside, true);
+          document.addEventListener("keydown", pressEscape, true);
+          return () => {
+            document.removeEventListener("click", clickOutside, true);
+            document.removeEventListener("keydown", pressEscape, true);
+            cleanup();
+          };
+        }),
+        (cleanup) => Effect.sync(cleanup),
+      ),
+    ),
 });
 
 const ScrollTimeline = Mount.define("ScrollCalendarTimeline", {
@@ -678,7 +729,15 @@ export const update = (
       ChangedView: ({ view }) =>
         busy(model) || model.view === view
           ? { model }
-          : { model: { ...model, view, slotFocus: null } },
+          : {
+              model: {
+                ...model,
+                view,
+                slotFocus: null,
+                selected: null,
+                confirmDelete: false,
+              },
+            },
       SelectedDate: ({ date }) =>
         busy(model) ? { model } : navigateDate(model, date),
       GotDatePicker: ({ surface, message }) =>
@@ -724,8 +783,23 @@ export const update = (
           ],
         };
       },
-      OpenedEvent: ({ event }) =>
-        busy(model) ? { model } : openPanel(model, { selected: event }),
+      OpenedEvent: ({ anchorId, event }) =>
+        busy(model) || model.selected?.anchorId === anchorId
+          ? { model }
+          : {
+              model: {
+                ...model,
+                selected: { anchorId, event },
+                confirmDelete: false,
+              },
+            },
+      ClosedEventDetails: ({ anchorId }) =>
+        model.selected?.anchorId !== anchorId || model.editor
+          ? { model }
+          : {
+              model: { ...model, selected: null, confirmDelete: false },
+              commands: [FocusEvent({ anchorId })],
+            },
       NewEvent: ({ day, minute }) =>
         busy(model)
           ? { model }
@@ -752,11 +826,11 @@ export const update = (
             }),
       FocusedSlot: ({ slot }) => ({ model: { ...model, slotFocus: slot } }),
       EditEvent: ({ series }) => {
-        const event = model.selected;
+        const event = model.selected?.event;
         const draft = series ? event?.series?.draft : event?.draft;
         if (!event || !draft || busy(model)) return { model };
         return openPanel(model, {
-          selected: event,
+          selected: model.selected,
           editor: {
             id: event.id,
             calendarId: event.calendarId,
@@ -860,16 +934,16 @@ export const update = (
       RequestedDelete: () =>
         busy(model) ? { model } : { model: { ...model, confirmDelete: true } },
       ConfirmedDelete: () => {
-        if (!model.selected?.draft || model.selected.recurring || busy(model))
-          return { model };
+        const event = model.selected?.event;
+        if (!event?.draft || event.recurring || busy(model)) return { model };
         const id = crypto.randomUUID();
         return {
           model: { ...model, error: null, request: { id, kind: "delete" } },
           commands: [
             DeleteEvent({
               id,
-              eventId: model.selected.id,
-              revision: model.selected.revision,
+              eventId: event.id,
+              revision: event.revision,
             }),
           ],
         };
@@ -1401,8 +1475,14 @@ const eventEditorView = (model: Model, h: H) => {
   );
 };
 
-const detailsView = (model: Model, h: H) => {
-  const event = model.selected!;
+const eventDetailsId = "calendar-event-details";
+const eventDetailsTitleId = `${eventDetailsId}-title`;
+
+const detailsView = (
+  { anchorId, event }: typeof SelectedEvent.Type,
+  model: Model,
+  h: H,
+) => {
   const date = (value: string) =>
     plain(value, { weekday: "short", month: "short", day: "numeric" });
   const time = (value: string) =>
@@ -1417,9 +1497,17 @@ const detailsView = (model: Model, h: H) => {
       : `${time(event.start)} – ${time(event.end)}`;
   const disabled = busy(model);
   return h.section(
-    [h.Class("calendar-panel"), h.AriaLabel("Event details")],
     [
-      h.h2([h.Tabindex(-1), h.OnMount(FocusPanel())], [event.title]),
+      h.Key(anchorId),
+      h.Id(eventDetailsId),
+      h.Class("calendar-event-popover"),
+      h.Role("dialog"),
+      h.AriaLabelledBy(eventDetailsTitleId),
+      h.Tabindex(-1),
+      h.OnMount(MountEventDetails({ anchorId })),
+    ],
+    [
+      h.h2([h.Id(eventDetailsTitleId)], [event.title]),
       h.p([h.Class("calendar-muted")], [when]),
       h.p([h.Class("calendar-muted")], [calendarName(model, event.calendarId)]),
       ...(event.recurring
@@ -1491,7 +1579,7 @@ const detailsView = (model: Model, h: H) => {
             {
               variant: "ghost",
               disabled,
-              onClick: Message.ClosedPanel(),
+              onClick: Message.ClosedEventDetails({ anchorId }),
               children: [model.confirmDelete ? "Cancel" : "Close"],
             },
             h,
@@ -1738,6 +1826,7 @@ const schedule = (
   const disabled = busy(model);
 
   const eventButton = (
+    day: string,
     event: CalendarOccurrence,
     time: string,
     accessibleTime: string,
@@ -1745,13 +1834,19 @@ const schedule = (
   ) => {
     const name = calendarName(model, event.calendarId);
     const label = [event.title, accessibleTime, name].join(", ");
+    const anchorId = `calendar-event-${day}-${event.id}-${event.occurrence}`;
+    const expanded = model.selected?.anchorId === anchorId && !model.editor;
     return h.button(
       [
         h.Key(`${event.id}:${event.occurrence}`),
+        h.Id(anchorId),
         h.Type("button"),
         h.Class("calendar-event"),
         h.DataAttribute("slot", "calendar-event"),
         h.AriaLabel(label),
+        h.AriaHasPopup("dialog"),
+        h.AriaExpanded(expanded),
+        ...(expanded ? [h.AriaControls(eventDetailsId)] : []),
         h.Title(label),
         h.Style({
           "--calendar-event-color":
@@ -1766,7 +1861,7 @@ const schedule = (
             : {}),
         }),
         h.Disabled(disabled),
-        h.OnClick(Message.OpenedEvent({ event })),
+        h.OnClick(Message.OpenedEvent({ anchorId, event })),
       ],
       [
         h.span([h.Class("calendar-event-title")], [event.title]),
@@ -1777,6 +1872,7 @@ const schedule = (
 
   return h.div(
     [
+      h.Key("calendar-timeline"),
       h.Class("calendar-timeline-scroll"),
       h.OnMount(
         ScrollTimeline({
@@ -1847,6 +1943,7 @@ const schedule = (
                       [h.Key(day), h.Class("calendar-all-day-events")],
                       allDay.map((event) =>
                         eventButton(
+                          day,
                           event,
                           "",
                           `All day, ${plain(day, { dateStyle: "full" })}`,
@@ -1950,6 +2047,7 @@ const schedule = (
                       const start = clock(event.start, model.zone);
                       const end = clock(event.end, model.zone);
                       return eventButton(
+                        day,
                         event,
                         item.continues ? "Continues" : start,
                         `${dateLabel}, ${item.continues ? "continues until " + end : start + " – " + end}`,
@@ -2011,9 +2109,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
           ]
         : []),
       ...(model.notice ? [h.p([h.Role("status")], [model.notice])] : []),
-      ...(model.selected ? [detailsView(model, h)] : []),
       ...(model.calendarEditor ? [calendarEditorView(model, h)] : []),
-      ...(model.editor ? [eventEditorView(model, h)] : []),
       ...(model.importing ? [importView(model.importing, model, h)] : []),
       ...(missing ? [h.p([h.Role("alert")], ["Calendar not found."])] : []),
       ...(!model.week && model.request?.kind === "load"
@@ -2029,6 +2125,10 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
         : []),
       ...(model.week && !missing
         ? [schedule(model, days, events, current, h)]
+        : []),
+      ...(model.editor ? [eventEditorView(model, h)] : []),
+      ...(model.selected && !model.editor
+        ? [detailsView(model.selected, model, h)]
         : []),
     ],
   );

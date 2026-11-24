@@ -4,6 +4,7 @@ import type { Html, HtmlBuilder } from "foldkit/html";
 import { buttonClassName } from "./button.ts";
 import { controls } from "./tokens.stylex.ts";
 
+export { anchorSetup } from "@foldkit/ui/anchor";
 export const { Model, Message, init, update, buttonId } = Popover;
 
 const styles = stylex.create({

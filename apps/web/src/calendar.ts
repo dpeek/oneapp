@@ -1623,7 +1623,7 @@ const viewChoices = [
   { value: "week", label: "Week" },
 ] as const;
 
-const scheduleToolbar = (model: Model, days: readonly string[], h: H) => {
+const scheduleTitle = (view: Model["view"], days: readonly string[]) => {
   const first = days[0]!;
   const last = days.at(-1)!;
   const crossYear = calendarDate(first).year !== calendarDate(last).year;
@@ -1633,23 +1633,24 @@ const scheduleToolbar = (model: Model, days: readonly string[], h: H) => {
       day: "numeric",
       ...(crossYear ? { year: "numeric" } : {}),
     });
-  const title =
-    model.view === "day"
-      ? plain(first, {
-          weekday: "long",
-          month: "long",
-          day: "numeric",
-          year: "numeric",
-        })
-      : `${period(first)} – ${period(last)}${crossYear ? "" : ` · ${calendarDate(last).year}`}`;
-  const disabled = busy(model);
+  return view === "day"
+    ? plain(first, {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      })
+    : `${period(first)} – ${period(last)}${crossYear ? "" : ` · ${calendarDate(last).year}`}`;
+};
+
+const scheduleControls = (view: Model["view"], disabled: boolean, h: H) => {
   const shift = (direction: -1 | 1) =>
     button(
       {
         variant: "ghost",
         size: "icon-sm",
         disabled,
-        ariaLabel: `${direction === -1 ? "Previous" : "Next"} ${model.view}`,
+        ariaLabel: `${direction === -1 ? "Previous" : "Next"} ${view}`,
         onClick: Message.ShiftedPeriod({ direction }),
         children: [
           outlineIcon(h, [
@@ -1662,8 +1663,7 @@ const scheduleToolbar = (model: Model, days: readonly string[], h: H) => {
   return toolbar(
     {
       label: "Schedule controls",
-      start: [h.h2([h.AriaLive("polite")], [title])],
-      end: [
+      start: [
         h.div(
           [h.Class("calendar-period-controls")],
           [
@@ -1681,10 +1681,12 @@ const scheduleToolbar = (model: Model, days: readonly string[], h: H) => {
             shift(1),
           ],
         ),
+      ],
+      end: [
         toggleGroup(
           {
             label: "Calendar view",
-            value: model.view,
+            value: view,
             items: viewChoices,
             disabled,
             onToggle: (view) => Message.ChangedView({ view }),
@@ -2037,6 +2039,10 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
         model.visible === null
           ? allCalendars
           : (selectedCalendar?.name ?? "Calendar"),
+      titleAccessory: h.span(
+        [h.Class("calendar-date-range"), h.AriaLive("polite")],
+        [scheduleTitle(model.view, days)],
+      ),
       headerActions: [
         h.div(
           [h.Class("workspace-drawer-trigger")],
@@ -2056,16 +2062,22 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
             ),
           ],
         ),
-        button(
-          {
-            size: "sm",
-            disabled: disabled || (model.visible !== null && !selectedCalendar),
-            onClick: Message.NewEvent({ day: model.date, minute: null }),
-            children: ["New event"],
-          },
-          h,
+        h.div(
+          [h.Class("calendar-header-actions")],
+          [
+            scheduleControls(model.view, disabled, h),
+            button(
+              {
+                size: "sm",
+                disabled:
+                  disabled || (model.visible !== null && !selectedCalendar),
+                onClick: Message.NewEvent({ day: model.date, minute: null }),
+                children: ["New event"],
+              },
+              h,
+            ),
+          ],
         ),
-        scheduleToolbar(model, days, h),
       ],
       sidebar: calendarNavigation(model, "sidebar", h),
       list,

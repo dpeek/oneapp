@@ -20,7 +20,7 @@ export const mailAvatar = <Message>(
       variant: contact.company || service ? "square" : "round",
       fallback: profileInitials(person?.name || sender.name, sender.address),
       src: domain ? websiteIconPath(domain) : contact.src,
-      fit: service ? undefined : contact.fit,
+      fit: "cover",
       imageMounted,
     },
     h,

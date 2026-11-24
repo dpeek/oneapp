@@ -59,7 +59,6 @@ it("shares company favicon defaults and logo overrides while preserving person p
   expect(contactImage(company)).toEqual({
     company: true,
     src: websiteIconPath("acme.com"),
-    fit: undefined,
   });
   expect(contactImage({ ...company, domains: [] }).src).toBe(
     websiteIconPath("fallback.com"),
@@ -71,7 +70,6 @@ it("shares company favicon defaults and logo overrides while preserving person p
   expect(contactImage({ ...company, kind: "person" })).toEqual({
     company: false,
     src: null,
-    fit: "cover",
   });
   expect(contactImage({ ...company, kind: "person", photo }).src).toBe(
     personPhotoPath(company.id, photo),

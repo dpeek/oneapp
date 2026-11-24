@@ -13,6 +13,5 @@ export const contactImage = (contact: PersonSummary | null | undefined) => {
       : domain
         ? websiteIconPath(domain)
         : null,
-    fit: company ? undefined : ("cover" as const),
   };
 };

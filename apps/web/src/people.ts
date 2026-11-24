@@ -300,7 +300,7 @@ const photoTypes = ["image/jpeg", "image/png", "image/webp"];
 const isProfilePhoto = (file: File) =>
   file.size <= 10 * 1024 * 1024 && photoTypes.includes(file.type);
 
-const photoFor = async (file: File, company: boolean) => {
+const photoFor = async (file: File) => {
   if (!isProfilePhoto(file))
     throw new Error("Choose a JPEG, PNG, or WebP photo up to 10 MB.");
   const source = await createImageBitmap(file);
@@ -313,33 +313,17 @@ const photoFor = async (file: File, company: boolean) => {
     const side = Math.min(source.width, source.height);
     context.fillStyle = "#fff";
     context.fillRect(0, 0, canvas.width, canvas.height);
-    if (company) {
-      const scale = Math.min(
-        canvas.width / source.width,
-        canvas.height / source.height,
-      );
-      const width = source.width * scale,
-        height = source.height * scale;
-      context.drawImage(
-        source,
-        (canvas.width - width) / 2,
-        (canvas.height - height) / 2,
-        width,
-        height,
-      );
-    } else {
-      context.drawImage(
-        source,
-        (source.width - side) / 2,
-        (source.height - side) / 2,
-        side,
-        side,
-        0,
-        0,
-        canvas.width,
-        canvas.height,
-      );
-    }
+    context.drawImage(
+      source,
+      (source.width - side) / 2,
+      (source.height - side) / 2,
+      side,
+      side,
+      0,
+      0,
+      canvas.width,
+      canvas.height,
+    );
     return canvas.toDataURL("image/jpeg", 0.86).split(",", 2)[1];
   } finally {
     source.close();
@@ -369,7 +353,7 @@ const Save = Command.define("SavePersonProfile", {
           : undefined;
         if (file instanceof File && file.size) {
           try {
-            photo = await photoFor(file, kind === "company");
+            photo = await photoFor(file);
           } catch {
             return fail(
               "Choose a readable JPEG, PNG, or WebP photo up to 10 MB.",
@@ -1010,7 +994,7 @@ export const profileAvatar = <Parent>(
         (options.kind ?? person?.kind) === "company" ? "square" : "round",
       imageMounted: options.imageMounted,
       size: options.size,
-      fit: (options.kind ?? person?.kind) === "company" ? undefined : "cover",
+      fit: "cover",
     },
     h,
   );

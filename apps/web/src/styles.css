@@ -862,6 +862,14 @@ oneapp-vault-reader {
   cursor: pointer;
 }
 
+.company-photo-picker {
+  border-radius: var(--control-radius);
+}
+
+.company-photo-picker > [data-photo-preview] {
+  background: white;
+}
+
 .person-photo-picker:focus-within {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
@@ -1357,7 +1365,6 @@ button {
   gap: 0.625rem;
   --inbox-avatar-size: 2.75rem;
   --inbox-avatar-font-size: 1rem;
-  --inbox-avatar-logo-padding: 0.35rem;
 }
 
 .inbox-unread-indicator {
@@ -1531,10 +1538,6 @@ button {
 
 .inbox-profile-avatar > [data-variant="round"] > [data-slot="avatar-image"] {
   background: transparent;
-}
-
-.inbox-profile-avatar > [data-variant="square"] > [data-slot="avatar-image"] {
-  padding: var(--inbox-avatar-logo-padding, 0.2rem);
 }
 
 button.inbox-profile-avatar {
@@ -1967,13 +1970,4 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
 }
 .inbox-compose-dialog li {
   overflow-wrap: anywhere;
-}
-
-.company-photo-picker,
-.company-photo-picker > img[data-photo-preview] {
-  border-radius: 0.5rem;
-}
-.company-photo-picker > img[data-photo-preview] {
-  object-fit: contain;
-  background: white;
 }

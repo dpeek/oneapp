@@ -1007,7 +1007,7 @@ oneapp-vault-reader {
   --people-content-width: 48rem;
 }
 
-.people-workspace .workspace-header a {
+.people-workspace .workspace-header > a {
   color: var(--muted);
 }
 

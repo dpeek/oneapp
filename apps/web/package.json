@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@effect/sql-d1": "~4.1.0",
+    "@js-temporal/polyfill": "0.5.1",
     "@modelcontextprotocol/server": "2.4.0",
     "@noble/hashes": "2.4.0",
     "@oneapp/core": "workspace:*",
@@ -32,6 +33,7 @@
     "fflate": "0.8.3",
     "foldkit": "0.170.0",
     "html-to-text": "10.0.1",
+    "ical.js": "2.2.1",
     "ipaddr.js": "^2.5.0",
     "pdfjs-dist": "6.5.438",
     "postal-mime": "4.2.1",

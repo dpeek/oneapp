@@ -4,7 +4,10 @@ import { isCompanyDomain } from "./company-domains.ts";
 
 export const peopleApiPath = "/api/people";
 export const contactsPath = "/contacts";
+const companiesPath = `${contactsPath}/companies`;
 export const contactPath = (id: string) => `${contactsPath}/${id}`;
+export const contactsListPath = (kind: ContactKind) =>
+  kind === "company" ? companiesPath : contactsPath;
 export const selfProfilePath = `${peopleApiPath}/me`;
 export const personApiPath = (id: string) => `${peopleApiPath}/${id}`;
 export const restoreContactPath = (receipt: string) =>
@@ -22,16 +25,23 @@ export const profilePhotoSize = 256;
 export const PersonId = Schema.String.check(
   Schema.isPattern(/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/u),
 );
-export const ContactsRoute = Schema.Struct({ id: Schema.NullOr(PersonId) });
+export const ContactKind = Schema.Literals(["person", "company"]);
+export type ContactKind = typeof ContactKind.Type;
+
+export const ContactsRoute = Schema.Struct({
+  id: Schema.NullOr(PersonId),
+  section: ContactKind,
+});
 const isPersonId = Schema.is(PersonId);
 export const contactsRouteFor = (
   pathname: string,
 ): typeof ContactsRoute.Type | null => {
   const path = pathname.replace(/\/$/u, "");
-  if (path === contactsPath) return { id: null };
+  if (path === contactsPath) return { id: null, section: "person" };
+  if (path === companiesPath) return { id: null, section: "company" };
   if (!path.startsWith(`${contactsPath}/`)) return null;
   const id = path.slice(contactsPath.length + 1);
-  return isPersonId(id) ? { id } : null;
+  return isPersonId(id) ? { id, section: "person" } : null;
 };
 
 export const normalizePersonEmail = (email: string) =>
@@ -42,7 +52,6 @@ export const PersonEmail = Schema.Trim.check(
   Schema.makeFilter((email) => readEmail(email)._tag === "Some"),
 );
 
-export const ContactKind = Schema.Literals(["person", "company"]);
 export const ContactNoiseChange = Schema.Struct({
   address: PersonEmail,
   noise: Schema.Boolean,

@@ -9,7 +9,7 @@ import { localDirectory, StageName } from "./mail/local.ts";
 const { values } = parseArgs({
   args: process.argv.slice(2),
   options: {
-    stage: { type: "string", default: "mail_sample" },
+    stage: { type: "string", default: "dev" },
     port: { type: "string", default: "1337" },
   },
 });

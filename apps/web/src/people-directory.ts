@@ -4,7 +4,9 @@ import {
   buttonClassName,
   item,
   itemGroup,
+  navigationLinks,
   outlineIcon,
+  Sheet,
   spinner,
   trashIconPaths,
 } from "@oneapp/ui";
@@ -12,7 +14,12 @@ import { Effect } from "effect";
 import { Submodel } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";
 import * as Mount from "foldkit/mount";
-import { contactsPath, contactPath, type Person } from "./people-contract.ts";
+import {
+  contactsListPath,
+  contactPath,
+  type ContactKind,
+  type Person,
+} from "./people-contract.ts";
 import {
   displayName,
   editForm,
@@ -27,7 +34,25 @@ import { workspace } from "./workspace.ts";
 type DirectoryMessage = typeof Message.Type;
 type Directory = (typeof Model.Type)["directory"];
 
+const sectionLabels = { person: "People", company: "Companies" };
 const names = new Intl.Collator(undefined, { sensitivity: "base" });
+
+const directoryNavigation = (
+  section: ContactKind,
+  h: HtmlBuilder<DirectoryMessage>,
+) =>
+  navigationLinks(
+    {
+      label: "Contacts sections",
+      variant: "sidebar",
+      destinations: (["person", "company"] as const).map((kind) => ({
+        href: contactsListPath(kind),
+        label: sectionLabels[kind],
+        current: kind === section,
+      })),
+    },
+    h,
+  );
 
 const FocusDetail = Mount.define("FocusPersonDetail", {
   messages: [Message.Mounted],
@@ -84,18 +109,26 @@ const personItem = (
   );
 };
 
-const listView = (directory: Directory, h: HtmlBuilder<DirectoryMessage>) => {
-  const records = [...(directory.records ?? [])].sort(
-    (first, second) =>
-      names.compare(displayName(first), displayName(second)) ||
-      names.compare(primaryEmail(first), primaryEmail(second)),
-  );
-  const loadingPeople =
+const listView = (
+  directory: Directory,
+  section: ContactKind,
+  h: HtmlBuilder<DirectoryMessage>,
+) => {
+  const label = sectionLabels[section];
+  const labelLower = label.toLowerCase();
+  const records = (directory.records ?? [])
+    .filter(({ kind }) => (kind ?? "person") === section)
+    .sort(
+      (first, second) =>
+        names.compare(displayName(first), displayName(second)) ||
+        names.compare(primaryEmail(first), primaryEmail(second)),
+    );
+  const loadingRecords =
     directory.listRequest || (!directory.records && !directory.listFailed);
   return h.section(
     [
       h.Class("workspace-list people-list"),
-      h.AriaLabel("Contacts"),
+      h.AriaLabel(label),
       h.Inert(directory.selected !== null),
       h.Tabindex(-1),
     ],
@@ -104,7 +137,7 @@ const listView = (directory: Directory, h: HtmlBuilder<DirectoryMessage>) => {
         [h.Class("workspace-results")],
         [
           ...(directory.listFailed
-            ? [loadError("Could not load contacts.", h)]
+            ? [loadError(`Could not load ${labelLower}.`, h)]
             : []),
           ...(records.length
             ? [
@@ -115,11 +148,16 @@ const listView = (directory: Directory, h: HtmlBuilder<DirectoryMessage>) => {
                   h,
                 ),
               ]
-            : loadingPeople
-              ? [loading("Loading contacts…", h)]
+            : loadingRecords
+              ? [loading(`Loading ${labelLower}…`, h)]
               : directory.listFailed
                 ? []
-                : [h.p([h.Class("people-list-status")], ["No contacts yet."])]),
+                : [
+                    h.p(
+                      [h.Class("people-list-status")],
+                      [`No ${labelLower} yet.`],
+                    ),
+                  ]),
         ],
       ),
     ],
@@ -148,12 +186,12 @@ const addressList = (
 
 const detailView = (
   selected: string,
+  person: Person | undefined,
   directory: Directory,
   h: HtmlBuilder<DirectoryMessage>,
 ) => {
   const { records, edit, editRequest, editError, deletion, listRequest } =
     directory;
-  const person = records?.find(({ id }) => id === selected);
   const content = person
     ? [
         ...(editError ? [h.p([h.Role("alert")], [editError])] : []),
@@ -231,51 +269,90 @@ const detailView = (
   );
 };
 
-export const view = Submodel.defineView<Directory, DirectoryMessage>(
-  (directory, h) => {
-    const selected = directory.selected;
-    return workspace(
-      {
-        className: "workspace-stacked people-workspace",
+export const view = Submodel.defineView<
+  Directory,
+  DirectoryMessage,
+  { section: ContactKind }
+>((directory, { section }, h) => {
+  const { selected, folderSheet } = directory;
+  const person = directory.records?.find(({ id }) => id === selected);
+  const currentSection = person?.kind ?? section;
+  const backLabel = `Back to ${sectionLabels[currentSection]}`;
+  const toFolderSheetMessage = (message: typeof Sheet.Message.Type) =>
+    Message.GotFolderSheetMessage({ message });
+  return workspace(
+    {
+      className: "workspace-stacked people-workspace",
+      title: selected ? undefined : sectionLabels[section],
+      headerActions: [
         ...(selected
-          ? {
-              headerActions: [
-                h.a(
-                  [
-                    h.Href(contactsPath),
-                    h.Class(
-                      buttonClassName({
-                        variant: "ghost",
-                        size: "icon-sm",
-                        rounded: true,
-                      }),
-                    ),
-                    h.DataAttribute("slot", "button"),
-                    h.AriaLabel("Back to Contacts"),
-                    h.Title("Back to Contacts"),
+          ? [
+              h.a(
+                [
+                  h.Href(contactsListPath(currentSection)),
+                  h.Class(
+                    buttonClassName({
+                      variant: "ghost",
+                      size: "icon-sm",
+                      rounded: true,
+                    }),
+                  ),
+                  h.DataAttribute("slot", "button"),
+                  h.AriaLabel(backLabel),
+                  h.Title(backLabel),
+                ],
+                [backIcon(h)],
+              ),
+            ]
+          : []),
+        h.div(
+          [h.Class("workspace-drawer-trigger")],
+          [
+            button(
+              {
+                variant: "ghost",
+                size: "icon",
+                rounded: true,
+                ariaLabel: "Contact folders",
+                dialogId: folderSheet.id,
+                onClick: toFolderSheetMessage(Sheet.Message.RequestedOpen()),
+                children: [outlineIcon(h, ["M4 6h16M4 12h16M4 18h16"])],
+              },
+              h,
+            ),
+          ],
+        ),
+        ...(selected
+          ? []
+          : [
+              button(
+                {
+                  size: "sm",
+                  onClick: Message.Created({ kind: section }),
+                  children: [
+                    section === "company" ? "Add company" : "Add person",
                   ],
-                  [backIcon(h)],
-                ),
-              ],
-              detail: detailView(selected, directory, h),
-            }
-          : {
-              title: "Contacts",
-              headerActions: [
-                button(
-                  {
-                    size: "sm",
-                    onClick: Message.Created({ kind: "person" }),
-                    children: ["Add contact"],
-                  },
-                  h,
-                ),
-              ],
-            }),
-        list: listView(directory, h),
-        hasSelection: selected !== null,
-      },
-      h,
-    );
-  },
-);
+                },
+                h,
+              ),
+            ]),
+      ],
+      sidebar: directoryNavigation(currentSection, h),
+      list: listView(directory, currentSection, h),
+      ...(selected
+        ? { detail: detailView(selected, person, directory, h) }
+        : {}),
+      hasSelection: selected !== null,
+      sheet: Sheet.sheet(
+        {
+          model: folderSheet,
+          title: "Contact folders",
+          content: directoryNavigation(currentSection, h),
+          toParentMessage: toFolderSheetMessage,
+        },
+        h,
+      ),
+    },
+    h,
+  );
+});

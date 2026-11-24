@@ -4,15 +4,16 @@ A Bun workspace for the OneApp CLI, web app, and Chromium extension, with a Swif
 
 ## Getting started
 
-Use Bun 1.4.4 or newer.
+Use Bun 1.4.4 or newer. The dev launcher also uses Node.js for Alchemy. Node.js 24.11.1 is a supported version.
 
 ```sh
 bun install
-bun run verify
-bun run build
+bun run dev
 ```
 
-Run `bun fmt` to format and `bun check` to type-check. `bun run test` runs Vitest on Bun with `@effect/vitest`, and `bun run test:watch` reruns tests as you edit. `bun run verify` formats files, then checks types and runs tests.
+Open `http://localhost:1337`. The root `dev` command starts the local Cloudflare Worker and the Vite web app on the same origin, applies database migrations, and watches both for changes. On first run it creates `.alchemy/dev.env`. Use its `OWNER_EMAIL` and `OWNER_PASSWORD` to sign in. Local development uses its own credentials and bindings. Pass `--port <port>` to use a different port or `--stage <stage>` to use a different local database.
+
+Run `bun fmt` to format and `bun check` to type-check. `bun run test` runs Vitest on Bun with `@effect/vitest`, and `bun run test:watch` reruns tests as you edit. `bun run verify` formats files, then checks types and runs tests. `bun run build` checks production builds independently of the dev server.
 
 ## Mobile mail notifications
 
@@ -55,7 +56,7 @@ registration authorization, permission handling and service-worker navigation.
 
 ## Local Mail fixtures
 
-After starting the local Alchemy Worker, run `bun run mail:seed` and refresh **Mail** (`/mail`). The sample mailbox includes single messages, a long thread with a sent reply and an attachment, newsletters in **Noise**, and an archived conversation. The command targets the local `dev_ui` stage by default. Use `bun run mail:seed --stage <stage>` for a different local stage. Rerunning the command preserves existing messages and their read or archive state.
+With `bun run dev` running, run `bun run mail:seed --stage dev` and refresh **Mail** (`/mail`). The sample mailbox includes single messages, a long thread with a sent reply and an attachment, newsletters in **Noise**, and an archived conversation. Pass the same stage name to `mail:seed` if you started the app with `--stage`. Rerunning the command preserves existing messages and their read or archive state.
 
 ## iCloud mail inventory and sample import
 
@@ -89,8 +90,6 @@ bun run mail:dev
 ```
 
 Keep that terminal running. `mail:dev` starts Alchemy in local mode with stage `mail_sample`, applies the migrations, and serves OneApp at the URL it prints (normally `http://localhost:1337`). It creates local sign-in credentials in `.alchemy/mail-sample.env` with permissions `600`; use its `OWNER_EMAIL` and `OWNER_PASSWORD` to sign in. It does not inherit production domain, email routing, sending, or authentication configuration.
-
-Vite serves the frontend directly from source and reloads it on edits; Alchemy also watches the Worker. No build or server restart is needed for application changes. Production builds use `apps/web/dist` independently, so running a build cannot invalidate the dev server's assets. An occupied port is reported as an error instead of silently moving the app to a different origin. The web workspace's standalone `dev` command is frontend-only; use `mail:dev` for the complete app with APIs and local bindings.
 
 In another terminal, with the iCloud credentials in the root `.env`, run:
 
@@ -132,7 +131,6 @@ Dry-run verifies the manifest, every original's checksum and all folder mappings
 For a fresh local replay, keep this development environment running:
 
 ```sh
-bun run --filter @oneapp/web build
 bun run mail:dev --stage mail_replay --port 1338
 ```
 

@@ -44,7 +44,7 @@ import { forgotPasswordPage } from "./password-recovery-contract.ts";
 import * as People from "./people.ts";
 import {
   ContactsRoute,
-  contactsPath,
+  contactsListPath,
   contactsRouteFor,
 } from "./people-contract.ts";
 import * as PeopleDirectory from "./people-directory.ts";
@@ -93,6 +93,7 @@ const Message = defineMessageUnion({
   ChangedUrl: { url: Url.Url },
   GotNavigationMessage: { message: AppNavigation.Message },
   NavigationFinished: {},
+  RequestedFolderSheetClose: {},
   RetriedSessionCheck: {},
   SessionCheckFailed: {},
   SubmittedSignIn: {},
@@ -386,12 +387,19 @@ const isApproval = (model: Model) =>
   model.extensionAccess.approvalId !== null ||
   model.extensionAccess.approved;
 
+const closeFolderSheet = (model: Model): Update.Return<Model, Message> =>
+  model.page === "contacts"
+    ? foldPeople(model, People.closeFolderSheet())
+    : foldInbox(model, Inbox.closeFolderSheet());
+
 const subscriptions = Subscription.make<Model, Message>()((entry) => ({
   folderSheet: entry(
     { open: Schema.Boolean },
     {
       modelToDependencies: (model) => ({
-        open: model.inbox.folderSheet.isOpen,
+        open:
+          model.inbox.folderSheet.isOpen ||
+          model.people.directory.folderSheet.isOpen,
       }),
       dependenciesToStream: ({ open }) =>
         open
@@ -400,7 +408,7 @@ const subscriptions = Subscription.make<Model, Message>()((entry) => ({
               "change",
             ).pipe(
               Stream.filter((event) => !event.matches),
-              Stream.map(() => toInboxMessage(Inbox.closeFolderSheet())),
+              Stream.map(() => Message.RequestedFolderSheetClose()),
             )
           : Stream.empty,
     },
@@ -515,7 +523,7 @@ const update = (
           mailRouteFor(request.url.pathname) ||
           contactsRouteFor(request.url.pathname))
       ) {
-        const from = foldInbox(model, Inbox.closeFolderSheet());
+        const from = closeFolderSheet(model);
         if (request.url.pathname === window.location.pathname) return from;
         return {
           model: from.model,
@@ -537,11 +545,12 @@ const update = (
         page === model.page &&
         mailRoute?.folder === model.mailRoute?.folder &&
         mailRoute?.id === model.mailRoute?.id &&
-        peopleRoute?.id === model.peopleRoute?.id;
+        peopleRoute?.id === model.peopleRoute?.id &&
+        peopleRoute?.section === model.peopleRoute?.section;
       const result = sameRoute
         ? { model }
         : Update.combine(model, [
-            foldInbox(Inbox.closeFolderSheet()),
+            closeFolderSheet,
             (next) =>
               loadPage(
                 { ...next, page, mailRoute, peopleRoute, error: null },
@@ -556,6 +565,7 @@ const update = (
           }
         : result;
     },
+    RequestedFolderSheetClose: () => closeFolderSheet(model),
     GotNavigationMessage: ({ message }) => foldNavigation(model, message),
     NavigationFinished: () => ({ model }),
     RetriedSessionCheck: () =>
@@ -855,17 +865,19 @@ const update = (
       const result = foldPeople(model, message);
       const deleted =
         message._tag === "DeletedRecord" &&
-        message.request === directory.deletion?.request;
+        message.request === directory.deletion?.request
+          ? directory.deletion
+          : null;
       if (
         deleted &&
         model.page === "contacts" &&
-        model.peopleRoute?.id === directory.deletion?.id
+        model.peopleRoute?.id === deleted.id
       )
         return {
           ...result,
           commands: [
             ...(result.commands ?? []),
-            Navigate({ href: contactsPath, mode: "replace" }),
+            Navigate({ href: contactsListPath(deleted.kind), mode: "replace" }),
           ],
         };
       const saved =
@@ -1274,6 +1286,9 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
                   slotId: "people-directory",
                   view: PeopleDirectory.view,
                   model: model.people.directory,
+                  viewInputs: {
+                    section: model.peopleRoute?.section ?? "person",
+                  },
                   toParentMessage: toPeopleMessage,
                 }),
               settings: () => settingsView(model, h),

@@ -6,8 +6,9 @@ import {
   field,
   input,
   nativeSelect,
+  Sheet,
 } from "@oneapp/ui";
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { Command, Submodel, Update } from "foldkit";
 import { focus } from "foldkit/dom";
 import type { Html, HtmlBuilder } from "foldkit/html";
@@ -38,6 +39,7 @@ import {
 import { contactImage } from "./contact-image.ts";
 import { Action, ContactUndo, Notification } from "./notifications.ts";
 import { normalizeCompanyDomain } from "./company-domains.ts";
+import { workspaceDrawerMedia } from "./workspace.ts";
 
 export const Model = Schema.Struct({
   self: Schema.NullOr(Person),
@@ -54,6 +56,7 @@ export const Model = Schema.Struct({
   saveRequest: Schema.NullOr(Schema.String),
   error: Schema.NullOr(Schema.String),
   directory: Schema.Struct({
+    folderSheet: Sheet.Model,
     selected: ContactsRoute.fields.id,
     records: Schema.NullOr(PeopleList.fields.people),
     listRequest: Schema.NullOr(Schema.String),
@@ -67,6 +70,7 @@ export const Model = Schema.Struct({
         request: Schema.String,
         id: PersonId,
         name: Schema.String,
+        kind: ContactKind,
       }),
     ),
     restorations: Schema.Record(Schema.String, ContactUndo),
@@ -88,6 +92,7 @@ export const initial: Model = {
   saveRequest: null,
   error: null,
   directory: {
+    folderSheet: Sheet.init({ id: "contact-folders" }),
     selected: null,
     records: null,
     listRequest: null,
@@ -102,6 +107,7 @@ export const initial: Model = {
 };
 
 export const Message = defineMessageUnion({
+  GotFolderSheetMessage: { message: Sheet.Message },
   RequestedSelf: {},
   Opened: {
     address: Schema.NullOr(Schema.String),
@@ -122,7 +128,7 @@ export const Message = defineMessageUnion({
   Saved: { request: Schema.String, person: Person },
   Failed: { request: Schema.String, error: Schema.String },
   SessionExpired: { request: Schema.String },
-  VisitedDirectory: { ...ContactsRoute.fields, refresh: Schema.Boolean },
+  VisitedDirectory: { id: ContactsRoute.fields.id, refresh: Schema.Boolean },
   RetriedDirectory: {},
   LoadedDirectory: { request: Schema.String, ...PeopleList.fields },
   DirectoryFailed: { request: Schema.String },
@@ -145,6 +151,21 @@ export const OutMessage = defineMessageUnion({
   DismissNotification: { key: Schema.String },
 });
 export type OutMessage = typeof OutMessage.Type;
+
+export const closeFolderSheet = () =>
+  Message.GotFolderSheetMessage({ message: Sheet.Message.RequestedClose() });
+
+const foldFolderSheet = Update.foldChild({
+  update: Sheet.update,
+  read: (model: Model) => Option.some(model.directory.folderSheet),
+  write: (model, folderSheet) => ({
+    ...model,
+    directory: { ...model.directory, folderSheet },
+  }),
+  toParentMessage: (message) => Message.GotFolderSheetMessage({ message }),
+  foldOutMessage: () => (model) => ({ model }),
+});
+
 const notificationKey = (id: string) => `contact-save:${id}`;
 const deletionKey = (id: string) => `contact-delete:${id}`;
 const undoDuration = 10_000;
@@ -448,6 +469,11 @@ export const update = (
   return Message.match<Update.ReturnWithOutMessage<Model, Message, OutMessage>>(
     message,
     {
+      GotFolderSheetMessage: ({ message }) =>
+        message._tag === "RequestedOpen" &&
+        !matchMedia(workspaceDrawerMedia).matches
+          ? { model }
+          : foldFolderSheet(model, message),
       RequestedSelf: () => {
         if (model.selfRequest) return { model };
         const request = crypto.randomUUID();
@@ -641,7 +667,7 @@ export const update = (
           },
         };
         const result =
-          refresh || directory.records === null
+          refresh || (directory.records === null && !directory.listRequest)
             ? loadDirectory(next)
             : { model: next };
         return id === null && directory.selected && !refresh
@@ -743,7 +769,12 @@ export const update = (
             ...model,
             directory: {
               ...directory,
-              deletion: { request, id: person.id, name: displayName(person) },
+              deletion: {
+                request,
+                id: person.id,
+                name: displayName(person),
+                kind: person.kind ?? "person",
+              },
             },
           },
           commands: [
@@ -1229,7 +1260,9 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
   if (!model.opened) return h.div([], []);
   const { person, address } = model;
   const heading = model.creating
-    ? "New contact"
+    ? model.kind === "company"
+      ? "New company"
+      : "New person"
     : person?.self || !address
       ? "Your profile"
       : model.kind === "company"

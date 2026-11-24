@@ -1,32 +1,24 @@
-import {
-  createMcpHandler,
-  McpServer,
-  type CallToolResult,
-} from "@modelcontextprotocol/server";
+import type { D1Database } from "@cloudflare/workers-types";
+import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { appName } from "@oneapp/core";
-import {
-  Link,
-  LinkId,
-  LinkList,
-  SaveLink,
-  type LinkScope,
-} from "@oneapp/core/links";
+import { Link, LinkId, LinkList, SaveLink } from "@oneapp/core/links";
 import { Context, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { SqlClient } from "effect/sql";
 import { jsonError, privateHeaders } from "./api-response.ts";
 import { deleteSavedLink, insertSavedLink, listSavedLinks } from "./links.ts";
-import { ReadLinks, WriteLinks, mcpLinkScopes, mcpOAuth } from "./mcp-oauth.ts";
+import {
+  type McpScope,
+  ReadLinks,
+  WriteLinks,
+  WriteTasks,
+  mcpScopes,
+  mcpOAuth,
+} from "./mcp-oauth.ts";
+import { registerTaskTools } from "./mcp-tasks.ts";
+import { pageFields, result, standardSchema, toolFailure } from "./mcp-tool.ts";
 
-const maximumPageSize = 100;
-const ListOptions = Schema.Struct({
-  limit: Schema.optional(
-    Schema.Int.check(
-      Schema.isBetween({ minimum: 1, maximum: maximumPageSize }),
-    ),
-  ),
-  offset: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
-});
+const ListOptions = Schema.Struct(pageFields);
 const LinkPage = Schema.Struct({
   links: LinkList,
   nextOffset: Schema.NullOr(Schema.Int),
@@ -35,25 +27,12 @@ const SavedLink = Schema.Struct({ link: Link });
 const DeleteLinkInput = Schema.Struct({ id: LinkId });
 const DeletedLink = Schema.Struct({ id: LinkId });
 
-const standardSchema = <S extends Schema.ConstraintDecoder<unknown>>(
-  schema: S,
-) => Schema.toStandardSchemaV1(Schema.toStandardJSONSchemaV1(schema));
-
-const result = (
-  structuredContent: Record<string, unknown>,
-): CallToolResult => ({
-  content: [{ type: "text", text: JSON.stringify(structuredContent) }],
-  structuredContent,
-});
-const toolFailure = (text: string): CallToolResult => ({
-  content: [{ type: "text", text }],
-  isError: true,
-});
-
 const createServer = (
+  origin: string,
   ownerId: string,
+  db: D1Database,
   sql: SqlClient.SqlClient,
-  scopes: readonly (typeof LinkScope.Type)[],
+  scopes: readonly McpScope[],
 ) => {
   const run = Effect.runPromiseWith(Context.make(SqlClient.SqlClient, sql));
   const server = new McpServer({ name: appName, version: "1.0.0" });
@@ -136,24 +115,24 @@ const createServer = (
         ),
     );
   }
+  registerTaskTools(server, origin, ownerId, db, scopes);
   return server;
 };
 
-// Either scope can connect. Advertise both for the usual full-access login.
-const advertiseLinkScopes = HttpRouter.middleware((effect) =>
+const advertiseScopes = HttpRouter.middleware((effect) =>
   Effect.map(effect, (response) => {
     const challenge = response.headers["www-authenticate"];
     return response.status === 401 && challenge
       ? HttpServerResponse.setHeader(
           response,
           "www-authenticate",
-          challenge.replace('scope=""', `scope="${mcpLinkScopes.join(" ")}"`),
+          challenge.replace('scope=""', `scope="${mcpScopes.join(" ")}"`),
         )
       : response;
   }),
 );
 
-export const mcpRoutes = (origin: string) =>
+export const mcpRoutes = (origin: string, db: D1Database) =>
   HttpRouter.add(
     "*",
     "/mcp",
@@ -174,9 +153,10 @@ export const mcpRoutes = (origin: string) =>
       if (!account) return yield* jsonError(403, "Account is inactive");
       const webRequest = yield* HttpServerRequest.toWeb(request);
       const handler = createMcpHandler(
-        () => createServer(access.subjectId, sql, access.scopes),
+        () => createServer(origin, access.subjectId, db, sql, access.scopes),
         {
-          maxRequestBodySize: 16 * 1024,
+          maxRequestBodySize:
+            (access.scopes.includes(WriteTasks) ? 128 : 16) * 1024,
           maxSubscriptions: 0,
         },
       );
@@ -196,6 +176,4 @@ export const mcpRoutes = (origin: string) =>
         HttpServerResponse.setHeaders(privateHeaders),
       );
     }),
-  ).pipe(
-    Layer.provide(mcpOAuth.middleware([]).combine(advertiseLinkScopes).layer),
-  );
+  ).pipe(Layer.provide(mcpOAuth.middleware([]).combine(advertiseScopes).layer));

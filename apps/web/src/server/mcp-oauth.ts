@@ -20,6 +20,8 @@ import {
   mcpGrantsPath,
   mcpLoginPath,
   mcpLoginQuery,
+  tasksReadScope,
+  tasksWriteScope,
 } from "../mcp-access-contract.ts";
 import { jsonError, privateHeaders } from "./api-response.ts";
 import {
@@ -32,9 +34,17 @@ import { McpConsentRenderer } from "./mcp-consent.ts";
 
 export const ReadLinks = OAuthScope.make(linksReadScope);
 export const WriteLinks = OAuthScope.make(linksWriteScope);
-export const mcpLinkScopes = [ReadLinks, WriteLinks] as const;
+export const ReadTasks = OAuthScope.make(tasksReadScope);
+export const WriteTasks = OAuthScope.make(tasksWriteScope);
+export const mcpScopes = [
+  ReadLinks,
+  WriteLinks,
+  ReadTasks,
+  WriteTasks,
+] as const;
+export type McpScope = (typeof mcpScopes)[number];
 export const mcpOAuth = OAuthServer.make("mcp", {
-  scopes: mcpLinkScopes,
+  scopes: mcpScopes,
 });
 const codexClient = {
   clientId: codexClientId,
@@ -154,7 +164,7 @@ export const mcpGrantRoutes = (
           AND json_array_length(payload, '$.authorization.scopes') > 0
           AND NOT EXISTS (
             SELECT 1 FROM json_each(payload, '$.authorization.scopes')
-            WHERE value NOT IN (${ReadLinks}, ${WriteLinks})
+            WHERE value NOT IN (SELECT value FROM json_each(${JSON.stringify(mcpScopes)}))
           )
         ORDER BY expires_at_millis DESC, grant_id
       `;

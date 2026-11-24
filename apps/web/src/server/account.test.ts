@@ -58,6 +58,8 @@ import {
   codexClientId,
   McpGrantList,
   mcpGrantsPath,
+  tasksReadScope,
+  tasksWriteScope,
 } from "../mcp-access-contract.ts";
 import {
   passwordResetPath,
@@ -2654,8 +2656,14 @@ it("issues scoped CLI tokens and applies read and write scopes to the Links API"
   ).toBe(401);
 });
 
-it("issues MCP link scopes and exposes only the tools a grant authorises", async () => {
-  using sqlite = new Database(":memory:");
+const defaultMcpScopes = [
+  linksReadScope,
+  linksWriteScope,
+  tasksReadScope,
+  tasksWriteScope,
+];
+
+const setupMcp = async (sqlite: Database) => {
   const { call, request, signIn, cookies } = await setup(sqlite);
   const session = cookies(await signIn(password));
   const origin = "https://oneapp.example";
@@ -2727,9 +2735,7 @@ it("issues MCP link scopes and exposes only the tools a grant authorises", async
       refresh_token: string;
       scope: string;
     };
-    expect(grant.scope).toBe(
-      (scopes ?? [linksReadScope, linksWriteScope]).join(" "),
-    );
+    expect(grant.scope).toBe((scopes ?? defaultMcpScopes).join(" "));
     return grant;
   };
 
@@ -2753,7 +2759,12 @@ it("issues MCP link scopes and exposes only the tools a grant authorises", async
       : body;
     return JSON.parse(data ?? "") as {
       error?: { message: string };
-      result?: { tools?: { name: string }[]; structuredContent?: unknown };
+      result?: {
+        tools?: { name: string }[];
+        structuredContent?: unknown;
+        content?: { text: string }[];
+        isError?: boolean;
+      };
     };
   };
   const names = async (token: string) =>
@@ -2762,22 +2773,45 @@ it("issues MCP link scopes and exposes only the tools a grant authorises", async
       .sort();
   const useTool = (token: string, name: string, args = {}) =>
     mcp(token, "tools/call", { name, arguments: args });
+  const listGrants = async () => {
+    const response = await call(mcpGrantsPath, undefined, session);
+    expect(response.status).toBe(200);
+    return Schema.decodeUnknownSync(McpGrantList)(await response.json());
+  };
+  return {
+    call,
+    request,
+    session,
+    origin,
+    resource,
+    form,
+    connect,
+    names,
+    useTool,
+    listGrants,
+  };
+};
+
+it("issues MCP link scopes and exposes only the tools a grant authorises", async () => {
+  using sqlite = new Database(":memory:");
+  const { request, resource, form, connect, names, useTool, listGrants } =
+    await setupMcp(sqlite);
 
   const challenge = await request("/mcp", { method: "POST" });
   expect(challenge.status).toBe(401);
   expect(challenge.headers.get("www-authenticate")).toContain(
-    `scope="${linksReadScope} ${linksWriteScope}"`,
+    `scope="${defaultMcpScopes.join(" ")}"`,
   );
   const metadata = await request(
     "/.well-known/oauth-protected-resource/mcp",
     {},
   );
   expect(await metadata.json()).toMatchObject({
-    scopes_supported: [linksReadScope, linksWriteScope],
+    scopes_supported: defaultMcpScopes,
   });
 
   const connectedAfter = Date.now();
-  const full = await connect();
+  const full = await connect([linksReadScope, linksWriteScope]);
   const readGrant = await connect([linksReadScope]);
   const read = readGrant.access_token;
   const write = (await connect([linksWriteScope])).access_token;
@@ -2805,11 +2839,6 @@ it("issues MCP link scopes and exposes only the tools a grant authorises", async
       ?.structuredContent,
   ).toEqual({ id: link.id });
 
-  const listGrants = async () => {
-    const response = await call(mcpGrantsPath, undefined, session);
-    expect(response.status).toBe(200);
-    return Schema.decodeUnknownSync(McpGrantList)(await response.json());
-  };
   const grants = await listGrants();
   expect(grants).toHaveLength(3);
   for (const grant of grants) {
@@ -2842,6 +2871,200 @@ it("issues MCP link scopes and exposes only the tools a grant authorises", async
   });
   expect(await refresh.json()).toMatchObject({ error: "invalid_grant" });
   expect(await listGrants()).toHaveLength(2);
+});
+
+it("uses scoped MCP tools to read and edit the same tasks and tags as the web app", async () => {
+  using sqlite = new Database(":memory:");
+  const {
+    call,
+    request,
+    session,
+    origin,
+    connect,
+    names,
+    useTool,
+    listGrants,
+  } = await setupMcp(sqlite);
+  const defaults = (await connect()).access_token;
+  expect(await names(defaults)).toEqual([
+    "create_tag",
+    "create_task",
+    "delete_link",
+    "get_task",
+    "list_links",
+    "list_tags",
+    "list_tasks",
+    "save_link",
+    "update_task",
+  ]);
+  const read = (await connect([tasksReadScope])).access_token;
+  const write = (await connect([tasksWriteScope])).access_token;
+  expect(await names(read)).toEqual(["get_task", "list_tags", "list_tasks"]);
+  expect(await names(write)).toEqual([
+    "create_tag",
+    "create_task",
+    "update_task",
+  ]);
+  expect(
+    (await useTool(read, "create_task", { title: "Restricted" })).error,
+  ).toBeDefined();
+  expect((await useTool(write, "list_tasks")).error).toBeDefined();
+  expect(await listGrants()).toHaveLength(3);
+
+  const receipts = Schema.decodeUnknownSync(Tag)(
+    await (await call(tagsApi, { name: "Receipts" }, session)).json(),
+  );
+  const createTag = async (name: string) => {
+    const reply = await useTool(write, "create_tag", { name });
+    return Schema.decodeUnknownSync(Schema.Struct({ tag: Tag }))(
+      reply.result?.structuredContent,
+    ).tag;
+  };
+  expect(await createTag("ｒｅｃｅｉｐｔｓ")).toEqual(receipts);
+  const review = await createTag("Review");
+  const finance = await createTag("Finance");
+  expect(
+    (await useTool(read, "list_tags", { query: "RECEIP" })).result
+      ?.structuredContent,
+  ).toEqual({ tags: [receipts], nextOffset: null });
+
+  const requestId = crypto.randomUUID();
+  const description = "# Receipt\n" + "a".repeat(19_990);
+  const creation = {
+    requestId,
+    title: "Check receipts",
+    description,
+    status: "in-review",
+    priority: "urgent",
+    dueOn: "2028-02-29",
+    tagIds: [receipts.id, review.id],
+  };
+  const task = await useTool(write, "create_task", creation);
+  const receipt = task.result?.structuredContent as {
+    id: string;
+    revision: string;
+    url: string;
+  };
+  expect(receipt).toEqual({
+    id: requestId,
+    revision: expect.any(String),
+    url: `${origin}/tasks/${requestId}`,
+  });
+  const getTask = async () => {
+    const reply = await useTool(read, "get_task", { id: requestId });
+    return Schema.decodeUnknownSync(Schema.Struct({ task: Task }))(
+      reply.result?.structuredContent,
+    ).task;
+  };
+  expect(await getTask()).toMatchObject({
+    description,
+    revision: receipt.revision,
+    dueOn: creation.dueOn,
+  });
+  expect(
+    (await useTool(write, "get_task", { id: requestId })).error,
+  ).toBeDefined();
+
+  const completed = await useTool(write, "create_task", {
+    title: "Filed receipts",
+    status: "completed",
+  });
+  const completedId = (completed.result?.structuredContent as { id: string })
+    .id;
+  const page = (
+    await useTool(read, "list_tasks", {
+      query: "CHECK",
+      status: "in-review",
+      priority: "urgent",
+      tagId: receipts.id,
+      dueOnOrAfter: "2028-02-28",
+      dueOnOrBefore: "2028-02-29",
+    })
+  ).result?.structuredContent as {
+    tasks: Record<string, unknown>[];
+    nextOffset: number | null;
+  };
+  expect(page).toMatchObject({ tasks: [receipt], nextOffset: null });
+  expect(page.tasks[0]).not.toHaveProperty("description");
+  expect(
+    (await useTool(read, "list_tasks")).result?.structuredContent,
+  ).toMatchObject({ tasks: [{ id: requestId }], nextOffset: null });
+  expect(
+    (await useTool(read, "list_tasks", { status: "all", limit: 1 })).result
+      ?.structuredContent,
+  ).toMatchObject({ tasks: [{ id: completedId }], nextOffset: 1 });
+  expect(
+    (await useTool(read, "list_tasks", { status: "all", limit: 1, offset: 1 }))
+      .result?.structuredContent,
+  ).toMatchObject({ tasks: [{ id: requestId }], nextOffset: null });
+
+  const edited = await useTool(write, "update_task", {
+    id: requestId,
+    revision: receipt.revision,
+    status: null,
+    priority: null,
+    dueOn: null,
+    addTagIds: [finance.id],
+    removeTagIds: [receipts.id],
+  });
+  const persisted = await getTask();
+  expect(edited.result?.structuredContent).toMatchObject({
+    id: requestId,
+    revision: persisted.revision,
+  });
+  expect(persisted).toMatchObject({
+    title: creation.title,
+    description,
+    status: null,
+    priority: null,
+    dueOn: null,
+  });
+  expect(persisted.tagIds.toSorted()).toEqual(
+    [review.id, finance.id].toSorted(),
+  );
+  expect(
+    (await useTool(write, "create_task", creation)).result?.structuredContent,
+  ).toEqual(edited.result?.structuredContent);
+  const browserIndex = Schema.decodeUnknownSync(TaskIndex)(
+    await (await call(tasksApi, undefined, session)).json(),
+  );
+  expect(browserIndex.tasks.find(({ id }) => id === requestId)).toEqual(
+    persisted,
+  );
+
+  const savedInBrowser = await request(taskApi(requestId), {
+    method: "PUT",
+    headers: {
+      cookie: session,
+      origin,
+      "content-type": "application/json",
+      "x-effect-auth-csrf": "1",
+    },
+    body: JSON.stringify({ ...persisted, title: "Renamed in the browser" }),
+  });
+  expect(savedInBrowser.status).toBe(200);
+  const stale = await useTool(write, "update_task", {
+    id: requestId,
+    revision: persisted.revision,
+    title: "Stale title",
+  });
+  expect(stale.result).toMatchObject({
+    isError: true,
+    content: [{ text: expect.stringContaining("latest revision") }],
+  });
+  expect((await getTask()).title).toBe("Renamed in the browser");
+
+  const invalid = await useTool(write, "create_task", {
+    title: "Bad date",
+    dueOn: "2027-02-29",
+  });
+  expect(Boolean(invalid.error || invalid.result?.isError)).toBe(true);
+  const unknownTag = await useTool(write, "create_task", {
+    title: "Bad tag",
+    tagIds: [crypto.randomUUID()],
+  });
+  expect(unknownTag.result?.isError).toBe(true);
+  expect(sqlite.query("SELECT id FROM items").all()).toHaveLength(2);
 });
 
 it("verifies the signed-in address and changes the password with session invalidation", async () => {

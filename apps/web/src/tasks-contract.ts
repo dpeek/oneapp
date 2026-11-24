@@ -37,7 +37,7 @@ export const TaskTitle = Schema.NonEmptyString.check(
   Schema.isTrimmed(),
   Schema.isMaxLength(taskTitleLimit),
 );
-const TaskDate = Schema.String.check(
+export const TaskDate = Schema.String.check(
   Schema.isPattern(/^(?!0000)\d{4}-\d{2}-\d{2}$/u),
   Schema.makeFilter((value) => {
     const date = new Date(`${value}T00:00:00.000Z`);

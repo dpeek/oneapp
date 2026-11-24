@@ -328,6 +328,16 @@ codex mcp add oneapp --url https://app.dpeek.com/mcp
 
 Codex supplies its client ID automatically through its OAuth client metadata. Approve access in your browser. If the approval page doesn't open, run `codex mcp login oneapp`. Start a new Codex session to use the tools. For a setup that used `ONEAPP_MCP_TOKEN`, remove that MCP registration and add it again with the command above.
 
-OneApp requests approval for `links:read` and `links:write` by default. For read-only access, run `codex mcp login oneapp --scopes links:read`. To reconnect a grant issued under the old scopes, run `codex mcp login oneapp`, approve access, then start a new Codex session.
+OneApp requests approval for `links:read`, `links:write`, `tasks:read`, and `tasks:write` by default. To add Tasks to an existing connection, run `codex mcp login oneapp`, approve access in the browser, then start a new Codex session.
+
+For read-only access to both features, request the read scopes.
+
+```sh
+codex mcp login oneapp --scopes links:read,tasks:read
+```
+
+`tasks:read` exposes `list_tasks`, `get_task`, and `list_tags`. The list defaults to active tasks and supports title, status, priority, tag ID, and due-date filters. `get_task` returns the Markdown description. Both list tools return `nextOffset` for paging.
+
+`tasks:write` exposes `create_task`, `update_task`, and `create_tag`. Use the task's latest `revision` when updating, and use `addTagIds` or `removeTagIds` to change its tags. Omitted fields keep their values. A UUID `requestId` lets a client safely retry task creation.
 
 Access tokens refresh automatically within the 30-day grant. Open **Settings → Clients** in the web app to revoke a grant.

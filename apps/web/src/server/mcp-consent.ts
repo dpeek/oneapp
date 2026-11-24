@@ -2,6 +2,14 @@ import { appName } from "@oneapp/core";
 import { linksReadScope, linksWriteScope } from "@oneapp/core/links";
 import { OAuthServer } from "@yielded/auth";
 import { Effect, Layer } from "effect";
+import { tasksReadScope, tasksWriteScope } from "../mcp-access-contract.ts";
+
+const scopeLabels = new Map<string, string>([
+  [linksReadScope, "Read your saved links"],
+  [linksWriteScope, "Save and delete your links"],
+  [tasksReadScope, "Read your tasks and tags"],
+  [tasksWriteScope, "Create and edit your tasks and create reusable tags"],
+]);
 
 const escapeHtml = (value: string) =>
   value
@@ -18,13 +26,7 @@ export const renderMcpConsent = (consent: OAuthServer.Consent) => {
     ? ""
     : `<div><dt>Client</dt><dd>${escapeHtml(new URL(consent.clientId).hostname)}</dd></div>`;
   const permissions = consent.scopes
-    .map((scope) =>
-      scope === linksReadScope
-        ? "<li>Read your saved links</li>"
-        : scope === linksWriteScope
-          ? "<li>Save and delete your links</li>"
-          : `<li>${escapeHtml(scope)}</li>`,
-    )
+    .map((scope) => `<li>${escapeHtml(scopeLabels.get(scope) ?? scope)}</li>`)
     .join("");
 
   return `<!doctype html>

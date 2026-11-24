@@ -1,5 +1,8 @@
 # Shared UI
 
+See [Components and style system](STYLE_SYSTEM.md) for Crease component adoption,
+StyleX tokens, and theme guidance.
+
 ## Toast notifications
 
 `Toast` from `@oneapp/ui` adapts CreaseUI's StyleX toast to OneApp's tokens and

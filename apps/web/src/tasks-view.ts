@@ -38,9 +38,11 @@ import {
   Message,
   selectedTask,
   tagSearch,
+  taskSortMenu,
   toFilterPopoverMessage,
   toFilterTagsMessage,
   toFolderSheetMessage,
+  toSortMenuMessage,
   writingCreation,
   type Editor,
   type Model,
@@ -225,9 +227,8 @@ const WatchFilterMenu = Mount.defineStream("WatchTaskFilterMenu", {
           !(event.target instanceof Element)
         )
           return;
-        const item = event.target.closest<HTMLButtonElement>(
-          "[data-filter-category], .task-filter-clear",
-        );
+        const item =
+          event.target.closest<HTMLButtonElement>('[role="menuitem"]');
         if (
           !item ||
           item.getAttribute("aria-expanded") === "true" ||
@@ -245,32 +246,55 @@ const WatchFilterMenu = Mount.defineStream("WatchTaskFilterMenu", {
             : close,
         );
       };
-      const dismiss = (event: Event) => {
+      const keydown = (event: Event) => {
         if (
           !(event instanceof KeyboardEvent) ||
-          event.key !== "Escape" ||
           event.isComposing ||
           !(event.target instanceof Element)
         )
           return;
         const submenu = event.target.closest(submenuSelector);
-        if (!submenu) return;
-        event.preventDefault();
-        event.stopPropagation();
-        const parent = submenu.previousElementSibling;
-        if (parent instanceof HTMLElement)
-          parent.focus({ preventScroll: true });
-        Queue.offerUnsafe(queue, close);
+        if (submenu && event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          const parent = submenu.previousElementSibling;
+          if (parent instanceof HTMLElement)
+            parent.focus({ preventScroll: true });
+          Queue.offerUnsafe(queue, close);
+        }
+        if (
+          !event.target.matches('[role="menuitem"]') ||
+          (event.key !== "ArrowDown" &&
+            event.key !== "ArrowUp" &&
+            event.key !== "Home" &&
+            event.key !== "End")
+        )
+          return;
+        const items = Array.from(
+          element.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+        );
+        const index = items.findIndex((item) => item === event.target);
+        const next = {
+          ArrowDown: (index + 1) % items.length,
+          ArrowUp: (index + items.length - 1) % items.length,
+          Home: 0,
+          End: items.length - 1,
+        }[event.key];
+        const target = items[next];
+        if (target) {
+          event.preventDefault();
+          target.focus({ preventScroll: true });
+        }
       };
       return Effect.acquireRelease(
         Effect.sync(() => {
           element.addEventListener("pointerover", hover);
-          element.addEventListener("keydown", dismiss);
+          element.addEventListener("keydown", keydown);
         }),
         () =>
           Effect.sync(() => {
             element.removeEventListener("pointerover", hover);
-            element.removeEventListener("keydown", dismiss);
+            element.removeEventListener("keydown", keydown);
           }),
       );
     }),
@@ -345,20 +369,24 @@ const taskFilters = (
       model: model.filterPopover,
       label: "Filters",
       triggerLabel: count ? `Filters, ${count} selected` : "Filters",
-      triggerButton: { variant: "outline", size: "sm" },
       trigger: h.span(
         [h.Class("task-filter-trigger")],
         [
           outlineIcon(h, ["M4 7h16M7 12h10m-7 5h4"]),
-          "Filters",
           ...(count ? [badge(String(count), h)] : []),
         ],
       ),
       placement: "bottom-start",
       portal: false,
       panelClassName: "task-filter-popover",
+      focusSelector: ".task-filter-categories [data-filter-category]",
       content: h.div(
-        [h.Class("task-filter-categories"), h.OnMount(WatchFilterMenu())],
+        [
+          h.Class("task-filter-categories"),
+          h.Role("menu"),
+          h.AriaLabel("Filter types"),
+          h.OnMount(WatchFilterMenu()),
+        ],
         [
           ...categories.map((category) => {
             const expanded = model.filterCategory === category;
@@ -367,19 +395,22 @@ const taskFilters = (
               focusOptions: true,
             });
             return h.div(
-              [h.Key(category), h.Class("task-filter-item")],
+              [h.Key(category), h.Class("task-filter-item"), h.Role("none")],
               [
                 h.button(
                   [
                     h.Type("button"),
-                    h.Class("task-filter-category"),
-                    h.DataAttribute("slot", "task-filter-category"),
+                    h.Class("task-filter-menuitem"),
+                    h.DataAttribute("slot", "task-filter-menuitem"),
                     h.DataAttribute("filter-category", category),
+                    h.Role("menuitem"),
                     h.AriaExpanded(expanded),
                     ...(expanded ? [h.AriaControls(filterOptionsId)] : []),
                     h.OnClick(enter),
                     h.OnKeyDownPreventDefault((key) =>
-                      key === "ArrowRight" ? Option.some(enter) : Option.none(),
+                      key === "ArrowRight" || key === "ArrowLeft"
+                        ? Option.some(enter)
+                        : Option.none(),
                     ),
                   ],
                   [filterLabels[category], outlineIcon(h, ["m9 18 6-6-6-6"])],
@@ -391,8 +422,9 @@ const taskFilters = (
           h.button(
             [
               h.Type("button"),
-              h.Class("task-filter-clear"),
-              h.DataAttribute("slot", "task-filter-clear"),
+              h.Class("task-filter-menuitem"),
+              h.DataAttribute("slot", "task-filter-menuitem"),
+              h.Role("menuitem"),
               h.OnClick(Message.ClearedFilters()),
             ],
             ["Clear filters"],
@@ -404,6 +436,23 @@ const taskFilters = (
     h,
   );
 };
+
+const taskSort = (model: Model, h: HtmlBuilder<Message>) =>
+  taskSortMenu.view(
+    {
+      model: model.sortMenu,
+      label: "Sort by",
+      trigger: outlineIcon(h, ["M11 5h9m-9 7h7m-7 7h5M5 5v14m-3-3 3 3 3-3"]),
+      selected: model.sort,
+      options: [
+        { value: "updated", label: "Updated" },
+        { value: "priority", label: "Priority" },
+        { value: "due", label: "Due date" },
+      ],
+      toParentMessage: toSortMenuMessage,
+    },
+    h,
+  );
 
 const taskList = (
   model: Model,
@@ -427,25 +476,6 @@ const taskList = (
       h.Tabindex(-1),
     ],
     [
-      h.div(
-        [h.Class("task-list-toolbar task-list-filters")],
-        [
-          taskFilters(model, tags, h),
-          nativeSelect(
-            {
-              label: "Sort by",
-              value: model.sort,
-              options: [
-                { value: "updated", label: "Updated" },
-                { value: "priority", label: "Priority" },
-                { value: "due", label: "Due date" },
-              ],
-              onChange: (value) => Message.SetSort({ value }),
-            },
-            h,
-          ),
-        ],
-      ),
       h.div(
         [h.Key(view), h.Class("workspace-results")],
         [
@@ -824,6 +854,12 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
     {
       className: "workspace-stacked tasks-workspace",
       title: selectedId ? undefined : viewLabels[model.view],
+      titleAccessory: selectedId
+        ? undefined
+        : h.div(
+            [h.Class("task-header-menus")],
+            [taskFilters(model, tags, h), taskSort(model, h)],
+          ),
       headerActions: [
         ...(selectedId
           ? [

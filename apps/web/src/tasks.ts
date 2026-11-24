@@ -1,4 +1,10 @@
-import { MultiCombobox, Popover, Sheet, Tokenizer } from "@oneapp/ui";
+import {
+  DropdownMenu,
+  MultiCombobox,
+  Popover,
+  Sheet,
+  Tokenizer,
+} from "@oneapp/ui";
 import { Effect, Option, Schema } from "effect";
 import { Command, Update } from "foldkit";
 import { focus } from "foldkit/dom";
@@ -56,8 +62,11 @@ export const filterOptionsId = "task-filter-options";
 const filterPopover = Popover.init({ id: "task-filters" });
 const filterTags = MultiCombobox.init("task-filter-tags");
 const closedFilterOptions = { filterCategory: null, filterTags };
-const closedFilterMenu = { filterPopover, ...closedFilterOptions };
 const Sort = Schema.Literals(["updated", "priority", "due"]);
+const sortMenu = DropdownMenu.SingleSelect.init({ id: "task-sort" });
+const closedTaskMenus = { filterPopover, ...closedFilterOptions, sortMenu };
+export const taskSortMenu =
+  DropdownMenu.SingleSelect.create<typeof Sort.Type>();
 const Field = Schema.Literals([
   "title",
   "description",
@@ -78,6 +87,7 @@ export const Model = Schema.Struct({
   filterTags: MultiCombobox.Model,
   filters: Filters,
   sort: Sort,
+  sortMenu: DropdownMenu.SingleSelect.Model,
   request: Schema.NullOr(
     Schema.Struct({ id: Schema.String, operation: Operation }),
   ),
@@ -91,7 +101,7 @@ export const initial: Model = {
   selectedId: null,
   editor: null,
   creation: null,
-  ...closedFilterMenu,
+  ...closedTaskMenus,
   filters: emptyFilters,
   sort: "updated",
   request: null,
@@ -119,7 +129,7 @@ export const Message = defineMessageUnion({
   ToggledPriorityFilter: { value: TaskPriority },
   GotFilterTagsMessage: { message: MultiCombobox.Message },
   ClearedFilters: {},
-  SetSort: { value: Schema.String },
+  GotSortMenuMessage: { message: DropdownMenu.SingleSelect.Message },
   GotTagPickerMessage: { id: ItemId, message: Tokenizer.Message },
   RemovedTag: { id: ItemId },
   Saved: {},
@@ -162,6 +172,22 @@ const foldFilterPopover = Update.foldChild({
   foldOutMessage: (out) => (model) => ({
     model: out._tag === "Closed" ? { ...model, ...closedFilterOptions } : model,
   }),
+});
+
+export const toSortMenuMessage = (
+  message: typeof DropdownMenu.SingleSelect.Message.Type,
+) => Message.GotSortMenuMessage({ message });
+
+const foldSortMenu = Update.foldChild({
+  update: taskSortMenu.update,
+  read: (model: Model) => Option.some(model.sortMenu),
+  write: (model, sortMenu) => ({ ...model, sortMenu }),
+  toParentMessage: toSortMenuMessage,
+  foldOutMessage:
+    ({ value }) =>
+    (model) => ({
+      model: Schema.is(Sort)(value) ? { ...model, sort: value } : model,
+    }),
 });
 
 export const toFilterTagsMessage = (
@@ -453,7 +479,7 @@ export const update = (
           id !== model.selectedId || view !== model.view
             ? {
                 ...model,
-                ...closedFilterMenu,
+                ...closedTaskMenus,
                 view,
                 selectedId: id,
                 editor: null,
@@ -463,7 +489,7 @@ export const update = (
             : refresh
               ? {
                   ...model,
-                  ...closedFilterMenu,
+                  ...closedTaskMenus,
                   ...(model.creation ? { creation: null, error: null } : {}),
                 }
               : model;
@@ -606,12 +632,12 @@ export const update = (
         },
       }),
       GotFilterTagsMessage: ({ message }) => foldFilterTags(model, message),
-      ClearedFilters: () => ({
-        model: { ...model, filters: emptyFilters, filterTags },
-      }),
-      SetSort: ({ value }) => ({
-        model: Schema.is(Sort)(value) ? { ...model, sort: value } : model,
-      }),
+      ClearedFilters: () =>
+        foldFilterPopover(
+          { ...model, filters: emptyFilters },
+          Popover.Message.RequestedClose(),
+        ),
+      GotSortMenuMessage: ({ message }) => foldSortMenu(model, message),
       GotTagPickerMessage: ({ id, message }) => {
         const editor =
           model.creation?.draft.id === id ? model.creation : model.editor;

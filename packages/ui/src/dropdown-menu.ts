@@ -1,7 +1,9 @@
-import { Menu } from "@foldkit/ui";
+import { Listbox, Menu } from "@foldkit/ui";
 import * as stylex from "@stylexjs/stylex";
+import { Option } from "effect";
 import { childAttributes, type Html, type HtmlBuilder } from "foldkit/html";
 import { buttonClassName } from "./button.ts";
+import { outlineIcon } from "./icons.ts";
 import { controls } from "./tokens.stylex.ts";
 
 export const { Model, Message, init } = Menu;
@@ -40,6 +42,7 @@ const styles = stylex.create({
     gap: "0.5rem",
     overflowWrap: "anywhere",
   },
+  check: { display: "inline-flex", inlineSize: "1rem", flexShrink: 0 },
   active: { backgroundColor: controls.hover },
   disabled: { opacity: 0.5, cursor: "default" },
   destructive: { color: "light-dark(#a42020, #ff9797)" },
@@ -122,4 +125,81 @@ export const create = <Action extends string>() => {
         toParentMessage: props.toParentMessage,
       }),
   };
+};
+
+const createSingleSelect = <Value extends string>() => {
+  type Choice = Readonly<{ value: Value; label: string }>;
+  const listbox = Listbox.create<Choice, Value>();
+  return {
+    update: listbox.update,
+    view: <ParentMessage>(
+      props: {
+        model: typeof Listbox.Model.Type;
+        label: string;
+        trigger: Html;
+        options: readonly Choice[];
+        selected: Value;
+        toParentMessage: (
+          message: typeof Listbox.Message.Type,
+        ) => ParentMessage;
+      },
+      h: HtmlBuilder<ParentMessage>,
+    ): Html =>
+      h.submodel({
+        slotId: props.model.id,
+        model: props.model,
+        view: listbox.view,
+        viewInputs: {
+          items: props.options,
+          itemToValue: ({ value }) => value,
+          itemToSearchText: ({ label }) => label,
+          maybeSelectedValue: Option.some(props.selected),
+          itemToConfig: ({ label }, { isActive, isSelected }) => ({
+            className: stylex.props(styles.item, isActive && styles.active)
+              .className,
+            content: h.span(
+              [h.Class(stylex.props(styles.label).className ?? "")],
+              [
+                h.span(
+                  [
+                    h.AriaHidden(true),
+                    h.Class(stylex.props(styles.check).className ?? ""),
+                  ],
+                  isSelected ? [outlineIcon(h, ["m5 12 4 4L19 6"])] : [],
+                ),
+                label,
+              ],
+            ),
+          }),
+          buttonContent: props.trigger,
+          buttonClassName: [
+            buttonClassName({
+              variant: "ghost",
+              size: "icon-sm",
+              rounded: true,
+            }),
+            stylex.props(styles.openGhostTrigger).className,
+          ].join(" "),
+          buttonAttributes: childAttributes([
+            h.DataAttribute("slot", "button"),
+            h.Title(props.label),
+            ...(props.model.isOpen
+              ? [h.Style({ position: "relative", zIndex: "49" })]
+              : []),
+          ]),
+          itemsClassName: stylex.props(styles.panel).className,
+          backdropClassName: stylex.props(styles.backdrop).className,
+          anchor: { placement: "bottom-end", gap: 4 },
+          ariaLabel: props.label,
+        },
+        toParentMessage: props.toParentMessage,
+      }),
+  };
+};
+
+export const SingleSelect = {
+  Model: Listbox.Model,
+  Message: Listbox.Message,
+  init: Listbox.init,
+  create: createSingleSelect,
 };

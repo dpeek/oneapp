@@ -37,6 +37,7 @@ export const view = <ParentMessage>(
     placement?: "bottom-start" | "bottom-end";
     portal?: boolean;
     panelClassName?: string;
+    focusSelector?: string;
     toParentMessage: (message: typeof Message.Type) => ParentMessage;
   },
   h: HtmlBuilder<ParentMessage>,
@@ -52,6 +53,7 @@ export const view = <ParentMessage>(
         portal: props.portal,
       },
       ariaLabel: props.triggerLabel ?? props.label,
+      focusSelector: props.focusSelector,
       toView: ({ button, panel, backdrop, isVisible }) =>
         h.div(
           [h.Class(stylex.props(styles.root).className ?? "")],

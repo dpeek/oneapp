@@ -2014,7 +2014,6 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
       ...(model.editor ? [eventEditorView(model, h)] : []),
       ...(model.importing ? [importView(model.importing, model, h)] : []),
       ...(missing ? [h.p([h.Role("alert")], ["Calendar not found."])] : []),
-      scheduleToolbar(model, days, h),
       ...(!model.week && model.request?.kind === "load"
         ? [h.p([h.Role("status")], ["Loading calendar…"])]
         : []),
@@ -2066,6 +2065,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
           },
           h,
         ),
+        scheduleToolbar(model, days, h),
       ],
       sidebar: calendarNavigation(model, "sidebar", h),
       list,

@@ -1997,7 +1997,6 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
 }
 
 .calendar-nav-header h2,
-.calendar h2,
 .calendar p {
   margin: 0;
 }
@@ -2037,7 +2036,9 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
   white-space: nowrap;
 }
 
-.calendar h2 {
+.calendar h2,
+.calendar-workspace > .workspace-header h2 {
+  margin: 0;
   font-size: 1.125rem;
 }
 
@@ -2116,24 +2117,21 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
   margin-block-end: 1rem;
 }
 
-.calendar [data-slot="toolbar"],
-.calendar [data-slot="toolbar-end"] {
+.calendar-workspace > .workspace-header [data-slot="toolbar"],
+.calendar-workspace > .workspace-header [data-slot="toolbar-end"] {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
 }
 
-.calendar [data-slot="toolbar"] {
-  justify-content: space-between;
-}
-
-.calendar [data-slot="toolbar-end"] {
+.calendar-workspace > .workspace-header [data-slot="toolbar"] {
+  flex-basis: 100%;
   justify-content: space-between;
 }
 
 .calendar-period-controls,
-.calendar [data-slot="toggle-group"] {
+.calendar-workspace > .workspace-header [data-slot="toggle-group"] {
   display: flex;
   align-items: center;
   padding: 0.125rem;
@@ -2142,7 +2140,7 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
   background: var(--canvas);
 }
 
-.calendar [data-slot="toggle-group"] button[aria-pressed="true"] {
+.calendar-workspace > .workspace-header [data-slot="toggle-group"] button[aria-pressed="true"] {
   background: var(--selected);
   color: var(--accent);
 }

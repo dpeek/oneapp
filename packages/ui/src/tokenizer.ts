@@ -119,13 +119,13 @@ const styles = stylex.create({
 });
 
 type Item = Readonly<{ id: string; name: string }>;
-const anchor = { placement: "bottom-start", gap: 4 } as const;
 
 export const view = <Msg>(
   props: {
     model: typeof Model.Type;
     label: string;
     placeholder: string;
+    placement?: "top-start" | "bottom-start";
     emptyMessage: string;
     items: readonly Item[];
     selected: readonly Item[];
@@ -140,6 +140,7 @@ export const view = <Msg>(
   h: HtmlBuilder<Msg>,
 ) => {
   const { model, toParentMessage } = props;
+  const anchor = { placement: props.placement ?? "bottom-start", gap: 4 };
   const inputId = Combobox.inputId(model.id);
   const wrapperId = `${model.id}-field`;
   const messageId = `${model.id}-message`;

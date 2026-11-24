@@ -55,7 +55,15 @@ export const TaskFields = Schema.Struct({
   dueOn: Schema.NullOr(TaskDate),
   tagIds: Schema.Array(ItemId).check(Schema.isMaxLength(taskTagLimit)),
 });
-export const TaskCreate = Schema.Struct({ id: ItemId, title: TaskTitle });
+export const TaskCreate = Schema.Struct({
+  id: ItemId,
+  title: TaskTitle,
+  description: Schema.optional(TaskFields.fields.description),
+  status: Schema.optional(TaskStatus),
+  priority: Schema.optional(TaskPriority),
+  dueOn: Schema.optional(TaskFields.fields.dueOn),
+  tagIds: Schema.optional(TaskFields.fields.tagIds),
+});
 export const TaskUpdate = Schema.Struct({
   ...TaskFields.fields,
   revision: ItemId,

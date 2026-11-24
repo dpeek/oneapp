@@ -19,7 +19,6 @@ import {
   TaskIndex,
   TaskPriority,
   TaskStatus,
-  TaskTitle,
   TaskUpdate,
   tasksApi,
   taskTagLimit,
@@ -28,10 +27,17 @@ import {
 const Draft = Schema.Struct({
   ...TaskUpdate.fields,
   id: ItemId,
+  revision: Schema.NullOr(ItemId),
   title: Schema.String,
   dueOn: Schema.NullOr(Schema.String),
 });
 type Draft = typeof Draft.Type;
+const Editor = Schema.Struct({
+  draft: Draft,
+  tagPicker: Tokenizer.Model,
+  tagError: Schema.NullOr(Schema.String),
+});
+export type Editor = typeof Editor.Type;
 const Operation = Schema.Union([
   Schema.TaggedStruct("Load", {}),
   Schema.TaggedStruct("Create", { input: TaskCreate }),
@@ -55,11 +61,8 @@ const Field = Schema.Literals([
 export const Model = Schema.Struct({
   index: Schema.NullOr(TaskIndex),
   selectedId: Schema.NullOr(ItemId),
-  draft: Schema.NullOr(Draft),
-  quickTitle: Schema.String,
-  quickId: Schema.NullOr(ItemId),
-  tagPicker: Tokenizer.Model,
-  tagError: Schema.NullOr(Schema.String),
+  editor: Schema.NullOr(Editor),
+  creation: Schema.NullOr(Editor),
   statusFilter: StatusFilter,
   tagFilter: Schema.NullOr(ItemId),
   sort: Sort,
@@ -72,11 +75,8 @@ export type Model = typeof Model.Type;
 export const initial: Model = {
   index: null,
   selectedId: null,
-  draft: null,
-  quickTitle: "",
-  quickId: null,
-  tagPicker: Tokenizer.init({ id: "task-tags" }),
-  tagError: null,
+  editor: null,
+  creation: null,
   statusFilter: "active",
   tagFilter: null,
   sort: "updated",
@@ -87,14 +87,16 @@ export const initial: Model = {
 export const Message = defineMessageUnion({
   Opened: { id: Schema.NullOr(ItemId), refresh: Schema.Boolean },
   Retried: {},
-  EditedQuickTitle: { title: Schema.String },
+  OpenedCreate: {},
+  CreateDialogMounted: {},
+  ClosedCreate: {},
   Created: {},
   EditedField: { field: Field, value: Schema.String },
   ToggledCompletion: { id: ItemId },
   SetStatusFilter: { value: Schema.String },
   SetTagFilter: { value: Schema.String },
   SetSort: { value: Schema.String },
-  GotTagPickerMessage: { message: Tokenizer.Message },
+  GotTagPickerMessage: { id: ItemId, message: Tokenizer.Message },
   RemovedTag: { id: ItemId },
   Saved: {},
   Discarded: {},
@@ -235,7 +237,7 @@ const toDraft = ({
   priority,
   dueOn,
   tagIds,
-}: Task): Draft => ({
+}: Task) => ({
   id,
   revision,
   title,
@@ -245,6 +247,17 @@ const toDraft = ({
   dueOn,
   tagIds,
 });
+
+const makeEditor = (draft: Draft): Editor => ({
+  draft,
+  tagPicker: Tokenizer.init({ id: `task-tags-${draft.id}` }),
+  tagError: null,
+});
+
+const withEditor = (model: Model, editor: Editor): Model =>
+  model.creation?.draft.id === editor.draft.id
+    ? { ...model, creation: editor }
+    : { ...model, editor };
 
 export const hasEdits = (draft: Draft, task: Task) =>
   draft.title !== task.title ||
@@ -283,11 +296,11 @@ const attach = (draft: Draft, id: string): Draft =>
 
 const createTagPrefix = "create:";
 
-export const tagSearch = (model: Model, tags = model.index?.tags ?? []) => {
-  const name = normalizeTagName(model.tagPicker.inputValue);
+export const tagSearch = (editor: Editor, tags: readonly Tag[]) => {
+  const name = normalizeTagName(editor.tagPicker.inputValue);
   const key = tagNameKey(name);
   const matches = tags.filter((tag) => tagNameKey(tag.name).includes(key));
-  const items = matches.filter((tag) => !model.draft?.tagIds.includes(tag.id));
+  const items = matches.filter((tag) => !editor.draft.tagIds.includes(tag.id));
   const invalid = name !== "" && !Schema.is(TagName)(name);
   const canCreate =
     name !== "" &&
@@ -304,22 +317,23 @@ export const tagSearch = (model: Model, tags = model.index?.tags ?? []) => {
       : items,
     error: invalid
       ? `Enter a tag name of up to ${tagNameLimit} characters.`
-      : model.tagError,
+      : editor.tagError,
   };
 };
 
-const toTagPickerMessage = (message: typeof Tokenizer.Message.Type) =>
-  Message.GotTagPickerMessage({ message });
+const toTagPickerMessage =
+  (id: string) => (message: typeof Tokenizer.Message.Type) =>
+    Message.GotTagPickerMessage({ id, message });
 
-const afterTagSelection = (model: Model, draft: Draft): Model => ({
-  ...model,
+const afterTagSelection = (editor: Editor, draft: Draft): Editor => ({
+  ...editor,
   draft,
   tagError: null,
   tagPicker:
     draft.tagIds.length >= taskTagLimit
-      ? Tokenizer.init({ id: model.tagPicker.id })
+      ? Tokenizer.init({ id: editor.tagPicker.id })
       : {
-          ...model.tagPicker,
+          ...editor.tagPicker,
           inputValue: "",
           maybeActiveItemIndex: Option.none(),
         },
@@ -345,51 +359,82 @@ export const update = (
     {
       Opened: ({ id, refresh }) => {
         const next =
-          id === model.selectedId
-            ? model
-            : {
+          id !== model.selectedId
+            ? {
                 ...model,
                 selectedId: id,
-                draft: null,
-                tagPicker: Tokenizer.init({
-                  id: id ? `task-tags-${id}` : "task-tags",
-                }),
-                tagError: null,
+                editor: null,
+                creation: null,
                 error: null,
-              };
+              }
+            : refresh && model.creation
+              ? { ...model, creation: null, error: null }
+              : model;
         const task = selectedTask(next);
         const opened =
-          task && next.draft === null
-            ? { ...next, draft: toDraft(task) }
+          task && next.editor === null
+            ? { ...next, editor: makeEditor(toDraft(task)) }
             : next;
         return refresh || !opened.index
           ? start(opened, { _tag: "Load" })
           : { model: opened };
       },
       Retried: () => start(model, { _tag: "Load" }),
-      EditedQuickTitle: ({ title }) => ({
-        model: { ...model, quickTitle: title, quickId: null },
-      }),
-      Created: () => {
-        if (model.request || !model.index) return { model };
-        const title = model.quickTitle.trim();
-        if (!Schema.is(TaskTitle)(title))
-          return { model: { ...model, error: "Enter a task title." } };
-        const id = model.quickId ?? crypto.randomUUID();
-        return start(
-          { ...model, quickId: id },
-          { _tag: "Create", input: { id, title } },
-        );
+      OpenedCreate: () => {
+        if (model.request || !model.index || model.creation) return { model };
+        return {
+          model: {
+            ...model,
+            error: null,
+            creation: makeEditor({
+              id: crypto.randomUUID(),
+              revision: null,
+              title: "",
+              description: "",
+              status: "not-started",
+              priority: null,
+              dueOn: null,
+              tagIds: [],
+            }),
+          },
+        };
       },
-      EditedField: ({ field, value }) => ({
+      CreateDialogMounted: () => ({ model }),
+      ClosedCreate: () => ({
         model:
-          model.draft && !model.request
-            ? { ...model, draft: editField(model.draft, field, value) }
+          model.creation && !model.request
+            ? { ...model, creation: null, error: null }
             : model,
       }),
+      Created: () => {
+        if (model.request || !model.creation) return { model };
+        const { revision: _, ...fields } = model.creation.draft;
+        const input = { ...fields, title: fields.title.trim() };
+        if (!Schema.is(TaskCreate)(input))
+          return {
+            model: {
+              ...model,
+              error: "Check the task title, due date and other fields.",
+            },
+          };
+        return start(model, { _tag: "Create", input });
+      },
+      EditedField: ({ field, value }) => {
+        const editor = model.creation ?? model.editor;
+        return {
+          model:
+            editor && !model.request
+              ? withEditor(model, {
+                  ...editor,
+                  draft: editField(editor.draft, field, value),
+                })
+              : model,
+        };
+      },
       ToggledCompletion: ({ id }) => {
         const task = model.index?.tasks.find((entry) => entry.id === id);
-        if (!task || (model.draft?.id === id && hasEdits(model.draft, task)))
+        const draft = model.editor?.draft;
+        if (!task || (draft?.id === id && hasEdits(draft, task)))
           return { model };
         const { id: itemId, ...input } = toDraft(task);
         return start(model, {
@@ -415,57 +460,72 @@ export const update = (
       SetSort: ({ value }) => ({
         model: Schema.is(Sort)(value) ? { ...model, sort: value } : model,
       }),
-      GotTagPickerMessage: ({ message }) => {
-        const draft = model.draft;
-        if (!draft || draft.tagIds.length >= taskTagLimit) return { model };
-        const result = Tokenizer.update(model.tagPicker, message);
-        const next = {
-          ...model,
+      GotTagPickerMessage: ({ id, message }) => {
+        const editor =
+          model.creation?.draft.id === id ? model.creation : model.editor;
+        if (
+          editor?.draft.id !== id ||
+          editor.draft.tagIds.length >= taskTagLimit
+        )
+          return { model };
+        const { draft } = editor;
+        const result = Tokenizer.update(editor.tagPicker, message);
+        const updated = {
+          ...editor,
           tagPicker: result.model,
           tagError:
-            message._tag === "UpdatedInputValue" ? null : model.tagError,
+            message._tag === "UpdatedInputValue" ? null : editor.tagError,
         };
+        const next = withEditor(model, updated);
         const commands = Command.mapMessages(
           result.commands ?? [],
-          toTagPickerMessage,
+          toTagPickerMessage(id),
         );
         const selection = result.outMessage;
         if (model.request || selection?._tag !== "Selected")
           return { model: next, commands };
         if (selection.value.startsWith(createTagPrefix)) {
-          const { name, canCreate } = tagSearch(next);
+          const { name, canCreate } = tagSearch(
+            updated,
+            model.index?.tags ?? [],
+          );
           return canCreate && selection.value === `${createTagPrefix}${name}`
             ? start(next, { _tag: "AddTag", id: draft.id, input: { name } })
             : { model: next, commands };
         }
         return {
           model: model.index?.tags.some((tag) => tag.id === selection.value)
-            ? afterTagSelection(next, attach(draft, selection.value))
+            ? withEditor(
+                model,
+                afterTagSelection(updated, attach(draft, selection.value)),
+              )
             : next,
           commands,
         };
       },
       RemovedTag: ({ id }) => {
-        if (!model.draft || model.request) return { model };
+        const editor = model.creation ?? model.editor;
+        if (!editor || model.request) return { model };
         return {
-          model: {
-            ...model,
+          model: withEditor(model, {
+            ...editor,
             draft: {
-              ...model.draft,
-              tagIds: model.draft.tagIds.filter((tagId) => tagId !== id),
+              ...editor.draft,
+              tagIds: editor.draft.tagIds.filter((tagId) => tagId !== id),
             },
-          },
+          }),
           commands: Command.mapMessages(
-            [Tokenizer.FocusInput({ id: model.tagPicker.id })],
-            toTagPickerMessage,
+            [Tokenizer.FocusInput({ id: editor.tagPicker.id })],
+            toTagPickerMessage(editor.draft.id),
           ),
         };
       },
       Saved: () => {
-        if (!model.draft) return { model };
+        const draft = model.editor?.draft;
+        if (!draft || model.creation) return { model };
         const task = selectedTask(model);
-        if (!task || model.draft.revision !== task.revision) return { model };
-        const { id, ...fields } = model.draft;
+        if (!task || draft.revision !== task.revision) return { model };
+        const { id, ...fields } = draft;
         const input = { ...fields, title: fields.title.trim() };
         if (!Schema.is(TaskUpdate)(input))
           return {
@@ -481,9 +541,7 @@ export const update = (
         return {
           model: {
             ...model,
-            draft: task && toDraft(task),
-            tagPicker: Tokenizer.init({ id: model.tagPicker.id }),
-            tagError: null,
+            editor: task && makeEditor(toDraft(task)),
             error: null,
           },
         };
@@ -495,19 +553,23 @@ export const update = (
         return {
           model: {
             ...next,
-            draft:
-              previous && model.draft && hasEdits(model.draft, previous)
-                ? model.draft
-                : task && toDraft(task),
+            editor:
+              previous && model.editor && hasEdits(model.editor.draft, previous)
+                ? model.editor
+                : task && makeEditor(toDraft(task)),
           },
         };
       },
-      TaskCreated: ({ task }) => ({
-        model: { ...replaceTask(model, task), quickTitle: "", quickId: null },
-        ...(model.selectedId === null
-          ? { outMessage: OutMessage.OpenTask({ id: task.id }) }
-          : {}),
-      }),
+      TaskCreated: ({ task }) => {
+        const next = replaceTask(model, task);
+        if (model.creation?.draft.id !== task.id) return { model: next };
+        return {
+          model: { ...next, creation: null },
+          ...(model.selectedId === null
+            ? { outMessage: OutMessage.OpenTask({ id: task.id }) }
+            : {}),
+        };
+      },
       TaskSaved: ({ task, conflict }) => {
         const next = replaceTask(model, task);
         if (task.id !== model.selectedId)
@@ -520,7 +582,10 @@ export const update = (
         return {
           model: {
             ...next,
-            draft: conflict ? model.draft : toDraft(task),
+            editor:
+              conflict || !model.editor
+                ? model.editor
+                : { ...model.editor, draft: toDraft(task) },
             error: conflict
               ? "This task changed elsewhere. Reload the saved task before editing again."
               : null,
@@ -533,7 +598,7 @@ export const update = (
           ? tags
           : [...(tags ?? []), tag];
         const operation = model.request?.operation;
-        const draft = model.draft;
+        const editor = model.creation ?? model.editor;
         const next = {
           ...model,
           index: model.index && { ...model.index, tags: newTags },
@@ -541,25 +606,33 @@ export const update = (
         };
         return {
           model:
-            draft && operation?._tag === "AddTag" && draft.id === operation.id
-              ? afterTagSelection(next, attach(draft, tag.id))
+            editor &&
+            operation?._tag === "AddTag" &&
+            editor.draft.id === operation.id
+              ? withEditor(
+                  next,
+                  afterTagSelection(editor, attach(editor.draft, tag.id)),
+                )
               : next,
         };
       },
       Failed: ({ error }) => {
         const operation = model.request?.operation;
         const next = { ...model, request: null };
+        if (operation?._tag === "Create" && !model.creation)
+          return { model: next };
         if (operation?._tag !== "AddTag") return { model: { ...next, error } };
-        if (model.draft?.id !== operation.id) return { model: next };
+        const editor = model.creation ?? model.editor;
+        if (editor?.draft.id !== operation.id) return { model: next };
         return {
-          model: {
-            ...next,
+          model: withEditor(next, {
+            ...editor,
             tagError: error,
             tagPicker: {
-              ...Tokenizer.init({ id: model.tagPicker.id }),
+              ...Tokenizer.init({ id: editor.tagPicker.id }),
               inputValue: operation.input.name,
             },
-          },
+          }),
         };
       },
       SessionExpired: () => ({

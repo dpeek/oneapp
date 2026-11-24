@@ -6,12 +6,7 @@ import {
   TagName,
   type Tag,
 } from "../items-contract.ts";
-import type {
-  Task,
-  TaskCreate,
-  TaskFields,
-  TaskUpdate,
-} from "../tasks-contract.ts";
+import type { Task, TaskCreate, TaskUpdate } from "../tasks-contract.ts";
 
 type TaskSummary = Omit<Task, "description">;
 type TaskRow<T extends TaskSummary = Task> = Omit<T, "tagIds"> & {
@@ -162,7 +157,7 @@ export const createTask = async (
     priority = null,
     dueOn = null,
     tagIds = [],
-  }: typeof TaskCreate.Type & Partial<typeof TaskFields.Type>,
+  }: typeof TaskCreate.Type,
   now: number,
 ) => {
   const revision = crypto.randomUUID();

@@ -6077,15 +6077,6 @@ it("persists reusable task tags and rejects stale or cross-account task edits at
     priority: null,
     tagIds: [],
   });
-  const second = Schema.decodeUnknownSync(Task)(
-    await (
-      await call(
-        tasksApi,
-        { id: crypto.randomUUID(), title: "Follow up" },
-        session,
-      )
-    ).json(),
-  );
   const tag = Schema.decodeUnknownSync(Tag)(
     await (await call(tagsApi, { name: "Receipts" }, session)).json(),
   );
@@ -6115,6 +6106,23 @@ it("persists reusable task tags and rejects stale or cross-account task edits at
     dueOn: "2028-02-29",
     tagIds: [tag.id],
   } as const;
+  const secondInput = {
+    ...changes,
+    id: crypto.randomUUID(),
+    title: "Follow up",
+  };
+  expect(
+    (await call(tasksApi, { ...secondInput, dueOn: "2027-02-29" }, session))
+      .status,
+  ).toBe(400);
+  const secondResponse = await call(tasksApi, secondInput, session);
+  expect(secondResponse.status).toBe(201);
+  const second = Schema.decodeUnknownSync(Task)(await secondResponse.json());
+  expect(second).toMatchObject(secondInput);
+  expect(await (await call(tasksApi, secondInput, session)).json()).toEqual(
+    second,
+  );
+
   expect((await save(first, changes, false)).status).toBe(403);
   expect((await save(first, { dueOn: "2027-02-29" })).status).toBe(400);
   const edited = await save(first, changes);
@@ -6122,7 +6130,6 @@ it("persists reusable task tags and rejects stale or cross-account task edits at
   const saved = Schema.decodeUnknownSync(Task)(await edited.json());
   expect(saved).toMatchObject(changes);
   expect(saved.revision).not.toBe(first.revision);
-  expect((await save(second, { tagIds: [tag.id] })).status).toBe(200);
 
   const stale = await save(first, { title: "Stale title", tagIds: [] });
   expect(stale.status).toBe(409);
@@ -6132,6 +6139,16 @@ it("persists reusable task tags and rejects stale or cross-account task edits at
   sqlite.run("INSERT INTO tags VALUES ('other', ?, 'Other tag', 'other tag')", [
     foreignTag,
   ]);
+  const rejectedId = crypto.randomUUID();
+  expect(
+    (
+      await call(
+        tasksApi,
+        { ...secondInput, id: rejectedId, tagIds: [foreignTag] },
+        session,
+      )
+    ).status,
+  ).toBe(409);
   expect(
     (await save(saved, { title: "Invalid title change", tagIds: [foreignTag] }))
       .status,
@@ -6145,7 +6162,6 @@ it("persists reusable task tags and rejects stale or cross-account task edits at
   );
   expect(index.tags).toEqual([tag]);
   expect(index.tasks.find(({ id }) => id === first.id)).toEqual(saved);
-  expect(index.tasks.find(({ id }) => id === second.id)?.tagIds).toEqual([
-    tag.id,
-  ]);
+  expect(index.tasks.find(({ id }) => id === second.id)).toEqual(second);
+  expect(index.tasks.some(({ id }) => id === rejectedId)).toBe(false);
 });

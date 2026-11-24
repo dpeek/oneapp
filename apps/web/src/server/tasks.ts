@@ -71,7 +71,10 @@ export const tasksRoutes = (
             Effect.gen(function* () {
               const input = yield* readInput(TaskCreate);
               if (input._tag === "None")
-                return yield* jsonError(400, "Enter a task title.");
+                return yield* jsonError(
+                  400,
+                  "Check the task title, due date and other fields.",
+                );
               const now = yield* Clock.currentTimeMillis;
               const task = yield* Effect.tryPromise(() =>
                 createTask(db, account, input.value, now),

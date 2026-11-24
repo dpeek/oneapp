@@ -37,24 +37,7 @@
 }
 
 .task-list-toolbar {
-  display: grid;
-  gap: 0.875rem;
   padding-block: 0.875rem;
-}
-
-.task-inline-form {
-  display: flex;
-  align-items: stretch;
-  gap: 0.5rem;
-}
-
-.task-inline-form input {
-  flex: 1;
-  min-inline-size: 0;
-}
-
-.task-inline-form button {
-  flex: none;
 }
 
 .task-list-filters,
@@ -227,6 +210,15 @@
   gap: 1rem;
 }
 
+.task-create-form .task-actions {
+  justify-content: flex-end;
+}
+
+.task-create-form p[role="alert"] {
+  margin: 0;
+  color: light-dark(#ab3723, #ffa693);
+}
+
 .task-fields {
   align-items: end;
 }
@@ -237,6 +229,10 @@
 
 .task-editor [data-slot="textarea"] {
   min-block-size: 9rem;
+}
+
+.task-create-form [data-slot="textarea"] {
+  min-block-size: 5rem;
 }
 
 .task-timestamps {

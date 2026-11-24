@@ -1,6 +1,7 @@
 import {
   backIcon,
   button,
+  dialog,
   field,
   input,
   nativeSelect,
@@ -8,7 +9,8 @@ import {
   textarea,
   Tokenizer,
 } from "@oneapp/ui";
-import { Submodel } from "foldkit";
+import { Effect } from "effect";
+import { Mount, Submodel } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";
 import { tagNameLimit, type Tag } from "./items-contract.ts";
 import {
@@ -24,6 +26,7 @@ import {
   Message,
   selectedTask,
   tagSearch,
+  type Editor,
   type Model,
 } from "./tasks.ts";
 import { workspace } from "./workspace.ts";
@@ -100,7 +103,7 @@ const taskRow = (
 ) => {
   const completed = task.status === "completed";
   const selected = model.selectedId === task.id;
-  const draft = selected ? model.draft : null;
+  const draft = selected ? (model.editor?.draft ?? null) : null;
   return h.li(
     [
       h.Key(task.id),
@@ -194,83 +197,50 @@ const taskList = (
 ) => {
   const tasks = sortedTasks(model);
   const busy = model.request !== null;
-  const creatingDisabled = busy || !model.index;
   const tagMap = new Map(tags.map((tag) => [tag.id, tag]));
   return h.section(
     [h.Class("workspace-list task-list"), h.AriaLabel("Task list")],
     [
       h.div(
-        [h.Class("task-list-toolbar")],
+        [h.Class("task-list-toolbar task-list-filters")],
         [
-          h.form(
-            [h.Class("task-inline-form"), h.OnSubmit(Message.Created())],
-            [
-              input(
-                [
-                  h.AriaLabel("New task title"),
-                  h.Type("text"),
-                  h.Maxlength(taskTitleLimit),
-                  h.Placeholder("New task title"),
-                  h.Value(model.quickTitle),
-                  h.Required(true),
-                  h.Disabled(creatingDisabled),
-                  h.OnInput((title) => Message.EditedQuickTitle({ title })),
-                ],
-                h,
-              ),
-              button(
-                {
-                  type: "submit",
-                  size: "sm",
-                  disabled: creatingDisabled,
-                  children: ["Add task"],
-                },
-                h,
-              ),
-            ],
+          nativeSelect(
+            {
+              label: "Status filter",
+              value: model.statusFilter ?? "",
+              options: [
+                { value: "active", label: "Active" },
+                { value: "all", label: "All statuses" },
+                ...statusOptions,
+              ],
+              onChange: (value) => Message.SetStatusFilter({ value }),
+            },
+            h,
           ),
-          h.div(
-            [h.Class("task-list-filters")],
-            [
-              nativeSelect(
-                {
-                  label: "Status filter",
-                  value: model.statusFilter ?? "",
-                  options: [
-                    { value: "active", label: "Active" },
-                    { value: "all", label: "All statuses" },
-                    ...statusOptions,
-                  ],
-                  onChange: (value) => Message.SetStatusFilter({ value }),
-                },
-                h,
-              ),
-              nativeSelect(
-                {
-                  label: "Tag filter",
-                  value: model.tagFilter ?? "",
-                  options: [
-                    { value: "", label: "All tags" },
-                    ...tags.map((tag) => ({ value: tag.id, label: tag.name })),
-                  ],
-                  onChange: (value) => Message.SetTagFilter({ value }),
-                },
-                h,
-              ),
-              nativeSelect(
-                {
-                  label: "Sort by",
-                  value: model.sort,
-                  options: [
-                    { value: "updated", label: "Updated" },
-                    { value: "priority", label: "Priority" },
-                    { value: "due", label: "Due date" },
-                  ],
-                  onChange: (value) => Message.SetSort({ value }),
-                },
-                h,
-              ),
-            ],
+          nativeSelect(
+            {
+              label: "Tag filter",
+              value: model.tagFilter ?? "",
+              options: [
+                { value: "", label: "All tags" },
+                ...tags.map((tag) => ({ value: tag.id, label: tag.name })),
+              ],
+              onChange: (value) => Message.SetTagFilter({ value }),
+            },
+            h,
+          ),
+          nativeSelect(
+            {
+              label: "Sort by",
+              value: model.sort,
+              options: [
+                { value: "updated", label: "Updated" },
+                { value: "priority", label: "Priority" },
+                { value: "due", label: "Due date" },
+              ],
+              onChange: (value) => Message.SetSort({ value }),
+            },
+            h,
           ),
         ],
       ),
@@ -303,18 +273,203 @@ const taskList = (
   );
 };
 
+const taskFields = (
+  editor: Editor,
+  tags: ReadonlyArray<Tag>,
+  busy: boolean,
+  creating: boolean,
+  h: HtmlBuilder<Message>,
+) => {
+  const { draft } = editor;
+  const tagsFull = draft.tagIds.length >= taskTagLimit;
+  const search = tagSearch(editor, tags);
+  return [
+    field(
+      "Title",
+      input(
+        [
+          h.Type("text"),
+          h.Value(draft.title),
+          h.Maxlength(taskTitleLimit),
+          h.Required(creating),
+          h.Autofocus(creating),
+          h.Disabled(busy),
+          h.OnInput((value) => Message.EditedField({ field: "title", value })),
+        ],
+        h,
+      ),
+      h,
+    ),
+    h.div(
+      [h.Class("task-fields")],
+      [
+        nativeSelect(
+          {
+            label: "Status",
+            options: statusOptions,
+            value: draft.status ?? "",
+            disabled: busy,
+            onChange: (value) =>
+              Message.EditedField({ field: "status", value }),
+          },
+          h,
+        ),
+        nativeSelect(
+          {
+            label: "Priority",
+            options: priorityOptions,
+            value: draft.priority ?? "",
+            disabled: busy,
+            onChange: (value) =>
+              Message.EditedField({ field: "priority", value }),
+          },
+          h,
+        ),
+        field(
+          "Due date",
+          input(
+            [
+              h.Type("date"),
+              h.Value(draft.dueOn ?? ""),
+              h.Disabled(busy),
+              h.OnInput((value) =>
+                Message.EditedField({ field: "dueOn", value }),
+              ),
+            ],
+            h,
+          ),
+          h,
+        ),
+      ],
+    ),
+    field(
+      "Description (Markdown)",
+      textarea(
+        [
+          h.Value(draft.description),
+          h.Maxlength(taskDescriptionLimit),
+          h.Disabled(busy),
+          h.OnInput((value) =>
+            Message.EditedField({ field: "description", value }),
+          ),
+        ],
+        h,
+      ),
+      h,
+    ),
+    Tokenizer.view(
+      {
+        model: editor.tagPicker,
+        label: "Tags",
+        placeholder: "Search or create tags",
+        ...(creating ? { placement: "top-start" } : {}),
+        emptyMessage: "No matching tags",
+        items: search.items,
+        selected: tags.filter(({ id }) => draft.tagIds.includes(id)),
+        maxLength: tagNameLimit,
+        busy,
+        full: tagsFull,
+        description: tagsFull
+          ? `A task can have up to ${taskTagLimit} tags.`
+          : null,
+        error: search.error,
+        toParentMessage: (message) =>
+          Message.GotTagPickerMessage({ id: draft.id, message }),
+        onRemove: (id) => Message.RemovedTag({ id }),
+      },
+      h,
+    ),
+  ];
+};
+
+const OpenCreateDialog = Mount.define("OpenTaskCreateDialog", {
+  messages: [Message.CreateDialogMounted],
+  execute: ({ element }) =>
+    Effect.acquireRelease(
+      Effect.sync(() => {
+        if (element instanceof HTMLDialogElement && !element.open)
+          element.showModal();
+      }),
+      () =>
+        Effect.sync(() => {
+          if (element instanceof HTMLDialogElement && element.open)
+            element.close();
+        }),
+    ).pipe(Effect.as(Message.CreateDialogMounted())),
+});
+
+const createDialogId = "task-create-dialog";
+const taskCreateDialog = (
+  editor: Editor,
+  model: Model,
+  tags: readonly Tag[],
+  h: HtmlBuilder<Message>,
+) => {
+  const busy = model.request !== null;
+  return dialog(
+    {
+      title: "Add task",
+      titleId: "task-create-title",
+      attributes: [
+        h.Id(createDialogId),
+        h.OnMount(OpenCreateDialog()),
+        h.OnCancel(Message.ClosedCreate()),
+      ],
+      children: [
+        h.form(
+          [
+            h.Class("task-editor task-create-form"),
+            h.OnSubmit(Message.Created()),
+          ],
+          [
+            ...(model.error ? [h.p([h.Role("alert")], [model.error])] : []),
+            ...taskFields(editor, tags, busy, true, h),
+            h.div(
+              [h.Class("task-actions")],
+              [
+                button(
+                  {
+                    variant: "outline",
+                    size: "sm",
+                    disabled: busy,
+                    onClick: Message.ClosedCreate(),
+                    children: ["Cancel"],
+                  },
+                  h,
+                ),
+                button(
+                  {
+                    type: "submit",
+                    size: "sm",
+                    disabled: busy || !editor.draft.title.trim(),
+                    children: [
+                      model.request?.operation._tag === "Create"
+                        ? "Adding…"
+                        : "Add task",
+                    ],
+                  },
+                  h,
+                ),
+              ],
+            ),
+          ],
+        ),
+      ],
+    },
+    h,
+  );
+};
+
 const taskDetail = (
   model: Model,
   tags: ReadonlyArray<Tag>,
   h: HtmlBuilder<Message>,
 ) => {
   const task = selectedTask(model);
-  const draft = model.draft;
+  const editor = model.editor;
   const busy = model.request !== null;
-  const tagsFull = (draft?.tagIds.length ?? 0) >= taskTagLimit;
-  const search = draft && tagSearch(model, tags);
-  const changed = !!(task && draft && hasEdits(draft, task));
-  const stale = !!(task && draft && task.revision !== draft.revision);
+  const changed = !!(task && editor && hasEdits(editor.draft, task));
+  const stale = !!(task && editor && task.revision !== editor.draft.revision);
   const time = (value: number) =>
     h.time(
       [h.Datetime(new Date(value).toISOString())],
@@ -328,7 +483,7 @@ const taskDetail = (
     [h.Class("workspace-detail task-detail"), h.AriaLabel("Task details")],
     [
       back,
-      ...(!task || !draft
+      ...(!task || !editor
         ? [
             h.p(
               [h.Role("status")],
@@ -345,102 +500,7 @@ const taskDetail = (
             h.div(
               [h.Key(task.id), h.Class("task-editor")],
               [
-                field(
-                  "Title",
-                  input(
-                    [
-                      h.Type("text"),
-                      h.Value(draft.title),
-                      h.Maxlength(taskTitleLimit),
-                      h.Disabled(busy),
-                      h.OnInput((value) =>
-                        Message.EditedField({ field: "title", value }),
-                      ),
-                    ],
-                    h,
-                  ),
-                  h,
-                ),
-                h.div(
-                  [h.Class("task-fields")],
-                  [
-                    nativeSelect(
-                      {
-                        label: "Status",
-                        options: statusOptions,
-                        value: draft.status ?? "",
-                        disabled: busy,
-                        onChange: (value) =>
-                          Message.EditedField({ field: "status", value }),
-                      },
-                      h,
-                    ),
-                    nativeSelect(
-                      {
-                        label: "Priority",
-                        options: priorityOptions,
-                        value: draft.priority ?? "",
-                        disabled: busy,
-                        onChange: (value) =>
-                          Message.EditedField({ field: "priority", value }),
-                      },
-                      h,
-                    ),
-                    field(
-                      "Due date",
-                      input(
-                        [
-                          h.Type("date"),
-                          h.Value(draft.dueOn ?? ""),
-                          h.Disabled(busy),
-                          h.OnInput((value) =>
-                            Message.EditedField({ field: "dueOn", value }),
-                          ),
-                        ],
-                        h,
-                      ),
-                      h,
-                    ),
-                  ],
-                ),
-                field(
-                  "Description (Markdown)",
-                  textarea(
-                    [
-                      h.Value(draft.description),
-                      h.Maxlength(taskDescriptionLimit),
-                      h.Disabled(busy),
-                      h.OnInput((value) =>
-                        Message.EditedField({ field: "description", value }),
-                      ),
-                    ],
-                    h,
-                  ),
-                  h,
-                ),
-                Tokenizer.view(
-                  {
-                    model: model.tagPicker,
-                    label: "Tags",
-                    placeholder: "Search or create tags",
-                    emptyMessage: "No matching tags",
-                    items: search?.items ?? [],
-                    selected: tags.filter(({ id }) =>
-                      draft.tagIds.includes(id),
-                    ),
-                    maxLength: tagNameLimit,
-                    busy,
-                    full: tagsFull,
-                    description: tagsFull
-                      ? `A task can have up to ${taskTagLimit} tags.`
-                      : null,
-                    error: search?.error ?? null,
-                    toParentMessage: (message) =>
-                      Message.GotTagPickerMessage({ message }),
-                    onRemove: (id) => Message.RemovedTag({ id }),
-                  },
-                  h,
-                ),
+                ...taskFields(editor, tags, busy, false, h),
                 h.div(
                   [h.Class("task-actions")],
                   [
@@ -448,7 +508,10 @@ const taskDetail = (
                       {
                         size: "sm",
                         disabled:
-                          busy || stale || !changed || !draft.title.trim(),
+                          busy ||
+                          stale ||
+                          !changed ||
+                          !editor.draft.title.trim(),
                         onClick: Message.Saved(),
                         children: ["Save changes"],
                       },
@@ -500,29 +563,44 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
     {
       className: "tasks-workspace",
       title: "Tasks",
-      headerActions: model.error
-        ? [
-            h.div(
-              [h.Class("task-error")],
-              [
-                h.p([h.Role("alert")], [model.error]),
-                ...(!model.index
-                  ? [
-                      button(
-                        {
-                          variant: "outline",
-                          size: "sm",
-                          onClick: Message.Retried(),
-                          children: ["Retry"],
-                        },
-                        h,
-                      ),
-                    ]
-                  : []),
-              ],
-            ),
-          ]
-        : [],
+      headerActions: [
+        button(
+          {
+            size: "sm",
+            disabled: model.request !== null || !model.index,
+            dialogId: createDialogId,
+            onClick: Message.OpenedCreate(),
+            children: ["Add task"],
+          },
+          h,
+        ),
+        ...(model.creation
+          ? [taskCreateDialog(model.creation, model, tags, h)]
+          : []),
+        ...(model.error && !model.creation
+          ? [
+              h.div(
+                [h.Class("task-error")],
+                [
+                  h.p([h.Role("alert")], [model.error]),
+                  ...(!model.index
+                    ? [
+                        button(
+                          {
+                            variant: "outline",
+                            size: "sm",
+                            onClick: Message.Retried(),
+                            children: ["Retry"],
+                          },
+                          h,
+                        ),
+                      ]
+                    : []),
+                ],
+              ),
+            ]
+          : []),
+      ],
       list: taskList(model, tags, h),
       hasSelection: model.selectedId !== null,
       ...(model.selectedId ? { detail: taskDetail(model, tags, h) } : {}),

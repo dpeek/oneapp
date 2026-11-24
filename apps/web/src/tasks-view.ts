@@ -1,11 +1,14 @@
 import {
   backIcon,
   button,
+  buttonClassName,
   dialog,
   field,
   input,
+  navigationLinks,
   nativeSelect,
   outlineIcon,
+  Sheet,
   textarea,
   Tokenizer,
 } from "@oneapp/ui";
@@ -14,18 +17,21 @@ import { Mount, Submodel } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";
 import { tagNameLimit, type Tag } from "./items-contract.ts";
 import {
+  activeTaskStatuses,
   type Task,
   taskDescriptionLimit,
+  taskListPath,
   taskPath,
-  tasksPath,
   taskTagLimit,
   taskTitleLimit,
+  type TaskView,
 } from "./tasks-contract.ts";
 import {
   hasEdits,
   Message,
   selectedTask,
   tagSearch,
+  toFolderSheetMessage,
   writingCreation,
   type Editor,
   type Model,
@@ -52,6 +58,14 @@ const statusOptions = Object.entries(statusLabels).map(([value, label]) => ({
   value,
   label,
 }));
+const statusFilterOptions = [
+  { value: "all", label: "All statuses" },
+  ...(["", ...activeTaskStatuses] as const).map((value) => ({
+    value,
+    label: statusLabels[value],
+  })),
+];
+const viewLabels = { active: "Active", completed: "Completed" };
 const priorityOptions = Object.entries(priorityLabels).map(
   ([value, label]) => ({ value, label }),
 );
@@ -65,17 +79,13 @@ const timestamp = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeStyle: "short",
 });
-const activeStatus = (status: Task["status"]) =>
-  status !== "completed" && status !== "canceled";
-
-const sortedTasks = (model: Model) =>
-  (model.index?.tasks ?? [])
+const sortedTasks = (tasks: readonly Task[], model: Model) =>
+  tasks
     .filter(
       (task) =>
-        (model.statusFilter === "all" ||
-          (model.statusFilter === "active"
-            ? activeStatus(task.status)
-            : task.status === model.statusFilter)) &&
+        (model.view === "completed" ||
+          model.statusFilter === "all" ||
+          task.status === model.statusFilter) &&
         (model.tagFilter === null || task.tagIds.includes(model.tagFilter)),
     )
     .sort((left, right) => {
@@ -103,14 +113,8 @@ const taskRow = (
   h: HtmlBuilder<Message>,
 ) => {
   const completed = task.status === "completed";
-  const selected = model.selectedId === task.id;
-  const draft = selected ? (model.editor?.draft ?? null) : null;
   return h.li(
-    [
-      h.Key(task.id),
-      h.Class("task-row"),
-      h.DataAttribute("selected", String(selected)),
-    ],
+    [h.Key(task.id), h.Class("task-row")],
     [
       button(
         {
@@ -120,8 +124,7 @@ const taskRow = (
           variant: "ghost",
           size: "icon-sm",
           rounded: true,
-          disabled:
-            model.request !== null || (draft !== null && hasEdits(draft, task)),
+          disabled: model.request !== null,
           attributes: [h.DataAttribute("task-complete", String(completed))],
           onClick: Message.ToggledCompletion({ id: task.id }),
           children: [
@@ -138,8 +141,8 @@ const taskRow = (
       h.a(
         [
           h.Class("task-row-link"),
-          h.Href(taskPath(task.id)),
-          ...(selected ? [h.AriaCurrent("page")] : []),
+          h.Href(taskPath(task.id, model.view)),
+          h.DataAttribute("task-id", task.id),
         ],
         [
           h.span(
@@ -196,28 +199,39 @@ const taskList = (
   tags: ReadonlyArray<Tag>,
   h: HtmlBuilder<Message>,
 ) => {
-  const tasks = sortedTasks(model);
+  const { view } = model;
+  const viewTasks = (model.index?.tasks ?? []).filter(({ status }) =>
+    view === "completed"
+      ? status === "completed"
+      : status !== "completed" && status !== "canceled",
+  );
+  const tasks = sortedTasks(viewTasks, model);
   const busy = model.request !== null;
   const tagMap = new Map(tags.map((tag) => [tag.id, tag]));
   return h.section(
-    [h.Class("workspace-list task-list"), h.AriaLabel("Task list")],
+    [
+      h.Class("workspace-list task-list"),
+      h.AriaLabel("Task list"),
+      h.Inert(model.selectedId !== null),
+      h.Tabindex(-1),
+    ],
     [
       h.div(
         [h.Class("task-list-toolbar task-list-filters")],
         [
-          nativeSelect(
-            {
-              label: "Status filter",
-              value: model.statusFilter ?? "",
-              options: [
-                { value: "active", label: "Active" },
-                { value: "all", label: "All statuses" },
-                ...statusOptions,
-              ],
-              onChange: (value) => Message.SetStatusFilter({ value }),
-            },
-            h,
-          ),
+          ...(view === "active"
+            ? [
+                nativeSelect(
+                  {
+                    label: "Status filter",
+                    value: model.statusFilter ?? "",
+                    options: statusFilterOptions,
+                    onChange: (value) => Message.SetStatusFilter({ value }),
+                  },
+                  h,
+                ),
+              ]
+            : []),
           nativeSelect(
             {
               label: "Tag filter",
@@ -246,7 +260,7 @@ const taskList = (
         ],
       ),
       h.div(
-        [h.Class("workspace-results")],
+        [h.Key(view), h.Class("workspace-results")],
         [
           !model.index
             ? busy
@@ -263,9 +277,9 @@ const taskList = (
               : h.p(
                   [h.Class("task-empty"), h.Role("status")],
                   [
-                    model.index.tasks.length
+                    viewTasks.length
                       ? "No tasks match these filters."
-                      : "Add your first task above.",
+                      : `No ${view} tasks yet.`,
                   ],
                 ),
         ],
@@ -494,7 +508,18 @@ export const createView = Submodel.defineView<Model, Message>((model, h) => {
   );
 });
 
+const FocusDetail = Mount.define("FocusTaskDetail", {
+  messages: [Message.FocusUpdated],
+  execute: ({ element }) =>
+    Effect.sync(() => {
+      if (element instanceof HTMLElement)
+        element.focus({ preventScroll: true });
+      return Message.FocusUpdated();
+    }),
+});
+
 const taskDetail = (
+  id: string,
   model: Model,
   tags: ReadonlyArray<Tag>,
   h: HtmlBuilder<Message>,
@@ -509,14 +534,15 @@ const taskDetail = (
       [h.Datetime(new Date(value).toISOString())],
       [timestamp.format(value)],
     );
-  const back = h.a(
-    [h.Class("task-back"), h.Href(tasksPath)],
-    [backIcon(h), "All tasks"],
-  );
   return h.section(
-    [h.Class("workspace-detail task-detail"), h.AriaLabel("Task details")],
     [
-      back,
+      h.Key(id),
+      h.Class("workspace-detail task-detail"),
+      h.AriaLabel("Task details"),
+      h.Tabindex(-1),
+      h.OnMount(FocusDetail()),
+    ],
+    [
       ...(!task || !editor
         ? [
             h.p(
@@ -589,13 +615,66 @@ const taskDetail = (
   );
 };
 
+const taskNavigation = (view: TaskView, h: HtmlBuilder<Message>) =>
+  navigationLinks(
+    {
+      label: "Task views",
+      variant: "sidebar",
+      destinations: (["active", "completed"] as const).map((destination) => ({
+        href: taskListPath(destination),
+        label: viewLabels[destination],
+        current: destination === view,
+      })),
+    },
+    h,
+  );
+
 export const view = Submodel.defineView<Model, Message>((model, h) => {
   const tags = sortedTags(model);
+  const { selectedId, folderSheet } = model;
+  const backLabel = `Back to ${viewLabels[model.view]}`;
   return workspace(
     {
-      className: "tasks-workspace",
-      title: "Tasks",
+      className: "workspace-stacked tasks-workspace",
+      title: selectedId ? undefined : viewLabels[model.view],
       headerActions: [
+        ...(selectedId
+          ? [
+              h.a(
+                [
+                  h.Href(taskListPath(model.view)),
+                  h.Class(
+                    buttonClassName({
+                      variant: "ghost",
+                      size: "icon-sm",
+                      rounded: true,
+                    }),
+                  ),
+                  h.DataAttribute("slot", "button"),
+                  h.AriaLabel(backLabel),
+                  h.Title(backLabel),
+                ],
+                [backIcon(h)],
+              ),
+            ]
+          : []),
+        h.div(
+          [h.Class("workspace-drawer-trigger")],
+          [
+            button(
+              {
+                variant: "ghost",
+                size: "icon",
+                rounded: true,
+                ariaLabel: "Task views",
+                dialogId: folderSheet.id,
+                onClick: toFolderSheetMessage(Sheet.Message.RequestedOpen()),
+                children: [outlineIcon(h, ["M4 6h16M4 12h16M4 18h16"])],
+              },
+              h,
+            ),
+          ],
+        ),
         button(
           {
             size: "sm",
@@ -630,9 +709,19 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
             ]
           : []),
       ],
+      sidebar: taskNavigation(model.view, h),
       list: taskList(model, tags, h),
-      hasSelection: model.selectedId !== null,
-      ...(model.selectedId ? { detail: taskDetail(model, tags, h) } : {}),
+      hasSelection: selectedId !== null,
+      ...(selectedId ? { detail: taskDetail(selectedId, model, tags, h) } : {}),
+      sheet: Sheet.sheet(
+        {
+          model: folderSheet,
+          title: "Task views",
+          content: taskNavigation(model.view, h),
+          toParentMessage: toFolderSheetMessage,
+        },
+        h,
+      ),
     },
     h,
   );

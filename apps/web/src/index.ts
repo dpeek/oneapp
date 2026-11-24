@@ -352,7 +352,12 @@ const foldTasks = Update.foldChild({
       return model.page === "tasks"
         ? {
             model,
-            commands: [Navigate({ href: taskPath(out.id), mode: "push" })],
+            commands: [
+              Navigate({
+                href: taskPath(out.id, model.tasks.view),
+                mode: "push",
+              }),
+            ],
           }
         : { model };
     },
@@ -535,6 +540,7 @@ const isApproval = (model: Model) =>
 const closeFolderSheet = (model: Model): Update.Return<Model, Message> => {
   if (model.page === "calendar")
     return foldCalendar(model, Calendar.closeFolderSheet());
+  if (model.page === "tasks") return foldTasks(model, Tasks.closeFolderSheet());
   return model.page === "contacts"
     ? foldPeople(model, People.closeFolderSheet())
     : foldInbox(model, Inbox.closeFolderSheet());
@@ -582,7 +588,8 @@ const subscriptions = Subscription.make<Model, Message>()((entry) => ({
         open:
           model.inbox.folderSheet.isOpen ||
           model.people.directory.folderSheet.isOpen ||
-          model.calendar.folderSheet.isOpen,
+          model.calendar.folderSheet.isOpen ||
+          model.tasks.folderSheet.isOpen,
       }),
       dependenciesToStream: ({ open }) =>
         open
@@ -627,7 +634,7 @@ const loadPage = (
     return foldTasks(
       model,
       Tasks.Message.Opened({
-        id: model.taskRoute.id,
+        ...model.taskRoute,
         refresh: previousPage !== "tasks",
       }),
     );
@@ -765,6 +772,7 @@ const update = (
         page === model.page &&
         calendarRoute?.id === model.calendarRoute?.id &&
         taskRoute?.id === model.taskRoute?.id &&
+        taskRoute?.view === model.taskRoute?.view &&
         fileRoute?.id === model.fileRoute?.id &&
         mailRoute?.folder === model.mailRoute?.folder &&
         mailRoute?.id === model.mailRoute?.id &&

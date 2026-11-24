@@ -2,28 +2,42 @@ import { Schema } from "effect";
 import { ItemId, ItemTagIds, itemTagLimit, Tag } from "./items-contract.ts";
 
 export const tasksPath = "/tasks";
+const completedTasksPath = `${tasksPath}/completed`;
 export const tasksApi = "/api/tasks";
-export const taskPath = (id: string) => `${tasksPath}/${id}`;
+export const TaskView = Schema.Literals(["active", "completed"]);
+export type TaskView = typeof TaskView.Type;
+export const taskListPath = (view: TaskView) =>
+  view === "completed" ? completedTasksPath : tasksPath;
+export const taskPath = (id: string, view: TaskView = "active") =>
+  `${taskListPath(view)}/${id}`;
 export const taskApi = (id: string) => `${tasksApi}/${id}`;
 
-export const TaskRoute = Schema.Struct({ id: Schema.NullOr(ItemId) });
+export const TaskRoute = Schema.Struct({
+  view: TaskView,
+  id: Schema.NullOr(ItemId),
+});
 export const taskRouteFor = (
   pathname: string,
 ): typeof TaskRoute.Type | null => {
-  if (pathname === tasksPath || pathname === `${tasksPath}/`)
-    return { id: null };
-  const id = /^\/tasks\/([^/]+)\/?$/u.exec(pathname)?.[1];
-  return Schema.is(ItemId)(id) ? { id } : null;
+  const path = pathname.replace(/\/$/u, "");
+  const view =
+    path === completedTasksPath || path.startsWith(`${completedTasksPath}/`)
+      ? "completed"
+      : "active";
+  const list = taskListPath(view);
+  if (path === list) return { view, id: null };
+  if (!path.startsWith(`${list}/`)) return null;
+  const id = path.slice(list.length + 1);
+  return Schema.is(ItemId)(id) ? { view, id } : null;
 };
 
+export const activeTaskStatuses = [
+  "not-started",
+  "in-progress",
+  "in-review",
+] as const;
 export const TaskStatus = Schema.NullOr(
-  Schema.Literals([
-    "not-started",
-    "in-progress",
-    "in-review",
-    "completed",
-    "canceled",
-  ]),
+  Schema.Literals([...activeTaskStatuses, "completed", "canceled"]),
 );
 export const TaskPriority = Schema.NullOr(
   Schema.Literals(["low", "medium", "high", "urgent"]),

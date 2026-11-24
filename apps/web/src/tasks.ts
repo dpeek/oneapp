@@ -1,19 +1,23 @@
-import { Tokenizer } from "@oneapp/ui";
+import { Sheet, Tokenizer } from "@oneapp/ui";
 import { Effect, Option, Schema } from "effect";
-import { Command, type Update } from "foldkit";
+import { Command, Update } from "foldkit";
+import { focus } from "foldkit/dom";
 import { defineMessageUnion } from "foldkit/message";
 import { ItemId, Tag, TagCreate, tagsApi } from "./items-contract.ts";
 import { createTagPrefix, searchTags } from "./tag-picker.ts";
 import {
+  activeTaskStatuses,
   Task,
   taskApi,
   TaskCreate,
   TaskIndex,
   TaskPriority,
+  TaskRoute,
   TaskStatus,
   TaskUpdate,
   tasksApi,
   taskTagLimit,
+  TaskView,
 } from "./tasks-contract.ts";
 
 const Draft = Schema.Struct({
@@ -42,10 +46,9 @@ const Operation = Schema.Union([
   Schema.TaggedStruct("AddTag", { id: ItemId, input: TagCreate }),
 ]);
 type Operation = typeof Operation.Type;
-const StatusFilter = Schema.Union([
-  Schema.Literals(["active", "all"]),
-  TaskStatus,
-]);
+const StatusFilter = Schema.NullOr(
+  Schema.Literals(["all", ...activeTaskStatuses]),
+);
 const Sort = Schema.Literals(["updated", "priority", "due"]);
 const Field = Schema.Literals([
   "title",
@@ -57,6 +60,8 @@ const Field = Schema.Literals([
 
 export const Model = Schema.Struct({
   index: Schema.NullOr(TaskIndex),
+  view: TaskView,
+  folderSheet: Sheet.Model,
   selectedId: Schema.NullOr(ItemId),
   editor: Schema.NullOr(Editor),
   creation: Schema.NullOr(Creation),
@@ -71,10 +76,12 @@ export const Model = Schema.Struct({
 export type Model = typeof Model.Type;
 export const initial: Model = {
   index: null,
+  view: "active",
+  folderSheet: Sheet.init({ id: "task-views" }),
   selectedId: null,
   editor: null,
   creation: null,
-  statusFilter: "active",
+  statusFilter: "all",
   tagFilter: null,
   sort: "updated",
   request: null,
@@ -82,7 +89,9 @@ export const initial: Model = {
 };
 
 export const Message = defineMessageUnion({
-  Opened: { id: Schema.NullOr(ItemId), refresh: Schema.Boolean },
+  Opened: { ...TaskRoute.fields, refresh: Schema.Boolean },
+  GotFolderSheetMessage: { message: Sheet.Message },
+  FocusUpdated: {},
   Retried: {},
   OpenedCreate: { preserveView: Schema.Boolean },
   CreateDialogMounted: {},
@@ -110,6 +119,34 @@ export const OutMessage = defineMessageUnion({
   SessionExpired: {},
 });
 export type OutMessage = typeof OutMessage.Type;
+
+export const toFolderSheetMessage = (message: typeof Sheet.Message.Type) =>
+  Message.GotFolderSheetMessage({ message });
+export const closeFolderSheet = () =>
+  toFolderSheetMessage(Sheet.Message.RequestedClose());
+
+const foldFolderSheet = Update.foldChild({
+  update: Sheet.update,
+  read: (model: Model) => Option.some(model.folderSheet),
+  write: (model, folderSheet) => ({ ...model, folderSheet }),
+  toParentMessage: toFolderSheetMessage,
+  foldOutMessage: () => (model) => ({ model }),
+});
+
+const FocusList = Command.define("FocusTaskList", {
+  args: { id: ItemId },
+  messages: [Message.FocusUpdated],
+  execute: ({ id }) => {
+    const list = ".tasks-workspace:not([data-panel]) .task-list";
+    return focus(`${list} [data-task-id="${id}"]`, {
+      preventScroll: true,
+    }).pipe(
+      Effect.catch(() => focus(list, { preventScroll: true })),
+      Effect.ignore,
+      Effect.as(Message.FocusUpdated()),
+    );
+  },
+});
 
 const requestJson = async <A>(
   signal: AbortSignal,
@@ -346,11 +383,12 @@ export const update = (
   return Message.match<Update.ReturnWithOutMessage<Model, Message, OutMessage>>(
     message,
     {
-      Opened: ({ id, refresh }) => {
+      Opened: ({ id, view, refresh }) => {
         const next =
-          id !== model.selectedId
+          id !== model.selectedId || view !== model.view
             ? {
                 ...model,
+                view,
                 selectedId: id,
                 editor: null,
                 creation: null,
@@ -364,10 +402,25 @@ export const update = (
           task && next.editor === null
             ? { ...next, editor: makeEditor(toDraft(task)) }
             : next;
-        return refresh || !opened.index
-          ? start(opened, { _tag: "Load" })
-          : { model: opened };
+        const result =
+          refresh || !opened.index
+            ? start(opened, { _tag: "Load" })
+            : { model: opened };
+        return !refresh &&
+          id === null &&
+          model.selectedId &&
+          view === model.view
+          ? {
+              ...result,
+              commands: [
+                ...(result.commands ?? []),
+                FocusList({ id: model.selectedId }),
+              ],
+            }
+          : result;
       },
+      GotFolderSheetMessage: ({ message }) => foldFolderSheet(model, message),
+      FocusUpdated: () => ({ model }),
       Retried: () => start(model, { _tag: "Load" }),
       OpenedCreate: ({ preserveView }) => {
         if (

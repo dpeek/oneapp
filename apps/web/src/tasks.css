@@ -1,15 +1,14 @@
 .workspace.tasks-workspace {
   --task-list-width: 64rem;
   --task-editor-width: 44rem;
-  grid-template:
-    "header" auto
-    "items" minmax(0, 1fr)
-    / minmax(0, 1fr);
 }
 
-.tasks-workspace > .workspace-header {
-  border-inline-end: 0;
-  padding-inline: clamp(0.875rem, 2vw, 1.5rem);
+.tasks-workspace .workspace-header > a {
+  color: var(--muted);
+}
+
+.tasks-workspace .workspace-header > button {
+  margin-inline-start: auto;
 }
 
 .task-error {
@@ -21,10 +20,6 @@
 
 .task-error p {
   margin: 0;
-}
-
-.tasks-workspace .task-list {
-  border-inline-end: 0;
 }
 
 .task-list-toolbar,
@@ -70,7 +65,7 @@
   border-block-end: 1px solid var(--border);
 }
 
-.task-row:is(:hover, [data-selected="true"]) {
+.task-row:hover {
   background: var(--selected);
 }
 
@@ -109,10 +104,6 @@
   font-size: 0.9375rem;
   font-weight: 600;
   overflow-wrap: anywhere;
-}
-
-.task-row[data-selected="true"] .task-row-title {
-  color: var(--accent);
 }
 
 .task-row-properties,
@@ -179,8 +170,7 @@
   overflow-wrap: anywhere;
 }
 
-.workspace.tasks-workspace .task-detail {
-  grid-area: items;
+.tasks-workspace .task-detail {
   padding: 0.875rem clamp(0.75rem, 2vw, 1.5rem) 1.5rem;
 }
 
@@ -250,23 +240,6 @@
 
 .task-timestamps dd {
   margin: 0;
-}
-
-@media (min-width: 64.001rem) {
-  .workspace.tasks-workspace[data-panel] {
-    grid-template:
-      "header header" auto
-      "items detail" minmax(0, 1fr)
-      / clamp(21rem, 40vw, 36rem) minmax(0, 1fr);
-  }
-
-  .tasks-workspace[data-panel] .task-list {
-    border-inline-end: 1px solid var(--border);
-  }
-
-  .workspace.tasks-workspace .task-detail {
-    grid-area: detail;
-  }
 }
 
 .file-row {

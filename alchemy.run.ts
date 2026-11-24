@@ -40,6 +40,11 @@ export const Web = Cloudflare.Worker(
   "Web",
   Effect.gen(function* () {
     const { dev } = yield* Alchemy.AlchemyContext;
+    const snapshot =
+      dev &&
+      (yield* Config.Boolean("ONEAPP_DEV_SNAPSHOT").pipe(
+        Config.withDefault(false),
+      ));
     const domain = yield* Config.option(Config.String("APP_DOMAIN"));
     const externalAuthSecrets = yield* Config.Boolean(
       "ONEAPP_EXTERNAL_AUTH_SECRETS",
@@ -112,7 +117,7 @@ export const Web = Cloudflare.Worker(
         traces: { enabled: true, headSamplingRate: 1, persist: true },
         issues: { enabled: true },
       },
-      crons: ["* * * * *"],
+      crons: snapshot ? [] : ["* * * * *"],
       env: {
         DB: Database,
         PUSH_PUBLIC_KEY: Config.String("PUSH_PUBLIC_KEY").pipe(

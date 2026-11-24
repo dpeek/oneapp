@@ -1,19 +1,19 @@
 import { chmod, mkdtemp, rm } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { Schema } from "effect";
 import { bucketBindings, openSource } from "./backup/cloudflare.ts";
 import {
-  decrypt,
+  defaultBackupDirectory,
   encrypt,
-  fileDigest,
   makeObjectDirectories,
   Manifest,
   objectFile,
   parallel,
   publishDirectory,
   restoreDatabase,
+  restoreSnapshot,
   verifyReferences,
 } from "./backup/snapshot.ts";
 
@@ -39,15 +39,6 @@ if (values.help) {
   console.log(usage);
   process.exit(0);
 }
-
-const checkFile = async (
-  path: string,
-  expected: { sha256: string; size: number },
-) => {
-  const actual = await fileDigest(Bun.file(path).stream());
-  if (actual.size !== expected.size || actual.sha256 !== expected.sha256)
-    throw new Error("A restored file failed checksum validation.");
-};
 
 const captureDatabase = async (
   source: Awaited<ReturnType<typeof openSource>>,
@@ -91,9 +82,7 @@ try {
     const stamp = createdAt.replaceAll(":", "-");
     const name = "oneapp-" + stamp + "-" + crypto.randomUUID().slice(0, 8);
     const destination = join(
-      resolve(
-        values.out ?? join(homedir(), ".local", "share", "oneapp", "backups"),
-      ),
+      resolve(values.out ?? defaultBackupDirectory),
       name,
     );
 
@@ -174,41 +163,7 @@ try {
     const source = resolve(snapshot);
     const destination = resolve(out);
 
-    await publishDirectory(destination, async (temporary) => {
-      const json = join(temporary, "manifest.json");
-      await decrypt(identity, join(source, "manifest.json.age"), json);
-      const manifest = Schema.decodeUnknownSync(Manifest)(
-        await Bun.file(json).json(),
-      );
-      await makeObjectDirectories(temporary);
-      const sql = join(temporary, "database.sql");
-      await decrypt(identity, join(source, "database.sql.age"), sql);
-      await checkFile(sql, manifest.database);
-      for (const bucket of bucketBindings) {
-        await parallel(manifest.objects[bucket], async (entry, index) => {
-          const output = objectFile(temporary, bucket, index);
-          await decrypt(
-            identity,
-            objectFile(source, bucket, index) + ".age",
-            output,
-          );
-          await checkFile(output, entry);
-        });
-        console.log(
-          "Verified " +
-            manifest.objects[bucket].length +
-            " " +
-            bucket +
-            " objects.",
-        );
-      }
-      const references = await restoreDatabase(
-        sql,
-        join(temporary, "database.sqlite"),
-        manifest.createdAt,
-      );
-      verifyReferences(manifest, references);
-    });
+    await restoreSnapshot(source, identity, destination);
     console.log("Verified restore saved to " + destination);
   } else {
     throw new Error(usage);

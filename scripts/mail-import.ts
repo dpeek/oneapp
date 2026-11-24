@@ -9,7 +9,8 @@ import { atomicJson, withFileLock, hashFile, sha256 } from "./mail/files.ts";
 import { validateSnapshot } from "./mail/snapshot.ts";
 import { mappingHash, previewMapping, replaySnapshot } from "./mail/replay.ts";
 import { openLocalMailSink } from "./mail/local-sink.ts";
-import { localDirectory, StageName } from "./mail/local.ts";
+import { localDirectory } from "./dev-local.ts";
+import { resolveMailStage } from "./mail/local.ts";
 import { MailSampleError } from "./mail/errors.ts";
 import { importCompletionPolicy } from "../apps/web/src/server/mail-import-completion.ts";
 
@@ -73,9 +74,7 @@ try {
     ),
   );
   if (!values["dry-run"]) {
-    const stage = origin
-      ? undefined
-      : Schema.decodeUnknownSync(StageName)(values.stage);
+    const stage = origin ? undefined : await resolveMailStage(values.stage!);
 
     const mailboxId = Schema.decodeUnknownSync(MailboxId)(values.mailbox);
     const stateDirectory = join(

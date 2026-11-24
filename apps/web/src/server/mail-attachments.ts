@@ -6,7 +6,7 @@ import {
   type InboxAttachment,
   inboxAttachmentTextPreviewLimit,
 } from "../inbox-contract.ts";
-import { privateHeaders } from "./api-response.ts";
+import { attachmentDisposition, privateHeaders } from "./api-response.ts";
 
 export const receivedMessageLimit = 25 * 1024 * 1024;
 export const mailMimeOptions = {
@@ -96,15 +96,6 @@ export const describeAttachments = (attachments: readonly Attachment[]) =>
     return item ? [item.metadata] : [];
   });
 
-const disposition = (name: string) => {
-  const fallback = name.replaceAll(/[^\x20-\x7e]|[%"]/gu, "_");
-  const encoded = encodeURIComponent(name).replaceAll(
-    /['()*]/gu,
-    (char) => "%" + char.charCodeAt(0).toString(16).toUpperCase(),
-  );
-  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
-};
-
 export const attachmentResponse = async (
   bucket: R2Bucket,
   id: string,
@@ -155,7 +146,7 @@ export const attachmentResponse = async (
       "content-disposition":
         preview && metadata.preview === "image"
           ? "inline"
-          : disposition(metadata.name),
+          : attachmentDisposition(metadata.name),
       "content-length": String(body.byteLength),
       "x-content-type-options": "nosniff",
       "content-security-policy": "default-src 'none'; sandbox",

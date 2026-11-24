@@ -56,3 +56,10 @@ export {
   personalVaultItems,
   personalVaults,
 } from "./vault/tables.ts";
+
+export {
+  calendars,
+  calendarEvents,
+  calendarMovedUids,
+  calendarPushOutbox,
+} from "./calendar-tables.ts";

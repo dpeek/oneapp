@@ -7,7 +7,8 @@ import { Redacted, Schema } from "effect";
 import { ImapFlow } from "imapflow";
 import { inventoryCredentials } from "./mail/config.ts";
 import { inventoryErrorMessage, MailSampleError } from "./mail/errors.ts";
-import { localDirectory, localMailResources } from "./mail/local.ts";
+import { localDirectory } from "./dev-local.ts";
+import { localMailResources, resolveMailStage } from "./mail/local.ts";
 import {
   planSample,
   runSample,
@@ -33,7 +34,8 @@ if (values.help) {
 
 let phase = "local storage";
 try {
-  const resources = await localMailResources(values.stage);
+  const stage = await resolveMailStage(values.stage);
+  const resources = await localMailResources(stage);
   const mailboxId = Schema.decodeUnknownSync(MailboxId)(values.mailbox);
   const credentials = inventoryCredentials(undefined, process.env);
   if (!credentials.user || !credentials.password)
@@ -41,16 +43,11 @@ try {
       "Set ICLOUD_IMAP_USER and ICLOUD_IMAP_PASSWORD in .env.",
     );
   const account = `icloud:${credentials.user.toLowerCase()}`;
-  const directory = join(
-    localDirectory,
-    "mail-import",
-    values.stage,
-    mailboxId,
-  );
+  const directory = join(localDirectory, "mail-import", stage, mailboxId);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await chmod(directory, 0o700);
   const planPath = join(directory, "plan.json");
-  const platform = await openLocalMailSink(values.stage, mailboxId);
+  const platform = await openLocalMailSink(stage, mailboxId);
   try {
     const sink = platform.sink;
     phase = "iCloud connection";
@@ -81,7 +78,7 @@ try {
       plan = {
         version: 1,
         account,
-        stage: values.stage,
+        stage,
         resources,
         createdAt: new Date().toISOString(),
         ...(await planSample(client, account)),
@@ -93,7 +90,7 @@ try {
     }
     if (
       plan.account !== account ||
-      plan.stage !== values.stage ||
+      plan.stage !== stage ||
       JSON.stringify(plan.resources) !== JSON.stringify(resources) ||
       plan.messages.reduce((sum, message) => sum + message.size, 0) >
         sampleLimits.bytes ||
@@ -120,7 +117,7 @@ try {
       console.error(`Checked ${count}/${total} messages.`),
     );
     const report = {
-      stage: values.stage,
+      stage,
       completedAt: new Date().toISOString(),
       ...result,
       imported: result.results.filter(

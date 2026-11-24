@@ -143,3 +143,30 @@ it("caches only the static offline page and leaves mail API requests alone", asy
   expect(await (response as Response).text()).toBe("offline");
   expect(worker.caches.match).toHaveBeenCalledWith("/offline.html");
 });
+
+it("opens the calendar from a private reminder using the same-origin calendar route", async () => {
+  const worker = setup();
+  await worker.dispatch("push", {
+    data: {
+      json: () => ({
+        type: "calendar",
+        title: "Private event",
+        tag: "calendar:event:time",
+        url: "https://example.com/calendar",
+      }),
+    },
+  });
+  const url = `${origin}/calendar`;
+  expect(worker.notifications).toHaveBeenCalledWith(
+    "Calendar reminder",
+    expect.objectContaining({
+      body: "Open OneApp to see your schedule.",
+      tag: "calendar:event:time",
+      data: { url },
+    }),
+  );
+  await worker.dispatch("notificationclick", {
+    notification: { close() {}, data: { url } },
+  });
+  expect(worker.openWindow).toHaveBeenCalledWith(url);
+});

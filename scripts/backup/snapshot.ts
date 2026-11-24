@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { chmod, lstat, mkdir, mkdtemp, rename, rm } from "node:fs/promises";
+import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Schema } from "effect";
 import { bucketBindings, type BucketBinding } from "./cloudflare.ts";
@@ -45,6 +46,13 @@ export const Manifest = Schema.Struct({
   ),
 });
 export type Manifest = typeof Manifest.Type;
+export const defaultBackupDirectory = join(
+  homedir(),
+  ".local",
+  "share",
+  "oneapp",
+  "backups",
+);
 
 export const objectFile = (
   root: string,
@@ -148,9 +156,9 @@ const requireAbsent = async (path: string) => {
   throw new Error("The destination already exists.");
 };
 
-export const publishDirectory = async (
+export const publishDirectory = async <A>(
   destination: string,
-  populate: (temporary: string) => Promise<void>,
+  populate: (temporary: string) => Promise<A>,
 ) => {
   const parent = dirname(destination);
   await mkdir(parent, { recursive: true, mode: 0o700 });
@@ -159,9 +167,10 @@ export const publishDirectory = async (
     join(parent, "." + basename(destination) + "-"),
   );
   try {
-    await populate(temporary);
+    const result = await populate(temporary);
     await requireAbsent(destination);
     await rename(temporary, destination);
+    return result;
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
@@ -236,4 +245,53 @@ export const verifyReferences = (
         bucket + " is missing " + missing + " referenced object(s).",
       );
   }
+};
+
+const checkFile = async (path: string, expected: typeof File.Type) => {
+  const actual = await fileDigest(Bun.file(path).stream());
+  if (actual.size !== expected.size || actual.sha256 !== expected.sha256)
+    throw new Error("A restored file failed checksum validation.");
+};
+
+export const restoreSnapshot = async (
+  source: string,
+  identity: string,
+  destination: string,
+) => {
+  return publishDirectory(destination, async (temporary) => {
+    const json = join(temporary, "manifest.json");
+    await decrypt(identity, join(source, "manifest.json.age"), json);
+    const manifest = Schema.decodeUnknownSync(Manifest)(
+      await Bun.file(json).json(),
+    );
+    await makeObjectDirectories(temporary);
+    const sql = join(temporary, "database.sql");
+    await decrypt(identity, join(source, "database.sql.age"), sql);
+    await checkFile(sql, manifest.database);
+    for (const bucket of bucketBindings) {
+      await parallel(manifest.objects[bucket], async (entry, index) => {
+        const output = objectFile(temporary, bucket, index);
+        await decrypt(
+          identity,
+          objectFile(source, bucket, index) + ".age",
+          output,
+        );
+        await checkFile(output, entry);
+      });
+      console.log(
+        "Verified " +
+          manifest.objects[bucket].length +
+          " " +
+          bucket +
+          " objects.",
+      );
+    }
+    const references = await restoreDatabase(
+      sql,
+      join(temporary, "database.sqlite"),
+      manifest.createdAt,
+    );
+    verifyReferences(manifest, references);
+    return manifest;
+  });
 };

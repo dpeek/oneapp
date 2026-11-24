@@ -29,7 +29,7 @@ self.addEventListener("fetch", (event) => {
     fetch(event.request).catch(
       async () =>
         (await caches.match("/offline.html")) ??
-        new Response("You’re offline. Connect and reload to read your mail.", {
+        new Response("You’re offline. Connect and reload to open OneApp.", {
           status: 503,
           headers: { "content-type": "text/plain" },
         }),
@@ -41,7 +41,8 @@ const destination = (value) => {
     const url = new URL(value, self.location.origin);
     if (
       url.origin === self.location.origin &&
-      /^\/mail\/all\/received\/[^/]+$/.test(url.pathname) &&
+      (url.pathname === "/calendar" ||
+        /^\/mail\/all\/received\/[^/]+$/.test(url.pathname)) &&
       !url.search &&
       !url.hash
     )
@@ -54,16 +55,24 @@ self.addEventListener("push", (event) => {
   try {
     payload = event.data?.json() ?? {};
   } catch {}
+  const calendar = payload?.type === "calendar";
   event.waitUntil(
-    self.registration.showNotification("New mail", {
-      body: "Open OneApp to read your message.",
-      icon: "/app-icon-192.png",
-      tag:
-        typeof payload?.tag === "string"
-          ? payload.tag.slice(0, 200)
-          : "oneapp-new-mail",
-      data: { url: destination(payload?.url) },
-    }),
+    self.registration.showNotification(
+      calendar ? "Calendar reminder" : "New mail",
+      {
+        body: calendar
+          ? "Open OneApp to see your schedule."
+          : "Open OneApp to read your message.",
+        icon: "/app-icon-192.png",
+        tag:
+          typeof payload?.tag === "string"
+            ? payload.tag.slice(0, 200)
+            : calendar
+              ? "oneapp-calendar"
+              : "oneapp-new-mail",
+        data: { url: destination(calendar ? "/calendar" : payload?.url) },
+      },
+    ),
   );
 });
 self.addEventListener("notificationclick", (event) => {

@@ -1,10 +1,14 @@
-import { expect, it, vi } from "@effect/vitest";
+import { afterEach, beforeEach, expect, it, vi } from "@effect/vitest";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { createECDH, randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import { generateVAPIDKeys } from "web-push";
 import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
+import { defaultCalendarId } from "../calendar-contract.ts";
 import { mailMessagePage } from "../inbox-contract.ts";
+import { deliverCalendarPush } from "./calendar-push.ts";
+import { ensureDefaultCalendar, importCalendar } from "./calendar.ts";
+import { readCalendarImport } from "./calendar-ical.ts";
 import { ensureDefaultMailbox, mailDatabase } from "./mailbox.ts";
 import { indexMail, type IndexedMail } from "./mail-index.ts";
 import { deliverMailPush, type PushEnv } from "./push-delivery.ts";
@@ -21,6 +25,11 @@ const ece = createRequire(import.meta.resolve("web-push"))("http_ece") as {
   ): Buffer;
 };
 const now = Date.now();
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(now);
+});
+afterEach(() => vi.useRealTimers());
 const id = "0-0000000000001-00000000-0000-4000-8000-000000000001.eml";
 const mail: IndexedMail = {
   id,
@@ -44,9 +53,21 @@ const setup = async (sqlite: Database) => {
   let failBatch = false;
   const statement = (sql: string, values: SQLQueryBindings[] = []) => ({
     bind: (...values: SQLQueryBindings[]) => statement(sql, values),
-    execute: () => ({ results: sqlite.query(sql).all(...values) }),
+    execute: () => {
+      const results = sqlite.query(sql).all(...values);
+      const { changes } = sqlite.query("SELECT changes() AS changes").get() as {
+        changes: number;
+      };
+      return { results, meta: { changes } };
+    },
     run: async () => ({ results: sqlite.query(sql).all(...values) }),
-    first: async () => sqlite.query(sql).get(...values),
+    first: async (column?: string) => {
+      const row = sqlite.query(sql).get(...values) as Record<
+        string,
+        unknown
+      > | null;
+      return column ? (row?.[column] ?? null) : row;
+    },
     all: async () => ({ results: sqlite.query(sql).all(...values) }),
   });
   const db = mailDatabase(
@@ -68,6 +89,7 @@ const setup = async (sqlite: Database) => {
     "INSERT INTO accounts (id, active, security_revision) VALUES ('owner', 1, '1')",
   );
   await ensureDefaultMailbox(db);
+  await ensureDefaultCalendar(db, "owner");
   sqlite
     .query(
       `INSERT INTO oneapp_auth_sessions (session_id, subject_id, digest, security_revision, issued_at, expires_at, absolute_expires_at, record)
@@ -354,3 +376,175 @@ it.each(["logout", "password-change", "expired", "read", "deleted"])(
     expect(send).not.toHaveBeenCalled();
   },
 );
+
+it("replays an import without overwriting an edit or restoring a deleted event", async () => {
+  using sqlite = new Database(":memory:");
+  const store = await setup(sqlite);
+  const parsed = readCalendarImport(
+    [
+      "BEGIN:VCALENDAR",
+      "VERSION:2.0",
+      "BEGIN:VEVENT",
+      "UID:unchanged",
+      "DTSTART:20261124T090000Z",
+      "SUMMARY:Original",
+      "END:VEVENT",
+      "BEGIN:VEVENT",
+      "UID:deleted",
+      "DTSTART:20261124T100000Z",
+      "SUMMARY:Removed",
+      "END:VEVENT",
+      "END:VCALENDAR",
+      "",
+    ].join("\r\n"),
+  );
+  expect(
+    await importCalendar(store.db, "owner", defaultCalendarId, parsed, false),
+  ).toMatchObject({
+    available: 2,
+    imported: 0,
+  });
+  expect(
+    await importCalendar(store.db, "owner", defaultCalendarId, parsed, true),
+  ).toMatchObject({
+    imported: 2,
+  });
+  sqlite.exec(
+    "UPDATE calendar_events SET ics = 'edited' WHERE uid = 'unchanged'",
+  );
+  sqlite.exec(
+    "UPDATE calendar_events SET ics = '', deleted = 1 WHERE uid = 'deleted'",
+  );
+  expect(
+    await importCalendar(store.db, "owner", defaultCalendarId, parsed, true),
+  ).toMatchObject({
+    imported: 0,
+    existing: 2,
+  });
+  expect(
+    sqlite
+      .query("SELECT uid, deleted, ics FROM calendar_events ORDER BY uid")
+      .all(),
+  ).toEqual([
+    { uid: "deleted", deleted: 1, ics: "" },
+    { uid: "unchanged", deleted: 0, ics: "edited" },
+  ]);
+});
+
+const scheduleCalendarEvent = (sqlite: Database, remindAt: number) =>
+  sqlite
+    .query(
+      `INSERT INTO calendar_events (id, account_id, calendar_id, uid, ics, revision, remind_at, reminder_ends_at)
+     VALUES ('event', 'owner', ?, 'event@oneapp', 'Confidential event', 'rev', ?, ?)`,
+    )
+    .run(defaultCalendarId, remindAt, remindAt + 10 * 60_000);
+
+it("delivers private calendar reminders when due and once per device", async () => {
+  using sqlite = new Database(":memory:");
+  const store = await setup(sqlite);
+  store.subscribe("second");
+  scheduleCalendarEvent(sqlite, now + 60_000);
+  const send = vi.fn(async (_url: string, init: RequestInit) => {
+    const payload = JSON.parse(
+      ece
+        .decrypt(Buffer.from(init.body as Uint8Array), {
+          version: "aes128gcm",
+          privateKey: store.receiver,
+          authSecret: store.auth,
+        })
+        .toString(),
+    );
+    expect(payload).toEqual({
+      type: "calendar",
+      tag: `calendar:event:${now + 60_000}`,
+      url: "/calendar",
+    });
+    return new Response(null, { status: 201 });
+  });
+  await deliverCalendarPush(store.env, send, now);
+  expect(send).not.toHaveBeenCalled();
+  await Promise.all([
+    deliverCalendarPush(store.env, send, now + 60_000),
+    deliverCalendarPush(store.env, send, now + 60_000),
+  ]);
+  await deliverCalendarPush(store.env, send, now + 120_000);
+  expect(send).toHaveBeenCalledTimes(2);
+});
+
+it("retries a reminder and suppresses it after the event is rescheduled or the session is revoked", async () => {
+  using sqlite = new Database(":memory:");
+  const store = await setup(sqlite);
+  scheduleCalendarEvent(sqlite, now);
+  const send = vi.fn(
+    async () =>
+      new Response(null, {
+        status: 429,
+        headers: { "retry-after": "120" },
+      }),
+  );
+  await deliverCalendarPush(store.env, send, now);
+  await deliverCalendarPush(store.env, send, now + 60_000);
+  expect(send).toHaveBeenCalledTimes(1);
+  sqlite
+    .query(
+      "UPDATE calendar_events SET remind_at = ?, reminder_ends_at = ? WHERE id = 'event'",
+    )
+    .run(now + 180_000, now + 780_000);
+  await deliverCalendarPush(store.env, send, now + 120_000);
+  expect(send).toHaveBeenCalledTimes(1);
+  sqlite.exec(
+    "UPDATE accounts SET security_revision = 'revoked' WHERE id = 'owner'",
+  );
+  await deliverCalendarPush(store.env, send, now + 180_000);
+  expect(send).toHaveBeenCalledTimes(1);
+});
+
+it("deduplicates imports within their destination and skips moved event identities", async () => {
+  using sqlite = new Database(":memory:");
+  const store = await setup(sqlite);
+  const named = crypto.randomUUID();
+  sqlite
+    .query(
+      "INSERT INTO calendars (account_id, id, name, name_key) VALUES ('owner', ?, 'Work', 'work')",
+    )
+    .run(named);
+  const parsed = readCalendarImport(
+    [
+      "BEGIN:VCALENDAR",
+      "VERSION:2.0",
+      "BEGIN:VEVENT",
+      "UID:common",
+      "DTSTART:20261124T090000Z",
+      "SUMMARY:Event",
+      "END:VEVENT",
+      "END:VCALENDAR",
+      "",
+    ].join("\r\n"),
+  );
+
+  expect(
+    await importCalendar(store.db, "owner", defaultCalendarId, parsed, true),
+  ).toMatchObject({ imported: 1 });
+  expect(
+    await importCalendar(store.db, "owner", named, parsed, true),
+  ).toMatchObject({ imported: 1 });
+  const event = sqlite
+    .query("SELECT id FROM calendar_events WHERE calendar_id = ?")
+    .get(named) as { id: string };
+  expect(event.id).toBeTruthy();
+  expect(
+    await importCalendar(store.db, "owner", named, parsed, false),
+  ).toMatchObject({ available: 0, existing: 1 });
+  sqlite.query("DELETE FROM calendar_events WHERE id = ?").run(event.id);
+  sqlite
+    .query(
+      "INSERT INTO calendar_moved_uids (account_id, calendar_id, uid) VALUES ('owner', ?, 'common')",
+    )
+    .run(named);
+  expect(
+    await importCalendar(store.db, "owner", named, parsed, false),
+  ).toMatchObject({ available: 0, existing: 1 });
+  expect(
+    await importCalendar(store.db, "owner", named, parsed, true),
+  ).toMatchObject({ imported: 0, existing: 1 });
+});

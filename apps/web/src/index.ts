@@ -24,6 +24,8 @@ import type { Document, HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import * as AccountSettings from "./account-settings.ts";
 import { Account, AuthApi } from "./auth-contract.ts";
+import * as Calendar from "./calendar.ts";
+import { calendarPath } from "./calendar-contract.ts";
 import * as CliLogin from "./cli-login.ts";
 import * as ConnectedClients from "./connected-clients.ts";
 import * as ExtensionAccess from "./extension-access.ts";
@@ -55,6 +57,8 @@ import { workspace, workspaceDrawerMedia } from "./workspace.ts";
 type Page = typeof AppNavigation.Page.Type;
 const pageFor = (url: Url.Url): Page => {
   if (mailRouteFor(url.pathname)) return "mail";
+  if (url.pathname === calendarPath || url.pathname === `${calendarPath}/`)
+    return "calendar";
   if (contactsRouteFor(url.pathname)) return "contacts";
   if (url.pathname === vaultPath || url.pathname === `${vaultPath}/`)
     return "vault";
@@ -75,6 +79,7 @@ const Model = Schema.Struct({
   vaultSetup: VaultSetup.Model,
   inbox: Inbox.Model,
   people: People.Model,
+  calendar: Calendar.Model,
   mailRoute: Schema.NullOr(MailRoute),
   peopleRoute: Schema.NullOr(ContactsRoute),
   signInNotice: Schema.NullOr(Schema.String),
@@ -108,6 +113,7 @@ const Message = defineMessageUnion({
   GotVaultSetupMessage: { message: VaultSetup.Message },
   GotInboxMessage: { message: Inbox.Message },
   GotPeopleMessage: { message: People.Message },
+  GotCalendarMessage: { message: Calendar.Message },
   GotLinksMessage: { message: Links.Message },
   GotNotificationMessage: { message: Notifications.Message },
   GotConnectedClientsMessage: { message: ConnectedClients.Message },
@@ -271,6 +277,18 @@ const foldLinks = Update.foldChild({
     },
 });
 
+const toCalendarMessage = (message: typeof Calendar.Message.Type) =>
+  Message.GotCalendarMessage({ message });
+const foldCalendar = Update.foldChild({
+  update: Calendar.update,
+  read: (model: Model) =>
+    model.account ? Option.some(model.calendar) : Option.none(),
+  write: (model, calendar) => ({ ...model, calendar }),
+  toParentMessage: toCalendarMessage,
+  foldOutMessage: () => (model) =>
+    update(model, Message.LoadedAccount({ account: null })),
+});
+
 const Navigate = Command.define("Navigate", {
   args: {
     href: Schema.String,
@@ -432,6 +450,8 @@ const loadPage = (
   if (!model.account || isApproval(model)) return { model };
   if (model.page === "links")
     return foldLinks(model, Links.Message.Requested());
+  if (model.page === "calendar")
+    return foldCalendar(model, Calendar.Message.Opened());
   if (model.page === "vault")
     return foldVaultSetup(model, VaultSetup.Message.Requested());
   if (model.mailRoute)
@@ -483,6 +503,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     vaultSetup: VaultSetup.initial,
     inbox: Inbox.initial,
     people: People.initial,
+    calendar: Calendar.initial(),
     mailRoute: mailRouteFor(url.pathname),
     peopleRoute: contactsRouteFor(url.pathname),
     signInNotice: null,
@@ -520,6 +541,7 @@ const update = (
         (request.url.pathname === "/links" ||
           request.url.pathname === "/settings" ||
           request.url.pathname === vaultPath ||
+          request.url.pathname === calendarPath ||
           mailRouteFor(request.url.pathname) ||
           contactsRouteFor(request.url.pathname))
       ) {
@@ -602,6 +624,7 @@ const update = (
         vaultSetup: VaultSetup.initial,
         inbox: Inbox.initial,
         people: People.initial,
+        calendar: Calendar.initial(),
         mailRoute: model.mailRoute,
         peopleRoute: model.peopleRoute,
         signInNotice: null,
@@ -832,6 +855,7 @@ const update = (
         commands: [...(result.commands ?? []), ...(notified.commands ?? [])],
       };
     },
+    GotCalendarMessage: ({ message }) => foldCalendar(model, message),
     GotLinksMessage: ({ message }) =>
       model.pending &&
       ["Submitted", "RequestedDeletion", "Retried"].includes(message._tag)
@@ -1232,6 +1256,7 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
   const title = {
     links: "Links",
     mail: "Mail",
+    calendar: "Calendar",
     vault: "Vault",
     contacts: "Contacts",
     settings: "Settings",
@@ -1239,6 +1264,7 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
   const usesOwnHeading =
     model.page === "links" ||
     model.page === "mail" ||
+    model.page === "calendar" ||
     model.page === "contacts" ||
     model.page === "settings" ||
     (model.page === "vault" && model.vaultSetup.status?.initialized === true);
@@ -1273,6 +1299,13 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
                   view: Inbox.view,
                   model: model.inbox,
                   toParentMessage: toInboxMessage,
+                }),
+              calendar: () =>
+                h.submodel({
+                  slotId: "calendar",
+                  view: Calendar.view,
+                  model: model.calendar,
+                  toParentMessage: toCalendarMessage,
                 }),
               vault: () =>
                 h.submodel({

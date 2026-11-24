@@ -6,7 +6,8 @@ import {
 } from "@alchemy.run/cloudflare-runtime/core/bindings";
 import { getPlatformProxy } from "@alchemy.run/cloudflare-runtime/core/platform-proxy";
 import { join } from "node:path";
-import { localDirectory, localMailResources } from "./local.ts";
+import { localDirectory } from "../dev-local.ts";
+import { localMailResources } from "./local.ts";
 import { MailSampleError } from "./errors.ts";
 import type { SnapshotSink } from "./replay.ts";
 import type { CompletionRequest } from "../../apps/web/src/server/mail-import-completion.ts";

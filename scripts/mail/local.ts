@@ -1,15 +1,26 @@
 import { join } from "node:path";
 import { Schema } from "effect";
+import {
+  currentDevStage,
+  localDirectory,
+  StageName,
+  usesDefaultDev,
+} from "../dev-local.ts";
 import { MailSampleError } from "./errors.ts";
 
-export const StageName = Schema.String.check(
-  Schema.isPattern(/^[a-zA-Z0-9_-]+$/u),
-);
-export const localDirectory = join(import.meta.dir, "..", "..", ".alchemy");
 const LocalState = Schema.Struct({
   providerMode: Schema.Literal("local"),
   attr: Schema.Record(Schema.String, Schema.Unknown),
 });
+
+export const resolveMailStage = async (name: string) => {
+  const stage = Schema.decodeUnknownSync(StageName)(name);
+  if (!usesDefaultDev(stage)) return stage;
+  const current = await currentDevStage();
+  if (!current)
+    throw new MailSampleError("Prepare local dev with bun run dev:pull first.");
+  return current;
+};
 
 export const localMailResources = async (stage: string) => {
   Schema.decodeUnknownSync(StageName)(stage);

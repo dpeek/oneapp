@@ -11,7 +11,9 @@ bun install
 bun run dev
 ```
 
-Open `http://localhost:1337`. The root `dev` command starts the local Cloudflare Worker and the Vite web app on the same origin, applies database migrations, and watches both for changes. On first run it creates `.alchemy/dev.env`. Use its `OWNER_EMAIL` and `OWNER_PASSWORD` to sign in. Local development uses its own credentials and bindings. Pass `--port <port>` to use a different port or `--stage <stage>` to use a different local database.
+Open `http://localhost:1337`. The root `dev` command starts the local Cloudflare Worker and Vite web app together and watches both for changes. On first run it populates local dev from the latest encrypted backup. Use the `OWNER_EMAIL` and `OWNER_PASSWORD` from the local environment file printed at startup. See [Local production backups](#local-production-backups) for setup and refresh.
+
+Pass `--port <port>` to change the port. Use `bun run dev --stage sandbox` to start a separate empty database for experiments.
 
 Run `bun fmt` to format and `bun check` to type-check. `bun run test` runs Vitest on Bun with `@effect/vitest`, and `bun run test:watch` reruns tests as you edit. `bun run verify` formats files, then checks types and runs tests. `bun run build` checks production builds independently of the dev server.
 
@@ -53,10 +55,6 @@ closed-app delivery, tapping the correct message, reauthentication, lost
 connectivity, disabling/re-enabling notifications, and confirming that imports
 produce no alerts. Automated tests cover the outbox, encryption, retry/revocation,
 registration authorization, permission handling and service-worker navigation.
-
-## Local Mail fixtures
-
-With `bun run dev` running, run `bun run mail:seed --stage dev` and refresh **Mail** (`/mail`). The sample mailbox includes single messages, a long thread with a sent reply and an attachment, newsletters in **Noise**, and an archived conversation. Pass the same stage name to `mail:seed` if you started the app with `--stage`. Rerunning the command preserves existing messages and their read or archive state.
 
 ## iCloud mail inventory and sample import
 
@@ -140,7 +138,7 @@ Then import in another terminal:
 bun run mail:import --snapshot .mail-snapshots/icloud --stage mail_replay --mailbox personal
 ```
 
-Sign in at `http://localhost:1338` with the `mail@dpeek.com` credentials in `.alchemy/mail_replay.env`. No dummy mailbox is seeded. The importer requires an explicit local stage and destination `--mailbox`, verifies the entire snapshot before writing, and stores a per-message report in `.alchemy/mail-import/<stage>/<mailbox>/<snapshot-id>-report.json`. Failed messages make the command exit nonzero. Repeat the command to resume; completed receipts are skipped, preserving subsequent read/archive/deletion changes. The local adapter reports messages over 25 MiB as unsupported; their originals remain in the snapshot.
+Sign in at `http://localhost:1338` with the `mail@dpeek.com` credentials in `.alchemy/mail_replay.env`. The importer requires an explicit local stage and destination `--mailbox`, verifies the entire snapshot before writing, and stores a per-message report in `.alchemy/mail-import/<stage>/<mailbox>/<snapshot-id>-report.json`. Failed messages make the command exit nonzero. Repeat the command to resume; completed receipts are skipped, preserving subsequent read/archive/deletion changes. The local adapter reports messages over 25 MiB as unsupported; their originals remain in the snapshot.
 
 After every selected message has imported successfully and threading is finished, a one-time completion policy marks inactive conversations complete. A conversation qualifies when its latest incoming **or sent** message is strictly older than 30 days, none of its incoming messages is unread, and none of its messages has the source `\\Flagged` flag. The cutoff is fixed at the snapshot's `createdAt` minus 30 days, so retries and imports on another machine make the same age comparison. Deleted messages are ignored; conversations containing mail outside this import are protected. Existing complete conversations stay complete.
 
@@ -222,6 +220,19 @@ bun run backup:restore --snapshot /path/to/snapshot \
 ```
 
 Restore works offline and verifies checksums, SQLite integrity, foreign keys, and object references. The new output directory contains plaintext `database.sql`, a usable `database.sqlite`, and the recovered object bodies. Use its `manifest.json` to map numbered files to their bucket keys and metadata. Keep the restore on a private volume. This workflow recovers the data files for inspection or import into a fresh deployment.
+
+### Refresh local development data
+
+```sh
+bun run dev:pull
+bun run dev
+```
+
+`bun run dev` runs the initial pull automatically. `dev:pull` uses the newest completed backup in `~/.local/share/oneapp/backups` and the age identity at `~/.config/oneapp/backup.agekey`. Use `--snapshot <directory>` or `--identity <file>` to override either. The pull verifies and decrypts the backup locally, applies branch migrations to a temporary copy, then loads application records and all four buckets into local dev. Resolve any migration-history error by restoring the original applied migration files and adding forward migrations.
+
+Sign in with the local credentials in the environment file printed by the launcher. The Vault uses its original master password. Local dev uses local sessions and device connections, with outbound mail, push, and scheduled maintenance disabled. Restored data persists under the private `.alchemy/` directory.
+
+Ordinary restarts reuse the current data, including local edits. A successful pull replaces the data used by the next `bun run dev`. Restart any running dev server to switch to the refreshed copy. Earlier copies remain on disk.
 
 ## Cloudflare preview
 

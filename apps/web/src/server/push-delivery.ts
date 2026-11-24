@@ -26,7 +26,53 @@ type Job = {
   attempts: number;
   created_at: number;
 };
-type Subscription = { endpoint: string; p256dh: string; auth: string };
+export type PushSubscription = {
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+};
+
+export const prepareWebPush = (
+  subscription: PushSubscription,
+  config: NonNullable<ReturnType<typeof pushConfiguration>>,
+  payload: object,
+  ttl: number,
+) => {
+  if (!isPushEndpoint(subscription.endpoint))
+    throw new Error("Invalid push endpoint");
+  const details = generateRequestDetails(
+    { endpoint: subscription.endpoint, keys: subscription },
+    JSON.stringify(payload),
+    {
+      vapidDetails: config,
+      contentEncoding: "aes128gcm",
+      urgency: "high",
+      TTL: Math.max(0, Math.floor(ttl / 1000)),
+    },
+  );
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(details.headers))
+    headers.set(name, String(value));
+  return {
+    endpoint: details.endpoint,
+    request: {
+      method: "POST",
+      headers,
+      body: new Uint8Array(details.body),
+      // Workers does not implement redirect: "error".
+      redirect: "manual",
+      signal: AbortSignal.timeout(10_000),
+    } satisfies RequestInit,
+  };
+};
+
+export const retryDelayForPush = (response: Response, now: number) => {
+  const retry = response.headers.get("retry-after");
+  if (!retry) return 0;
+  return /^\d+$/.test(retry)
+    ? Number(retry) * 1000
+    : Math.max(0, Date.parse(retry) - now) || 0;
+};
 
 export const deliverMailPush = async (
   env: PushEnv,
@@ -77,7 +123,7 @@ export const deliverMailPush = async (
         AND ${activePushSubscription}`,
       )
       .bind(job.message_id, job.subscription_id, job.mailbox_id, now, now)
-      .first<Subscription>();
+      .first<PushSubscription>();
     if (!subscription) {
       await complete();
       return;
@@ -85,39 +131,19 @@ export const deliverMailPush = async (
     let retryAfter = 0;
     let stage = "prepare";
     try {
-      if (!isPushEndpoint(subscription.endpoint))
-        throw new Error("Invalid push endpoint");
-      const details = generateRequestDetails(
-        { endpoint: subscription.endpoint, keys: subscription },
-        JSON.stringify({
+      const push = prepareWebPush(
+        subscription,
+        config,
+        {
           title: "New mail",
           body: "Open OneApp to read your message.",
           tag: `mail:${job.mailbox_id}:${job.message_id}`,
           url: mailMessagePage("all", job.message_id),
-        }),
-        {
-          vapidDetails: config,
-          contentEncoding: "aes128gcm",
-          urgency: "high",
-          TTL: Math.max(
-            0,
-            Math.floor((job.created_at + pushLifetimeMs - now) / 1000),
-          ),
         },
+        job.created_at + pushLifetimeMs - now,
       );
-      const headers = new Headers();
-      for (const [name, value] of Object.entries(details.headers))
-        headers.set(name, String(value));
       stage = "send";
-      const response = await send(details.endpoint, {
-        method: "POST",
-        headers,
-        body: new Uint8Array(details.body),
-        // Workers does not implement redirect: "error". Return 3xx responses
-        // without following them; they take the failure/retry path below.
-        redirect: "manual",
-        signal: AbortSignal.timeout(10_000),
-      });
+      const response = await send(push.endpoint, push.request);
       await response.body?.cancel().catch(() => {});
       if (response.ok) {
         await complete();
@@ -130,11 +156,7 @@ export const deliverMailPush = async (
           .run();
         return;
       }
-      const retry = response.headers.get("retry-after");
-      if (retry)
-        retryAfter = /^\d+$/.test(retry)
-          ? Number(retry) * 1000
-          : Math.max(0, Date.parse(retry) - now) || 0;
+      retryAfter = retryDelayForPush(response, now);
       console.warn("Mail push delivery failed", {
         status: response.status,
         attempt: job.attempts,

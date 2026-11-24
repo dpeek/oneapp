@@ -1,3 +1,5 @@
+import { deliverCalendarPush } from "./calendar-push.ts";
+import { calendarRoutes } from "./calendar.ts";
 import { mailImportRoutes } from "./mail-import-api.ts";
 import { pushRoutes } from "./push-api.ts";
 import { deliverMailPush, type PushEnv } from "./push-delivery.ts";
@@ -159,7 +161,12 @@ export default {
     else await notify;
   },
   async scheduled(event: { scheduledTime?: number }, env: WorkerEnv) {
-    await deliverMailPush(env);
+    await Promise.all([
+      deliverMailPush(env),
+      deliverCalendarPush(env).catch(() =>
+        console.warn("Could not process calendar push outbox"),
+      ),
+    ]);
     // Retry push and recover recent arrivals every minute; retain the existing
     // 15-minute maintenance cadence for full scans and garbage collection.
     const maintenance =
@@ -456,6 +463,7 @@ export default {
           mailRoutes,
           mailImportRoutes(env, defer),
           peopleRoutes(http, env, defer),
+          calendarRoutes(http, env),
           vaultSetupRoutes(http, env.DB),
           vaultItemRoutes(http, env.DB),
           vaultManagementRoutes(http, env, defer),

@@ -51,7 +51,7 @@ const Operation = Schema.Union([
   Schema.TaggedStruct("AddTag", { id: ItemId, input: TagCreate }),
 ]);
 type Operation = typeof Operation.Type;
-const FilterCategory = Schema.Literals(["status", "priority", "tags"]);
+export const FilterCategory = Schema.Literals(["status", "priority", "tags"]);
 export const filterOptionsId = "task-filter-options";
 const filterPopover = Popover.init({ id: "task-filters" });
 const filterTags = MultiCombobox.init("task-filter-tags");
@@ -110,7 +110,11 @@ export const Message = defineMessageUnion({
   EditedField: { field: Field, value: Schema.String },
   ToggledCompletion: { id: ItemId },
   GotFilterPopoverMessage: { message: Popover.Message },
-  OpenedFilterCategory: { category: FilterCategory },
+  OpenedFilterCategory: {
+    category: FilterCategory,
+    focusOptions: Schema.Boolean,
+  },
+  ClosedFilterCategory: {},
   ToggledStatusFilter: { value: StatusFilter },
   ToggledPriorityFilter: { value: TaskPriority },
   GotFilterTagsMessage: { message: MultiCombobox.Message },
@@ -570,15 +574,19 @@ export const update = (
       },
       GotFilterPopoverMessage: ({ message }) =>
         foldFilterPopover(model, message),
-      OpenedFilterCategory: ({ category }) => {
+      OpenedFilterCategory: ({ category, focusOptions }) => {
         if (!model.filterPopover.isOpen) return { model };
-        const filterCategory =
-          model.filterCategory === category ? null : category;
         return {
-          model: { ...model, filterCategory, filterTags },
-          ...(filterCategory ? { commands: [FocusFilterOptions()] } : {}),
+          model:
+            model.filterCategory === category
+              ? model
+              : { ...model, filterCategory: category, filterTags },
+          ...(focusOptions ? { commands: [FocusFilterOptions()] } : {}),
         };
       },
+      ClosedFilterCategory: () => ({
+        model: { ...model, ...closedFilterOptions },
+      }),
       ToggledStatusFilter: ({ value }) => ({
         model: {
           ...model,

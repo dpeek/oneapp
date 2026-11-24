@@ -15,7 +15,7 @@ import {
   textarea,
   Tokenizer,
 } from "@oneapp/ui";
-import { Effect } from "effect";
+import { Effect, Option, Queue, Schema, Stream } from "effect";
 import { Mount, Submodel } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";
 import { tagNameKey, tagNameLimit, type Tag } from "./items-contract.ts";
@@ -32,6 +32,7 @@ import {
 } from "./tasks-contract.ts";
 import { matchesTaskFilters, taskFilterCount } from "./tasks-filters.ts";
 import {
+  FilterCategory,
   filterOptionsId,
   hasEdits,
   Message,
@@ -208,6 +209,73 @@ const filterCheckbox = (
     ],
   );
 
+const WatchFilterMenu = Mount.defineStream("WatchTaskFilterMenu", {
+  messages: [Message.OpenedFilterCategory, Message.ClosedFilterCategory],
+  execute: ({ element }) =>
+    Stream.callback<
+      | typeof Message.OpenedFilterCategory.Type
+      | typeof Message.ClosedFilterCategory.Type
+    >((queue) => {
+      const submenuSelector = `#${filterOptionsId}`;
+      const close = Message.ClosedFilterCategory();
+      const hover = (event: Event) => {
+        if (
+          !(event instanceof PointerEvent) ||
+          event.pointerType === "touch" ||
+          !(event.target instanceof Element)
+        )
+          return;
+        const item = event.target.closest<HTMLButtonElement>(
+          "[data-filter-category], .task-filter-clear",
+        );
+        if (
+          !item ||
+          item.getAttribute("aria-expanded") === "true" ||
+          (event.relatedTarget instanceof Node &&
+            item.contains(event.relatedTarget))
+        )
+          return;
+        const category = item.getAttribute("data-filter-category");
+        if (document.activeElement?.closest(submenuSelector))
+          item.focus({ preventScroll: true });
+        Queue.offerUnsafe(
+          queue,
+          Schema.is(FilterCategory)(category)
+            ? Message.OpenedFilterCategory({ category, focusOptions: false })
+            : close,
+        );
+      };
+      const dismiss = (event: Event) => {
+        if (
+          !(event instanceof KeyboardEvent) ||
+          event.key !== "Escape" ||
+          event.isComposing ||
+          !(event.target instanceof Element)
+        )
+          return;
+        const submenu = event.target.closest(submenuSelector);
+        if (!submenu) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const parent = submenu.previousElementSibling;
+        if (parent instanceof HTMLElement)
+          parent.focus({ preventScroll: true });
+        Queue.offerUnsafe(queue, close);
+      };
+      return Effect.acquireRelease(
+        Effect.sync(() => {
+          element.addEventListener("pointerover", hover);
+          element.addEventListener("keydown", dismiss);
+        }),
+        () =>
+          Effect.sync(() => {
+            element.removeEventListener("pointerover", hover);
+            element.removeEventListener("keydown", dismiss);
+          }),
+      );
+    }),
+});
+
 const taskFilterOptions = (
   model: Model,
   tags: readonly Tag[],
@@ -287,38 +355,48 @@ const taskFilters = (
         ],
       ),
       placement: "bottom-start",
+      portal: false,
       panelClassName: "task-filter-popover",
       content: h.div(
-        [h.Class("task-filter-panels")],
+        [h.Class("task-filter-categories"), h.OnMount(WatchFilterMenu())],
         [
-          h.div(
-            [h.Class("task-filter-categories")],
-            [
-              ...categories.map((category) => {
-                const expanded = model.filterCategory === category;
-                return h.button(
+          ...categories.map((category) => {
+            const expanded = model.filterCategory === category;
+            const enter = Message.OpenedFilterCategory({
+              category,
+              focusOptions: true,
+            });
+            return h.div(
+              [h.Key(category), h.Class("task-filter-item")],
+              [
+                h.button(
                   [
-                    h.Key(category),
                     h.Type("button"),
                     h.Class("task-filter-category"),
+                    h.DataAttribute("slot", "task-filter-category"),
+                    h.DataAttribute("filter-category", category),
                     h.AriaExpanded(expanded),
                     ...(expanded ? [h.AriaControls(filterOptionsId)] : []),
-                    h.OnClick(Message.OpenedFilterCategory({ category })),
+                    h.OnClick(enter),
+                    h.OnKeyDownPreventDefault((key) =>
+                      key === "ArrowRight" ? Option.some(enter) : Option.none(),
+                    ),
                   ],
                   [filterLabels[category], outlineIcon(h, ["m9 18 6-6-6-6"])],
-                );
-              }),
-              h.button(
-                [
-                  h.Type("button"),
-                  h.Class("task-filter-clear"),
-                  h.OnClick(Message.ClearedFilters()),
-                ],
-                ["Clear filters"],
-              ),
+                ),
+                ...(expanded ? [taskFilterOptions(model, tags, h)] : []),
+              ],
+            );
+          }),
+          h.button(
+            [
+              h.Type("button"),
+              h.Class("task-filter-clear"),
+              h.DataAttribute("slot", "task-filter-clear"),
+              h.OnClick(Message.ClearedFilters()),
             ],
+            ["Clear filters"],
           ),
-          taskFilterOptions(model, tags, h),
         ],
       ),
       toParentMessage: toFilterPopoverMessage,

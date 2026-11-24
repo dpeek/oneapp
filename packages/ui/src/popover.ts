@@ -35,6 +35,7 @@ export const view = <ParentMessage>(
     triggerButton?: Parameters<typeof buttonClassName>[0];
     content: Html;
     placement?: "bottom-start" | "bottom-end";
+    portal?: boolean;
     panelClassName?: string;
     toParentMessage: (message: typeof Message.Type) => ParentMessage;
   },
@@ -45,7 +46,11 @@ export const view = <ParentMessage>(
     model: props.model,
     view: Popover.view,
     viewInputs: {
-      anchor: { placement: props.placement ?? "bottom-end", gap: 4 },
+      anchor: {
+        placement: props.placement ?? "bottom-end",
+        gap: 4,
+        portal: props.portal,
+      },
       ariaLabel: props.triggerLabel ?? props.label,
       toView: ({ button, panel, backdrop, isVisible }) =>
         h.div(

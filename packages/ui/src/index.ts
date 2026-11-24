@@ -8,6 +8,7 @@ export { actionBar } from "./action-bar.ts";
 export { avatarGroup } from "./avatar-group.ts";
 export { button, buttonClassName } from "./button.ts";
 export { buttonGroup, createButtonGroup } from "./button-group.ts";
+export * as ColorPicker from "./color-picker.ts";
 export { dialog } from "./dialog.ts";
 export * as DropdownMenu from "./dropdown-menu.ts";
 export {

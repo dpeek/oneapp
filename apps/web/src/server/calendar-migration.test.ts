@@ -1,7 +1,8 @@
 import { expect, it } from "@effect/vitest";
 import { Database } from "bun:sqlite";
+import { defaultCalendarColor } from "../calendar-contract.ts";
 
-it("moves existing events, import tombstones and reminders into the default calendar", async () => {
+it("preserves existing events and reminders and gives existing calendars a default colour", async () => {
   using db = new Database(":memory:");
   const root = new URL("../../drizzle/", import.meta.url).pathname;
   const files = Array.from(
@@ -77,4 +78,24 @@ it("moves existing events, import tombstones and reminders into the default cale
       "UPDATE calendar_events SET calendar_id = 'private' WHERE id = 'event'",
     ),
   ).toThrow(/FOREIGN KEY/u);
+
+  const colourUpgrade = files.find((file) =>
+    file.includes("_calendar_colour/"),
+  )!;
+  const colourMigration = await Bun.file(root + colourUpgrade).text();
+  db.transaction(() => db.exec(colourMigration))();
+  expect(
+    db
+      .query(
+        "SELECT id, color FROM calendars WHERE account_id = 'other' ORDER BY id",
+      )
+      .all(),
+  ).toEqual([
+    { id: "default", color: defaultCalendarColor },
+    { id: "private", color: defaultCalendarColor },
+  ]);
+  expect(db.query("SELECT event_id FROM calendar_push_outbox").all()).toEqual([
+    { event_id: "event" },
+  ]);
+  expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
 });

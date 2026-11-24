@@ -41,7 +41,7 @@ const styles = stylex.create({
     justifyContent: "space-between",
     gap: "0.5rem",
   },
-  title: { margin: 0, fontSize: "1.125rem" },
+  title: { margin: 0, marginInlineEnd: "auto", fontSize: "1.125rem" },
 });
 
 // Crease's left-edge Sheet layout on the installed Foldkit Dialog primitive.
@@ -49,6 +49,7 @@ export const sheet = <ParentMessage>(
   props: {
     model: typeof Model.Type;
     title: string;
+    headerActions?: ReadonlyArray<Html>;
     content: Html;
     toParentMessage: (message: typeof Message.Type) => ParentMessage;
   },
@@ -95,6 +96,7 @@ export const sheet = <ParentMessage>(
                           ],
                           [props.title],
                         ),
+                        ...(props.headerActions ?? []),
                         h.button(
                           [
                             ...closeButton,

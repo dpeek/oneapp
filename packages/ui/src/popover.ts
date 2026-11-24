@@ -28,6 +28,7 @@ export const view = <ParentMessage>(
   props: {
     model: typeof Model.Type;
     label: string;
+    disabled?: boolean;
     trigger: Html;
     content: Html;
     toParentMessage: (message: typeof Message.Type) => ParentMessage;
@@ -50,6 +51,7 @@ export const view = <ParentMessage>(
                 ...button,
                 h.DataAttribute("slot", "button"),
                 h.Title(props.label),
+                h.Disabled(props.disabled ?? false),
                 h.Class(
                   [
                     buttonClassName({

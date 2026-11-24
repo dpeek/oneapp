@@ -6,6 +6,9 @@ StyleX toast, toast behavior, and focus recovery helper at revision
 The local adaptation uses OneApp tokens and buttons, adds notification defaults,
 and includes action activation in the runtime message schema.
 
+`src/color-picker.ts` and `src/color-picker-color.ts` adapt the opaque picker
+from the same CreaseUI revision for OneApp’s shared dialog and popover UI.
+
 MIT License
 
 Copyright (c) 2026 Potti1234

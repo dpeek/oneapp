@@ -1,0 +1,1 @@
+ALTER TABLE `calendars` ADD `color` text DEFAULT '#4b43ad' NOT NULL;

@@ -25,7 +25,11 @@ import { defineMessageUnion } from "foldkit/message";
 import * as AccountSettings from "./account-settings.ts";
 import { Account, AuthApi } from "./auth-contract.ts";
 import * as Calendar from "./calendar.ts";
-import { calendarPath } from "./calendar-contract.ts";
+import {
+  calendarListPath,
+  CalendarRoute,
+  calendarRouteFor,
+} from "./calendar-contract.ts";
 import * as CliLogin from "./cli-login.ts";
 import * as ConnectedClients from "./connected-clients.ts";
 import * as ExtensionAccess from "./extension-access.ts";
@@ -57,8 +61,7 @@ import { workspace, workspaceDrawerMedia } from "./workspace.ts";
 type Page = typeof AppNavigation.Page.Type;
 const pageFor = (url: Url.Url): Page => {
   if (mailRouteFor(url.pathname)) return "mail";
-  if (url.pathname === calendarPath || url.pathname === `${calendarPath}/`)
-    return "calendar";
+  if (calendarRouteFor(url.pathname)) return "calendar";
   if (contactsRouteFor(url.pathname)) return "contacts";
   if (url.pathname === vaultPath || url.pathname === `${vaultPath}/`)
     return "vault";
@@ -80,6 +83,7 @@ const Model = Schema.Struct({
   inbox: Inbox.Model,
   people: People.Model,
   calendar: Calendar.Model,
+  calendarRoute: Schema.NullOr(CalendarRoute),
   mailRoute: Schema.NullOr(MailRoute),
   peopleRoute: Schema.NullOr(ContactsRoute),
   signInNotice: Schema.NullOr(Schema.String),
@@ -285,8 +289,20 @@ const foldCalendar = Update.foldChild({
     model.account ? Option.some(model.calendar) : Option.none(),
   write: (model, calendar) => ({ ...model, calendar }),
   toParentMessage: toCalendarMessage,
-  foldOutMessage: () => (model) =>
-    update(model, Message.LoadedAccount({ account: null })),
+  foldOutMessage:
+    (out: Calendar.OutMessage): Update.Step<Model, Message> =>
+    (model) => {
+      if (out._tag === "SessionExpired")
+        return update(model, Message.LoadedAccount({ account: null }));
+      return model.page === "calendar"
+        ? {
+            model,
+            commands: [
+              Navigate({ href: calendarListPath(out.id), mode: "push" }),
+            ],
+          }
+        : { model };
+    },
 });
 
 const Navigate = Command.define("Navigate", {
@@ -405,10 +421,13 @@ const isApproval = (model: Model) =>
   model.extensionAccess.approvalId !== null ||
   model.extensionAccess.approved;
 
-const closeFolderSheet = (model: Model): Update.Return<Model, Message> =>
-  model.page === "contacts"
+const closeFolderSheet = (model: Model): Update.Return<Model, Message> => {
+  if (model.page === "calendar")
+    return foldCalendar(model, Calendar.closeFolderSheet());
+  return model.page === "contacts"
     ? foldPeople(model, People.closeFolderSheet())
     : foldInbox(model, Inbox.closeFolderSheet());
+};
 
 const subscriptions = Subscription.make<Model, Message>()((entry) => ({
   folderSheet: entry(
@@ -417,7 +436,8 @@ const subscriptions = Subscription.make<Model, Message>()((entry) => ({
       modelToDependencies: (model) => ({
         open:
           model.inbox.folderSheet.isOpen ||
-          model.people.directory.folderSheet.isOpen,
+          model.people.directory.folderSheet.isOpen ||
+          model.calendar.folderSheet.isOpen,
       }),
       dependenciesToStream: ({ open }) =>
         open
@@ -450,8 +470,14 @@ const loadPage = (
   if (!model.account || isApproval(model)) return { model };
   if (model.page === "links")
     return foldLinks(model, Links.Message.Requested());
-  if (model.page === "calendar")
-    return foldCalendar(model, Calendar.Message.Opened());
+  if (model.calendarRoute)
+    return foldCalendar(
+      model,
+      Calendar.Message.Opened({
+        id: model.calendarRoute.id,
+        refresh: previousPage !== "calendar",
+      }),
+    );
   if (model.page === "vault")
     return foldVaultSetup(model, VaultSetup.Message.Requested());
   if (model.mailRoute)
@@ -504,6 +530,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     inbox: Inbox.initial,
     people: People.initial,
     calendar: Calendar.initial(),
+    calendarRoute: calendarRouteFor(url.pathname),
     mailRoute: mailRouteFor(url.pathname),
     peopleRoute: contactsRouteFor(url.pathname),
     signInNotice: null,
@@ -541,7 +568,7 @@ const update = (
         (request.url.pathname === "/links" ||
           request.url.pathname === "/settings" ||
           request.url.pathname === vaultPath ||
-          request.url.pathname === calendarPath ||
+          calendarRouteFor(request.url.pathname) ||
           mailRouteFor(request.url.pathname) ||
           contactsRouteFor(request.url.pathname))
       ) {
@@ -562,9 +589,11 @@ const update = (
     ChangedUrl: ({ url }) => {
       const page = pageFor(url);
       const mailRoute = mailRouteFor(url.pathname);
+      const calendarRoute = calendarRouteFor(url.pathname);
       const peopleRoute = contactsRouteFor(url.pathname);
       const sameRoute =
         page === model.page &&
+        calendarRoute?.id === model.calendarRoute?.id &&
         mailRoute?.folder === model.mailRoute?.folder &&
         mailRoute?.id === model.mailRoute?.id &&
         peopleRoute?.id === model.peopleRoute?.id &&
@@ -575,7 +604,14 @@ const update = (
             closeFolderSheet,
             (next) =>
               loadPage(
-                { ...next, page, mailRoute, peopleRoute, error: null },
+                {
+                  ...next,
+                  page,
+                  calendarRoute,
+                  mailRoute,
+                  peopleRoute,
+                  error: null,
+                },
                 model.page,
               ),
           ]);
@@ -625,6 +661,7 @@ const update = (
         inbox: Inbox.initial,
         people: People.initial,
         calendar: Calendar.initial(),
+        calendarRoute: model.calendarRoute,
         mailRoute: model.mailRoute,
         peopleRoute: model.peopleRoute,
         signInNotice: null,

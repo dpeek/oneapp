@@ -7,7 +7,9 @@ import {
   calendarImportLimit,
   calendarImportLimitLabel,
   CalendarId,
-  CalendarNameWrite,
+  CalendarColor,
+  CalendarPreferencesWrite,
+  defaultCalendarColor,
   CalendarSummary,
   defaultCalendarId,
   defaultCalendarName,
@@ -52,7 +54,9 @@ const importBody = HttpServerRequest.schemaBodyJson(
 const exportQuery = HttpServerRequest.schemaSearchParams(
   Schema.Struct({ calendarId: Schema.optional(CalendarId) }),
 ).pipe(Effect.option);
-const nameBody = HttpServerRequest.schemaBodyJson(CalendarNameWrite).pipe(
+const preferencesBody = HttpServerRequest.schemaBodyJson(
+  CalendarPreferencesWrite,
+).pipe(
   Effect.provideService(HttpServerRequest.MaxBodySize, ByteSize.kibibytes(2)),
   Effect.option,
 );
@@ -66,6 +70,7 @@ const errorText = (error: unknown, fallback: string) =>
 
 type CalendarSummary = typeof CalendarSummary.Type;
 const isCalendarId = Schema.is(CalendarId);
+const isCalendarColor = Schema.is(CalendarColor);
 
 export const ensureDefaultCalendar = (db: D1Database, account: string) =>
   db
@@ -84,7 +89,9 @@ export const ensureDefaultCalendar = (db: D1Database, account: string) =>
 const getCalendar = async (db: D1Database, account: string, id: string) => {
   if (id === defaultCalendarId) await ensureDefaultCalendar(db, account);
   return db
-    .prepare("SELECT id, name FROM calendars WHERE account_id = ? AND id = ?")
+    .prepare(
+      "SELECT id, name, color FROM calendars WHERE account_id = ? AND id = ?",
+    )
     .bind(account, id)
     .first<CalendarSummary>();
 };
@@ -124,7 +131,7 @@ export const listCalendarWeek = async (
           .first()
       : null,
     env.DB.prepare(
-      "SELECT id, name FROM calendars WHERE account_id = ? ORDER BY id <> ?, name_key, id",
+      "SELECT id, name, color FROM calendars WHERE account_id = ? ORDER BY id <> ?, name_key, id",
     )
       .bind(account, defaultCalendarId)
       .all<CalendarSummary>(),
@@ -312,7 +319,7 @@ export const calendarRoutes = (
       ),
     );
 
-  const writeName = (create: boolean) =>
+  const writePreferences = (create: boolean) =>
     handle(
       http.protect(
         Effect.gen(function* () {
@@ -322,7 +329,7 @@ export const calendarRoutes = (
           const { id } = yield* HttpRouter.params;
           if (!isCalendarId(id) || (create && id === defaultCalendarId))
             return yield* missing();
-          const body = yield* nameBody;
+          const body = yield* preferencesBody;
           const name =
             body._tag === "Some" ? body.value.name.trim().normalize("NFC") : "";
           if (!name || /[\u0000-\u001f\u007f]/u.test(name))
@@ -330,27 +337,45 @@ export const calendarRoutes = (
               400,
               "Enter a calendar name up to 80 characters.",
             );
+          const color = body._tag === "Some" ? body.value.color : undefined;
+          if (color !== undefined && !isCalendarColor(color))
+            return yield* jsonError(400, "Choose an opaque colour.");
+          const normalizedColor = color?.toLowerCase();
           const nameKey = name.toLowerCase();
           yield* Effect.tryPromise(() => ensureDefaultCalendar(db, subjectId));
           const result = yield* Effect.tryPromise(() =>
             (create
               ? db
                   .prepare(
-                    "INSERT INTO calendars (account_id, id, name, name_key) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                    `INSERT INTO calendars (account_id, id, name, name_key, color)
+                     VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING id, name, color`,
                   )
-                  .bind(subjectId, id, name, nameKey)
+                  .bind(
+                    subjectId,
+                    id,
+                    name,
+                    nameKey,
+                    normalizedColor ?? defaultCalendarColor,
+                  )
               : db
                   .prepare(
-                    "UPDATE OR IGNORE calendars SET name = ?, name_key = ? WHERE account_id = ? AND id = ?",
+                    `UPDATE OR IGNORE calendars SET name = ?, name_key = ?, color = COALESCE(?, color)
+                     WHERE account_id = ? AND id = ? RETURNING id, name, color`,
                   )
-                  .bind(name, nameKey, subjectId, id)
-            ).run(),
+                  .bind(name, nameKey, normalizedColor ?? null, subjectId, id)
+            ).first<CalendarSummary>(),
           );
-          if (result.meta.changes) return yield* json({ id, name });
+          if (result) return yield* json(result);
           const existing = yield* Effect.tryPromise(() =>
             getCalendar(db, subjectId, id),
           );
-          if (create && existing?.name === name) return yield* json(existing);
+          if (
+            create &&
+            existing?.name === name &&
+            (normalizedColor === undefined ||
+              existing.color === normalizedColor)
+          )
+            return yield* json(existing);
           if (!create && !existing) return yield* missing();
           return yield* jsonError(
             409,
@@ -361,8 +386,16 @@ export const calendarRoutes = (
     );
 
   return Layer.mergeAll(
-    HttpRouter.add("POST", `${calendarApi}/calendars/:id`, writeName(true)),
-    HttpRouter.add("PUT", `${calendarApi}/calendars/:id`, writeName(false)),
+    HttpRouter.add(
+      "POST",
+      `${calendarApi}/calendars/:id`,
+      writePreferences(true),
+    ),
+    HttpRouter.add(
+      "PUT",
+      `${calendarApi}/calendars/:id`,
+      writePreferences(false),
+    ),
     HttpRouter.add(
       "GET",
       calendarApi,

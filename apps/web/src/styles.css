@@ -1972,17 +1972,15 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
   overflow-wrap: anywhere;
 }
 
-.page:has(> .calendar) {
-  width: min(100%, 92rem);
-}
-
-.calendar {
+.workspace-list.calendar {
   display: grid;
+  align-content: start;
   gap: 1rem;
-  min-width: 0;
+  overflow: auto;
+  padding: 0 0.875rem 1rem;
 }
 
-.calendar-header,
+.calendar-nav-header,
 .calendar-toolbar,
 .calendar-actions {
   display: flex;
@@ -1991,19 +1989,63 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
   gap: 0.5rem;
 }
 
-.calendar-header,
+.calendar-nav-header,
 .calendar-toolbar {
   justify-content: space-between;
 }
 
-.calendar .calendar-header h1,
+.calendar-nav-header {
+  margin-block-end: 0.5rem;
+}
+
+.calendar-nav-header h2,
 .calendar h2,
 .calendar p {
   margin: 0;
 }
 
+.calendar-nav-header h2 {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.calendar-nav-row {
+  display: grid;
+  align-items: center;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.25rem;
+}
+
+.calendar-nav-destination,
+.calendar-colour-field {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.calendar-nav-swatch {
+  flex: none;
+  width: 0.625rem;
+  height: 0.625rem;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+}
+
+.calendar-nav-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .calendar h2 {
   font-size: 1.125rem;
+}
+
+.calendar-import-preview {
+  display: grid;
+  gap: 0.75rem;
 }
 
 .calendar-panel,
@@ -2018,10 +2060,6 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
   border-radius: 0.75rem;
   background: var(--surface);
   overflow-wrap: anywhere;
-}
-
-.calendar-panel form {
-  width: 100%;
 }
 
 .calendar-form-dates {
@@ -2126,6 +2164,8 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
   width: 100%;
   padding: 0.375rem;
   border: 1px solid transparent;
+  border-inline-start: 0.1875rem solid
+    var(--calendar-event-color, var(--accent));
   border-radius: 0.375rem;
   background: var(--canvas);
   color: var(--text);
@@ -2139,7 +2179,7 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
 }
 
 .page .calendar-day button.calendar-event:hover {
-  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 .calendar-event-time {
@@ -2186,23 +2226,6 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
     min-height: 2.75rem;
     padding: 0.5rem;
   }
-}
-
-.calendar-list {
-  display: grid;
-  width: 100%;
-  gap: 0.5rem;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.calendar-list li {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
 }
 
 .calendar-event-summary {

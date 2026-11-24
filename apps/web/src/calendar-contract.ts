@@ -7,6 +7,7 @@ export const calendarImportLimitLabel = `${calendarImportLimit / (1024 * 1024)} 
 export const calendarReminderMinutes = 10;
 export const defaultCalendarId = "default";
 export const defaultCalendarName = "Personal";
+export const defaultCalendarColor = "#4b43ad";
 export const calendarNameLimit = 80;
 export const calendarExportName = (name: string) =>
   (name
@@ -19,12 +20,32 @@ export const CalendarId = Schema.String.check(
     /^(?:default|[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12})$/u,
   ),
 );
+export const CalendarRoute = Schema.Struct({ id: Schema.NullOr(CalendarId) });
+const isCalendarId = Schema.is(CalendarId);
+export const calendarListPath = (id: string | null) =>
+  id === null ? calendarPath : `${calendarPath}/${id}`;
+
+export const calendarRouteFor = (
+  pathname: string,
+): typeof CalendarRoute.Type | null => {
+  const path = pathname.replace(/\/$/u, "");
+  if (path === calendarPath) return { id: null };
+  if (!path.startsWith(`${calendarPath}/`)) return null;
+  const id = path.slice(calendarPath.length + 1);
+  return isCalendarId(id) ? { id } : null;
+};
+
+export const CalendarColor = Schema.String.check(
+  Schema.isPattern(/^#[0-9a-f]{6}$/iu),
+);
 export const CalendarSummary = Schema.Struct({
   id: CalendarId,
   name: Schema.String,
+  color: CalendarColor,
 });
-export const CalendarNameWrite = Schema.Struct({
+export const CalendarPreferencesWrite = Schema.Struct({
   name: Schema.String.check(Schema.isMaxLength(calendarNameLimit)),
+  color: Schema.optional(Schema.String),
 });
 
 const text = (limit: number) => Schema.String.check(Schema.isMaxLength(limit));

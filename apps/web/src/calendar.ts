@@ -1,12 +1,27 @@
 import { Temporal } from "@js-temporal/polyfill";
-import { button, buttonClassName, nativeSelect } from "@oneapp/ui";
-import { Effect, Schema } from "effect";
-import { Command, Mount, Submodel, type Update } from "foldkit";
+import {
+  button,
+  ColorPicker,
+  dialog,
+  DropdownMenu,
+  ellipsisIcon,
+  nativeSelect,
+  outlineIcon,
+  plusIcon,
+  Sheet,
+  sidebarClassNames,
+  sidebarItemClassName,
+} from "@oneapp/ui";
+import { Effect, Option, Schema } from "effect";
+import { Command, Mount, Submodel, Update } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import {
   calendarApi,
+  CalendarColor,
+  defaultCalendarColor,
   CalendarId,
+  calendarListPath,
   calendarNameLimit,
   CalendarSummary,
   defaultCalendarId,
@@ -24,6 +39,17 @@ import {
   calendarDays,
   calendarWeekStart,
 } from "./calendar-time.ts";
+import { workspace } from "./workspace.ts";
+
+const MenuTarget = Schema.Struct({
+  calendarId: CalendarId,
+  surface: Schema.Literals(["sidebar", "sheet"]),
+});
+type MenuTarget = typeof MenuTarget.Type;
+const menuId = ({ calendarId, surface }: MenuTarget) =>
+  `calendar-actions-${surface}-${calendarId}`;
+type CalendarAction = "edit" | "import" | "export";
+const menu = DropdownMenu.create<CalendarAction>();
 
 const ImportState = Schema.Struct({
   ics: Schema.String,
@@ -35,10 +61,11 @@ const Editor = Schema.Struct({
   revision: Schema.NullOr(Schema.String),
   draft: CalendarDraft,
 });
-const NameEditor = Schema.Struct({
+const CalendarEditor = Schema.Struct({
   id: CalendarId,
   create: Schema.Boolean,
   name: Schema.String,
+  picker: ColorPicker.Model,
 });
 const RequestState = Schema.Struct({
   id: Schema.String,
@@ -48,7 +75,7 @@ const RequestState = Schema.Struct({
     "delete",
     "preview",
     "import",
-    "name",
+    "calendar",
   ]),
 });
 
@@ -58,8 +85,9 @@ export const Model = Schema.Struct({
   week: Schema.NullOr(CalendarWeek),
   calendars: Schema.Array(CalendarSummary),
   visible: Schema.NullOr(CalendarId),
-  managing: Schema.Boolean,
-  nameEditor: Schema.NullOr(NameEditor),
+  folderSheet: Sheet.Model,
+  menus: Schema.Record(Schema.String, DropdownMenu.Model),
+  calendarEditor: Schema.NullOr(CalendarEditor),
   request: Schema.NullOr(RequestState),
   selected: Schema.NullOr(CalendarOccurrence),
   editor: Schema.NullOr(Editor),
@@ -78,8 +106,9 @@ export const initial = (): Model => ({
   week: null,
   calendars: [],
   visible: null,
-  managing: false,
-  nameEditor: null,
+  folderSheet: Sheet.init({ id: "calendar-folders" }),
+  menus: {},
+  calendarEditor: null,
   request: null,
   selected: null,
   editor: null,
@@ -91,16 +120,17 @@ export const initial = (): Model => ({
 });
 
 export const Message = defineMessageUnion({
-  Opened: {},
+  Opened: { id: Schema.NullOr(CalendarId), refresh: Schema.Boolean },
   ShiftedWeek: { days: Schema.Number },
   JumpedToToday: {},
   Retried: {},
-  ShowedCalendar: { id: Schema.String },
-  ManagedCalendars: {},
-  NamedCalendar: { calendar: Schema.NullOr(CalendarSummary) },
+  GotFolderSheetMessage: { message: Sheet.Message },
+  GotMenuMessage: { target: MenuTarget, message: DropdownMenu.Message },
+  NewCalendar: {},
+  DownloadStarted: {},
   ChangedName: { name: Schema.String },
-  SavedName: {},
-  ClosedName: {},
+  GotColorPicker: { message: ColorPicker.Message },
+  SavedCalendar: {},
   OpenedEvent: { event: CalendarOccurrence },
   NewEvent: { day: Schema.String },
   EditEvent: {},
@@ -118,10 +148,9 @@ export const Message = defineMessageUnion({
   ToggledAllDay: {},
   ToggledReminder: {},
   SavedEvent: {},
+  ClosedEventEditor: {},
   RequestedDelete: {},
   ConfirmedDelete: {},
-  OpenedImport: {},
-  ChangedImportCalendar: { id: CalendarId },
   ChangedImportFile: {},
   PreviewedFile: {},
   CommittedImport: {},
@@ -134,14 +163,17 @@ export const Message = defineMessageUnion({
     notice: Schema.String,
     calendarId: Schema.NullOr(CalendarId),
   },
-  CalendarNamed: { request: Schema.String, calendar: CalendarSummary },
+  CalendarSaved: { request: Schema.String, calendar: CalendarSummary },
   Failed: { request: Schema.String, error: Schema.String },
   SessionExpired: { request: Schema.String },
   Focused: {},
 });
 type Message = typeof Message.Type;
-export const OutMessage = defineMessageUnion({ SessionExpired: {} });
-type OutMessage = typeof OutMessage.Type;
+export const OutMessage = defineMessageUnion({
+  SessionExpired: {},
+  OpenCalendar: { id: CalendarId },
+});
+export type OutMessage = typeof OutMessage.Type;
 
 class CalendarRequestError extends Error {
   constructor(
@@ -301,20 +333,51 @@ const ImportFile = Command.define("ImportCalendarFile", {
     }),
 });
 
-const SaveCalendarName = Command.define("SaveCalendarName", {
-  args: { id: Schema.String, editor: NameEditor },
-  messages: [Message.CalendarNamed, Message.SessionExpired, Message.Failed],
-  execute: ({ id, editor }) =>
+const SaveCalendar = Command.define("SaveCalendar", {
+  args: {
+    request: Schema.String,
+    calendarId: CalendarId,
+    create: Schema.Boolean,
+    name: Schema.String,
+    color: CalendarColor,
+  },
+  messages: [Message.CalendarSaved, Message.SessionExpired, Message.Failed],
+  execute: ({ request: id, calendarId, create, name, color }) =>
     run(id, async (signal) => {
       const response = await request(
         signal,
-        `${calendarApi}/calendars/${editor.id}`,
-        jsonRequest(editor.create ? "POST" : "PUT", { name: editor.name }),
+        `${calendarApi}/calendars/${calendarId}`,
+        jsonRequest(create ? "POST" : "PUT", { name, color }),
       );
       const calendar = Schema.decodeUnknownSync(CalendarSummary)(
         await response.json(),
       );
-      return Message.CalendarNamed({ request: id, calendar });
+      return Message.CalendarSaved({ request: id, calendar });
+    }),
+});
+
+const DownloadCalendar = Command.define("DownloadCalendar", {
+  args: { id: CalendarId },
+  messages: [Message.DownloadStarted],
+  execute: ({ id }) =>
+    Effect.sync(() => {
+      const link = document.createElement("a");
+      link.href = `${calendarApi}/export?${new URLSearchParams({ calendarId: id })}`;
+      link.download = "";
+      document.body.append(link);
+      link.click();
+      link.remove();
+      return Message.DownloadStarted();
+    }),
+});
+
+const OpenCalendarDialog = Mount.define("OpenCalendarDialog", {
+  messages: [Message.Focused],
+  execute: ({ element }) =>
+    Effect.sync(() => {
+      if (element instanceof HTMLDialogElement && !element.open)
+        element.showModal();
+      return Message.Focused();
     }),
 });
 
@@ -332,8 +395,7 @@ const closedPanel = {
   editor: null,
   importing: null,
   preview: null,
-  managing: false,
-  nameEditor: null,
+  calendarEditor: null,
   confirmDelete: false,
 } as const;
 
@@ -356,10 +418,104 @@ const openPanel = (model: Model, panel: Partial<Model>) => ({
   model: { ...model, ...closedPanel, error: null, notice: null, ...panel },
 });
 
-const showDestination = (
-  visible: Model["visible"],
+const afterMutation = (
+  model: Model,
+  notice: string,
   destination: string | null,
-) => (visible && destination ? destination : visible);
+) => {
+  const result = load({ ...model, ...closedPanel, notice });
+  return destination && destination !== model.visible
+    ? { ...result, outMessage: OutMessage.OpenCalendar({ id: destination }) }
+    : result;
+};
+
+const toFolderSheet = (message: typeof Sheet.Message.Type) =>
+  Message.GotFolderSheetMessage({ message });
+export const closeFolderSheet = () =>
+  toFolderSheet(Sheet.Message.RequestedClose());
+
+const foldFolderSheet = Update.foldChild({
+  update: Sheet.update,
+  read: (model: Model) => Option.some(model.folderSheet),
+  write: (model, folderSheet) => ({ ...model, folderSheet }),
+  toParentMessage: toFolderSheet,
+  foldOutMessage: () => (model) => ({ model }),
+});
+
+const menuModel = (model: Model, target: MenuTarget) =>
+  model.menus[menuId(target)] ?? DropdownMenu.init({ id: menuId(target) });
+
+const calendarEditorFor = (calendar?: typeof CalendarSummary.Type) => ({
+  id: calendar?.id ?? crypto.randomUUID(),
+  create: !calendar,
+  name: calendar?.name ?? "",
+  picker: ColorPicker.init(
+    "calendar-color-picker",
+    calendar?.color ?? defaultCalendarColor,
+  ),
+});
+
+const toColorPicker = (message: typeof ColorPicker.Message.Type) =>
+  Message.GotColorPicker({ message });
+
+const foldColorPicker = Update.foldChild({
+  update: ColorPicker.update,
+  read: (model: Model) => Option.fromNullishOr(model.calendarEditor?.picker),
+  write: (model, picker) =>
+    model.calendarEditor
+      ? { ...model, calendarEditor: { ...model.calendarEditor, picker } }
+      : model,
+  toParentMessage: toColorPicker,
+});
+
+const closeSheetAndOpenPanel = (model: Model, panel: Partial<Model>) =>
+  foldFolderSheet(
+    openPanel(model, panel).model,
+    Sheet.Message.RequestedClose(),
+  );
+
+const foldMenu = Update.foldChildAt({
+  update: menu.update,
+  readAt: (model: Model, target: MenuTarget) =>
+    Option.some(menuModel(model, target)),
+  writeAt: (model, target, child) => ({
+    ...model,
+    menus: { ...model.menus, [menuId(target)]: child },
+  }),
+  toParentMessage: (target, message) =>
+    Message.GotMenuMessage({ target, message }),
+  foldOutMessage:
+    (target: MenuTarget) =>
+    ({ value }: { value: CalendarAction }): Update.Step<Model, Message> =>
+    (model) => {
+      const calendar = calendarChoices(model).find(
+        ({ id }) => id === target.calendarId,
+      );
+      if (busy(model) || !calendar) return { model };
+      if (value === "export")
+        return { model, commands: [DownloadCalendar({ id: calendar.id })] };
+      return closeSheetAndOpenPanel(
+        model,
+        value === "edit"
+          ? { calendarEditor: calendarEditorFor(calendar) }
+          : { importing: calendar.id },
+      );
+    },
+});
+
+const updateFolderSheet = (
+  model: Model,
+  message: typeof Sheet.Message.Type,
+) => {
+  if (message._tag !== "RequestedClose") return foldFolderSheet(model, message);
+  const menuSteps = calendarChoices(model).flatMap(({ id: calendarId }) => {
+    const target = { calendarId, surface: "sheet" } as const;
+    return model.menus[menuId(target)]?.isOpen
+      ? [foldMenu(target, DropdownMenu.Message.Closed())]
+      : [];
+  });
+  return Update.combine(model, [...menuSteps, foldFolderSheet(message)]);
+};
 
 const beginImport = (model: Model, ics: string | null) => {
   if (!model.importing) return { model };
@@ -384,7 +540,13 @@ export const update = (
   Message.match<Update.ReturnWithOutMessage<Model, Message, OutMessage>>(
     message,
     {
-      Opened: () => (busy(model) ? { model } : load(model)),
+      Opened: ({ id, refresh }) => {
+        if (busy(model)) return { model: { ...model, visible: id } };
+        const next = { ...model, ...closedPanel, visible: id };
+        return refresh || (!next.week && !next.request)
+          ? load(next)
+          : { model: next };
+      },
       ShiftedWeek: ({ days }) =>
         busy(model)
           ? { model }
@@ -395,40 +557,43 @@ export const update = (
           : navigateWeek(model, calendarWeekStart(today())),
       Retried: () =>
         busy(model) ? { model } : load({ ...model, ...closedPanel }),
-      ShowedCalendar: ({ id }) =>
-        busy(model) ||
-        (id !== "" && !model.calendars.some((calendar) => calendar.id === id))
-          ? { model }
-          : openPanel(model, { visible: id || null }),
-      ManagedCalendars: () =>
-        busy(model) ? { model } : openPanel(model, { managing: true }),
-      NamedCalendar: ({ calendar }) =>
+      GotFolderSheetMessage: ({ message }) => updateFolderSheet(model, message),
+      GotMenuMessage: ({ target, message }) => foldMenu(model, target, message),
+      NewCalendar: () =>
         busy(model)
           ? { model }
-          : openPanel(model, {
-              managing: true,
-              nameEditor: {
-                id: calendar?.id ?? crypto.randomUUID(),
-                create: !calendar,
-                name: calendar?.name ?? "",
-              },
+          : closeSheetAndOpenPanel(model, {
+              calendarEditor: calendarEditorFor(),
             }),
+      DownloadStarted: () => ({ model }),
       ChangedName: ({ name }) =>
-        !model.nameEditor || busy(model)
+        !model.calendarEditor || busy(model)
           ? { model }
           : {
-              model: { ...model, nameEditor: { ...model.nameEditor, name } },
+              model: {
+                ...model,
+                calendarEditor: { ...model.calendarEditor, name },
+              },
             },
-      SavedName: () => {
-        if (!model.nameEditor || busy(model)) return { model };
+      GotColorPicker: ({ message }) =>
+        busy(model) ? { model } : foldColorPicker(model, message),
+      SavedCalendar: () => {
+        const editor = model.calendarEditor;
+        if (!editor || busy(model)) return { model };
         const id = crypto.randomUUID();
         return {
-          model: { ...model, error: null, request: { id, kind: "name" } },
-          commands: [SaveCalendarName({ id, editor: model.nameEditor })],
+          model: { ...model, error: null, request: { id, kind: "calendar" } },
+          commands: [
+            SaveCalendar({
+              request: id,
+              calendarId: editor.id,
+              create: editor.create,
+              name: editor.name,
+              color: ColorPicker.hex(editor.picker),
+            }),
+          ],
         };
       },
-      ClosedName: () =>
-        busy(model) ? { model } : openPanel(model, { managing: true }),
       OpenedEvent: ({ event }) =>
         busy(model) ? { model } : openPanel(model, { selected: event }),
       NewEvent: ({ day }) =>
@@ -458,6 +623,7 @@ export const update = (
           ? { ...event.draft, end: calendarDays(event.draft.end, -1) }
           : event.draft;
         return openPanel(model, {
+          selected: event,
           editor: {
             id: event.id,
             calendarId: event.calendarId,
@@ -527,6 +693,10 @@ export const update = (
           commands: [SaveEvent({ id, editor: model.editor })],
         };
       },
+      ClosedEventEditor: () =>
+        busy(model)
+          ? { model }
+          : { model: { ...model, editor: null, error: null } },
       RequestedDelete: () =>
         busy(model) ? { model } : { model: { ...model, confirmDelete: true } },
       ConfirmedDelete: () => {
@@ -543,18 +713,6 @@ export const update = (
           ],
         };
       },
-      OpenedImport: () =>
-        busy(model)
-          ? { model }
-          : openPanel(model, {
-              importing: model.visible ?? defaultCalendarId,
-            }),
-      ChangedImportCalendar: ({ id }) =>
-        !model.importing || busy(model)
-          ? { model }
-          : {
-              model: { ...model, importing: id, preview: null, error: null },
-            },
       ChangedImportFile: () =>
         busy(model)
           ? { model }
@@ -585,31 +743,28 @@ export const update = (
       Imported: ({ request, report }) =>
         request !== model.request?.id
           ? { model }
-          : load({
-              ...model,
-              ...closedPanel,
-              visible: showDestination(model.visible, model.importing),
-              notice: `Imported ${report.imported} events and series.`,
-            }),
+          : afterMutation(
+              model,
+              `Imported ${report.imported} events and series.`,
+              model.visible ? model.importing : null,
+            ),
       Changed: ({ request, notice, calendarId }) =>
         request !== model.request?.id
           ? { model }
-          : load({
-              ...model,
-              ...closedPanel,
-              visible: showDestination(model.visible, calendarId),
-              notice,
-            }),
-      CalendarNamed: ({ request, calendar }) => {
+          : afterMutation(model, notice, model.visible ? calendarId : null),
+      CalendarSaved: ({ request, calendar }) => {
         if (request !== model.request?.id) return { model };
-        const created = model.nameEditor?.create === true;
-        return load({
-          ...model,
-          ...closedPanel,
-          managing: true,
-          visible: created ? calendar.id : model.visible,
-          notice: created ? "Calendar created." : "Calendar renamed.",
-        });
+        const created = model.calendarEditor?.create === true;
+        const calendars = created
+          ? [...model.calendars, calendar]
+          : model.calendars.map((entry) =>
+              entry.id === calendar.id ? calendar : entry,
+            );
+        return afterMutation(
+          { ...model, calendars },
+          created ? "Calendar created." : "Calendar updated.",
+          created ? calendar.id : null,
+        );
       },
       Failed: ({ request, error }) =>
         request !== model.request?.id
@@ -659,12 +814,18 @@ const eventsForDay = (
 
 type H = HtmlBuilder<Message>;
 
-const blankCalendar = { id: defaultCalendarId, name: defaultCalendarName };
+const blankCalendar = {
+  id: defaultCalendarId,
+  name: defaultCalendarName,
+  color: defaultCalendarColor,
+};
 const calendarChoices = (model: Model) =>
   model.calendars.length ? model.calendars : [blankCalendar];
+const calendarFor = (model: Model, id: string) =>
+  calendarChoices(model).find((calendar) => calendar.id === id);
+
 const calendarName = (model: Model, id: string) =>
-  calendarChoices(model).find((calendar) => calendar.id === id)?.name ??
-  "Calendar";
+  calendarFor(model, id)?.name ?? "Calendar";
 
 const calendarOptions = (model: Model) =>
   calendarChoices(model).map((calendar) => ({
@@ -672,125 +833,203 @@ const calendarOptions = (model: Model) =>
     label: calendar.name,
   }));
 
-const exportLink = (calendar: typeof CalendarSummary.Type, h: H) =>
-  h.a(
-    [
-      h.Href(
-        `${calendarApi}/export?${new URLSearchParams({ calendarId: calendar.id })}`,
-      ),
-      h.Class(buttonClassName({ variant: "outline" })),
-      h.Download(""),
-      h.AriaLabel(`Export ${calendar.name}`),
-    ],
-    ["Export"],
+const allCalendars = "All calendars";
+
+const newCalendarButton = (model: Model, h: H) =>
+  button(
+    {
+      variant: "ghost",
+      size: "icon-sm",
+      rounded: true,
+      ariaLabel: "New calendar",
+      attributes: [h.Title("New calendar")],
+      disabled: busy(model),
+      onClick: Message.NewCalendar(),
+      children: [plusIcon(h, "16")],
+    },
+    h,
   );
 
-const calendarsView = (model: Model, h: H) => {
-  const disabled = busy(model);
-  const editor = model.nameEditor;
-  return h.section(
-    [h.Class("calendar-panel"), h.AriaLabel("Manage calendars")],
-    [
-      h.h2([h.Tabindex(-1), h.OnMount(FocusPanel())], ["Calendars"]),
-      h.ul(
-        [h.Class("calendar-list")],
-        calendarChoices(model).map((calendar) =>
-          h.li(
-            [h.Key(calendar.id)],
-            [
-              h.span([], [calendar.name]),
-              h.div(
-                [h.Class("calendar-actions")],
-                [
-                  button(
-                    {
-                      variant: "ghost",
-                      disabled: disabled || Boolean(editor),
-                      ariaLabel: `Rename ${calendar.name}`,
-                      onClick: Message.NamedCalendar({ calendar }),
-                      children: ["Rename"],
-                    },
-                    h,
+const calendarNavigation = (
+  model: Model,
+  surface: MenuTarget["surface"],
+  h: H,
+) => {
+  const navigationLink = (id: string | null, label: string, color?: string) => {
+    const current = id === model.visible;
+    return h.a(
+      [
+        h.Href(calendarListPath(id)),
+        h.DataAttribute("slot", "navigation-link"),
+        h.Class(sidebarItemClassName(current)),
+        ...(current ? [h.AriaCurrent("page")] : []),
+      ],
+      [
+        h.span(
+          [h.Class("calendar-nav-destination")],
+          [
+            ...(color
+              ? [
+                  h.span(
+                    [
+                      h.Class("calendar-nav-swatch"),
+                      h.Style({ backgroundColor: color }),
+                      h.AriaHidden(true),
+                    ],
+                    [],
                   ),
-                  exportLink(calendar, h),
-                ],
-              ),
-            ],
-          ),
+                ]
+              : []),
+            h.span([h.Class("calendar-nav-label"), h.Title(label)], [label]),
+          ],
         ),
+      ],
+    );
+  };
+
+  return h.nav(
+    [h.AriaLabel("Calendar navigation")],
+    [
+      ...(surface === "sidebar"
+        ? [
+            h.div(
+              [h.Class("calendar-nav-header")],
+              [h.h2([], ["Calendars"]), newCalendarButton(model, h)],
+            ),
+          ]
+        : []),
+      h.ul(
+        [h.Class(sidebarClassNames.list)],
+        [
+          h.li([h.Key("all")], [navigationLink(null, allCalendars)]),
+          ...calendarChoices(model).map((calendar) => {
+            const target = { calendarId: calendar.id, surface };
+            return h.li(
+              [h.Key(calendar.id), h.Class("calendar-nav-row")],
+              [
+                navigationLink(calendar.id, calendar.name, calendar.color),
+                menu.view(
+                  {
+                    model: menuModel(model, target),
+                    label: `Actions for ${calendar.name}`,
+                    trigger: ellipsisIcon(h),
+                    disabled: busy(model),
+                    toParentMessage: (message) =>
+                      Message.GotMenuMessage({ target, message }),
+                    items: [
+                      {
+                        action: "edit",
+                        label: "Edit",
+                        icon: outlineIcon(h, [
+                          "m15 5 4 4M4 20l4-.8L20 7a2.1 2.1 0 0 0-3-3L4.8 16z",
+                        ]),
+                      },
+                      {
+                        action: "import",
+                        label: "Import",
+                        icon: outlineIcon(h, [
+                          "M12 15V3m-4 4 4-4 4 4M4 15v5h16v-5",
+                        ]),
+                      },
+                      {
+                        action: "export",
+                        label: "Export",
+                        icon: outlineIcon(h, [
+                          "M12 3v12m-4-4 4 4 4-4M4 15v5h16v-5",
+                        ]),
+                      },
+                    ],
+                  },
+                  h,
+                ),
+              ],
+            );
+          }),
+        ],
       ),
-      editor
-        ? h.form(
-            [h.OnSubmit(Message.SavedName())],
-            [
-              h.label(
-                [h.Class("calendar-field")],
-                [
-                  h.span([], ["Calendar name"]),
-                  h.input([
-                    h.Type("text"),
-                    h.Value(editor.name),
-                    h.Required(true),
-                    h.Maxlength(calendarNameLimit),
-                    h.Disabled(disabled),
-                    h.OnMount(FocusPanel()),
-                    h.OnInput((name) => Message.ChangedName({ name })),
-                  ]),
-                ],
-              ),
-              h.div(
-                [h.Class("calendar-actions")],
-                [
-                  button(
-                    {
-                      type: "submit",
-                      disabled,
-                      children: [
-                        editor.create ? "Create calendar" : "Save name",
-                      ],
-                    },
-                    h,
-                  ),
-                  button(
-                    {
-                      variant: "ghost",
-                      disabled,
-                      onClick: Message.ClosedName(),
-                      children: ["Cancel"],
-                    },
-                    h,
-                  ),
-                ],
-              ),
-            ],
-          )
-        : h.div(
-            [h.Class("calendar-actions")],
-            [
-              button(
-                {
-                  disabled,
-                  onClick: Message.NamedCalendar({ calendar: null }),
-                  children: ["New calendar"],
-                },
-                h,
-              ),
-              button(
-                {
-                  variant: "ghost",
-                  disabled,
-                  onClick: Message.ClosedPanel(),
-                  children: ["Done"],
-                },
-                h,
-              ),
-            ],
-          ),
     ],
   );
 };
 
-const editorView = (model: Model, h: H) => {
+const calendarEditorView = (model: Model, h: H) => {
+  const editor = model.calendarEditor!;
+  const disabled = busy(model);
+  return dialog(
+    {
+      title: editor.create ? "New calendar" : "Edit calendar",
+      titleId: "calendar-editor-title",
+      attributes: [
+        h.OnMount(OpenCalendarDialog()),
+        h.OnCancel(Message.ClosedPanel()),
+      ],
+      children: [
+        ...(model.error ? [h.p([h.Role("alert")], [model.error])] : []),
+        h.form(
+          [h.OnSubmit(Message.SavedCalendar())],
+          [
+            h.label(
+              [h.Class("calendar-field")],
+              [
+                h.span([], ["Calendar name"]),
+                h.input([
+                  h.Type("text"),
+                  h.Value(editor.name),
+                  h.Required(true),
+                  h.Maxlength(calendarNameLimit),
+                  h.Disabled(disabled),
+                  h.Autofocus(true),
+                  h.OnInput((name) => Message.ChangedName({ name })),
+                ]),
+              ],
+            ),
+            h.div(
+              [h.Class("calendar-colour-field")],
+              [
+                h.span([], ["Colour"]),
+                ColorPicker.view(
+                  {
+                    model: editor.picker,
+                    label: "Calendar colour",
+                    disabled,
+                    toParentMessage: toColorPicker,
+                  },
+                  h,
+                ),
+              ],
+            ),
+            h.div(
+              [h.Class("calendar-actions")],
+              [
+                button(
+                  {
+                    type: "submit",
+                    disabled,
+                    children: [
+                      editor.create ? "Create calendar" : "Save changes",
+                    ],
+                  },
+                  h,
+                ),
+                button(
+                  {
+                    variant: "ghost",
+                    disabled,
+                    onClick: Message.ClosedPanel(),
+                    children: ["Cancel"],
+                  },
+                  h,
+                ),
+              ],
+            ),
+          ],
+        ),
+      ],
+    },
+    h,
+  );
+};
+
+const eventEditorView = (model: Model, h: H) => {
   const editor = model.editor!;
   const { draft } = editor;
   const disabled = busy(model);
@@ -809,6 +1048,7 @@ const editorView = (model: Model, h: H) => {
           h.Value(draft[field]),
           h.Required(required),
           h.Disabled(disabled),
+          ...(field === "title" ? [h.Autofocus(true)] : []),
           h.OnInput((value) => Message.ChangedText({ field, value })),
           ...(type === "datetime-local" ? [h.Attribute("step", "1")] : []),
           ...(field === "title" || field === "location"
@@ -817,127 +1057,132 @@ const editorView = (model: Model, h: H) => {
         ]),
       ],
     );
-  return h.section(
-    [h.Class("calendar-panel"), h.AriaLabel("Event editor")],
-    [
-      h.h2(
-        [h.Tabindex(-1), h.OnMount(FocusPanel())],
-        [editor.revision ? "Edit event" : "New event"],
-      ),
-      h.form(
-        [h.OnSubmit(Message.SavedEvent())],
-        [
-          textInput("Title", "title", "text"),
-          nativeSelect(
-            {
-              label: "Calendar",
-              value: editor.calendarId,
-              options: calendarOptions(model),
-              disabled,
-              onChange: (id) => Message.ChangedEventCalendar({ id }),
-            },
-            h,
-          ),
-          h.label(
-            [h.Class("calendar-checkbox")],
-            [
-              h.input([
-                h.Type("checkbox"),
-                h.Checked(draft.allDay),
-                h.Disabled(disabled),
-                h.OnChange(() => Message.ToggledAllDay()),
-              ]),
-              "All day",
-            ],
-          ),
-          h.div(
-            [h.Class("calendar-form-dates")],
-            [
-              textInput(
-                draft.allDay ? "First day" : "Starts",
-                "start",
-                draft.allDay ? "date" : "datetime-local",
-              ),
-              textInput(
-                draft.allDay ? "Last day" : "Ends",
-                "end",
-                draft.allDay ? "date" : "datetime-local",
-              ),
-            ],
-          ),
-          ...(draft.allDay
-            ? []
-            : [h.p([h.Class("calendar-muted")], [draft.timeZone])]),
-          textInput("Location", "location", "text", false),
-          h.label(
-            [h.Class("calendar-field")],
-            [
-              h.span([], ["Notes"]),
-              h.textarea([
-                h.Value(draft.description),
-                h.Maxlength(8000),
-                h.Disabled(disabled),
-                h.OnInput((value) =>
-                  Message.ChangedText({ field: "description", value }),
+  return dialog(
+    {
+      title: editor.revision ? "Edit event" : "New event",
+      titleId: "calendar-event-editor-title",
+      attributes: [
+        h.OnMount(OpenCalendarDialog()),
+        h.OnCancel(Message.ClosedEventEditor()),
+      ],
+      children: [
+        ...(model.error ? [h.p([h.Role("alert")], [model.error])] : []),
+        h.form(
+          [h.OnSubmit(Message.SavedEvent())],
+          [
+            textInput("Title", "title", "text"),
+            nativeSelect(
+              {
+                label: "Calendar",
+                value: editor.calendarId,
+                options: calendarOptions(model),
+                disabled,
+                onChange: (id) => Message.ChangedEventCalendar({ id }),
+              },
+              h,
+            ),
+            h.label(
+              [h.Class("calendar-checkbox")],
+              [
+                h.input([
+                  h.Type("checkbox"),
+                  h.Checked(draft.allDay),
+                  h.Disabled(disabled),
+                  h.OnChange(() => Message.ToggledAllDay()),
+                ]),
+                "All day",
+              ],
+            ),
+            h.div(
+              [h.Class("calendar-form-dates")],
+              [
+                textInput(
+                  draft.allDay ? "First day" : "Starts",
+                  "start",
+                  draft.allDay ? "date" : "datetime-local",
                 ),
-              ]),
-            ],
-          ),
-          ...(draft.allDay
-            ? []
-            : [
-                h.label(
-                  [h.Class("calendar-checkbox")],
-                  [
-                    h.input([
-                      h.Type("checkbox"),
-                      h.Checked(draft.reminder),
-                      h.Disabled(disabled),
-                      h.OnChange(() => Message.ToggledReminder()),
-                    ]),
-                    `Remind me ${calendarReminderMinutes} minutes before`,
-                  ],
+                textInput(
+                  draft.allDay ? "Last day" : "Ends",
+                  "end",
+                  draft.allDay ? "date" : "datetime-local",
                 ),
-                ...(!model.week?.remindersAvailable
-                  ? [
-                      h.p(
-                        [h.Class("calendar-muted")],
-                        [
-                          "Set up notifications on a device in ",
-                          h.a([h.Href("/settings")], ["Settings"]),
-                          ".",
-                        ],
-                      ),
-                    ]
-                  : []),
-              ]),
-          h.div(
-            [h.Class("calendar-actions")],
-            [
-              button(
-                {
-                  type: "submit",
-                  disabled,
-                  children: [
-                    model.request?.kind === "save" ? "Saving…" : "Save event",
-                  ],
-                },
-                h,
-              ),
-              button(
-                {
-                  variant: "ghost",
-                  disabled,
-                  onClick: Message.ClosedPanel(),
-                  children: ["Cancel"],
-                },
-                h,
-              ),
-            ],
-          ),
-        ],
-      ),
-    ],
+              ],
+            ),
+            ...(draft.allDay
+              ? []
+              : [h.p([h.Class("calendar-muted")], [draft.timeZone])]),
+            textInput("Location", "location", "text", false),
+            h.label(
+              [h.Class("calendar-field")],
+              [
+                h.span([], ["Notes"]),
+                h.textarea([
+                  h.Value(draft.description),
+                  h.Maxlength(8000),
+                  h.Disabled(disabled),
+                  h.OnInput((value) =>
+                    Message.ChangedText({ field: "description", value }),
+                  ),
+                ]),
+              ],
+            ),
+            ...(draft.allDay
+              ? []
+              : [
+                  h.label(
+                    [h.Class("calendar-checkbox")],
+                    [
+                      h.input([
+                        h.Type("checkbox"),
+                        h.Checked(draft.reminder),
+                        h.Disabled(disabled),
+                        h.OnChange(() => Message.ToggledReminder()),
+                      ]),
+                      `Remind me ${calendarReminderMinutes} minutes before`,
+                    ],
+                  ),
+                  ...(!model.week?.remindersAvailable
+                    ? [
+                        h.p(
+                          [h.Class("calendar-muted")],
+                          [
+                            "Set up notifications on a device in ",
+                            h.a([h.Href("/settings")], ["Settings"]),
+                            ".",
+                          ],
+                        ),
+                      ]
+                    : []),
+                ]),
+            h.div(
+              [h.Class("calendar-actions")],
+              [
+                button(
+                  {
+                    type: "submit",
+                    disabled,
+                    children: [
+                      model.request?.kind === "save" ? "Saving…" : "Save event",
+                    ],
+                  },
+                  h,
+                ),
+                button(
+                  {
+                    variant: "ghost",
+                    disabled,
+                    onClick: Message.ClosedEventEditor(),
+                    children: ["Cancel"],
+                  },
+                  h,
+                ),
+              ],
+            ),
+          ],
+        ),
+      ],
+    },
+    h,
   );
 };
 
@@ -1025,119 +1270,119 @@ const detailsView = (model: Model, h: H) => {
   );
 };
 
-const importView = (model: Model, h: H) => {
+const importView = (id: string, model: Model, h: H) => {
   const report = model.preview?.report;
   const disabled = busy(model);
-  return h.section(
-    [h.Class("calendar-panel"), h.AriaLabel("Import calendar")],
-    [
-      h.h2([h.Tabindex(-1), h.OnMount(FocusPanel())], ["Import calendar"]),
-      report
-        ? h.div(
-            [],
-            [
-              h.p(
-                [],
-                [
-                  `${report.available} ready to import · ${report.existing} already imported · ${report.total - report.available - report.existing} skipped`,
-                ],
-              ),
-              h.p([], [`Import into ${calendarName(model, model.importing!)}`]),
-              ...(report.warnings.length
-                ? [
-                    h.ul(
-                      [h.Class("calendar-import-warnings")],
-                      report.warnings.map((warning) => h.li([], [warning])),
+  return dialog(
+    {
+      titleId: "calendar-import-title",
+      title: `Import into ${calendarName(model, id)}`,
+      attributes: [
+        h.OnMount(OpenCalendarDialog()),
+        h.OnCancel(Message.ClosedPanel()),
+      ],
+      children: [
+        ...(model.error ? [h.p([h.Role("alert")], [model.error])] : []),
+        report
+          ? h.div(
+              [h.Class("calendar-import-preview")],
+              [
+                h.p(
+                  [],
+                  [
+                    `${report.available} ready to import · ${report.existing} already imported · ${report.total - report.available - report.existing} skipped`,
+                  ],
+                ),
+                ...(report.warnings.length
+                  ? [
+                      h.ul(
+                        [h.Class("calendar-import-warnings")],
+                        report.warnings.map((warning) => h.li([], [warning])),
+                      ),
+                    ]
+                  : []),
+                h.div(
+                  [h.Class("calendar-actions")],
+                  [
+                    button(
+                      {
+                        disabled: disabled || !report.available,
+                        onClick: Message.CommittedImport(),
+                        children: [disabled ? "Importing…" : "Import events"],
+                      },
+                      h,
                     ),
-                  ]
-                : []),
-              h.div(
-                [h.Class("calendar-actions")],
-                [
-                  button(
-                    {
-                      disabled: disabled || !report.available,
-                      onClick: Message.CommittedImport(),
-                      children: [disabled ? "Importing…" : "Import events"],
-                    },
-                    h,
-                  ),
-                  button(
-                    {
-                      variant: "ghost",
-                      disabled,
-                      onClick: Message.ChangedImportFile(),
-                      children: ["Change file or calendar"],
-                    },
-                    h,
-                  ),
-                  button(
-                    {
-                      variant: "ghost",
-                      disabled,
-                      onClick: Message.ClosedPanel(),
-                      children: ["Done"],
-                    },
-                    h,
-                  ),
-                ],
-              ),
-            ],
-          )
-        : h.form(
-            [h.OnSubmit(Message.PreviewedFile())],
-            [
-              nativeSelect(
-                {
-                  label: "Import into",
-                  value: model.importing!,
-                  options: calendarOptions(model),
-                  disabled,
-                  onChange: (id) => Message.ChangedImportCalendar({ id }),
-                },
-                h,
-              ),
-              h.label(
-                [h.Class("calendar-field")],
-                [
-                  h.span(
-                    [],
-                    [`Calendar file (.ics, up to ${calendarImportLimitLabel})`],
-                  ),
-                  h.input([
-                    h.Type("file"),
-                    h.Id(fileInput),
-                    h.Required(true),
-                    h.Accept(".ics,text/calendar"),
-                    h.Disabled(disabled),
-                  ]),
-                ],
-              ),
-              h.div(
-                [h.Class("calendar-actions")],
-                [
-                  button(
-                    {
-                      type: "submit",
-                      disabled,
-                      children: [disabled ? "Reading…" : "Preview import"],
-                    },
-                    h,
-                  ),
-                  button(
-                    {
-                      variant: "ghost",
-                      disabled,
-                      onClick: Message.ClosedPanel(),
-                      children: ["Cancel"],
-                    },
-                    h,
-                  ),
-                ],
-              ),
-            ],
-          ),
-    ],
+                    button(
+                      {
+                        variant: "ghost",
+                        disabled,
+                        onClick: Message.ChangedImportFile(),
+                        children: ["Choose another file"],
+                      },
+                      h,
+                    ),
+                    button(
+                      {
+                        variant: "ghost",
+                        disabled,
+                        onClick: Message.ClosedPanel(),
+                        children: ["Done"],
+                      },
+                      h,
+                    ),
+                  ],
+                ),
+              ],
+            )
+          : h.form(
+              [h.OnSubmit(Message.PreviewedFile())],
+              [
+                h.label(
+                  [h.Class("calendar-field")],
+                  [
+                    h.span(
+                      [],
+                      [
+                        `Calendar file (.ics, up to ${calendarImportLimitLabel})`,
+                      ],
+                    ),
+                    h.input([
+                      h.Type("file"),
+                      h.Id(fileInput),
+                      h.Required(true),
+                      h.Accept(".ics,text/calendar"),
+                      h.Disabled(disabled),
+                      h.Autofocus(true),
+                    ]),
+                  ],
+                ),
+                h.div(
+                  [h.Class("calendar-actions")],
+                  [
+                    button(
+                      {
+                        type: "submit",
+                        disabled,
+                        children: [disabled ? "Reading…" : "Preview import"],
+                      },
+                      h,
+                    ),
+                    button(
+                      {
+                        variant: "ghost",
+                        disabled,
+                        onClick: Message.ClosedPanel(),
+                        children: ["Cancel"],
+                      },
+                      h,
+                    ),
+                  ],
+                ),
+              ],
+            ),
+      ],
+    },
+    h,
   );
 };
 
@@ -1154,65 +1399,20 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
   const selectedCalendar = calendars.find(
     (calendar) => calendar.id === model.visible,
   );
-  const exportCalendar =
-    selectedCalendar ?? (calendars.length === 1 ? calendars[0] : undefined);
   const events =
     model.week?.events.filter(
       (event) => !model.visible || event.calendarId === model.visible,
     ) ?? [];
   const showCalendarNames = calendars.length > 1 && !model.visible;
-  return h.div(
-    [h.Class("calendar")],
+  const missing =
+    model.week !== null && model.visible !== null && !selectedCalendar;
+  const list = h.div(
+    [h.Class("workspace-list calendar")],
     [
-      h.header(
-        [h.Class("calendar-header")],
-        [
-          h.h1([], ["Calendar"]),
-          h.div(
-            [h.Class("calendar-actions")],
-            [
-              button(
-                {
-                  variant: "outline",
-                  disabled,
-                  onClick: Message.OpenedImport(),
-                  children: ["Import"],
-                },
-                h,
-              ),
-              exportCalendar
-                ? exportLink(exportCalendar, h)
-                : button(
-                    {
-                      variant: "outline",
-                      disabled,
-                      onClick: Message.ManagedCalendars(),
-                      children: ["Export"],
-                    },
-                    h,
-                  ),
-              button(
-                {
-                  variant: "outline",
-                  disabled,
-                  onClick: Message.ManagedCalendars(),
-                  children: ["Calendars"],
-                },
-                h,
-              ),
-              button(
-                {
-                  disabled,
-                  onClick: Message.NewEvent({ day: eventDate }),
-                  children: ["New event"],
-                },
-                h,
-              ),
-            ],
-          ),
-        ],
-      ),
-      ...(model.error
+      ...(model.error &&
+      !model.importing &&
+      !model.calendarEditor &&
+      !model.editor
         ? [
             h.div(
               [h.Class("calendar-error")],
@@ -1231,15 +1431,11 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
           ]
         : []),
       ...(model.notice ? [h.p([h.Role("status")], [model.notice])] : []),
-      ...(model.editor
-        ? [editorView(model, h)]
-        : model.importing
-          ? [importView(model, h)]
-          : model.managing
-            ? [calendarsView(model, h)]
-            : model.selected
-              ? [detailsView(model, h)]
-              : []),
+      ...(model.selected ? [detailsView(model, h)] : []),
+      ...(model.calendarEditor ? [calendarEditorView(model, h)] : []),
+      ...(model.editor ? [eventEditorView(model, h)] : []),
+      ...(model.importing ? [importView(model.importing, model, h)] : []),
+      ...(missing ? [h.p([h.Role("alert")], ["Calendar not found."])] : []),
       h.div(
         [h.Class("calendar-toolbar")],
         [
@@ -1252,23 +1448,6 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
           h.div(
             [h.Class("calendar-actions")],
             [
-              ...(calendars.length > 1
-                ? [
-                    nativeSelect(
-                      {
-                        label: "Show calendar",
-                        value: model.visible ?? "",
-                        options: [
-                          { value: "", label: "All calendars" },
-                          ...calendarOptions(model),
-                        ],
-                        disabled,
-                        onChange: (id) => Message.ShowedCalendar({ id }),
-                      },
-                      h,
-                    ),
-                  ]
-                : []),
               button(
                 {
                   variant: "outline",
@@ -1313,7 +1492,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
             ),
           ]
         : []),
-      ...(model.week
+      ...(model.week && !missing
         ? [
             ...(events.length === 0
               ? [h.p([h.Class("calendar-empty")], ["No events this week."])]
@@ -1364,6 +1543,11 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
                                     [
                                       h.Type("button"),
                                       h.Class("calendar-event"),
+                                      h.Style({
+                                        "--calendar-event-color":
+                                          calendarFor(model, event.calendarId)
+                                            ?.color ?? defaultCalendarColor,
+                                      }),
                                       h.Disabled(disabled),
                                       h.OnClick(Message.OpenedEvent({ event })),
                                       h.DataAttribute(
@@ -1423,5 +1607,57 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
           ]
         : []),
     ],
+  );
+  return workspace(
+    {
+      className: "workspace-stacked calendar-workspace",
+      title:
+        model.visible === null
+          ? allCalendars
+          : (selectedCalendar?.name ?? "Calendar"),
+      headerActions: [
+        h.div(
+          [h.Class("workspace-drawer-trigger")],
+          [
+            button(
+              {
+                variant: "ghost",
+                size: "icon",
+                rounded: true,
+                ariaLabel: "Calendars",
+                dialogId: model.folderSheet.id,
+                disabled,
+                onClick: toFolderSheet(Sheet.Message.RequestedOpen()),
+                children: [outlineIcon(h, ["M4 6h16M4 12h16M4 18h16"])],
+              },
+              h,
+            ),
+          ],
+        ),
+        button(
+          {
+            size: "sm",
+            disabled: disabled || (model.visible !== null && !selectedCalendar),
+            onClick: Message.NewEvent({ day: eventDate }),
+            children: ["New event"],
+          },
+          h,
+        ),
+      ],
+      sidebar: calendarNavigation(model, "sidebar", h),
+      list,
+      hasSelection: false,
+      sheet: Sheet.sheet(
+        {
+          model: model.folderSheet,
+          title: "Calendars",
+          headerActions: [newCalendarButton(model, h)],
+          content: calendarNavigation(model, "sheet", h),
+          toParentMessage: toFolderSheet,
+        },
+        h,
+      ),
+    },
+    h,
   );
 });

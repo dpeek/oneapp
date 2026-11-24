@@ -7,6 +7,7 @@ import {
   text,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
+import { defaultCalendarColor } from "../calendar-contract.ts";
 import { accounts } from "./database.ts";
 import { pushSubscriptions } from "./push-tables.ts";
 
@@ -19,6 +20,7 @@ export const calendars = sqliteTable(
     id: text().notNull(),
     name: text().notNull(),
     nameKey: text("name_key").notNull(),
+    color: text().notNull().default(defaultCalendarColor),
   },
   (table) => [
     primaryKey({ columns: [table.accountId, table.id] }),

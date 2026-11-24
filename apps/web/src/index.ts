@@ -9,11 +9,20 @@ import {
   bitwardenSignInQuery,
 } from "./bitwarden-connection.ts";
 import { appName } from "@oneapp/core";
-import { button, item, itemGroup, outlineIcon, plusIcon } from "@oneapp/ui";
+import {
+  button,
+  CommandMenu,
+  dialog,
+  item,
+  itemGroup,
+  outlineIcon,
+  plusIcon,
+} from "@oneapp/ui";
 import * as Client from "@yielded/auth/Client";
 import { Effect, Option, Schema, Stream } from "effect";
 import {
   Command,
+  Mount,
   Navigation,
   Runtime,
   Subscription,
@@ -56,7 +65,10 @@ import {
 import * as PeopleDirectory from "./people-directory.ts";
 import * as Tasks from "./tasks.ts";
 import { taskPath, TaskRoute, taskRouteFor } from "./tasks-contract.ts";
-import { view as tasksView } from "./tasks-view.ts";
+import {
+  createView as taskCreateView,
+  view as tasksView,
+} from "./tasks-view.ts";
 import { vaultPath } from "./vault-setup-contract.ts";
 import * as VaultSetup from "./vault-setup.ts";
 import { workspace, workspaceDrawerMedia } from "./workspace.ts";
@@ -89,6 +101,7 @@ const Model = Schema.Struct({
   calendar: Calendar.Model,
   calendarRoute: Schema.NullOr(CalendarRoute),
   tasks: Tasks.Model,
+  creationMenu: Schema.NullOr(CommandMenu.Model),
   taskRoute: Schema.NullOr(TaskRoute),
   mailRoute: Schema.NullOr(MailRoute),
   peopleRoute: Schema.NullOr(ContactsRoute),
@@ -125,6 +138,10 @@ const Message = defineMessageUnion({
   GotPeopleMessage: { message: People.Message },
   GotCalendarMessage: { message: Calendar.Message },
   GotTasksMessage: { message: Tasks.Message },
+  OpenedCreationMenu: {},
+  ClosedCreationMenu: {},
+  CreationMenuMounted: {},
+  GotCreationMenuMessage: { message: CommandMenu.Message },
   GotLinksMessage: { message: Links.Message },
   GotNotificationMessage: { message: Notifications.Message },
   GotConnectedClientsMessage: { message: ConnectedClients.Message },
@@ -350,6 +367,42 @@ const Navigate = Command.define("Navigate", {
   },
 });
 
+const creationMenu = CommandMenu.create<"task">();
+const creationItems = [{ value: "task", label: "Task" }] as const;
+const toCreationMenu = (message: typeof CommandMenu.Message.Type) =>
+  Message.GotCreationMenuMessage({ message });
+const foldCreationMenu = Update.foldChild({
+  update: creationMenu.update,
+  read: (model: Model) => Option.fromNullishOr(model.creationMenu),
+  write: (model, creationMenu) => ({ ...model, creationMenu }),
+  toParentMessage: toCreationMenu,
+  foldOutMessage:
+    (out): Update.Step<Model, Message> =>
+    (model) =>
+      out._tag === "Selected"
+        ? foldTasks(
+            { ...model, creationMenu: null },
+            Tasks.Message.OpenedCreate({ preserveView: true }),
+          )
+        : { model },
+});
+
+const OpenCreationMenu = Mount.define("OpenCreationMenu", {
+  messages: [Message.CreationMenuMounted],
+  execute: ({ element }) =>
+    Effect.acquireRelease(
+      Effect.sync(() => {
+        if (element instanceof HTMLDialogElement && !element.open)
+          element.showModal();
+      }),
+      () =>
+        Effect.sync(() => {
+          if (element instanceof HTMLDialogElement && element.open)
+            element.close();
+        }),
+    ).pipe(Effect.as(Message.CreationMenuMounted())),
+});
+
 const canonicalMailNavigation = (url: Url.Url, route: Model["mailRoute"]) => {
   if (!route?.id) return;
   const pathname = mailMessagePage(route.folder, route.id);
@@ -458,7 +511,41 @@ const closeFolderSheet = (model: Model): Update.Return<Model, Message> => {
     : foldInbox(model, Inbox.closeFolderSheet());
 };
 
+const isEditable = (target: EventTarget | null) =>
+  target instanceof HTMLElement &&
+  (target.isContentEditable ||
+    target.closest(
+      'input, textarea, select, [role="textbox"], [role="combobox"]',
+    ) !== null);
+
+const isCreationShortcut = (event: KeyboardEvent) =>
+  event.key.toLowerCase() === "c" &&
+  !event.defaultPrevented &&
+  !event.isComposing &&
+  !event.repeat &&
+  !event.altKey &&
+  !event.ctrlKey &&
+  !event.metaKey &&
+  !event.shiftKey &&
+  !isEditable(event.target) &&
+  !isEditable(document.activeElement);
+
 const subscriptions = Subscription.make<Model, Message>()((entry) => ({
+  creationShortcut: entry(
+    { active: Schema.Boolean },
+    {
+      modelToDependencies: (model) => ({
+        active: model.account !== null && !isApproval(model),
+      }),
+      dependenciesToStream: ({ active }) =>
+        active
+          ? Stream.fromEventListener<KeyboardEvent>(document, "keydown").pipe(
+              Stream.filter(isCreationShortcut),
+              Stream.map(() => Message.OpenedCreationMenu()),
+            )
+          : Stream.empty,
+    },
+  ),
   folderSheet: entry(
     { open: Schema.Boolean },
     {
@@ -569,6 +656,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     calendar: Calendar.initial(),
     calendarRoute: calendarRouteFor(url.pathname),
     tasks: Tasks.initial,
+    creationMenu: null,
     taskRoute: taskRouteFor(url.pathname),
     mailRoute: mailRouteFor(url.pathname),
     peopleRoute: contactsRouteFor(url.pathname),
@@ -653,6 +741,7 @@ const update = (
                   taskRoute,
                   mailRoute,
                   peopleRoute,
+                  creationMenu: null,
                   error: null,
                 },
                 model.page,
@@ -706,6 +795,7 @@ const update = (
         calendar: Calendar.initial(),
         calendarRoute: model.calendarRoute,
         tasks: Tasks.initial,
+        creationMenu: null,
         taskRoute: model.taskRoute,
         mailRoute: model.mailRoute,
         peopleRoute: model.peopleRoute,
@@ -939,6 +1029,21 @@ const update = (
     },
     GotCalendarMessage: ({ message }) => foldCalendar(model, message),
     GotTasksMessage: ({ message }) => foldTasks(model, message),
+    OpenedCreationMenu: () =>
+      model.account &&
+      !isApproval(model) &&
+      !model.creationMenu &&
+      !model.tasks.creation
+        ? {
+            model: {
+              ...model,
+              creationMenu: CommandMenu.init({ id: "creation-command" }),
+            },
+          }
+        : { model },
+    ClosedCreationMenu: () => ({ model: { ...model, creationMenu: null } }),
+    CreationMenuMounted: () => ({ model }),
+    GotCreationMenuMessage: ({ message }) => foldCreationMenu(model, message),
     GotLinksMessage: ({ message }) =>
       model.pending &&
       ["Submitted", "RequestedDeletion", "Retried"].includes(message._tag)
@@ -1427,6 +1532,42 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
           model: model.people,
           toParentMessage: toPeopleMessage,
         }),
+        ...(model.creationMenu
+          ? [
+              dialog(
+                {
+                  title: "Create",
+                  titleId: "creation-command-title",
+                  attributes: [
+                    h.Key("creation-command-dialog"),
+                    h.OnMount(OpenCreationMenu()),
+                    h.OnCancel(Message.ClosedCreationMenu()),
+                  ],
+                  children: [
+                    creationMenu.view(
+                      {
+                        model: model.creationMenu,
+                        items: creationItems,
+                        toParentMessage: toCreationMenu,
+                      },
+                      h,
+                    ),
+                  ],
+                },
+                h,
+              ),
+            ]
+          : []),
+        ...(model.tasks.creation
+          ? [
+              h.submodel({
+                slotId: "task-creation",
+                view: taskCreateView,
+                model: model.tasks,
+                toParentMessage: toTasksMessage,
+              }),
+            ]
+          : []),
       ],
     ),
   };

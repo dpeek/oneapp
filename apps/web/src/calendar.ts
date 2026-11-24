@@ -470,6 +470,7 @@ const MountEventDetails = Mount.defineStream("MountCalendarEventDetails", {
             focusAfterPosition: true,
           });
           const dismiss = (event: Event) => {
+            if (document.querySelector(":modal")) return;
             event.preventDefault();
             event.stopPropagation();
             Queue.offerUnsafe(queue, Message.ClosedEventDetails({ anchorId }));

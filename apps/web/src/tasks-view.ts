@@ -26,6 +26,7 @@ import {
   Message,
   selectedTask,
   tagSearch,
+  writingCreation,
   type Editor,
   type Model,
 } from "./tasks.ts";
@@ -279,6 +280,7 @@ const taskFields = (
   busy: boolean,
   creating: boolean,
   h: HtmlBuilder<Message>,
+  tagsUnavailable = false,
 ) => {
   const { draft } = editor;
   const tagsFull = draft.tagIds.length >= taskTagLimit;
@@ -367,7 +369,7 @@ const taskFields = (
         items: search.items,
         selected: tags.filter(({ id }) => draft.tagIds.includes(id)),
         maxLength: tagNameLimit,
-        busy,
+        busy: busy || tagsUnavailable,
         full: tagsFull,
         description: tagsFull
           ? `A task can have up to ${taskTagLimit} tags.`
@@ -399,18 +401,22 @@ const OpenCreateDialog = Mount.define("OpenTaskCreateDialog", {
 });
 
 const createDialogId = "task-create-dialog";
-const taskCreateDialog = (
-  editor: Editor,
-  model: Model,
-  tags: readonly Tag[],
-  h: HtmlBuilder<Message>,
-) => {
-  const busy = model.request !== null;
+const sortedTags = (model: Model) =>
+  [...(model.index?.tags ?? [])].sort((left, right) =>
+    left.name.localeCompare(right.name),
+  );
+
+export const createView = Submodel.defineView<Model, Message>((model, h) => {
+  const editor = model.creation;
+  if (!editor) return h.empty;
+  const busy =
+    model.request !== null && model.request.operation._tag !== "Load";
   return dialog(
     {
       title: "Add task",
       titleId: "task-create-title",
       attributes: [
+        h.Key(createDialogId),
         h.Id(createDialogId),
         h.OnMount(OpenCreateDialog()),
         h.OnCancel(Message.ClosedCreate()),
@@ -422,8 +428,20 @@ const taskCreateDialog = (
             h.OnSubmit(Message.Created()),
           ],
           [
-            ...(model.error ? [h.p([h.Role("alert")], [model.error])] : []),
-            ...taskFields(editor, tags, busy, true, h),
+            ...(editor.error ? [h.p([h.Role("alert")], [editor.error])] : []),
+            ...(!model.index
+              ? model.error
+                ? [h.p([h.Role("alert")], [model.error])]
+                : [h.p([h.Role("status")], ["Loading tasks and tags…"])]
+              : []),
+            ...taskFields(
+              editor,
+              sortedTags(model),
+              busy,
+              true,
+              h,
+              !model.index,
+            ),
             h.div(
               [h.Class("task-actions")],
               [
@@ -431,17 +449,33 @@ const taskCreateDialog = (
                   {
                     variant: "outline",
                     size: "sm",
-                    disabled: busy,
+                    disabled: writingCreation(model),
                     onClick: Message.ClosedCreate(),
                     children: ["Cancel"],
                   },
                   h,
                 ),
+                ...(!model.index && !model.request
+                  ? [
+                      button(
+                        {
+                          variant: "outline",
+                          size: "sm",
+                          onClick: Message.Retried(),
+                          children: ["Retry"],
+                        },
+                        h,
+                      ),
+                    ]
+                  : []),
                 button(
                   {
                     type: "submit",
                     size: "sm",
-                    disabled: busy || !editor.draft.title.trim(),
+                    disabled:
+                      model.request !== null ||
+                      !model.index ||
+                      !editor.draft.title.trim(),
                     children: [
                       model.request?.operation._tag === "Create"
                         ? "Adding…"
@@ -458,7 +492,7 @@ const taskCreateDialog = (
     },
     h,
   );
-};
+});
 
 const taskDetail = (
   model: Model,
@@ -556,9 +590,7 @@ const taskDetail = (
 };
 
 export const view = Submodel.defineView<Model, Message>((model, h) => {
-  const tags = [...(model.index?.tags ?? [])].sort((left, right) =>
-    left.name.localeCompare(right.name),
-  );
+  const tags = sortedTags(model);
   return workspace(
     {
       className: "tasks-workspace",
@@ -569,15 +601,12 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
             size: "sm",
             disabled: model.request !== null || !model.index,
             dialogId: createDialogId,
-            onClick: Message.OpenedCreate(),
+            onClick: Message.OpenedCreate({ preserveView: false }),
             children: ["Add task"],
           },
           h,
         ),
-        ...(model.creation
-          ? [taskCreateDialog(model.creation, model, tags, h)]
-          : []),
-        ...(model.error && !model.creation
+        ...(model.error
           ? [
               h.div(
                 [h.Class("task-error")],

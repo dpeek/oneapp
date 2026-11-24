@@ -1,0 +1,171 @@
+// Adapted from CreaseUI's StyleX Command (MIT), revision b11a974af28917ae6fea67cbf9ade89d8a3c464c.
+import { Combobox } from "@foldkit/ui";
+import * as stylex from "@stylexjs/stylex";
+import { Option } from "effect";
+import type { Html, HtmlBuilder } from "foldkit/html";
+import { inputClassName } from "./field.ts";
+import { outlineIcon } from "./icons.ts";
+import { controls } from "./tokens.stylex.ts";
+
+export const { Model, Message, init } = Combobox;
+type Model = typeof Model.Type;
+type Message = typeof Message.Type;
+
+const styles = stylex.create({
+  search: { display: "flex", alignItems: "center", gap: "0.5rem" },
+  icon: { flexShrink: 0, color: controls.mutedForeground },
+  list: { marginBlockStart: "0.5rem" },
+  item: {
+    padding: "0.5rem 0.75rem",
+    borderRadius: controls.radius,
+    backgroundColor: { ":is([data-active])": controls.hover },
+    cursor: "pointer",
+  },
+  empty: {
+    padding: "0.75rem",
+    color: controls.mutedForeground,
+    textAlign: "center",
+  },
+});
+
+const matches = (query: string, label: string) => {
+  const text = label.toLowerCase();
+  let index = 0;
+  for (const letter of query.trim().toLowerCase()) {
+    index = text.indexOf(letter, index);
+    if (index === -1) return false;
+    index++;
+  }
+  return true;
+};
+
+type Item<Value extends string> = Readonly<{ value: Value; label: string }>;
+
+// Crease's inline combobox keeps the list visible and highlights the first match.
+export const create = <Value extends string>() => {
+  const { update } = Combobox.create<Value>();
+  return {
+    update,
+    view: <ParentMessage>(
+      {
+        model,
+        items,
+        toParentMessage,
+      }: {
+        model: Model;
+        items: readonly Item<Value>[];
+        toParentMessage: (message: Message) => ParentMessage;
+      },
+      h: HtmlBuilder<ParentMessage>,
+    ): Html => {
+      const visible = items.filter(({ label }) =>
+        matches(model.inputValue, label),
+      );
+      const active = Option.getOrUndefined(model.maybeActiveItemIndex) ?? 0;
+      const index = visible[active] ? active : 0;
+      const item = visible[index];
+      const listId = `${model.id}-items`;
+      const itemId = (position: number) => `${model.id}-item-${position}`;
+      const select = ({ value, label }: Item<Value>) =>
+        toParentMessage(
+          Message.SelectedItem({
+            item: value,
+            displayText: label,
+            wasSelected: false,
+          }),
+        );
+      return h.div(
+        [h.DataAttribute("slot", "command")],
+        [
+          h.div(
+            [h.Class(stylex.props(styles.search).className ?? "")],
+            [
+              h.span(
+                [h.Class(stylex.props(styles.icon).className ?? "")],
+                [
+                  outlineIcon(h, [
+                    "M21 21l-4.35-4.35",
+                    "M19 11a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z",
+                  ]),
+                ],
+              ),
+              h.input([
+                h.Id(Combobox.inputId(model.id)),
+                h.DataAttribute("slot", "command-input"),
+                h.Class(inputClassName),
+                h.Role("combobox"),
+                h.AriaLabel("Search commands"),
+                h.AriaExpanded(true),
+                h.AriaControls(listId),
+                h.AriaAutocomplete("list"),
+                ...(item ? [h.AriaActiveDescendant(itemId(index))] : []),
+                h.Autofocus(true),
+                h.Autocomplete("off"),
+                h.Placeholder("Search commands"),
+                h.Value(model.inputValue),
+                h.OnInput((value) =>
+                  toParentMessage(Message.UpdatedInputValue({ value })),
+                ),
+                h.OnKeyDownPreventDefault((key) => {
+                  if (key === "Enter" && item) return Option.some(select(item));
+                  const next = Math.min(
+                    visible.length - 1,
+                    key === "ArrowDown" ? index + 1 : index - 1,
+                  );
+                  return visible.length > 0 &&
+                    (key === "ArrowDown" || key === "ArrowUp")
+                    ? Option.some(
+                        toParentMessage(
+                          Message.ActivatedItem({
+                            index: Math.max(0, next),
+                            activationTrigger: "Keyboard",
+                            maybeImmediateSelection: Option.none(),
+                          }),
+                        ),
+                      )
+                    : Option.none();
+                }),
+              ]),
+            ],
+          ),
+          h.div(
+            [
+              h.Id(listId),
+              h.Role("listbox"),
+              h.AriaLabel("Commands"),
+              h.Class(stylex.props(styles.list).className ?? ""),
+            ],
+            visible.map((option, position) =>
+              h.div(
+                [
+                  h.Key(option.value),
+                  h.Id(itemId(position)),
+                  h.Role("option"),
+                  h.AriaSelected(position === index),
+                  h.DataAttribute("slot", "command-item"),
+                  ...(position === index
+                    ? [h.DataAttribute("active", "")]
+                    : []),
+                  h.Class(stylex.props(styles.item).className ?? ""),
+                  h.OnClick(select(option)),
+                ],
+                [option.label],
+              ),
+            ),
+          ),
+          ...(item
+            ? []
+            : [
+                h.div(
+                  [
+                    h.Role("status"),
+                    h.Class(stylex.props(styles.empty).className ?? ""),
+                  ],
+                  ["No commands found."],
+                ),
+              ]),
+        ],
+      );
+    },
+  };
+};

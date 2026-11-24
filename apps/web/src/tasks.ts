@@ -38,6 +38,11 @@ const Editor = Schema.Struct({
   tagError: Schema.NullOr(Schema.String),
 });
 export type Editor = typeof Editor.Type;
+const Creation = Schema.Struct({
+  ...Editor.fields,
+  preserveView: Schema.Boolean,
+  error: Schema.NullOr(Schema.String),
+});
 const Operation = Schema.Union([
   Schema.TaggedStruct("Load", {}),
   Schema.TaggedStruct("Create", { input: TaskCreate }),
@@ -62,7 +67,7 @@ export const Model = Schema.Struct({
   index: Schema.NullOr(TaskIndex),
   selectedId: Schema.NullOr(ItemId),
   editor: Schema.NullOr(Editor),
-  creation: Schema.NullOr(Editor),
+  creation: Schema.NullOr(Creation),
   statusFilter: StatusFilter,
   tagFilter: Schema.NullOr(ItemId),
   sort: Sort,
@@ -87,7 +92,7 @@ export const initial: Model = {
 export const Message = defineMessageUnion({
   Opened: { id: Schema.NullOr(ItemId), refresh: Schema.Boolean },
   Retried: {},
-  OpenedCreate: {},
+  OpenedCreate: { preserveView: Schema.Boolean },
   CreateDialogMounted: {},
   ClosedCreate: {},
   Created: {},
@@ -213,6 +218,10 @@ const Request = Command.define("RequestTasks", {
     ),
 });
 
+const isCreationWrite = (model: Model, operation: Operation | undefined) =>
+  operation?._tag === "Create" ||
+  (operation?._tag === "AddTag" && operation.id === model.creation?.draft.id);
+
 const start = (
   model: Model,
   operation: Operation,
@@ -220,13 +229,20 @@ const start = (
   if (model.request) return { model };
   const id = crypto.randomUUID();
   return {
-    model: { ...model, request: { id, operation }, error: null },
+    model: {
+      ...model,
+      request: { id, operation },
+      error: isCreationWrite(model, operation) ? model.error : null,
+    },
     commands: [Request({ request: id, operation })],
   };
 };
 
 export const selectedTask = (model: Model) =>
   model.index?.tasks.find((task) => task.id === model.selectedId) ?? null;
+
+export const writingCreation = (model: Model) =>
+  isCreationWrite(model, model.request?.operation);
 
 const toDraft = ({
   id,
@@ -256,7 +272,7 @@ const makeEditor = (draft: Draft): Editor => ({
 
 const withEditor = (model: Model, editor: Editor): Model =>
   model.creation?.draft.id === editor.draft.id
-    ? { ...model, creation: editor }
+    ? { ...model, creation: { ...model.creation, ...editor } }
     : { ...model, editor };
 
 export const hasEdits = (draft: Draft, task: Task) =>
@@ -380,13 +396,16 @@ export const update = (
           : { model: opened };
       },
       Retried: () => start(model, { _tag: "Load" }),
-      OpenedCreate: () => {
-        if (model.request || !model.index || model.creation) return { model };
-        return {
-          model: {
-            ...model,
-            error: null,
-            creation: makeEditor({
+      OpenedCreate: ({ preserveView }) => {
+        if (
+          model.creation ||
+          (!preserveView && (model.request || !model.index))
+        )
+          return { model };
+        const next = {
+          ...model,
+          creation: {
+            ...makeEditor({
               id: crypto.randomUUID(),
               revision: null,
               title: "",
@@ -396,34 +415,45 @@ export const update = (
               dueOn: null,
               tagIds: [],
             }),
+            preserveView,
+            error: null,
           },
         };
+        return model.index ? { model: next } : start(next, { _tag: "Load" });
       },
       CreateDialogMounted: () => ({ model }),
       ClosedCreate: () => ({
         model:
-          model.creation && !model.request
-            ? { ...model, creation: null, error: null }
+          model.creation && !writingCreation(model)
+            ? { ...model, creation: null }
             : model,
       }),
       Created: () => {
-        if (model.request || !model.creation) return { model };
+        if (model.request || !model.creation || !model.index) return { model };
         const { revision: _, ...fields } = model.creation.draft;
         const input = { ...fields, title: fields.title.trim() };
         if (!Schema.is(TaskCreate)(input))
           return {
             model: {
               ...model,
-              error: "Check the task title, due date and other fields.",
+              creation: {
+                ...model.creation,
+                error: "Check the task title, due date and other fields.",
+              },
             },
           };
-        return start(model, { _tag: "Create", input });
+        return start(
+          { ...model, creation: { ...model.creation, error: null } },
+          { _tag: "Create", input },
+        );
       },
       EditedField: ({ field, value }) => {
         const editor = model.creation ?? model.editor;
+        const loadingCreation =
+          model.creation && model.request?.operation._tag === "Load";
         return {
           model:
-            editor && !model.request
+            editor && (!model.request || loadingCreation)
               ? withEditor(model, {
                   ...editor,
                   draft: editField(editor.draft, field, value),
@@ -565,7 +595,7 @@ export const update = (
         if (model.creation?.draft.id !== task.id) return { model: next };
         return {
           model: { ...next, creation: null },
-          ...(model.selectedId === null
+          ...(!model.creation.preserveView && model.selectedId === null
             ? { outMessage: OutMessage.OpenTask({ id: task.id }) }
             : {}),
         };
@@ -598,7 +628,11 @@ export const update = (
           ? tags
           : [...(tags ?? []), tag];
         const operation = model.request?.operation;
-        const editor = model.creation ?? model.editor;
+        const editor =
+          operation?._tag === "AddTag" &&
+          model.creation?.draft.id === operation.id
+            ? model.creation
+            : model.editor;
         const next = {
           ...model,
           index: model.index && { ...model.index, tags: newTags },
@@ -619,10 +653,17 @@ export const update = (
       Failed: ({ error }) => {
         const operation = model.request?.operation;
         const next = { ...model, request: null };
-        if (operation?._tag === "Create" && !model.creation)
-          return { model: next };
+        if (operation?._tag === "Create")
+          return {
+            model: model.creation
+              ? { ...next, creation: { ...model.creation, error } }
+              : next,
+          };
         if (operation?._tag !== "AddTag") return { model: { ...next, error } };
-        const editor = model.creation ?? model.editor;
+        const editor =
+          model.creation?.draft.id === operation.id
+            ? model.creation
+            : model.editor;
         if (editor?.draft.id !== operation.id) return { model: next };
         return {
           model: withEditor(next, {

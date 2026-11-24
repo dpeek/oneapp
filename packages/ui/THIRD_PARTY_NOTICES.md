@@ -12,6 +12,8 @@ from the same CreaseUI revision for OneApp’s shared dialog and popover UI.
 `src/tokenizer.ts` adapts the StyleX Tokenizer from the same CreaseUI revision.
 It uses OneApp control tokens and renders selections owned by the task draft.
 
+`src/command-menu.ts` adapts the StyleX Command from the same CreaseUI revision.
+
 MIT License
 
 Copyright (c) 2026 Potti1234

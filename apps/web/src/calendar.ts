@@ -28,6 +28,8 @@ import {
   defaultCalendarName,
   CalendarDraft,
   CalendarImportReport,
+  CalendarFrequency,
+  CalendarRepeat,
   calendarImportLimit,
   calendarImportLimitLabel,
   CalendarOccurrence,
@@ -60,6 +62,9 @@ const Editor = Schema.Struct({
   calendarId: CalendarId,
   revision: Schema.NullOr(Schema.String),
   draft: CalendarDraft,
+  repeat: Schema.NullOr(CalendarRepeat),
+  scope: Schema.Literals(["event", "occurrence", "series"]),
+  occurrence: Schema.NullOr(Schema.String),
 });
 const CalendarEditor = Schema.Struct({
   id: CalendarId,
@@ -133,7 +138,9 @@ export const Message = defineMessageUnion({
   SavedCalendar: {},
   OpenedEvent: { event: CalendarOccurrence },
   NewEvent: { day: Schema.String },
-  EditEvent: {},
+  EditEvent: { series: Schema.Boolean },
+  ChangedFrequency: { frequency: Schema.NullOr(CalendarFrequency) },
+  ChangedRepeatEnd: { until: Schema.String },
   ChangedEventCalendar: { id: CalendarId },
   ChangedText: {
     field: Schema.Literals([
@@ -250,13 +257,17 @@ const SaveEvent = Command.define("SaveCalendarEvent", {
   messages: [Message.Changed, Message.SessionExpired, Message.Failed],
   execute: ({ id, editor }) =>
     run(id, async (signal) => {
-      const draft = editor.draft.allDay
-        ? {
-            ...editor.draft,
-            reminder: false,
-            end: calendarDays(editor.draft.end, 1),
-          }
-        : editor.draft;
+      const draft = {
+        ...editor.draft,
+        end: editor.draft.allDay
+          ? calendarDays(editor.draft.end, 1)
+          : editor.draft.end,
+        reminder:
+          !editor.draft.allDay &&
+          !editor.repeat &&
+          editor.scope !== "occurrence" &&
+          editor.draft.reminder,
+      };
       await request(
         signal,
         `${calendarApi}/events/${editor.id}`,
@@ -264,11 +275,15 @@ const SaveEvent = Command.define("SaveCalendarEvent", {
           revision: editor.revision,
           calendarId: editor.calendarId,
           draft,
+          repeat: editor.repeat,
+          ...(editor.occurrence !== null
+            ? { occurrence: editor.occurrence }
+            : {}),
         }),
       );
       return Message.Changed({
         request: id,
-        notice: "Event saved.",
+        notice: editor.scope === "series" ? "Series saved." : "Event saved.",
         calendarId: editor.calendarId,
       });
     }),
@@ -604,6 +619,9 @@ export const update = (
                 id: crypto.randomUUID(),
                 calendarId: model.visible ?? defaultCalendarId,
                 revision: null,
+                repeat: null,
+                scope: "event",
+                occurrence: null,
                 draft: {
                   title: "",
                   location: "",
@@ -616,28 +634,53 @@ export const update = (
                 },
               },
             }),
-      EditEvent: () => {
+      EditEvent: ({ series }) => {
         const event = model.selected;
-        if (!event?.draft || busy(model)) return { model };
-        const draft = event.allDay
-          ? { ...event.draft, end: calendarDays(event.draft.end, -1) }
-          : event.draft;
+        const draft = series ? event?.series?.draft : event?.draft;
+        if (!event || !draft || busy(model)) return { model };
         return openPanel(model, {
           selected: event,
           editor: {
             id: event.id,
             calendarId: event.calendarId,
             revision: event.revision,
-            draft,
+            draft: draft.allDay
+              ? { ...draft, end: calendarDays(draft.end, -1) }
+              : draft,
+            repeat: series ? (event.series?.repeat ?? null) : null,
+            scope: series ? "series" : event.recurring ? "occurrence" : "event",
+            occurrence: !series && event.recurring ? event.occurrence : null,
           },
         });
       },
       ChangedEventCalendar: ({ id }) =>
-        !model.editor || busy(model)
+        !model.editor || busy(model) || model.editor.scope === "occurrence"
           ? { model }
           : {
               model: { ...model, editor: { ...model.editor, calendarId: id } },
             },
+      ChangedFrequency: ({ frequency }) => {
+        const editor = model.editor;
+        if (!editor || busy(model) || editor.scope === "occurrence")
+          return { model };
+        const repeat = frequency
+          ? { frequency, until: editor.repeat?.until ?? null }
+          : null;
+        return { model: { ...model, editor: { ...editor, repeat } } };
+      },
+      ChangedRepeatEnd: ({ until }) => {
+        const editor = model.editor;
+        if (!editor?.repeat || busy(model)) return { model };
+        return {
+          model: {
+            ...model,
+            editor: {
+              ...editor,
+              repeat: { ...editor.repeat, until: until || null },
+            },
+          },
+        };
+      },
       ChangedText: ({ field, value }) => {
         const editor = model.editor;
         if (!editor || busy(model)) return { model };
@@ -700,7 +743,8 @@ export const update = (
       RequestedDelete: () =>
         busy(model) ? { model } : { model: { ...model, confirmDelete: true } },
       ConfirmedDelete: () => {
-        if (!model.selected?.draft || busy(model)) return { model };
+        if (!model.selected?.draft || model.selected.recurring || busy(model))
+          return { model };
         const id = crypto.randomUUID();
         return {
           model: { ...model, error: null, request: { id, kind: "delete" } },
@@ -1029,10 +1073,26 @@ const calendarEditorView = (model: Model, h: H) => {
   );
 };
 
+const isFrequency = Schema.is(CalendarFrequency);
+const repeatOptions = [
+  { label: "Does not repeat", value: "" },
+  { label: "Daily", value: "daily" },
+  { label: "Weekly", value: "weekly" },
+  { label: "Monthly", value: "monthly" },
+];
+
 const eventEditorView = (model: Model, h: H) => {
   const editor = model.editor!;
   const { draft } = editor;
   const disabled = busy(model);
+  const title =
+    editor.scope === "series"
+      ? "Edit series"
+      : editor.scope === "occurrence"
+        ? "Edit occurrence"
+        : editor.revision
+          ? "Edit event"
+          : "New event";
   const textInput = (
     label: string,
     field: "title" | "location" | "start" | "end",
@@ -1059,7 +1119,7 @@ const eventEditorView = (model: Model, h: H) => {
     );
   return dialog(
     {
-      title: editor.revision ? "Edit event" : "New event",
+      title,
       titleId: "calendar-event-editor-title",
       attributes: [
         h.OnMount(OpenCalendarDialog()),
@@ -1076,7 +1136,7 @@ const eventEditorView = (model: Model, h: H) => {
                 label: "Calendar",
                 value: editor.calendarId,
                 options: calendarOptions(model),
-                disabled,
+                disabled: disabled || editor.scope === "occurrence",
                 onChange: (id) => Message.ChangedEventCalendar({ id }),
               },
               h,
@@ -1097,7 +1157,11 @@ const eventEditorView = (model: Model, h: H) => {
               [h.Class("calendar-form-dates")],
               [
                 textInput(
-                  draft.allDay ? "First day" : "Starts",
+                  draft.allDay
+                    ? "First day"
+                    : editor.scope === "series"
+                      ? "Series starts"
+                      : "Starts",
                   "start",
                   draft.allDay ? "date" : "datetime-local",
                 ),
@@ -1111,6 +1175,42 @@ const eventEditorView = (model: Model, h: H) => {
             ...(draft.allDay
               ? []
               : [h.p([h.Class("calendar-muted")], [draft.timeZone])]),
+            ...(editor.scope === "occurrence"
+              ? []
+              : [
+                  nativeSelect(
+                    {
+                      label: "Repeat",
+                      value: editor.repeat?.frequency ?? "",
+                      options: repeatOptions,
+                      disabled,
+                      onChange: (value) =>
+                        Message.ChangedFrequency({
+                          frequency: isFrequency(value) ? value : null,
+                        }),
+                    },
+                    h,
+                  ),
+                  ...(editor.repeat
+                    ? [
+                        h.label(
+                          [h.Class("calendar-field")],
+                          [
+                            h.span([], ["Repeat until (optional)"]),
+                            h.input([
+                              h.Type("date"),
+                              h.Value(editor.repeat.until ?? ""),
+                              h.Disabled(disabled),
+                              h.Min(draft.start.slice(0, 10)),
+                              h.OnInput((until) =>
+                                Message.ChangedRepeatEnd({ until }),
+                              ),
+                            ]),
+                          ],
+                        ),
+                      ]
+                    : []),
+                ]),
             textInput("Location", "location", "text", false),
             h.label(
               [h.Class("calendar-field")],
@@ -1126,7 +1226,7 @@ const eventEditorView = (model: Model, h: H) => {
                 ]),
               ],
             ),
-            ...(draft.allDay
+            ...(draft.allDay || editor.repeat || editor.scope === "occurrence"
               ? []
               : [
                   h.label(
@@ -1162,7 +1262,11 @@ const eventEditorView = (model: Model, h: H) => {
                     type: "submit",
                     disabled,
                     children: [
-                      model.request?.kind === "save" ? "Saving…" : "Save event",
+                      model.request?.kind === "save"
+                        ? "Saving…"
+                        : editor.scope === "series"
+                          ? "Save series"
+                          : "Save event",
                     ],
                   },
                   h,
@@ -1227,11 +1331,28 @@ const detailsView = (model: Model, h: H) => {
                   {
                     variant: "outline",
                     disabled,
-                    onClick: Message.EditEvent(),
-                    children: ["Edit"],
+                    onClick: Message.EditEvent({ series: false }),
+                    children: [event.recurring ? "Edit occurrence" : "Edit"],
                   },
                   h,
                 ),
+              ]
+            : []),
+          ...(event.series
+            ? [
+                button(
+                  {
+                    variant: "ghost",
+                    disabled,
+                    onClick: Message.EditEvent({ series: true }),
+                    children: ["Edit series"],
+                  },
+                  h,
+                ),
+              ]
+            : []),
+          ...(event.draft && !event.recurring && !model.confirmDelete
+            ? [
                 button(
                   {
                     variant: "ghost",

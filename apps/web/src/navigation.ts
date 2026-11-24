@@ -6,12 +6,14 @@ import { defineMessageUnion } from "foldkit/message";
 import { calendarPath } from "./calendar-contract.ts";
 import { mailPath } from "./inbox-contract.ts";
 import { contactsPath } from "./people-contract.ts";
+import { tasksPath } from "./tasks-contract.ts";
 import { vaultPath } from "./vault-setup-contract.ts";
 
 export const Page = Schema.Literals([
   "links",
   "mail",
   "calendar",
+  "tasks",
   "vault",
   "contacts",
   "settings",
@@ -45,6 +47,12 @@ const destinations = [
       "M5 5h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z",
       "M3 10h18M8 3v4m8-4v4m-8 8h2m4 0h2",
     ],
+  },
+  {
+    page: "tasks",
+    href: tasksPath,
+    label: "Tasks",
+    paths: ["m3 7 2 2 4-4m2 3h10", "m3 16 2 2 4-4m2 3h10"],
   },
   {
     page: "vault",
@@ -87,6 +95,7 @@ export const initial: Model = {
   links: Tooltip.init({ id: "nav-links" }),
   mail: Tooltip.init({ id: "nav-mail" }),
   calendar: Tooltip.init({ id: "nav-calendar" }),
+  tasks: Tooltip.init({ id: "nav-tasks" }),
   vault: Tooltip.init({ id: "nav-vault" }),
   contacts: Tooltip.init({ id: "nav-contacts" }),
   settings: Tooltip.init({ id: "nav-settings" }),

@@ -50,6 +50,10 @@ const dataTables = [
   "calendars",
   "calendar_events",
   "calendar_moved_uids",
+  "items",
+  "tasks",
+  "tags",
+  "item_tags",
 ] as const;
 
 export const migrateSnapshot = async (db: Database) => {

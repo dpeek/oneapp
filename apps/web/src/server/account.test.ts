@@ -24,6 +24,8 @@ import {
 } from "../account-contract.ts";
 import { bitwardenDevicesPath } from "../bitwarden-device-contract.ts";
 import { calendarApi, calendarImportLimit } from "../calendar-contract.ts";
+import { Tag, tagsApi } from "../items-contract.ts";
+import { Task, taskApi, TaskIndex, tasksApi } from "../tasks-contract.ts";
 import {
   allMailApiPath,
   archiveApiPath,
@@ -5835,4 +5837,92 @@ it("keeps push subscriptions isolated across devices and resets pending alerts w
   expect(sqlite.query("SELECT endpoint FROM push_subscriptions").all()).toEqual(
     [{ endpoint: "https://web.push.apple.com/second" }],
   );
+});
+
+it("persists reusable task tags and rejects stale or cross-account task edits atomically", async () => {
+  using sqlite = new Database(":memory:");
+  const { call, request, signIn, cookies, env } = await setup(sqlite);
+  const session = cookies(await signIn(password));
+  expect((await call(tasksApi)).status).toBe(401);
+
+  const firstInput = { id: crypto.randomUUID(), title: "Capture a task" };
+  const created = await call(tasksApi, firstInput, session);
+  expect(created.status).toBe(201);
+  const first = Schema.decodeUnknownSync(Task)(await created.json());
+  expect(first).toMatchObject({
+    status: "not-started",
+    priority: null,
+    tagIds: [],
+  });
+  const second = Schema.decodeUnknownSync(Task)(
+    await (
+      await call(
+        tasksApi,
+        { id: crypto.randomUUID(), title: "Follow up" },
+        session,
+      )
+    ).json(),
+  );
+  const tag = Schema.decodeUnknownSync(Tag)(
+    await (await call(tagsApi, { name: "Receipts" }, session)).json(),
+  );
+  const reused = await call(tagsApi, { name: "ｒｅｃｅｉｐｔｓ" }, session);
+  expect(await reused.json()).toEqual(tag);
+
+  const save = (
+    task: typeof Task.Type,
+    changes: Partial<typeof Task.Type>,
+    csrf = true,
+  ) =>
+    request(taskApi(task.id), {
+      method: "PUT",
+      headers: {
+        cookie: session,
+        origin: env.APP_ORIGIN,
+        "content-type": "application/json",
+        ...(csrf ? { "x-effect-auth-csrf": "1" } : {}),
+      },
+      body: JSON.stringify({ ...task, ...changes }),
+    });
+  const changes = {
+    title: "Review the receipt",
+    description: "## Receipt\n\n- Check the total",
+    status: "in-review",
+    priority: "urgent",
+    dueOn: "2028-02-29",
+    tagIds: [tag.id],
+  } as const;
+  expect((await save(first, changes, false)).status).toBe(403);
+  expect((await save(first, { dueOn: "2027-02-29" })).status).toBe(400);
+  const edited = await save(first, changes);
+  expect(edited.status).toBe(200);
+  const saved = Schema.decodeUnknownSync(Task)(await edited.json());
+  expect(saved).toMatchObject(changes);
+  expect(saved.revision).not.toBe(first.revision);
+  expect((await save(second, { tagIds: [tag.id] })).status).toBe(200);
+
+  const stale = await save(first, { title: "Stale title", tagIds: [] });
+  expect(stale.status).toBe(409);
+  expect(await stale.json()).toEqual(saved);
+  const foreignTag = crypto.randomUUID();
+  sqlite.run("INSERT INTO accounts VALUES ('other', 1, 'revision')");
+  sqlite.run("INSERT INTO tags VALUES ('other', ?, 'Other tag', 'other tag')", [
+    foreignTag,
+  ]);
+  expect(
+    (await save(saved, { title: "Invalid title change", tagIds: [foreignTag] }))
+      .status,
+  ).toBe(400);
+  expect(await (await call(tasksApi, firstInput, session)).json()).toEqual(
+    saved,
+  );
+
+  const index = Schema.decodeUnknownSync(TaskIndex)(
+    await (await call(tasksApi, undefined, session)).json(),
+  );
+  expect(index.tags).toEqual([tag]);
+  expect(index.tasks.find(({ id }) => id === first.id)).toEqual(saved);
+  expect(index.tasks.find(({ id }) => id === second.id)?.tagIds).toEqual([
+    tag.id,
+  ]);
 });

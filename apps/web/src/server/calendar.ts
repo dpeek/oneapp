@@ -26,7 +26,7 @@ import { AppAuth, ownerId, type authHttp } from "./auth.ts";
 import {
   calendarOccurrences,
   calendarRange,
-  canEditCalendarEvent,
+  canDeleteCalendarEvent,
   combineCalendarEvents,
   readCalendarImport,
   writeCalendarEvent,
@@ -474,7 +474,7 @@ export const calendarRoutes = (
             const input = yield* editBody;
             if (!id || !uuid.test(id) || input._tag === "None")
               return yield* jsonError(400, "Invalid event.");
-            const { draft, revision } = input.value;
+            const { draft, revision, repeat, occurrence } = input.value;
             const row =
               revision === null
                 ? null
@@ -495,6 +495,14 @@ export const calendarRoutes = (
               return yield* stale();
             const calendarId =
               input.value.calendarId ?? row?.calendar_id ?? defaultCalendarId;
+            if (
+              occurrence !== undefined &&
+              (!row || calendarId !== row.calendar_id)
+            )
+              return yield* jsonError(
+                400,
+                "Edit the entire series to change calendars.",
+              );
             const calendar = yield* Effect.tryPromise(() =>
               getCalendar(db, account.subjectId, calendarId),
             );
@@ -502,7 +510,10 @@ export const calendarRoutes = (
             const uid = row?.uid ?? `${id}@oneapp`;
             let next: ReturnType<typeof writeCalendarEvent>;
             try {
-              next = writeCalendarEvent(draft, uid, row?.ics);
+              next = writeCalendarEvent(draft, uid, row?.ics, {
+                repeat,
+                occurrence,
+              });
             } catch (error) {
               return yield* jsonError(
                 400,
@@ -609,7 +620,7 @@ export const calendarRoutes = (
             );
             if (!row) return noContent();
             if (row.revision !== revision) return yield* stale();
-            if (!canEditCalendarEvent(row.ics))
+            if (!canDeleteCalendarEvent(row.ics))
               return yield* jsonError(409, "This event is read-only.");
             const result = yield* Effect.tryPromise(() =>
               db

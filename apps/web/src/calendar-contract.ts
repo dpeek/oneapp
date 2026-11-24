@@ -61,6 +61,17 @@ export const CalendarDraft = Schema.Struct({
 });
 export type CalendarDraft = typeof CalendarDraft.Type;
 
+export const CalendarFrequency = Schema.Literals([
+  "daily",
+  "weekly",
+  "monthly",
+]);
+export const CalendarRepeat = Schema.Struct({
+  frequency: CalendarFrequency,
+  until: Schema.NullOr(text(10)),
+});
+export type CalendarRepeat = typeof CalendarRepeat.Type;
+
 export const CalendarOccurrence = Schema.Struct({
   id: Schema.String,
   calendarId: CalendarId,
@@ -73,6 +84,9 @@ export const CalendarOccurrence = Schema.Struct({
   end: Schema.String,
   recurring: Schema.Boolean,
   draft: Schema.NullOr(CalendarDraft),
+  series: Schema.optional(
+    Schema.Struct({ draft: CalendarDraft, repeat: CalendarRepeat }),
+  ),
   revision: Schema.String,
 });
 export type CalendarOccurrence = typeof CalendarOccurrence.Type;
@@ -95,4 +109,6 @@ export const CalendarWrite = Schema.Struct({
   calendarId: Schema.optional(CalendarId),
   draft: CalendarDraft,
   revision: Schema.NullOr(Schema.String),
+  repeat: Schema.optional(Schema.NullOr(CalendarRepeat)),
+  occurrence: Schema.optional(text(32)),
 });

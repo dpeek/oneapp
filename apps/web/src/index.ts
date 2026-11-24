@@ -54,6 +54,9 @@ import {
   contactsRouteFor,
 } from "./people-contract.ts";
 import * as PeopleDirectory from "./people-directory.ts";
+import * as Tasks from "./tasks.ts";
+import { taskPath, TaskRoute, taskRouteFor } from "./tasks-contract.ts";
+import { view as tasksView } from "./tasks-view.ts";
 import { vaultPath } from "./vault-setup-contract.ts";
 import * as VaultSetup from "./vault-setup.ts";
 import { workspace, workspaceDrawerMedia } from "./workspace.ts";
@@ -62,6 +65,7 @@ type Page = typeof AppNavigation.Page.Type;
 const pageFor = (url: Url.Url): Page => {
   if (mailRouteFor(url.pathname)) return "mail";
   if (calendarRouteFor(url.pathname)) return "calendar";
+  if (taskRouteFor(url.pathname)) return "tasks";
   if (contactsRouteFor(url.pathname)) return "contacts";
   if (url.pathname === vaultPath || url.pathname === `${vaultPath}/`)
     return "vault";
@@ -84,6 +88,8 @@ const Model = Schema.Struct({
   people: People.Model,
   calendar: Calendar.Model,
   calendarRoute: Schema.NullOr(CalendarRoute),
+  tasks: Tasks.Model,
+  taskRoute: Schema.NullOr(TaskRoute),
   mailRoute: Schema.NullOr(MailRoute),
   peopleRoute: Schema.NullOr(ContactsRoute),
   signInNotice: Schema.NullOr(Schema.String),
@@ -118,6 +124,7 @@ const Message = defineMessageUnion({
   GotInboxMessage: { message: Inbox.Message },
   GotPeopleMessage: { message: People.Message },
   GotCalendarMessage: { message: Calendar.Message },
+  GotTasksMessage: { message: Tasks.Message },
   GotLinksMessage: { message: Links.Message },
   GotNotificationMessage: { message: Notifications.Message },
   GotConnectedClientsMessage: { message: ConnectedClients.Message },
@@ -305,6 +312,28 @@ const foldCalendar = Update.foldChild({
     },
 });
 
+const toTasksMessage = (message: Tasks.Message) =>
+  Message.GotTasksMessage({ message });
+const foldTasks = Update.foldChild({
+  update: Tasks.update,
+  read: (model: Model) =>
+    model.account ? Option.some(model.tasks) : Option.none(),
+  write: (model, tasks) => ({ ...model, tasks }),
+  toParentMessage: toTasksMessage,
+  foldOutMessage:
+    (out: Tasks.OutMessage): Update.Step<Model, Message> =>
+    (model) => {
+      if (out._tag === "SessionExpired")
+        return update(model, Message.LoadedAccount({ account: null }));
+      return model.page === "tasks"
+        ? {
+            model,
+            commands: [Navigate({ href: taskPath(out.id), mode: "push" })],
+          }
+        : { model };
+    },
+});
+
 const Navigate = Command.define("Navigate", {
   args: {
     href: Schema.String,
@@ -478,6 +507,14 @@ const loadPage = (
         refresh: previousPage !== "calendar",
       }),
     );
+  if (model.taskRoute)
+    return foldTasks(
+      model,
+      Tasks.Message.Opened({
+        id: model.taskRoute.id,
+        refresh: previousPage !== "tasks",
+      }),
+    );
   if (model.page === "vault")
     return foldVaultSetup(model, VaultSetup.Message.Requested());
   if (model.mailRoute)
@@ -531,6 +568,8 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     people: People.initial,
     calendar: Calendar.initial(),
     calendarRoute: calendarRouteFor(url.pathname),
+    tasks: Tasks.initial,
+    taskRoute: taskRouteFor(url.pathname),
     mailRoute: mailRouteFor(url.pathname),
     peopleRoute: contactsRouteFor(url.pathname),
     signInNotice: null,
@@ -569,6 +608,7 @@ const update = (
           request.url.pathname === "/settings" ||
           request.url.pathname === vaultPath ||
           calendarRouteFor(request.url.pathname) ||
+          taskRouteFor(request.url.pathname) ||
           mailRouteFor(request.url.pathname) ||
           contactsRouteFor(request.url.pathname))
       ) {
@@ -590,10 +630,12 @@ const update = (
       const page = pageFor(url);
       const mailRoute = mailRouteFor(url.pathname);
       const calendarRoute = calendarRouteFor(url.pathname);
+      const taskRoute = taskRouteFor(url.pathname);
       const peopleRoute = contactsRouteFor(url.pathname);
       const sameRoute =
         page === model.page &&
         calendarRoute?.id === model.calendarRoute?.id &&
+        taskRoute?.id === model.taskRoute?.id &&
         mailRoute?.folder === model.mailRoute?.folder &&
         mailRoute?.id === model.mailRoute?.id &&
         peopleRoute?.id === model.peopleRoute?.id &&
@@ -608,6 +650,7 @@ const update = (
                   ...next,
                   page,
                   calendarRoute,
+                  taskRoute,
                   mailRoute,
                   peopleRoute,
                   error: null,
@@ -662,6 +705,8 @@ const update = (
         people: People.initial,
         calendar: Calendar.initial(),
         calendarRoute: model.calendarRoute,
+        tasks: Tasks.initial,
+        taskRoute: model.taskRoute,
         mailRoute: model.mailRoute,
         peopleRoute: model.peopleRoute,
         signInNotice: null,
@@ -893,6 +938,7 @@ const update = (
       };
     },
     GotCalendarMessage: ({ message }) => foldCalendar(model, message),
+    GotTasksMessage: ({ message }) => foldTasks(model, message),
     GotLinksMessage: ({ message }) =>
       model.pending &&
       ["Submitted", "RequestedDeletion", "Retried"].includes(message._tag)
@@ -1294,6 +1340,7 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
     links: "Links",
     mail: "Mail",
     calendar: "Calendar",
+    tasks: "Tasks",
     vault: "Vault",
     contacts: "Contacts",
     settings: "Settings",
@@ -1302,6 +1349,7 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
     model.page === "links" ||
     model.page === "mail" ||
     model.page === "calendar" ||
+    model.page === "tasks" ||
     model.page === "contacts" ||
     model.page === "settings" ||
     (model.page === "vault" && model.vaultSetup.status?.initialized === true);
@@ -1343,6 +1391,13 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
                   view: Calendar.view,
                   model: model.calendar,
                   toParentMessage: toCalendarMessage,
+                }),
+              tasks: () =>
+                h.submodel({
+                  slotId: "tasks",
+                  view: tasksView,
+                  model: model.tasks,
+                  toParentMessage: toTasksMessage,
                 }),
               vault: () =>
                 h.submodel({

@@ -1,5 +1,6 @@
 import { createStylexBunPlugin } from "@stylexjs/unplugin/bun";
 import { cp, rename, rm } from "node:fs/promises";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stylexOptions } from "./stylex-options.ts";
 
@@ -12,6 +13,9 @@ await Bun.build({
   outdir: fileURLToPath(output),
   target: "browser",
   publicPath: "/",
+  // Bun resolves root-relative HTML links against the working directory.
+  // Keep these links pointed at the files copied from public/ above.
+  external: [resolve("manifest.webmanifest"), resolve("app-icon-192.png")],
   minify: true,
   splitting: true,
   plugins: [

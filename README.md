@@ -200,6 +200,29 @@ Xcode 26 or later compiles `apps/apple/OneApp.icon` into the layered app icon. B
 
 The app loads `https://app.dpeek.com` and keeps its own OneApp sign-in session. Links to other sites open in your default browser.
 
+## Local production backups
+
+Install `age` and `sqlite3`. Generate an age identity once and keep a recoverable copy of it separately from the snapshots. The capture command uses the public recipient.
+
+```sh
+age-keygen -o /path/to/oneapp-backup.agekey
+age-keygen -y /path/to/oneapp-backup.agekey
+
+CLOUDFLARE_ACCOUNT_ID=<account-id> bun run backup:capture \
+  --worker <deployed-worker-name> --recipient <age-public-key>
+```
+
+Capture uses the same Cloudflare profile or API token as deployment. It reads the deployed Worker's bindings to find D1 and the Inbox, Sent, ProfilePhotos, and VaultFiles buckets. The token must be able to read Worker bindings and R2 objects and export D1. Cloudflare can pause D1 queries during an export. Run captures in a quiet window. [D1 export API](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/export/) · [R2 object API](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/objects/)
+
+Snapshots default to `~/.local/share/oneapp/backups`; use `--out` to select a local volume. The command publishes a new encrypted directory after checking database integrity and all referenced objects. Each directory contains the D1 SQL, the four buckets, and a manifest with the D1 bookmark, object keys, HTTP and custom metadata, and SHA-256 checksums. The D1 export includes the migration history and production account state. Keep deployment configuration and Worker secrets separately recoverable.
+
+```sh
+bun run backup:restore --snapshot /path/to/snapshot \
+  --identity /path/to/oneapp-backup.agekey --out /path/to/new-restore-directory
+```
+
+Restore works offline and verifies checksums, SQLite integrity, foreign keys, and object references. The new output directory contains plaintext `database.sql`, a usable `database.sqlite`, and the recovered object bodies. Use its `manifest.json` to map numbered files to their bucket keys and metadata. Keep the restore on a private volume. This workflow recovers the data files for inspection or import into a fresh deployment.
+
 ## Cloudflare preview
 
 The Alchemy stack deploys the Foldkit web app and Effect API to one Worker. It creates a D1 database per stage, applies the committed Drizzle migrations, and provisions the owner through Yielded Auth.

@@ -25,7 +25,9 @@
     "mail:import": "bun scripts/mail-import.ts",
     "test": "bun --bun vitest run",
     "test:watch": "bun --bun vitest",
-    "verify": "bun fmt && bun check && bun run test"
+    "verify": "bun fmt && bun check && bun run test",
+    "backup:capture": "bun scripts/backup.ts capture",
+    "backup:restore": "bun scripts/backup.ts restore"
   },
   "devDependencies": {
     "@alchemy.run/cloudflare": "2.0.0-beta.85",

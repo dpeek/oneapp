@@ -1,4 +1,5 @@
-import { Effect, Schema } from "effect";
+import { Tokenizer } from "@oneapp/ui";
+import { Effect, Option, Schema } from "effect";
 import { Command, type Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";
 import {
@@ -7,6 +8,7 @@ import {
   Tag,
   TagCreate,
   TagName,
+  tagNameKey,
   tagsApi,
   tagNameLimit,
 } from "./items-contract.ts";
@@ -56,7 +58,8 @@ export const Model = Schema.Struct({
   draft: Schema.NullOr(Draft),
   quickTitle: Schema.String,
   quickId: Schema.NullOr(ItemId),
-  tagName: Schema.String,
+  tagPicker: Tokenizer.Model,
+  tagError: Schema.NullOr(Schema.String),
   statusFilter: StatusFilter,
   tagFilter: Schema.NullOr(ItemId),
   sort: Sort,
@@ -72,7 +75,8 @@ export const initial: Model = {
   draft: null,
   quickTitle: "",
   quickId: null,
-  tagName: "",
+  tagPicker: Tokenizer.init({ id: "task-tags" }),
+  tagError: null,
   statusFilter: "active",
   tagFilter: null,
   sort: "updated",
@@ -90,9 +94,7 @@ export const Message = defineMessageUnion({
   SetStatusFilter: { value: Schema.String },
   SetTagFilter: { value: Schema.String },
   SetSort: { value: Schema.String },
-  EditedTagName: { name: Schema.String },
-  CreatedTag: {},
-  AttachedTag: { id: Schema.String },
+  GotTagPickerMessage: { message: Tokenizer.Message },
   RemovedTag: { id: ItemId },
   Saved: {},
   Discarded: {},
@@ -279,6 +281,50 @@ const attach = (draft: Draft, id: string): Draft =>
     ? draft
     : { ...draft, tagIds: [...draft.tagIds, id] };
 
+const createTagPrefix = "create:";
+
+export const tagSearch = (model: Model, tags = model.index?.tags ?? []) => {
+  const name = normalizeTagName(model.tagPicker.inputValue);
+  const key = tagNameKey(name);
+  const matches = tags.filter((tag) => tagNameKey(tag.name).includes(key));
+  const items = matches.filter((tag) => !model.draft?.tagIds.includes(tag.id));
+  const invalid = name !== "" && !Schema.is(TagName)(name);
+  const canCreate =
+    name !== "" &&
+    !invalid &&
+    !matches.some((tag) => tagNameKey(tag.name) === key);
+  return {
+    name,
+    canCreate,
+    items: canCreate
+      ? [
+          ...items,
+          { id: `${createTagPrefix}${name}`, name: `Create “${name}”` },
+        ]
+      : items,
+    error: invalid
+      ? `Enter a tag name of up to ${tagNameLimit} characters.`
+      : model.tagError,
+  };
+};
+
+const toTagPickerMessage = (message: typeof Tokenizer.Message.Type) =>
+  Message.GotTagPickerMessage({ message });
+
+const afterTagSelection = (model: Model, draft: Draft): Model => ({
+  ...model,
+  draft,
+  tagError: null,
+  tagPicker:
+    draft.tagIds.length >= taskTagLimit
+      ? Tokenizer.init({ id: model.tagPicker.id })
+      : {
+          ...model.tagPicker,
+          inputValue: "",
+          maybeActiveItemIndex: Option.none(),
+        },
+});
+
 const replaceTask = (model: Model, task: Task): Model => ({
   ...model,
   index: model.index && {
@@ -305,7 +351,10 @@ export const update = (
                 ...model,
                 selectedId: id,
                 draft: null,
-                tagName: "",
+                tagPicker: Tokenizer.init({
+                  id: id ? `task-tags-${id}` : "task-tags",
+                }),
+                tagError: null,
                 error: null,
               };
         const task = selectedTask(next);
@@ -366,44 +415,52 @@ export const update = (
       SetSort: ({ value }) => ({
         model: Schema.is(Sort)(value) ? { ...model, sort: value } : model,
       }),
-      EditedTagName: ({ name }) => ({ model: { ...model, tagName: name } }),
-      CreatedTag: () => {
-        if (!model.draft || model.draft.tagIds.length >= taskTagLimit)
-          return { model };
-        const name = normalizeTagName(model.tagName);
-        if (!Schema.is(TagName)(name))
-          return {
-            model: {
-              ...model,
-              error: `Enter a tag name of up to ${tagNameLimit} characters.`,
-            },
-          };
-        return start(model, {
-          _tag: "AddTag",
-          id: model.draft.id,
-          input: { name },
-        });
+      GotTagPickerMessage: ({ message }) => {
+        const draft = model.draft;
+        if (!draft || draft.tagIds.length >= taskTagLimit) return { model };
+        const result = Tokenizer.update(model.tagPicker, message);
+        const next = {
+          ...model,
+          tagPicker: result.model,
+          tagError:
+            message._tag === "UpdatedInputValue" ? null : model.tagError,
+        };
+        const commands = Command.mapMessages(
+          result.commands ?? [],
+          toTagPickerMessage,
+        );
+        const selection = result.outMessage;
+        if (model.request || selection?._tag !== "Selected")
+          return { model: next, commands };
+        if (selection.value.startsWith(createTagPrefix)) {
+          const { name, canCreate } = tagSearch(next);
+          return canCreate && selection.value === `${createTagPrefix}${name}`
+            ? start(next, { _tag: "AddTag", id: draft.id, input: { name } })
+            : { model: next, commands };
+        }
+        return {
+          model: model.index?.tags.some((tag) => tag.id === selection.value)
+            ? afterTagSelection(next, attach(draft, selection.value))
+            : next,
+          commands,
+        };
       },
-      AttachedTag: ({ id }) => ({
-        model:
-          model.draft &&
-          !model.request &&
-          model.index?.tags.some((tag) => tag.id === id)
-            ? { ...model, draft: attach(model.draft, id) }
-            : model,
-      }),
-      RemovedTag: ({ id }) => ({
-        model:
-          model.draft && !model.request
-            ? {
-                ...model,
-                draft: {
-                  ...model.draft,
-                  tagIds: model.draft.tagIds.filter((tagId) => tagId !== id),
-                },
-              }
-            : model,
-      }),
+      RemovedTag: ({ id }) => {
+        if (!model.draft || model.request) return { model };
+        return {
+          model: {
+            ...model,
+            draft: {
+              ...model.draft,
+              tagIds: model.draft.tagIds.filter((tagId) => tagId !== id),
+            },
+          },
+          commands: Command.mapMessages(
+            [Tokenizer.FocusInput({ id: model.tagPicker.id })],
+            toTagPickerMessage,
+          ),
+        };
+      },
       Saved: () => {
         if (!model.draft) return { model };
         const task = selectedTask(model);
@@ -425,7 +482,8 @@ export const update = (
           model: {
             ...model,
             draft: task && toDraft(task),
-            tagName: "",
+            tagPicker: Tokenizer.init({ id: model.tagPicker.id }),
+            tagError: null,
             error: null,
           },
         };
@@ -476,19 +534,34 @@ export const update = (
           : [...(tags ?? []), tag];
         const operation = model.request?.operation;
         const draft = model.draft;
-        const attachToDraft =
-          draft && operation?._tag === "AddTag" && draft.id === operation.id;
+        const next = {
+          ...model,
+          index: model.index && { ...model.index, tags: newTags },
+          request: null,
+        };
+        return {
+          model:
+            draft && operation?._tag === "AddTag" && draft.id === operation.id
+              ? afterTagSelection(next, attach(draft, tag.id))
+              : next,
+        };
+      },
+      Failed: ({ error }) => {
+        const operation = model.request?.operation;
+        const next = { ...model, request: null };
+        if (operation?._tag !== "AddTag") return { model: { ...next, error } };
+        if (model.draft?.id !== operation.id) return { model: next };
         return {
           model: {
-            ...model,
-            index: model.index && { ...model.index, tags: newTags },
-            draft: attachToDraft ? attach(draft, tag.id) : draft,
-            tagName: attachToDraft ? "" : model.tagName,
-            request: null,
+            ...next,
+            tagError: error,
+            tagPicker: {
+              ...Tokenizer.init({ id: model.tagPicker.id }),
+              inputValue: operation.input.name,
+            },
           },
         };
       },
-      Failed: ({ error }) => ({ model: { ...model, request: null, error } }),
       SessionExpired: () => ({
         model,
         outMessage: OutMessage.SessionExpired(),

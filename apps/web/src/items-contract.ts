@@ -11,3 +11,5 @@ export const Tag = Schema.Struct({ id: ItemId, name: TagName });
 export type Tag = typeof Tag.Type;
 export const TagCreate = Schema.Struct({ name: TagName });
 export const normalizeTagName = (name: string) => name.normalize("NFKC").trim();
+export const tagNameKey = (name: string) =>
+  normalizeTagName(name).toLowerCase();

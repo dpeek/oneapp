@@ -9,6 +9,9 @@ and includes action activation in the runtime message schema.
 `src/color-picker.ts` and `src/color-picker-color.ts` adapt the opaque picker
 from the same CreaseUI revision for OneApp’s shared dialog and popover UI.
 
+`src/tokenizer.ts` adapts the StyleX Tokenizer from the same CreaseUI revision.
+It uses OneApp control tokens and renders selections owned by the task draft.
+
 MIT License
 
 Copyright (c) 2026 Potti1234

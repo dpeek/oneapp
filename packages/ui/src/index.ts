@@ -52,6 +52,7 @@ export { spinner } from "./spinner.ts";
 export { toolbar, toggleGroup } from "./toolbar.ts";
 export * as Tooltip from "./tooltip.ts";
 export * as Toast from "./toast.ts";
+export * as Tokenizer from "./tokenizer.ts";
 export { timestamp } from "./timestamp.ts";
 
 const Model = Schema.Struct({ title: Schema.String });

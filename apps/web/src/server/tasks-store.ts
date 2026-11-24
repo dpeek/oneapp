@@ -1,6 +1,11 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { Schema } from "effect";
-import { normalizeTagName, TagName, type Tag } from "../items-contract.ts";
+import {
+  normalizeTagName,
+  tagNameKey,
+  TagName,
+  type Tag,
+} from "../items-contract.ts";
 import type {
   Task,
   TaskCreate,
@@ -119,7 +124,7 @@ export const listTags = async (
     .prepare(
       `${tagProjection} AND instr(name_key, ?2) > 0 ORDER BY name_key LIMIT ?3 OFFSET ?4`,
     )
-    .bind(account, normalizeTagName(query).toLowerCase(), limit, offset)
+    .bind(account, tagNameKey(query), limit, offset)
     .all<Tag>();
   return results;
 };
@@ -237,7 +242,7 @@ export const createTag = async (
 ) => {
   const name = normalizeTagName(input);
   if (!Schema.is(TagName)(name)) return null;
-  const nameKey = name.toLowerCase();
+  const nameKey = tagNameKey(name);
   const [, tag] = await db.batch<Tag>([
     db
       .prepare(

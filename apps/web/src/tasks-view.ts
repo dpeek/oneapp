@@ -6,6 +6,7 @@ import {
   nativeSelect,
   outlineIcon,
   textarea,
+  Tokenizer,
 } from "@oneapp/ui";
 import { Submodel } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";
@@ -18,7 +19,13 @@ import {
   taskTagLimit,
   taskTitleLimit,
 } from "./tasks-contract.ts";
-import { hasEdits, Message, selectedTask, type Model } from "./tasks.ts";
+import {
+  hasEdits,
+  Message,
+  selectedTask,
+  tagSearch,
+  type Model,
+} from "./tasks.ts";
 import { workspace } from "./workspace.ts";
 
 const statusLabels = {
@@ -305,7 +312,7 @@ const taskDetail = (
   const draft = model.draft;
   const busy = model.request !== null;
   const tagsFull = (draft?.tagIds.length ?? 0) >= taskTagLimit;
-  const availableTags = tags.filter((tag) => !draft?.tagIds.includes(tag.id));
+  const search = draft && tagSearch(model, tags);
   const changed = !!(task && draft && hasEdits(draft, task));
   const stale = !!(task && draft && task.revision !== draft.revision);
   const time = (value: number) =>
@@ -411,93 +418,28 @@ const taskDetail = (
                   ),
                   h,
                 ),
-                h.fieldset(
-                  [h.Class("task-tag-editor")],
-                  [
-                    h.legend([], ["Tags"]),
-                    h.div(
-                      [h.Class("task-tags")],
-                      tags
-                        .filter((tag) => draft.tagIds.includes(tag.id))
-                        .map((tag) =>
-                          h.span(
-                            [h.Key(tag.id), h.Class("task-tag")],
-                            [
-                              tag.name,
-                              button(
-                                {
-                                  ariaLabel: `Remove tag ${tag.name}`,
-                                  variant: "ghost",
-                                  size: "icon-sm",
-                                  disabled: busy,
-                                  onClick: Message.RemovedTag({ id: tag.id }),
-                                  children: ["×"],
-                                },
-                                h,
-                              ),
-                            ],
-                          ),
-                        ),
+                Tokenizer.view(
+                  {
+                    model: model.tagPicker,
+                    label: "Tags",
+                    placeholder: "Search or create tags",
+                    emptyMessage: "No matching tags",
+                    items: search?.items ?? [],
+                    selected: tags.filter(({ id }) =>
+                      draft.tagIds.includes(id),
                     ),
-                    ...(availableTags.length && !tagsFull
-                      ? [
-                          nativeSelect(
-                            {
-                              label: "Add existing tag",
-                              options: [
-                                { value: "", label: "Choose a tag" },
-                                ...availableTags.map((tag) => ({
-                                  value: tag.id,
-                                  label: tag.name,
-                                })),
-                              ],
-                              value: "",
-                              disabled: busy,
-                              onChange: (id) => Message.AttachedTag({ id }),
-                            },
-                            h,
-                          ),
-                        ]
-                      : []),
-                    tagsFull
-                      ? h.p(
-                          [h.Class("task-muted")],
-                          [`A task can have up to ${taskTagLimit} tags.`],
-                        )
-                      : h.form(
-                          [
-                            h.Class("task-inline-form"),
-                            h.OnSubmit(Message.CreatedTag()),
-                          ],
-                          [
-                            input(
-                              [
-                                h.Type("text"),
-                                h.Value(model.tagName),
-                                h.AriaLabel("New tag name"),
-                                h.Placeholder("New tag name"),
-                                h.Maxlength(tagNameLimit),
-                                h.Required(true),
-                                h.Disabled(busy),
-                                h.OnInput((name) =>
-                                  Message.EditedTagName({ name }),
-                                ),
-                              ],
-                              h,
-                            ),
-                            button(
-                              {
-                                type: "submit",
-                                variant: "outline",
-                                size: "sm",
-                                disabled: busy,
-                                children: ["Add tag"],
-                              },
-                              h,
-                            ),
-                          ],
-                        ),
-                  ],
+                    maxLength: tagNameLimit,
+                    busy,
+                    full: tagsFull,
+                    description: tagsFull
+                      ? `A task can have up to ${taskTagLimit} tags.`
+                      : null,
+                    error: search?.error ?? null,
+                    toParentMessage: (message) =>
+                      Message.GotTagPickerMessage({ message }),
+                    onRemove: (id) => Message.RemovedTag({ id }),
+                  },
+                  h,
                 ),
                 h.div(
                   [h.Class("task-actions")],

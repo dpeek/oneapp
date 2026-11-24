@@ -1,6 +1,7 @@
 import { Temporal } from "@js-temporal/polyfill";
 import ICAL from "ical.js";
 import {
+  calendarImportLimit,
   calendarReminderMinutes,
   type CalendarDraft,
   type CalendarOccurrence,
@@ -19,6 +20,8 @@ const recurringProperties = ["rrule", "rdate", "exdate"];
 const dateProperties = ["dtstart", "dtend", "recurrence-id", "rdate", "exdate"];
 const utc = ICAL.Timezone.utcTimezone;
 const floating = ICAL.Timezone.localTimezone;
+// Each stored series carries its own calendar wrapper and time zones.
+const normalizedImportLimit = calendarImportLimit * 4;
 
 const newCalendar = () => {
   const calendar = new ICAL.Component("vcalendar");
@@ -232,7 +235,7 @@ export const readCalendarImport = (ics: string) => {
       validateSeries(single);
       const file = serialized(single);
       normalizedBytes += encoder.encode(file).byteLength;
-      if (normalizedBytes <= 2 * 1024 * 1024) {
+      if (normalizedBytes <= normalizedImportLimit) {
         const { master, recurring } = seriesFor(single);
         events.push({
           uid,
@@ -249,7 +252,7 @@ export const readCalendarImport = (ics: string) => {
       );
     }
   }
-  if (normalizedBytes > 2 * 1024 * 1024)
+  if (normalizedBytes > normalizedImportLimit)
     throw new Error(
       "This calendar is too large after expanding its time zone definitions.",
     );

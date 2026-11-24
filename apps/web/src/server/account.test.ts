@@ -23,6 +23,7 @@ import {
   passwordChangePath,
 } from "../account-contract.ts";
 import { bitwardenDevicesPath } from "../bitwarden-device-contract.ts";
+import { calendarApi, calendarImportLimit } from "../calendar-contract.ts";
 import {
   allMailApiPath,
   archiveApiPath,
@@ -129,13 +130,28 @@ const setup = async (
   }
 
   sqlite.exec("PRAGMA foreign_keys = ON");
+  const totalChanges = sqlite.query<{ changes: number }, []>(
+    "SELECT total_changes() AS changes",
+  );
   const bind = (sql: string, params: SQLQueryBindings[]) => {
-    const execute = () => ({ results: sqlite.query(sql).all(...params) });
+    const execute = () => {
+      const before = totalChanges.get()!.changes;
+      const results = sqlite.query(sql).all(...params);
+      return {
+        results,
+        meta: { changes: totalChanges.get()!.changes - before },
+      };
+    };
     return {
       execute,
       all: async () => execute(),
       run: async () => execute(),
-      first: async () => execute().results[0] ?? null,
+      first: async (column?: string) => {
+        const row = sqlite
+          .query<Record<string, unknown>, SQLQueryBindings[]>(sql)
+          .get(...params);
+        return column === undefined ? row : (row?.[column] ?? null);
+      },
       raw: async () => sqlite.query(sql).values(...params),
     };
   };
@@ -277,6 +293,75 @@ const setup = async (
     },
   };
 };
+
+it("imports a 2 MiB calendar with an older recurring event", async () => {
+  using sqlite = new Database(":memory:");
+  const { call, signIn, cookies } = await setup(sqlite);
+  const session = cookies(await signIn(password));
+  const entries = Array.from({ length: 1000 }, (_, index) =>
+    [
+      "BEGIN:VEVENT",
+      `UID:import-limit-${index}`,
+      "DTSTAMP:20260101T000000Z",
+      index === 0 ? "DTSTART:20150321T003000Z" : "DTSTART:20260101T000000Z",
+      ...(index === 0 ? ["RRULE:FREQ=YEARLY"] : []),
+      "DESCRIPTION:",
+    ].join("\r\n"),
+  );
+  const render = (description: (index: number) => string) =>
+    [
+      "BEGIN:VCALENDAR",
+      "VERSION:2.0",
+      ...entries.map(
+        (entry, index) => `${entry}${description(index)}\r\nEND:VEVENT`,
+      ),
+      "END:VCALENDAR",
+      "",
+    ].join("\r\n");
+  const padding = calendarImportLimit - render(() => "").length;
+  const descriptionLength = Math.floor(padding / entries.length);
+  const remainder = padding % entries.length;
+  const ics = render((index) =>
+    '"'.repeat(descriptionLength + Number(index < remainder)),
+  );
+  expect(ics.length).toBe(2 * 1024 * 1024);
+  expect(JSON.stringify({ ics }).length).toBeGreaterThan(calendarImportLimit);
+
+  const report = {
+    total: entries.length,
+    available: entries.length,
+    existing: 0,
+    imported: 0,
+    warnings: [],
+  };
+  const preview = await call(`${calendarApi}/import/preview`, { ics }, session);
+  expect(preview.status).toBe(200);
+  expect(await preview.json()).toEqual(report);
+
+  const imported = await call(`${calendarApi}/import`, { ics }, session);
+  expect(imported.status).toBe(200);
+  expect(await imported.json()).toEqual({
+    ...report,
+    imported: entries.length,
+  });
+  const saved = sqlite
+    .query<{ ics: string }, [string]>(
+      "SELECT ics FROM calendar_events WHERE uid = ?",
+    )
+    .get("import-limit-0");
+  expect(saved?.ics).toContain("DTSTART:20150321T003000Z");
+  expect(saved?.ics).toContain("RRULE:FREQ=YEARLY");
+
+  const oversized = await call(
+    `${calendarApi}/import/preview`,
+    { ics: `${ics}\n` },
+    session,
+  );
+  expect(oversized.status).toBe(400);
+  expect(await oversized.json()).toMatchObject({
+    error: "Choose an .ics file up to 2 MiB.",
+  });
+});
 
 it("shares private people profiles across aliases and keeps account addresses linked to the owner", async () => {
   using sqlite = new Database(":memory:");

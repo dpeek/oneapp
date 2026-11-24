@@ -5,6 +5,7 @@ import {
   calendarApi,
   calendarExportName,
   calendarImportLimit,
+  calendarImportLimitLabel,
   CalendarId,
   CalendarNameWrite,
   CalendarSummary,
@@ -41,7 +42,11 @@ const importBody = HttpServerRequest.schemaBodyJson(
     calendarId: Schema.optional(CalendarId),
   }),
 ).pipe(
-  Effect.provideService(HttpServerRequest.MaxBodySize, ByteSize.mebibytes(2)),
+  // A JSON escape can take six bytes, and the object has other fields.
+  Effect.provideService(
+    HttpServerRequest.MaxBodySize,
+    ByteSize.bytes(calendarImportLimit * 6 + 1024),
+  ),
   Effect.option,
 );
 const exportQuery = HttpServerRequest.schemaSearchParams(
@@ -281,7 +286,10 @@ export const calendarRoutes = (
             new TextEncoder().encode(body.value.ics).byteLength >
               calendarImportLimit
           )
-            return yield* jsonError(400, "Choose an .ics file up to 512 KiB.");
+            return yield* jsonError(
+              400,
+              `Choose an .ics file up to ${calendarImportLimitLabel}.`,
+            );
           const calendarId = body.value.calendarId ?? defaultCalendarId;
           const calendar = yield* Effect.tryPromise(() =>
             getCalendar(db, account.subjectId, calendarId),

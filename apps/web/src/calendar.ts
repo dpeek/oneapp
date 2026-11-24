@@ -14,6 +14,7 @@ import {
   CalendarDraft,
   CalendarImportReport,
   calendarImportLimit,
+  calendarImportLimitLabel,
   CalendarOccurrence,
   calendarReminderMinutes,
   CalendarWeek,
@@ -282,7 +283,7 @@ const ImportFile = Command.define("ImportCalendarFile", {
         if (!file || file.size > calendarImportLimit)
           throw new CalendarRequestError(
             400,
-            "Choose an .ics file up to 512 KiB.",
+            `Choose an .ics file up to ${calendarImportLimitLabel}.`,
           );
         source = await file.text();
       }
@@ -1099,7 +1100,10 @@ const importView = (model: Model, h: H) => {
               h.label(
                 [h.Class("calendar-field")],
                 [
-                  h.span([], ["Calendar file (.ics, up to 512 KiB)"]),
+                  h.span(
+                    [],
+                    [`Calendar file (.ics, up to ${calendarImportLimitLabel})`],
+                  ),
                   h.input([
                     h.Type("file"),
                     h.Id(fileInput),

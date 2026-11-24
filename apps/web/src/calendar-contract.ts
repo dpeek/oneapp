@@ -2,7 +2,8 @@ import { Schema } from "effect";
 
 export const calendarPath = "/calendar";
 export const calendarApi = "/api/calendar";
-export const calendarImportLimit = 512 * 1024;
+export const calendarImportLimit = 2 * 1024 * 1024;
+export const calendarImportLimitLabel = `${calendarImportLimit / (1024 * 1024)} MiB`;
 export const calendarReminderMinutes = 10;
 export const defaultCalendarId = "default";
 export const defaultCalendarName = "Personal";

@@ -212,7 +212,7 @@ CLOUDFLARE_ACCOUNT_ID=<account-id> bun run backup:capture \
 
 Capture uses the same Cloudflare profile or API token as deployment. It reads the deployed Worker's bindings to find D1 and the Inbox, Sent, ProfilePhotos, and VaultFiles buckets. The token must be able to read Worker bindings and R2 objects and export D1. Cloudflare can pause D1 queries during an export. Run captures in a quiet window. [D1 export API](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/export/) · [R2 object API](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/objects/)
 
-Snapshots default to `~/.local/share/oneapp/backups`; use `--out` to select a local volume. The command publishes a new encrypted directory after checking database integrity and all referenced objects. Each directory contains the D1 SQL, the four buckets, and a manifest with the D1 bookmark, object keys, HTTP and custom metadata, and SHA-256 checksums. The D1 export includes the migration history and production account state. Keep deployment configuration and Worker secrets separately recoverable.
+Snapshots default to `~/.local/share/oneapp/backups`; use `--out` to select a local volume. The command publishes a new encrypted directory after checking database integrity and all referenced objects. Each directory contains the D1 SQL, the R2 buckets, and a manifest with the D1 bookmark, object keys, HTTP and custom metadata, and SHA-256 checksums. The D1 export includes the migration history and production account state. Keep deployment configuration and Worker secrets separately recoverable.
 
 ```sh
 bun run backup:restore --snapshot /path/to/snapshot \
@@ -228,7 +228,7 @@ bun run dev:pull
 bun run dev
 ```
 
-`bun run dev` runs the initial pull automatically. `dev:pull` uses the newest completed backup in `~/.local/share/oneapp/backups` and the age identity at `~/.config/oneapp/backup.agekey`. Use `--snapshot <directory>` or `--identity <file>` to override either. The pull verifies and decrypts the backup locally, applies branch migrations to a temporary copy, then loads application records and all four buckets into local dev. Resolve any migration-history error by restoring the original applied migration files and adding forward migrations.
+`bun run dev` runs the initial pull automatically. `dev:pull` uses the newest completed backup in `~/.local/share/oneapp/backups` and the age identity at `~/.config/oneapp/backup.agekey`. Use `--snapshot <directory>` or `--identity <file>` to override either. The pull verifies and decrypts the backup locally, applies branch migrations to a temporary copy, then loads application records and R2 objects into local dev. Resolve any migration-history error by restoring the original applied migration files and adding forward migrations.
 
 Sign in with the local credentials in the environment file printed by the launcher. The Vault uses its original master password. Local dev uses local sessions and device connections, with outbound mail, push, and scheduled maintenance disabled. Restored data persists under the private `.alchemy/` directory.
 

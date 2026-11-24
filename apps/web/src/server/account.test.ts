@@ -24,6 +24,14 @@ import {
 } from "../account-contract.ts";
 import { bitwardenDevicesPath } from "../bitwarden-device-contract.ts";
 import { calendarApi, calendarImportLimit } from "../calendar-contract.ts";
+import {
+  fileApi,
+  fileContentApi,
+  FileIndex,
+  fileNameHeader,
+  filesApi,
+  StoredFile,
+} from "../files-contract.ts";
 import { Tag, tagsApi } from "../items-contract.ts";
 import { Task, taskApi, TaskIndex, tasksApi } from "../tasks-contract.ts";
 import {
@@ -120,6 +128,7 @@ const setup = async (
       | "INBOX_EMAIL_FROM"
       | "SENT_MESSAGES"
       | "PROFILE_PHOTOS"
+      | "FILE_UPLOADS"
       | "PUSH_PUBLIC_KEY"
       | "PUSH_PRIVATE_KEY"
       | "PUSH_SUBJECT"
@@ -297,6 +306,103 @@ const setup = async (
     },
   };
 };
+
+it("requires session ownership for uploaded file metadata, previews and downloads", async () => {
+  using sqlite = new Database(":memory:");
+  const objects = new Map<string, ArrayBuffer>();
+  const reads: string[] = [];
+  const { env, request, signIn, cookies } = await setup(sqlite, {
+    FILE_UPLOADS: {
+      put: async (key: string, bytes: ArrayBuffer) => {
+        objects.set(key, bytes);
+        return { size: bytes.byteLength };
+      },
+      get: async (key: string) => {
+        reads.push(key);
+        const bytes = objects.get(key);
+        return bytes
+          ? { size: bytes.byteLength, body: new Response(bytes).body }
+          : null;
+      },
+    } as unknown as WorkerEnv["FILE_UPLOADS"],
+  });
+  const cookie = cookies(await signIn(password));
+  const name = 'Résumé "draft".png';
+  const bytes = new Uint8Array([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  ]);
+  const upload = await request(filesApi, {
+    method: "POST",
+    headers: {
+      cookie,
+      origin: env.APP_ORIGIN,
+      "x-effect-auth-csrf": "1",
+      [fileNameHeader]: encodeURIComponent(name),
+      "content-type": "image/png",
+    },
+    body: bytes,
+  });
+  expect(upload.status).toBe(201);
+  const file = Schema.decodeUnknownSync(StoredFile)(await upload.json());
+  expect(file).toMatchObject({
+    name,
+    size: bytes.length,
+    previewType: "image/png",
+  });
+  expect([...objects.keys()]).toEqual([`owner/${file.id}`]);
+
+  const foreign = crypto.randomUUID();
+  sqlite
+    .query(
+      "INSERT INTO accounts (id, active, security_revision) VALUES ('other', 1, ?)",
+    )
+    .run(crypto.randomUUID());
+  sqlite
+    .query(
+      "INSERT INTO items (account_id, id, kind, title, revision, created_at, updated_at) VALUES ('other', ?, 'file', 'private.png', ?, 1, 1)",
+    )
+    .run(foreign, crypto.randomUUID());
+  sqlite
+    .query(
+      "INSERT INTO files (account_id, item_id, media_type, size, preview_type) VALUES ('other', ?, 'image/png', 8, 'image/png')",
+    )
+    .run(foreign);
+  objects.set(`other/${foreign}`, bytes.buffer);
+
+  for (const path of [
+    fileApi(file.id),
+    fileContentApi(file.id, "preview"),
+    fileContentApi(file.id, "download"),
+  ])
+    expect((await request(path, {})).status).toBe(401);
+  for (const path of [
+    fileApi(foreign),
+    fileContentApi(foreign, "preview"),
+    fileContentApi(foreign, "download"),
+  ])
+    expect((await request(path, { headers: { cookie } })).status).toBe(404);
+  expect(reads).toEqual([]);
+
+  const index = await request(filesApi, { headers: { cookie } });
+  expect(Schema.decodeUnknownSync(FileIndex)(await index.json()).files).toEqual(
+    [file],
+  );
+  const preview = await request(fileContentApi(file.id, "preview"), {
+    headers: { cookie },
+  });
+  expect(preview.headers.get("content-type")).toBe("image/png");
+  expect(preview.headers.get("cache-control")).toBe("no-store");
+  expect(new Uint8Array(await preview.arrayBuffer())).toEqual(bytes);
+
+  const download = await request(fileContentApi(file.id, "download"), {
+    headers: { cookie },
+  });
+  expect(download.headers.get("content-type")).toBe("application/octet-stream");
+  expect(download.headers.get("content-disposition")).toContain(
+    "filename*=UTF-8''R%C3%A9sum%C3%A9%20%22draft%22.png",
+  );
+  expect(new Uint8Array(await download.arrayBuffer())).toEqual(bytes);
+});
 
 it("imports a 2 MiB calendar with an older recurring event", async () => {
   using sqlite = new Database(":memory:");

@@ -1,10 +1,14 @@
 import { cloudflareEnvironment } from "../cloudflare-env.ts";
 
-export const bucketBindings = [
+const legacyBucketBindings = [
   "INBOX_MESSAGES",
   "SENT_MESSAGES",
   "PROFILE_PHOTOS",
   "VAULT_FILES",
+] as const;
+export const bucketBindings = [
+  ...legacyBucketBindings,
+  "FILE_UPLOADS",
 ] as const;
 export type BucketBinding = (typeof bucketBindings)[number];
 
@@ -69,36 +73,44 @@ export const openSource = async (worker: string) => {
     (binding) => binding.name === "DB" && binding.type === "d1",
   )?.id;
   if (!database) throw new Error("The Worker is missing its DB binding.");
-  const buckets = Object.fromEntries(
-    bucketBindings.map((name) => {
-      const binding = settings.bindings.find(
-        (item) => item.name === name && item.type === "r2_bucket",
-      );
-      if (!binding?.bucket_name)
-        throw new Error("The Worker is missing " + name + ".");
-      return [
-        name,
-        {
+  const getBucket = (name: BucketBinding) => {
+    const binding = settings.bindings.find(
+      (item) => item.name === name && item.type === "r2_bucket",
+    );
+    return binding?.bucket_name
+      ? {
           name: binding.bucket_name,
           jurisdiction: binding.jurisdiction ?? "default",
-        },
-      ];
+        }
+      : undefined;
+  };
+  const requiredBuckets = Object.fromEntries(
+    legacyBucketBindings.map((name) => {
+      const bucket = getBucket(name);
+      if (!bucket) throw new Error("The Worker is missing " + name + ".");
+      return [name, bucket];
     }),
-  ) as Record<BucketBinding, Bucket>;
-
-  const bucketPath = (binding: BucketBinding) =>
-    "/r2/buckets/" + encodeURIComponent(buckets[binding].name) + "/objects";
-  const jurisdiction = (binding: BucketBinding) => ({
-    "cf-r2-jurisdiction": buckets[binding].jurisdiction,
+  ) as Record<(typeof legacyBucketBindings)[number], Bucket>;
+  const fileUploads = getBucket("FILE_UPLOADS");
+  const buckets = {
+    ...requiredBuckets,
+    ...(fileUploads ? { FILE_UPLOADS: fileUploads } : {}),
+  };
+  const bucketPath = (bucket: Bucket) =>
+    "/r2/buckets/" + encodeURIComponent(bucket.name) + "/objects";
+  const jurisdiction = (bucket: Bucket) => ({
+    "cf-r2-jurisdiction": bucket.jurisdiction,
   });
 
   const list = async function* (binding: BucketBinding) {
+    const bucket = buckets[binding];
+    if (!bucket) return;
     const query = new URLSearchParams({ per_page: "1000" });
     do {
       const page = await json<RemoteObject[]>(
         "List " + binding,
-        bucketPath(binding) + "?" + query,
-        { headers: jurisdiction(binding) },
+        bucketPath(bucket) + "?" + query,
+        { headers: jurisdiction(bucket) },
       );
       yield* page.result;
       if (!page.result_info?.is_truncated) return;
@@ -112,13 +124,15 @@ export const openSource = async (worker: string) => {
   };
 
   const get = async (binding: BucketBinding, object: RemoteObject) => {
+    const bucket = buckets[binding];
+    if (!bucket) throw new Error("The Worker is missing " + binding + ".");
     const parts = object.key.split("/");
     if (parts.some((part) => part === "." || part === ".."))
       throw new Error("Unsupported path segment in an object key.");
     const path = parts.map(encodeURIComponent).join("/");
     for (let attempt = 0; attempt < 5; attempt++) {
-      const response = await request(bucketPath(binding) + "/" + path, {
-        headers: { ...jurisdiction(binding), "accept-encoding": "identity" },
+      const response = await request(bucketPath(bucket) + "/" + path, {
+        headers: { ...jurisdiction(bucket), "accept-encoding": "identity" },
       });
       if (response.ok && response.body) {
         if (response.headers.get("etag")?.replaceAll('"', "") !== object.etag) {

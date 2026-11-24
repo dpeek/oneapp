@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { chmod, lstat, mkdir, mkdtemp, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { bucketBindings, type BucketBinding } from "./cloudflare.ts";
 
 const Count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
@@ -23,6 +23,17 @@ const ObjectEntry = Schema.Struct({
     Schema.Record(Schema.String, Schema.NullOr(Schema.String)),
   ),
 });
+const BucketSource = Schema.Struct({
+  name: Schema.NonEmptyString,
+  jurisdiction: Schema.NonEmptyString,
+});
+const bucketFields = <S extends Schema.Constraint>(schema: S) => ({
+  INBOX_MESSAGES: schema,
+  SENT_MESSAGES: schema,
+  PROFILE_PHOTOS: schema,
+  VAULT_FILES: schema,
+});
+
 export const Manifest = Schema.Struct({
   version: Schema.Literal(1),
   createdAt: Schema.NonEmptyString,
@@ -31,19 +42,18 @@ export const Manifest = Schema.Struct({
     account: Schema.NonEmptyString,
     worker: Schema.NonEmptyString,
     database: Schema.NonEmptyString,
-    buckets: Schema.Record(
-      Schema.Literals(bucketBindings),
-      Schema.Struct({
-        name: Schema.NonEmptyString,
-        jurisdiction: Schema.NonEmptyString,
-      }),
-    ),
+    buckets: Schema.Struct({
+      ...bucketFields(BucketSource),
+      FILE_UPLOADS: Schema.optionalKey(BucketSource),
+    }),
   }),
   database: Schema.Struct({ ...File.fields, bookmark: Schema.NonEmptyString }),
-  objects: Schema.Record(
-    Schema.Literals(bucketBindings),
-    Schema.Array(ObjectEntry),
-  ),
+  objects: Schema.Struct({
+    ...bucketFields(Schema.Array(ObjectEntry)),
+    FILE_UPLOADS: Schema.Array(ObjectEntry).pipe(
+      Schema.withDecodingDefaultKey(Effect.succeed([])),
+    ),
+  }),
 });
 export type Manifest = typeof Manifest.Type;
 export const defaultBackupDirectory = join(
@@ -218,7 +228,7 @@ export const restoreDatabase = async (
 
   const at = Date.parse(createdAt);
   if (!Number.isFinite(at)) throw new Error("Invalid snapshot capture time.");
-  return references.map(([bucket, query]) => {
+  const result = references.map(([bucket, query]) => {
     const rows = db
       .query<{ id: string; mailbox_id?: string }, [number] | []>(query)
       .all(...(bucket === "PROFILE_PHOTOS" ? ([at] as const) : []));
@@ -229,6 +239,20 @@ export const restoreDatabase = async (
     );
     return { bucket, keys };
   });
+  const files = db
+    .query(
+      "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'files'",
+    )
+    .get();
+  if (files) {
+    const rows = db
+      .query<{ key: string }, []>(
+        "SELECT account_id || '/' || item_id AS key FROM files",
+      )
+      .all();
+    result.push({ bucket: "FILE_UPLOADS", keys: rows.map(({ key }) => key) });
+  }
+  return result;
 };
 
 export const verifyReferences = (

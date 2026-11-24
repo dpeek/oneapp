@@ -74,6 +74,7 @@ import {
   passwordRecoveryRoutes,
   resetLinkRenderer,
 } from "./password-recovery.ts";
+import { filesRoutes } from "./files.ts";
 import { tasksRoutes } from "./tasks.ts";
 import { collectAttachments } from "./vault/attachments.ts";
 import { vaultAttachmentRoutes } from "./vault/web-attachments.ts";
@@ -466,6 +467,7 @@ export default {
           peopleRoutes(http, env, defer),
           calendarRoutes(http, env),
           tasksRoutes(http, env.DB),
+          filesRoutes(http, env),
           vaultSetupRoutes(http, env.DB),
           vaultItemRoutes(http, env.DB),
           vaultManagementRoutes(http, env, defer),

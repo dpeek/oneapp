@@ -13,6 +13,10 @@ const Database = Cloudflare.D1.Database("Database", {
   migrations: "./apps/web/drizzle",
 });
 
+const FileUploads = Cloudflare.R2.Bucket("FileUploads", {
+  publicAccess: false,
+});
+
 const VaultFiles = Cloudflare.R2.Bucket("VaultFiles", { publicAccess: false });
 
 const InboxMessages = Cloudflare.R2.Bucket("InboxMessages", {
@@ -132,6 +136,7 @@ export const Web = Cloudflare.Worker(
         MAILBOX_ALIASES: Config.String("MAILBOX_ALIASES").pipe(
           Config.withDefault(""),
         ),
+        FILE_UPLOADS: FileUploads,
         VAULT_FILES: VaultFiles,
         INBOX_MESSAGES: InboxMessages,
         SENT_MESSAGES: SentMessages,

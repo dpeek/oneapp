@@ -129,6 +129,7 @@ const verifyWorker = async (
     for (const path of [
       "/api/me",
       "/api/people",
+      "/api/files",
       "/api/inbox/unread",
       "/api/vault/setup",
     ]) {

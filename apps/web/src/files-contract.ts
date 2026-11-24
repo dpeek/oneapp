@@ -1,0 +1,51 @@
+import { FileMetadata } from "@oneapp/core/files";
+import { Schema } from "effect";
+import { ItemId, ItemTagIds, Tag } from "./items-contract.ts";
+
+export const filesPath = "/files";
+export const filesApi = "/api/files";
+export const filePath = (id: string) => `${filesPath}/${id}`;
+export const fileApi = (id: string) => `${filesApi}/${id}` as const;
+export const fileContentApi = (id: string, action: "preview" | "download") =>
+  `${fileApi(id)}/${action}` as const;
+
+export const FileRoute = Schema.Struct({ id: Schema.NullOr(ItemId) });
+export const fileRouteFor = (
+  pathname: string,
+): typeof FileRoute.Type | null => {
+  if (pathname === filesPath || pathname === `${filesPath}/`)
+    return { id: null };
+  const id = /^\/files\/([^/]+)\/?$/u.exec(pathname)?.[1];
+  return Schema.is(ItemId)(id) ? { id } : null;
+};
+
+export const fileUploadLimit = 16 * 1024 * 1024;
+export const fileNameHeader = "x-oneapp-filename";
+export const FileName = Schema.NonEmptyString.check(
+  Schema.isMaxLength(255),
+  Schema.isPattern(/^[^/\p{Cc}]+$/u),
+);
+export const FilePreviewType = Schema.Literals([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "application/pdf",
+]);
+export const StoredFile = Schema.Struct({
+  ...FileMetadata.fields,
+  id: ItemId,
+  revision: ItemId,
+  createdAt: Schema.Number,
+  tagIds: ItemTagIds,
+  previewType: Schema.NullOr(FilePreviewType),
+});
+export type StoredFile = typeof StoredFile.Type;
+export const FileIndex = Schema.Struct({
+  files: Schema.Array(StoredFile),
+  tags: Schema.Array(Tag),
+});
+export const FileTagUpdate = Schema.Struct({
+  revision: ItemId,
+  tagIds: ItemTagIds,
+});

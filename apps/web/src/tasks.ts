@@ -2,16 +2,8 @@ import { Tokenizer } from "@oneapp/ui";
 import { Effect, Option, Schema } from "effect";
 import { Command, type Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";
-import {
-  ItemId,
-  normalizeTagName,
-  Tag,
-  TagCreate,
-  TagName,
-  tagNameKey,
-  tagsApi,
-  tagNameLimit,
-} from "./items-contract.ts";
+import { ItemId, Tag, TagCreate, tagsApi } from "./items-contract.ts";
+import { createTagPrefix, searchTags } from "./tag-picker.ts";
 import {
   Task,
   taskApi,
@@ -310,32 +302,13 @@ const attach = (draft: Draft, id: string): Draft =>
     ? draft
     : { ...draft, tagIds: [...draft.tagIds, id] };
 
-const createTagPrefix = "create:";
-
-export const tagSearch = (editor: Editor, tags: readonly Tag[]) => {
-  const name = normalizeTagName(editor.tagPicker.inputValue);
-  const key = tagNameKey(name);
-  const matches = tags.filter((tag) => tagNameKey(tag.name).includes(key));
-  const items = matches.filter((tag) => !editor.draft.tagIds.includes(tag.id));
-  const invalid = name !== "" && !Schema.is(TagName)(name);
-  const canCreate =
-    name !== "" &&
-    !invalid &&
-    !matches.some((tag) => tagNameKey(tag.name) === key);
-  return {
-    name,
-    canCreate,
-    items: canCreate
-      ? [
-          ...items,
-          { id: `${createTagPrefix}${name}`, name: `Create “${name}”` },
-        ]
-      : items,
-    error: invalid
-      ? `Enter a tag name of up to ${tagNameLimit} characters.`
-      : editor.tagError,
-  };
-};
+export const tagSearch = (editor: Editor, tags: readonly Tag[]) =>
+  searchTags(
+    editor.tagPicker.inputValue,
+    editor.draft.tagIds,
+    tags,
+    editor.tagError,
+  );
 
 const toTagPickerMessage =
   (id: string) => (message: typeof Tokenizer.Message.Type) =>

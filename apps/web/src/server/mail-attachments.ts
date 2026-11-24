@@ -7,6 +7,7 @@ import {
   inboxAttachmentTextPreviewLimit,
 } from "../inbox-contract.ts";
 import { attachmentDisposition, privateHeaders } from "./api-response.ts";
+import { detectFilePreviewType } from "./file-preview-type.ts";
 
 export const receivedMessageLimit = 25 * 1024 * 1024;
 export const mailMimeOptions = {
@@ -18,28 +19,12 @@ export const mailMimeOptions = {
 
 const textMediaTypes = new Set(["text/plain", "text/csv", "application/json"]);
 
-const hasBytes = (bytes: Uint8Array, signature: readonly number[]) =>
-  signature.every((byte, index) => bytes[index] === byte);
-
 const rasterExtensions = {
   "image/png": ".png",
   "image/jpeg": ".jpg",
   "image/gif": ".gif",
   "image/webp": ".webp",
 };
-const detectMediaType = (bytes: Uint8Array) => {
-  if (hasBytes(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
-    return "image/png";
-  if (hasBytes(bytes, [0xff, 0xd8, 0xff])) return "image/jpeg";
-  const signature = new TextDecoder().decode(bytes.subarray(0, 12));
-  if (signature.startsWith("GIF87a") || signature.startsWith("GIF89a"))
-    return "image/gif";
-  if (signature.startsWith("RIFF") && signature.slice(8) === "WEBP")
-    return "image/webp";
-  if (signature.startsWith("%PDF-")) return "application/pdf";
-  return null;
-};
-
 export const attachmentPart = (attachment: Attachment, part: number) => {
   const { content } = attachment;
   if (typeof content === "string") return null;
@@ -49,7 +34,7 @@ export const attachmentPart = (attachment: Attachment, part: number) => {
       : content.buffer instanceof ArrayBuffer
         ? new Uint8Array(content.buffer, content.byteOffset, content.byteLength)
         : new Uint8Array(content);
-  const detected = detectMediaType(bytes);
+  const detected = detectFilePreviewType(bytes);
   const declared = attachment.mimeType;
   const mediaType =
     detected ??

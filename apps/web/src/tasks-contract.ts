@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { ItemId, Tag } from "./items-contract.ts";
+import { ItemId, ItemTagIds, itemTagLimit, Tag } from "./items-contract.ts";
 
 export const tasksPath = "/tasks";
 export const tasksApi = "/api/tasks";
@@ -31,7 +31,7 @@ export const TaskPriority = Schema.NullOr(
 
 export const taskTitleLimit = 200;
 export const taskDescriptionLimit = 20_000;
-export const taskTagLimit = 32;
+export const taskTagLimit = itemTagLimit;
 
 export const TaskTitle = Schema.NonEmptyString.check(
   Schema.isTrimmed(),
@@ -53,7 +53,7 @@ export const TaskFields = Schema.Struct({
   status: TaskStatus,
   priority: TaskPriority,
   dueOn: Schema.NullOr(TaskDate),
-  tagIds: Schema.Array(ItemId).check(Schema.isMaxLength(taskTagLimit)),
+  tagIds: ItemTagIds,
 });
 export const TaskCreate = Schema.Struct({
   id: ItemId,

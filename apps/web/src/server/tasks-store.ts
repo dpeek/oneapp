@@ -1,11 +1,13 @@
 import type { D1Database } from "@cloudflare/workers-types";
-import { Schema } from "effect";
+import type { Tag } from "../items-contract.ts";
 import {
-  normalizeTagName,
-  tagNameKey,
-  TagName,
-  type Tag,
-} from "../items-contract.ts";
+  claimed,
+  deleteTags,
+  insertTags,
+  itemTagIdsColumn,
+  tagCatalog,
+  tagsAreAvailable,
+} from "./items-store.ts";
 import type { Task, TaskCreate, TaskUpdate } from "../tasks-contract.ts";
 
 type TaskSummary = Omit<Task, "description">;
@@ -15,16 +17,12 @@ type TaskRow<T extends TaskSummary = Task> = Omit<T, "tagIds"> & {
 const taskColumns = `
   i.id, i.title, i.revision, i.created_at AS createdAt,
     i.updated_at AS updatedAt, t.status, t.priority, t.due_on AS dueOn,
-    (
-      SELECT json_group_array(tag_id)
-      FROM item_tags WHERE account_id = i.account_id AND item_id = i.id
-    ) AS tagIds`;
+    ${itemTagIdsColumn}`;
 const taskSource = `
   FROM items i JOIN tasks t ON t.account_id = i.account_id AND t.item_id = i.id
   WHERE i.account_id = ?1 AND i.kind = 'task'`;
 const taskProjection = `SELECT ${taskColumns}, t.description ${taskSource}`;
 const taskOrder = "ORDER BY i.updated_at DESC, i.id DESC";
-const tagProjection = "SELECT id, name FROM tags WHERE account_id = ?1";
 
 const taskStatement = (db: D1Database, account: string, id: string) =>
   db.prepare(`${taskProjection} AND i.id = ?2`).bind(account, id);
@@ -45,7 +43,7 @@ export const getTask = async (db: D1Database, account: string, id: string) => {
 export const taskIndex = async (db: D1Database, account: string) => {
   const [taskRows, tagRows] = await db.batch<TaskRow | Tag>([
     db.prepare(`${taskProjection} ${taskOrder}`).bind(account),
-    db.prepare(`${tagProjection} ORDER BY name_key`).bind(account),
+    tagCatalog(db, account),
   ]);
   return {
     tasks: (taskRows!.results as TaskRow[]).map(decodeTask),
@@ -107,44 +105,6 @@ export const listTasks = async (
     .all<TaskRow<TaskSummary>>();
   return results.map(decodeTask);
 };
-
-export const listTags = async (
-  db: D1Database,
-  account: string,
-  query: string,
-  limit: number,
-  offset: number,
-) => {
-  const { results } = await db
-    .prepare(
-      `${tagProjection} AND instr(name_key, ?2) > 0 ORDER BY name_key LIMIT ?3 OFFSET ?4`,
-    )
-    .bind(account, tagNameKey(query), limit, offset)
-    .all<Tag>();
-  return results;
-};
-
-const tagsAreAvailable = (idsParameter: string) => `NOT EXISTS (
-  SELECT 1 FROM json_each(${idsParameter}) AS requested
-  WHERE NOT EXISTS (SELECT 1 FROM tags WHERE account_id = ?1 AND id = requested.value)
-)`;
-// Subsequent statements can write only if this batch claimed the item's revision.
-const claimed = `EXISTS (
-  SELECT 1 FROM items WHERE account_id = ?1 AND id = ?2 AND revision = ?3
-)`;
-const insertTags = (
-  db: D1Database,
-  account: string,
-  id: string,
-  revision: string,
-  tagIds: string,
-) =>
-  db
-    .prepare(
-      `INSERT INTO item_tags (account_id, item_id, tag_id)
-      SELECT ?1, ?2, value FROM json_each(?4) WHERE ${claimed}`,
-    )
-    .bind(account, id, revision, tagIds);
 
 export const createTask = async (
   db: D1Database,
@@ -215,11 +175,7 @@ export const updateTask = async (
         input.priority,
         input.dueOn,
       ),
-    db
-      .prepare(
-        `DELETE FROM item_tags WHERE account_id = ?1 AND item_id = ?2 AND ${claimed}`,
-      )
-      .bind(account, id, revision),
+    deleteTags(db, account, id, revision),
     insertTags(db, account, id, revision, tagIds),
     taskStatement(db, account, id),
   ]);
@@ -228,28 +184,4 @@ export const updateTask = async (
     changed: item!.meta.changes > 0,
     task: row ? decodeTask(row) : null,
   };
-};
-
-export const createTag = async (
-  db: D1Database,
-  account: string,
-  input: string,
-) => {
-  const name = normalizeTagName(input);
-  if (!Schema.is(TagName)(name)) return null;
-  const nameKey = tagNameKey(name);
-  const [, tag] = await db.batch<Tag>([
-    db
-      .prepare(
-        `INSERT INTO tags (account_id, id, name, name_key) VALUES (?, ?, ?, ?)
-         ON CONFLICT (account_id, name_key) DO NOTHING`,
-      )
-      .bind(account, crypto.randomUUID(), name, nameKey),
-    db
-      .prepare(
-        "SELECT id, name FROM tags WHERE account_id = ? AND name_key = ?",
-      )
-      .bind(account, nameKey),
-  ]);
-  return tag!.results[0]!;
 };

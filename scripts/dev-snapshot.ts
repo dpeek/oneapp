@@ -18,6 +18,7 @@ const bucketResources = {
   SENT_MESSAGES: "SentMessages",
   PROFILE_PHOTOS: "ProfilePhotos",
   VAULT_FILES: "VaultFiles",
+  FILE_UPLOADS: "FileUploads",
 } as const satisfies Record<BucketBinding, string>;
 
 // Import only durable application tables, in foreign-key order. The target
@@ -52,6 +53,7 @@ const dataTables = [
   "calendar_moved_uids",
   "items",
   "tasks",
+  "files",
   "tags",
   "item_tags",
 ] as const;

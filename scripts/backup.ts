@@ -101,6 +101,7 @@ try {
         SENT_MESSAGES: [],
         PROFILE_PHOTOS: [],
         VAULT_FILES: [],
+        FILE_UPLOADS: [],
       };
       for (const bucket of bucketBindings) {
         const entries = await Array.fromAsync(source.list(bucket));

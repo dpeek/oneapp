@@ -10,16 +10,10 @@ import {
   taskPath,
   taskTagLimit,
 } from "../tasks-contract.ts";
+import { createTag, listTags } from "./items-store.ts";
 import { type McpScope, ReadTasks, WriteTasks } from "./mcp-oauth.ts";
 import { pageFields, result, standardSchema, toolFailure } from "./mcp-tool.ts";
-import {
-  createTag,
-  createTask,
-  getTask,
-  listTags,
-  listTasks,
-  updateTask,
-} from "./tasks-store.ts";
+import { createTask, getTask, listTasks, updateTask } from "./tasks-store.ts";
 
 const { description, ...summaryFields } = Task.fields;
 const { title, status, priority, dueOn, tagIds } = summaryFields;

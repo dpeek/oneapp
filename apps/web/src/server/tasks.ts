@@ -5,7 +5,8 @@ import { ItemId, TagCreate, tagsApi } from "../items-contract.ts";
 import { TaskCreate, tasksApi, TaskUpdate } from "../tasks-contract.ts";
 import { jsonError, privateHeaders } from "./api-response.ts";
 import { AppAuth, ownerId, type authHttp } from "./auth.ts";
-import { createTag, createTask, taskIndex, updateTask } from "./tasks-store.ts";
+import { createTag } from "./items-store.ts";
+import { createTask, taskIndex, updateTask } from "./tasks-store.ts";
 
 const json = (value: unknown, status = 200) =>
   HttpServerResponse.json(value, { status, headers: privateHeaders });

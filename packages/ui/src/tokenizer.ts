@@ -24,9 +24,10 @@ const styles = stylex.create({
     minBlockSize: "2.25rem",
     minInlineSize: 0,
     boxSizing: "border-box",
-    border: `1px solid ${controls.border}`,
+    borderStyle: "solid",
+    borderWidth: 1,
     borderRadius: controls.radius,
-    borderColor: { ":focus-within": controls.focus },
+    borderColor: { default: controls.border, ":focus-within": controls.focus },
     boxShadow: {
       ":focus-within": `0 0 0 1px color-mix(in srgb, ${controls.focus} 35%, transparent)`,
     },
@@ -54,7 +55,7 @@ const styles = stylex.create({
     inlineSize: "1.5rem",
     blockSize: "1.5rem",
     padding: 0,
-    border: 0,
+    borderStyle: "none",
     borderRadius: controls.radius,
     color: "inherit",
     backgroundColor: {
@@ -62,6 +63,8 @@ const styles = stylex.create({
       ":hover": controls.surface,
     },
     cursor: { default: "pointer", ":disabled": "default" },
+    outline: { ":focus-visible": `2px solid ${controls.focus}` },
+    outlineOffset: 1,
   },
   combobox: {
     display: "contents",
@@ -76,7 +79,7 @@ const styles = stylex.create({
     minBlockSize: "1.625rem",
     paddingBlock: 0,
     paddingInline: "0.375rem",
-    border: 0,
+    borderStyle: "none",
     backgroundColor: "transparent",
     color: controls.foreground,
     fontFamily: "inherit",
@@ -85,11 +88,14 @@ const styles = stylex.create({
     "::placeholder": { color: controls.mutedForeground },
   },
   panel: {
+    zIndex: 50,
     boxSizing: "border-box",
     inlineSize: "var(--button-width)",
     maxInlineSize: "calc(100vw - 1rem)",
     padding: "0.25rem",
-    border: `1px solid ${controls.border}`,
+    borderStyle: "solid",
+    borderWidth: 1,
+    borderColor: controls.border,
     borderRadius: controls.radius,
     backgroundColor: controls.popover,
     color: controls.foreground,
@@ -108,7 +114,6 @@ const styles = stylex.create({
     cursor: "pointer",
   },
   activeOption: { backgroundColor: controls.hover },
-  emptyOption: { color: controls.mutedForeground, cursor: "default" },
   description: { color: controls.mutedForeground, fontSize: "0.8125rem" },
   error: { color: "light-dark(#ab3723, #ffa693)", fontSize: "0.8125rem" },
 });
@@ -138,9 +143,11 @@ export const view = <Msg>(
   const inputId = Combobox.inputId(model.id);
   const wrapperId = `${model.id}-field`;
   const messageId = `${model.id}-message`;
-  const feedback = props.error ?? props.description;
   const labels = new Map(props.items.map(({ id, name }) => [id, name]));
-  if (labels.size === 0) labels.set("", props.emptyMessage);
+  const feedback =
+    props.error ??
+    props.description ??
+    (labels.size === 0 && model.inputValue.trim() ? props.emptyMessage : null);
   const displayText = (id: string) => labels.get(id) ?? id;
   const message = feedback
     ? [
@@ -179,6 +186,7 @@ export const view = <Msg>(
                 h.button(
                   [
                     h.Type("button"),
+                    h.DataAttribute("slot", "tokenizer-remove"),
                     h.AriaLabel(`Remove tag ${name}`),
                     h.Disabled(props.busy),
                     h.Class(stylex.props(styles.remove).className ?? ""),
@@ -200,12 +208,10 @@ export const view = <Msg>(
               selectedValues: props.selected.map(({ id }) => id),
               itemToValue: (id) => id,
               itemToDisplayText: displayText,
-              isItemDisabled: (id) => id === "",
-              itemToConfig: (id, { isActive, isDisabled }) => ({
+              itemToConfig: (id, { isActive }) => ({
                 className: stylex.props(
                   styles.option,
-                  isActive && !isDisabled && styles.activeOption,
-                  isDisabled && styles.emptyOption,
+                  isActive && styles.activeOption,
                 ).className,
                 content: h.span([], [displayText(id)]),
               }),
@@ -215,6 +221,7 @@ export const view = <Msg>(
               inputClassName: stylex.props(styles.input).className,
               inputPlaceholder: props.placeholder,
               inputAttributes: childAttributes([
+                h.DataAttribute("slot", "input"),
                 h.Maxlength(props.maxLength),
                 h.Disabled(props.full),
                 ...(props.full || props.busy

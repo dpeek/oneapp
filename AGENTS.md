@@ -15,4 +15,5 @@ Use `bun.lock` for resolved versions. Verify APIs against installed source befor
 ## Schema and deployment
 
 - `apps/web/src/server/schema.ts` is the Drizzle schema entry point. Use `bun run db:generate` after schema changes and review the generated SQL.
-- `bun run deploy` builds the web app and deploys to Cloudflare through `scripts/deploy.ts`. The web workspace's `dev` script serves the frontend only.
+- Production is the `OneApp/production` stage at `https://app.dpeek.com`. Use `bun --env-file=.env.production run deploy --stage production`. This builds the web app and deploys it through `scripts/deploy.ts`. The web workspace's `dev` script serves the frontend only.
+- Inspect production logs and traces under the `oneapp-web-production` Worker in Cloudflare Observability.

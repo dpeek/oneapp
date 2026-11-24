@@ -207,10 +207,10 @@ age-keygen -o /path/to/oneapp-backup.agekey
 age-keygen -y /path/to/oneapp-backup.agekey
 
 CLOUDFLARE_ACCOUNT_ID=<account-id> bun run backup:capture \
-  --worker <deployed-worker-name> --recipient <age-public-key>
+  --worker oneapp-web-production --recipient <age-public-key>
 ```
 
-Capture uses the same Cloudflare profile or API token as deployment. It reads the deployed Worker's bindings to find D1 and the Inbox, Sent, ProfilePhotos, and VaultFiles buckets. The token must be able to read Worker bindings and R2 objects and export D1. Cloudflare can pause D1 queries during an export. Run captures in a quiet window. [D1 export API](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/export/) · [R2 object API](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/objects/)
+Capture uses the same Cloudflare profile or API token as deployment. It reads the deployed Worker's bindings to find D1 and the Inbox, Sent, ProfilePhotos, VaultFiles, and FileUploads buckets. The token must be able to read Worker bindings and R2 objects and export D1. Cloudflare can pause D1 queries during an export. Run captures in a quiet window. [D1 export API](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/export/) · [R2 object API](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/objects/)
 
 Snapshots default to `~/.local/share/oneapp/backups`; use `--out` to select a local volume. The command publishes a new encrypted directory after checking database integrity and all referenced objects. Each directory contains the D1 SQL, the R2 buckets, and a manifest with the D1 bookmark, object keys, HTTP and custom metadata, and SHA-256 checksums. The D1 export includes the migration history and production account state. Keep deployment configuration and Worker secrets separately recoverable.
 
@@ -220,6 +220,14 @@ bun run backup:restore --snapshot /path/to/snapshot \
 ```
 
 Restore works offline and verifies checksums, SQLite integrity, foreign keys, and object references. The new output directory contains plaintext `database.sql`, a usable `database.sqlite`, and the recovered object bodies. Use its `manifest.json` to map numbered files to their bucket keys and metadata. Keep the restore on a private volume. This workflow recovers the data files for inspection or import into a fresh deployment.
+
+### Restore to a fresh Cloudflare stage
+
+Import into an empty D1 database with the target Worker isolated and its scheduled jobs and email disabled. Preserve the `__alchemy_migrations` table and its rows, then apply pending repository migrations after the import.
+
+1. Rebuild the SQL import from the verified restore. Create tables in foreign-key dependency order and create indexes before inserting rows, so foreign keys can resolve referenced unique keys. Insert parent rows before their dependents and recreate triggers after the bulk load to avoid replaying their side effects.
+2. Load rows whose literal `INSERT` would exceed D1's 100,000-byte statement limit through short parameterized queries with bound values. Preserve dependency order for those rows as well. At cutover, `mail_import_completions` and `mail_import_runs` each had one oversized row, and both tables could be loaded after the bulk import. [D1 limits](https://developers.cloudflare.com/d1/platform/limits/)
+3. Compare the imported rows to the verified SQLite restore and run `PRAGMA foreign_key_check`. Restore all five R2 buckets using the manifest's keys and metadata, and verify object checksums before routing traffic to the stage.
 
 ### Refresh local development data
 
@@ -234,14 +242,16 @@ Sign in with the local credentials in the environment file printed by the launch
 
 Ordinary restarts reuse the current data, including local edits. A successful pull replaces the data used by the next `bun run dev`. Restart any running dev server to switch to the refreshed copy. Earlier copies remain on disk.
 
-## Cloudflare preview
+## Cloudflare production
+
+`OneApp/production` serves `app.dpeek.com` on the `oneapp-web-production` Worker. The former `OneApp/preview` stage was retired after the cutover.
 
 The Alchemy stack deploys the Foldkit web app and Effect API to one Worker. It creates a D1 database per stage, applies the committed Drizzle migrations, and provisions the owner through Yielded Auth.
 
-Create a private, Git-ignored `.env.preview` from `.env.example` and set its permissions with `chmod 600 .env.preview`. Use the Cloudflare account ID, the name of your authenticated `cf` profile, and the owner's email address. Generate `OWNER_PASSWORD`, `AUTH_SECRET`, and `MCP_OAUTH_SECRET` separately with `bun -e 'console.log(require("node:crypto").randomBytes(32).toString("base64url"))'`. Keep the values stable for that stage. The password is used only during provisioning and the database stores its verifier. The session and OAuth signing keys are Worker secrets.
+Use a private, Git-ignored `.env.production` with permissions `600`. `.env.example` lists the deployment settings. Keep the production session and OAuth signing keys and web push key pair stable across deployments.
 
 ```sh
-bun --env-file=.env.preview run deploy --stage preview
+bun --env-file=.env.production run deploy --stage production
 ```
 
 The deploy script uses the named `cf` profile locally. For CI, supply `CLOUDFLARE_API_TOKEN` and omit `CLOUDFLARE_AUTH_PROFILE`. A fresh stage gets its own Worker and database. `OWNER_EMAIL` and `OWNER_PASSWORD` are required only for the first provisioning of a database. Subsequent deploys use the existing owner in D1, including any email or password changes made in Settings. Use separate credentials for separate stages. Local `alchemy dev` sessions keep their emulator state in `.alchemy/state`. Cloud deployments share encrypted state in the account’s Cloudflare `alchemy-state-store` Worker. The store uses a Durable Object and Cloudflare Secrets Store. Run deploys to the same stage one at a time; this version’s Cloudflare store does not provide a deployment-wide lock. Keep `.alchemy/` private: it caches state-store credentials. A fresh checkout uses the same remote state after authenticating to the same Cloudflare account.
@@ -249,11 +259,12 @@ The deploy script uses the named `cf` profile locally. For CI, supply `CLOUDFLAR
 Use the same authentication wrapper for Alchemy maintenance commands:
 
 ```sh
-bun --env-file=.env.preview scripts/alchemy.ts state list OneApp/preview
-bun --env-file=.env.preview scripts/alchemy.ts plan --stage preview
+bun --env-file=.env.production scripts/alchemy.ts state list OneApp/production
+bun --env-file=.env.production scripts/alchemy.ts plan --stage production
+bun --env-file=.env.production scripts/alchemy.ts logs --stage production --resource Web --since 1h
 ```
 
-The existing `preview` stage has been recovered from live resource identities and moved to remote state. Do not restore its old `.alchemy/state` files over the remote store. For a new Cloudflare account, provision the store once with `bun --env-file=.env.preview scripts/alchemy.ts state bootstrap` before CI deployment. CI needs access to the state-store Worker and Secrets Store in addition to the application resources; set `CI=true` so missing state infrastructure fails rather than being provisioned implicitly. [Alchemy’s state-store documentation](https://alchemy.run/state-store/) describes credentials and bootstrap behavior.
+For a new Cloudflare account, provision the remote store once with `bun --env-file=.env.production scripts/alchemy.ts state bootstrap` before CI deployment. CI needs access to the state-store Worker and Secrets Store in addition to the application resources; set `CI=true` so missing state infrastructure fails rather than being provisioned implicitly. [Alchemy’s state-store documentation](https://alchemy.run/state-store/) describes credentials and bootstrap behavior.
 
 The main deployment uses `APP_DOMAIN=app.dpeek.com`. Alchemy attaches the hostname to the Worker, and Cloudflare manages DNS and TLS. Stages with a custom domain serve traffic on that domain. Stages without one use their `workers.dev` URL.
 
@@ -273,7 +284,7 @@ Mail loads remote images through the server after displaying the message. Likely
 
 The OneApp vault and Bitwarden clients request website icons from OneApp at `/icons/<hostname>/icon.png`. On a cache miss, the Worker tries the site’s HTTPS favicon and checks its homepage for icon links. It serves raster icons and caches successful lookups for seven days and misses for one hour. IP literals and private DNS addresses are blocked. The web vault shows a generic icon for protected logins and when no website icon is available. Icon requests contain the login hostname, which can appear in Cloudflare’s Worker request logs.
 
-Cloudflare stores invocation logs and traces at 100% sampling and groups recurring errors in Workers Issues. Query strings are redacted from request URLs in telemetry.
+Cloudflare stores invocation logs and traces at 100% sampling and groups recurring errors in Workers Issues. Query strings are redacted from request URLs in telemetry. Open **Workers & Pages → oneapp-web-production → Observability** to inspect production logs and traces. [Cloudflare Query Builder](https://developers.cloudflare.com/workers/observability/query-builder/) also documents the telemetry API.
 
 Open the URL printed at the end of the deploy and sign in with the configured email and password. Under **Links** (`/links`), enter an HTTP or HTTPS URL and press Enter. Use **Delete** next to a saved link to remove it. **Settings** (`/settings`) shows your account and connected CLI, extension, and MCP access.
 

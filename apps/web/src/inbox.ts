@@ -2128,14 +2128,6 @@ const listView = (model: Model, h: HtmlBuilder<Message>) => {
       h.Tabindex(-1),
     ],
     [
-      ...(folder === "trash"
-        ? [
-            h.p(
-              [h.Class("inbox-status")],
-              ["Messages in Trash are permanently deleted after 30 days."],
-            ),
-          ]
-        : []),
       h.div(
         [h.Key(folder), h.Class("workspace-results")],
         [

@@ -57,6 +57,21 @@ For a command palette, set `showHeader: false` and `padded: false` to let the
 search row span the panel. The dialog keeps its accessible name from `title`,
 with Escape and backdrop dismissal.
 
+## Inline alerts
+
+Use `alert` from `@oneapp/ui` for persistent feedback in the affected workspace
+or dialog. Pass the message, visual severity, and announcement mode separately.
+Use `announcement: "status"` for routine recoverable failures and `"alert"`
+when the user needs to hear the result immediately. Use `"static"` for a
+message that only needs to remain visible, such as a background copy of an error
+announced in the active dialog.
+
+Render the alert with a `null` message before the request starts so its live
+region is ready. Clear the message when recovery starts if the workflow already
+does so. Pass an adjacent Retry control as `action`. Keep focus in the workflow
+and associate field-specific validation with its control. Use the toast policy
+below for outcomes that would otherwise go unnoticed.
+
 ## Toast notifications
 
 `Toast` from `@oneapp/ui` adapts CreaseUI's StyleX toast to OneApp's tokens and

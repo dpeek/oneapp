@@ -94,7 +94,12 @@ export const Model = Schema.Struct({
   request: Schema.NullOr(
     Schema.Struct({ id: Schema.String, operation: Operation }),
   ),
-  error: Schema.NullOr(Schema.String),
+  error: Schema.NullOr(
+    Schema.Struct({
+      message: Schema.String,
+      announcedInCreation: Schema.Boolean,
+    }),
+  ),
 });
 export type Model = typeof Model.Type;
 export const initial: Model = {
@@ -247,6 +252,18 @@ const FocusCreateSubmit = Command.define("FocusTaskCreateSubmit", {
     Effect.ignore,
     Effect.as(Message.FocusUpdated()),
   ),
+});
+
+const FocusRetryTarget = Command.define("FocusTaskRetryTarget", {
+  args: { inCreation: Schema.Boolean },
+  messages: [Message.FocusUpdated],
+  execute: ({ inCreation }) =>
+    focus(
+      inCreation
+        ? `#${creationTitleId}`
+        : ".tasks-workspace.workspace-stacked > .workspace-header",
+      { preventScroll: true },
+    ).pipe(Effect.ignore, Effect.as(Message.FocusUpdated())),
 });
 
 const requestJson = async <A>(
@@ -527,7 +544,18 @@ export const update = (
       },
       GotFolderSheetMessage: ({ message }) => foldFolderSheet(model, message),
       FocusUpdated: () => ({ model }),
-      Retried: () => start(model, { _tag: "Load" }),
+      Retried: () => {
+        const result = start(model, { _tag: "Load" });
+        return result.commands
+          ? {
+              model: result.model,
+              commands: [
+                FocusRetryTarget({ inCreation: model.creation !== null }),
+                ...result.commands,
+              ],
+            }
+          : result;
+      },
       OpenedCreate: ({ preserveView }) => {
         if (
           model.creation ||
@@ -722,7 +750,10 @@ export const update = (
           return {
             model: {
               ...model,
-              error: "Check the task title, due date and other fields.",
+              error: {
+                message: "Check the task title, due date and other fields.",
+                announcedInCreation: false,
+              },
             },
           };
         return start(model, { _tag: "Save", id, input });
@@ -767,7 +798,12 @@ export const update = (
           return {
             model: {
               ...next,
-              error: conflict ? "The task changed. Try again." : null,
+              error: conflict
+                ? {
+                    message: "The task changed. Try again.",
+                    announcedInCreation: false,
+                  }
+                : null,
             },
           };
         return {
@@ -778,7 +814,11 @@ export const update = (
                 ? model.editor
                 : { ...model.editor, draft: toDraft(task) },
             error: conflict
-              ? "This task changed elsewhere. Reload the saved task before editing again."
+              ? {
+                  message:
+                    "This task changed elsewhere. Reload the saved task before editing again.",
+                  announcedInCreation: false,
+                }
               : null,
           },
         };
@@ -820,7 +860,19 @@ export const update = (
               ? { ...next, creation: { ...model.creation, error } }
               : next,
           };
-        if (operation?._tag !== "AddTag") return { model: { ...next, error } };
+        if (operation?._tag !== "AddTag")
+          return {
+            model: {
+              ...next,
+              error: {
+                message: error,
+                announcedInCreation:
+                  operation?._tag === "Load" &&
+                  !model.index &&
+                  model.creation !== null,
+              },
+            },
+          };
         const editor =
           model.creation?.draft.id === operation.id
             ? model.creation

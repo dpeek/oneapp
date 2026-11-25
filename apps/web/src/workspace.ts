@@ -1,10 +1,11 @@
-import type { Html, HtmlBuilder } from "foldkit/html";
+import type { Attribute, Html, HtmlBuilder } from "foldkit/html";
 
 export const workspace = <Message>(
   props: {
     className: string;
     title?: string;
     titleAccessory?: Html;
+    headerAttributes?: ReadonlyArray<Attribute<Message>>;
     headerActions?: ReadonlyArray<Html>;
     sidebar?: Html;
     list: Html;
@@ -22,7 +23,7 @@ export const workspace = <Message>(
     ],
     [
       h.header(
-        [h.Class("workspace-header")],
+        [h.Class("workspace-header"), ...(props.headerAttributes ?? [])],
         [
           ...(title
             ? [

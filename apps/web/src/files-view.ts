@@ -1,4 +1,5 @@
 import {
+  alert,
   backIcon,
   button,
   buttonClassName,
@@ -64,16 +65,13 @@ const fileDetail = (
   const id = model.selectedId;
   const detail = () => {
     if (!file)
-      return h.p(
-        [h.Role("status")],
-        [
-          model.request
-            ? "Loading file…"
-            : model.index
-              ? "File not found."
-              : "File details are unavailable.",
-        ],
-      );
+      return h.p(model.error ? [] : [h.Role("status")], [
+        model.request
+          ? "Loading file…"
+          : model.index
+            ? "File not found."
+            : "File details are unavailable.",
+      ]);
     const full = file.tagIds.length >= itemTagLimit;
     const search = searchTags(model.tagPicker.inputValue, file.tagIds, tags);
     return h.div(
@@ -124,8 +122,18 @@ const fileDetail = (
           },
           h,
         ),
+        alert(
+          {
+            message: model.previewFailed
+              ? "Could not preview this file."
+              : null,
+            severity: "error",
+            announcement: "status",
+          },
+          h,
+        ),
         ...(model.previewFailed
-          ? [h.p([h.Role("status")], ["Could not preview this file."])]
+          ? []
           : file.previewType === "application/pdf"
             ? [
                 h.div(
@@ -275,6 +283,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
     {
       className: "tasks-workspace files-workspace",
       title: "Files",
+      headerAttributes: [h.Tabindex(-1)],
       headerActions: [
         h.label(
           [h.Class("file-upload")],
@@ -306,29 +315,26 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
               ),
             ]
           : []),
-        ...(model.error
-          ? [
-              h.div(
-                [h.Class("task-error")],
-                [
-                  h.p([h.Role("alert")], [model.error]),
-                  ...(!model.index
-                    ? [
-                        button(
-                          {
-                            variant: "outline",
-                            size: "sm",
-                            onClick: Message.Retried(),
-                            children: ["Retry"],
-                          },
-                          h,
-                        ),
-                      ]
-                    : []),
-                ],
-              ),
-            ]
-          : []),
+        alert(
+          {
+            message: model.error,
+            severity: "error",
+            announcement: "status",
+            action:
+              model.error && !model.index
+                ? button(
+                    {
+                      variant: "outline",
+                      size: "sm",
+                      onClick: Message.Retried(),
+                      children: ["Retry"],
+                    },
+                    h,
+                  )
+                : undefined,
+          },
+          h,
+        ),
       ],
       hasSelection: model.selectedId !== null,
       list: fileList(model, tags, h),

@@ -3,6 +3,10 @@
   --accent-hover: light-dark(#3d3693, #d8d3ff);
   --on-accent: light-dark(#fff, #1d1844);
   --control-radius: 0.5rem;
+  --alert-info: var(--accent);
+  --alert-success: light-dark(#247047, #8ddbb1);
+  --alert-warning: light-dark(#7d4e0c, #f3cb85);
+  --alert-error: light-dark(#ab3723, #ffa693);
 }
 
 [data-slot="button-group"] > :not(:last-child) {

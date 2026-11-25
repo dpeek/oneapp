@@ -17,17 +17,6 @@
   margin-inline-start: auto;
 }
 
-.task-error {
-  flex-basis: 100%;
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.task-error p {
-  margin: 0;
-}
-
 .task-list-toolbar,
 .task-rows,
 .task-empty {
@@ -316,11 +305,6 @@
 .task-editor {
   display: grid;
   gap: 1rem;
-}
-
-.task-create-form p[role="alert"] {
-  margin: 0;
-  color: light-dark(#ab3723, #ffa693);
 }
 
 .task-fields {

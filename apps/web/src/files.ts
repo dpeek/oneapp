@@ -1,6 +1,7 @@
 import { Tokenizer } from "@oneapp/ui";
 import { Effect, Option, Schema } from "effect";
 import { Command, type Update } from "foldkit";
+import { focus } from "foldkit/dom";
 import { defineMessageUnion } from "foldkit/message";
 import {
   fileApi,
@@ -56,6 +57,7 @@ export const initial: Model = {
 export const Message = defineMessageUnion({
   Opened: { id: Schema.NullOr(ItemId), refresh: Schema.Boolean },
   Retried: {},
+  FocusUpdated: {},
   PickedFile: {},
   SetTagFilter: { value: Schema.String },
   GotTagPickerMessage: { id: ItemId, message: Tokenizer.Message },
@@ -84,6 +86,12 @@ const writeJson = (method: "POST" | "PUT", value: unknown): RequestInit => ({
   method,
   headers: { "content-type": "application/json", "x-effect-auth-csrf": "1" },
   body: JSON.stringify(value),
+});
+const FocusRetryTarget = Command.define("FocusFileRetryTarget", {
+  messages: [Message.FocusUpdated],
+  execute: focus(".files-workspace > .workspace-header", {
+    preventScroll: true,
+  }).pipe(Effect.ignore, Effect.as(Message.FocusUpdated())),
 });
 const Request = Command.define("RequestFiles", {
   args: { request: ItemId, operation: Operation },
@@ -226,7 +234,13 @@ export const update = (
           ? start(next, { _tag: "Load" })
           : { model: next };
       },
-      Retried: () => start(model, { _tag: "Load" }),
+      Retried: () => {
+        const result = start(model, { _tag: "Load" });
+        return result.commands
+          ? { ...result, commands: [FocusRetryTarget(), ...result.commands] }
+          : result;
+      },
+      FocusUpdated: () => ({ model }),
       PickedFile: () => start(model, { _tag: "Upload" }),
       SetTagFilter: ({ value }) => ({
         model: { ...model, tagFilter: Schema.is(ItemId)(value) ? value : null },

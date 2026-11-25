@@ -13,3 +13,10 @@ export const controls = stylex.defineVars({
   focus: "var(--accent)",
   radius: "var(--control-radius)",
 });
+
+export const alertColors = stylex.defineVars({
+  info: "var(--alert-info)",
+  success: "var(--alert-success)",
+  warning: "var(--alert-warning)",
+  error: "var(--alert-error)",
+});

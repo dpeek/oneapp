@@ -1,4 +1,5 @@
 import {
+  alert,
   backIcon,
   badge,
   button,
@@ -630,6 +631,17 @@ const sortedTags = (model: Model) =>
     left.name.localeCompare(right.name),
   );
 
+const retryTasksButton = (h: HtmlBuilder<Message>) =>
+  button(
+    {
+      variant: "outline",
+      size: "sm",
+      onClick: Message.Retried(),
+      children: ["Retry"],
+    },
+    h,
+  );
+
 export const createView = Submodel.defineView(
   (
     model: Model,
@@ -641,14 +653,22 @@ export const createView = Submodel.defineView(
     const busy =
       model.request !== null && model.request.operation._tag !== "Load";
     const submitting = model.request?.operation._tag === "Create";
+    const loadError = model.index ? null : (model.error?.message ?? null);
     return h.form(
       [h.Class("task-editor task-create-form"), h.OnSubmit(Message.Created())],
       [
-        ...(editor.error ? [h.p([h.Role("alert")], [editor.error])] : []),
-        ...(!model.index
-          ? model.error
-            ? [h.p([h.Role("alert")], [model.error])]
-            : [h.p([h.Role("status")], ["Loading tasks and tags…"])]
+        alert(
+          {
+            message: editor.error ?? loadError,
+            severity: "error",
+            announcement: "status",
+            action:
+              loadError && !model.request ? retryTasksButton(h) : undefined,
+          },
+          h,
+        ),
+        ...(!model.index && !loadError
+          ? [h.p([h.Role("status")], ["Loading tasks and tags…"])]
           : []),
         ...taskFields(editor, sortedTags(model), busy, h, {
           initialFocus,
@@ -666,19 +686,6 @@ export const createView = Submodel.defineView(
               },
               h,
             ),
-            ...(!model.index && !model.request
-              ? [
-                  button(
-                    {
-                      variant: "outline",
-                      size: "sm",
-                      onClick: Message.Retried(),
-                      children: ["Retry"],
-                    },
-                    h,
-                  ),
-                ]
-              : []),
             button(
               {
                 type: "submit",
@@ -738,16 +745,13 @@ const taskDetail = (
     [
       ...(!task || !editor
         ? [
-            h.p(
-              [h.Role("status")],
-              [
-                !model.index
-                  ? busy
-                    ? "Loading task…"
-                    : "Task details are unavailable."
-                  : "Task not found.",
-              ],
-            ),
+            h.p(model.error ? [] : [h.Role("status")], [
+              !model.index
+                ? busy
+                  ? "Loading task…"
+                  : "Task details are unavailable."
+                : "Task not found.",
+            ]),
           ]
         : [
             h.div(
@@ -826,9 +830,13 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
   const tags = sortedTags(model);
   const { selectedId, folderSheet } = model;
   const backLabel = `Back to ${viewLabels[model.view]}`;
+  // The load error stays visible after Add task closes, without announcing again.
+  const loadErrorInDialog =
+    (!model.index && model.creation) || model.error?.announcedInCreation;
   return workspace(
     {
       className: "workspace-stacked tasks-workspace",
+      headerAttributes: [h.Tabindex(-1)],
       title: selectedId ? undefined : viewLabels[model.view],
       titleAccessory: selectedId
         ? undefined
@@ -884,29 +892,16 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
           },
           h,
         ),
-        ...(model.error
-          ? [
-              h.div(
-                [h.Class("task-error")],
-                [
-                  h.p([h.Role("alert")], [model.error]),
-                  ...(!model.index
-                    ? [
-                        button(
-                          {
-                            variant: "outline",
-                            size: "sm",
-                            onClick: Message.Retried(),
-                            children: ["Retry"],
-                          },
-                          h,
-                        ),
-                      ]
-                    : []),
-                ],
-              ),
-            ]
-          : []),
+        alert(
+          {
+            message: model.error?.message ?? null,
+            severity: "error",
+            announcement: loadErrorInDialog ? "static" : "status",
+            action:
+              model.error && !model.index ? retryTasksButton(h) : undefined,
+          },
+          h,
+        ),
       ],
       sidebar: taskNavigation(model.view, h),
       list: taskList(model, tags, h),

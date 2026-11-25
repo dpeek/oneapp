@@ -15,7 +15,6 @@ import {
   Sheet,
   textarea,
   Tokenizer,
-  Tooltip,
 } from "@oneapp/ui";
 import { Effect, Option, Queue, Schema, Stream } from "effect";
 import { Mount, Submodel } from "foldkit";
@@ -34,7 +33,6 @@ import {
 } from "./tasks-contract.ts";
 import { matchesTaskFilters, taskFilterCount } from "./tasks-filters.ts";
 import {
-  completionTooltip,
   FilterCategory,
   creationDialogId,
   creationSubmitId,
@@ -81,12 +79,6 @@ const viewLabels = { active: "Active", completed: "Completed" };
 const priorityOptions = Object.entries(priorityLabels).map(
   ([value, label]) => ({ value, label }),
 );
-const dueDate = new Intl.DateTimeFormat(undefined, {
-  month: "short",
-  day: "numeric",
-  year: "numeric",
-  timeZone: "UTC",
-});
 const timestamp = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeStyle: "short",
@@ -112,82 +104,35 @@ const sortedTasks = (tasks: readonly Task[], model: Model) =>
       );
     });
 
+const taskTimestamp = (value: number, h: HtmlBuilder<Message>) =>
+  h.time(
+    [h.Datetime(new Date(value).toISOString())],
+    [timestamp.format(value)],
+  );
+
 const taskRow = (
   task: Task,
   tags: ReadonlyMap<string, Tag>,
-  model: Model,
+  view: TaskView,
   h: HtmlBuilder<Message>,
-) => {
-  const completed = task.status === "completed";
-  const operation = model.request?.operation;
-  const action = {
-    disabled: model.request !== null,
-    focusableWhenDisabled:
-      operation?._tag === "ToggleCompletion" && operation.id === task.id,
-    onClick: Message.ToggledCompletion({ id: task.id }),
-  };
-  const actionId = h.DataAttribute("task-action", task.id);
-  return h.li(
+) =>
+  h.tr(
     [h.Key(task.id), h.Class("task-row")],
     [
-      h.div(
-        [h.Class("task-row-action")],
+      h.td(
+        [],
         [
-          completed
-            ? button(
-                {
-                  ...action,
-                  ariaLabel: `Reopen ${task.title}`,
-                  variant: "outline",
-                  size: "sm",
-                  attributes: [actionId],
-                  children: ["Reopen"],
-                },
-                h,
-              )
-            : Tooltip.tooltip(
-                {
-                  model: completionTooltip(model, task.id),
-                  content: "Mark complete",
-                  toParentMessage: (message) =>
-                    Message.GotCompletionTooltipMessage({
-                      id: task.id,
-                      message,
-                    }),
-                  renderTrigger: (attributes) =>
-                    button(
-                      {
-                        ...action,
-                        ariaLabel: `Mark complete: ${task.title}`,
-                        variant: "ghost",
-                        size: "icon-sm",
-                        rounded: true,
-                        attributes: [...attributes, actionId],
-                        children: [
-                          outlineIcon(h, [
-                            "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z",
-                            "m9 12 2 2 4-4",
-                          ]),
-                        ],
-                      },
-                      h,
-                    ),
-                },
-                h,
-              ),
-        ],
-      ),
-      h.a(
-        [
-          h.Class("task-row-link"),
-          h.Href(taskPath(task.id, model.view)),
-          h.DataAttribute("task-id", task.id),
-        ],
-        [
-          h.span(
+          h.div(
             [h.Class("task-row-main")],
             [
-              h.span([h.Class("task-row-title")], [task.title]),
+              h.a(
+                [
+                  h.Class("task-row-link"),
+                  h.Href(taskPath(task.id, view)),
+                  h.DataAttribute("task-id", task.id),
+                ],
+                [task.title],
+              ),
               ...task.tagIds.flatMap((id) => {
                 const tag = tags.get(id);
                 return tag
@@ -196,42 +141,30 @@ const taskRow = (
               }),
             ],
           ),
+        ],
+      ),
+      h.td(
+        [],
+        [
           h.span(
-            [h.Class("task-row-properties")],
             [
-              h.span(
-                [
-                  h.Class("task-status"),
-                  h.DataAttribute("status", task.status ?? ""),
-                ],
-                [statusLabels[task.status ?? ""]],
-              ),
-              ...(task.priority
-                ? [
-                    h.span(
-                      [
-                        h.Class("task-priority"),
-                        h.DataAttribute("priority", task.priority),
-                      ],
-                      [priorityLabels[task.priority]],
-                    ),
-                  ]
-                : []),
-              ...(task.dueOn
-                ? [
-                    h.time(
-                      [h.Datetime(task.dueOn), h.Class("task-due")],
-                      [`Due ${dueDate.format(new Date(task.dueOn))}`],
-                    ),
-                  ]
-                : []),
+              h.Class("task-status"),
+              h.DataAttribute("status", task.status ?? ""),
             ],
+            [statusLabels[task.status ?? ""]],
           ),
         ],
       ),
+      h.td(
+        [
+          h.Class("task-priority"),
+          h.DataAttribute("priority", task.priority ?? ""),
+        ],
+        [priorityLabels[task.priority ?? ""]],
+      ),
+      h.td([h.Class("task-updated")], [taskTimestamp(task.updatedAt, h)]),
     ],
   );
-};
 
 const filterCheckbox = (
   label: string,
@@ -513,7 +446,17 @@ const taskList = (
     ],
     [
       h.div(
-        [h.Key(view), h.Class("workspace-results")],
+        [
+          h.Key(view),
+          h.Class("workspace-results task-table-scroll"),
+          ...(tasks.length
+            ? [
+                h.Role("group"),
+                h.AriaLabel("Scrollable task table"),
+                h.Tabindex(0),
+              ]
+            : []),
+        ],
         [
           !model.index
             ? busy
@@ -523,9 +466,31 @@ const taskList = (
                 )
               : h.empty
             : tasks.length
-              ? h.ul(
-                  [h.Class("task-rows")],
-                  tasks.map((task) => taskRow(task, tagMap, model, h)),
+              ? h.table(
+                  [
+                    h.Class("task-table"),
+                    h.AriaLabel(`${viewLabels[view]} tasks`),
+                  ],
+                  [
+                    h.thead(
+                      [],
+                      [
+                        h.tr(
+                          [],
+                          [
+                            h.th([h.Scope("col")], ["Task"]),
+                            h.th([h.Scope("col")], ["Status"]),
+                            h.th([h.Scope("col")], ["Priority"]),
+                            h.th([h.Scope("col")], ["Updated"]),
+                          ],
+                        ),
+                      ],
+                    ),
+                    h.tbody(
+                      [],
+                      tasks.map((task) => taskRow(task, tagMap, view, h)),
+                    ),
+                  ],
                 )
               : h.p(
                   [h.Class("task-empty"), h.Role("status")],
@@ -761,11 +726,6 @@ const taskDetail = (
   const busy = model.request !== null;
   const changed = !!(task && editor && hasEdits(editor.draft, task));
   const stale = !!(task && editor && task.revision !== editor.draft.revision);
-  const time = (value: number) =>
-    h.time(
-      [h.Datetime(new Date(value).toISOString())],
-      [timestamp.format(value)],
-    );
   return h.section(
     [
       h.Key(id),
@@ -829,11 +789,17 @@ const taskDetail = (
                   [
                     h.div(
                       [],
-                      [h.dt([], ["Created"]), h.dd([], [time(task.createdAt)])],
+                      [
+                        h.dt([], ["Created"]),
+                        h.dd([], [taskTimestamp(task.createdAt, h)]),
+                      ],
                     ),
                     h.div(
                       [],
-                      [h.dt([], ["Updated"]), h.dd([], [time(task.updatedAt)])],
+                      [
+                        h.dt([], ["Updated"]),
+                        h.dd([], [taskTimestamp(task.updatedAt, h)]),
+                      ],
                     ),
                   ],
                 ),

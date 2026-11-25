@@ -4,10 +4,9 @@ import {
   Popover,
   Sheet,
   Tokenizer,
-  Tooltip,
 } from "@oneapp/ui";
 import { Effect, Option, Schema } from "effect";
-import { Command, Render, Update } from "foldkit";
+import { Command, Update } from "foldkit";
 import { focus } from "foldkit/dom";
 import { defineMessageUnion } from "foldkit/message";
 import { ItemId, Tag, TagCreate, tagsApi } from "./items-contract.ts";
@@ -28,7 +27,6 @@ import {
 import {
   emptyFilters,
   Filters,
-  matchesTaskFilters,
   StatusFilter,
   toggleFilter,
 } from "./tasks-filters.ts";
@@ -56,7 +54,6 @@ const Operation = Schema.Union([
   Schema.TaggedStruct("Load", {}),
   Schema.TaggedStruct("Create", { input: TaskCreate }),
   Schema.TaggedStruct("Save", { id: ItemId, input: TaskUpdate }),
-  Schema.TaggedStruct("ToggleCompletion", { id: ItemId, input: TaskUpdate }),
   Schema.TaggedStruct("AddTag", { id: ItemId, input: TagCreate }),
 ]);
 type Operation = typeof Operation.Type;
@@ -94,7 +91,6 @@ export const Model = Schema.Struct({
   filters: Filters,
   sort: Sort,
   sortMenu: DropdownMenu.SingleSelect.Model,
-  completionTooltips: Schema.Record(Schema.String, Tooltip.Model),
   request: Schema.NullOr(
     Schema.Struct({ id: Schema.String, operation: Operation }),
   ),
@@ -116,7 +112,6 @@ export const initial: Model = {
   ...closedTaskMenus,
   filters: emptyFilters,
   sort: "updated",
-  completionTooltips: {},
   request: null,
   error: null,
 };
@@ -130,8 +125,6 @@ export const Message = defineMessageUnion({
   ClosedCreate: {},
   Created: {},
   EditedField: { field: Field, value: Schema.String },
-  ToggledCompletion: { id: ItemId },
-  GotCompletionTooltipMessage: { id: ItemId, message: Tooltip.Message },
   GotFilterPopoverMessage: { message: Popover.Message },
   OpenedFilterCategory: {
     category: FilterCategory,
@@ -252,47 +245,6 @@ const FocusList = Command.define("FocusTaskList", {
   },
 });
 
-const FocusAfterCompletion = Command.define("FocusAfterTaskCompletion", {
-  args: { id: ItemId },
-  messages: [Message.FocusUpdated],
-  execute: ({ id }) =>
-    Effect.gen(function* () {
-      const actionSelector = "button[data-task-action]";
-      const focused = document.activeElement;
-      const row = focused?.closest(".task-row");
-      if (
-        row?.querySelector<HTMLButtonElement>(actionSelector)?.dataset
-          .taskAction !== id
-      )
-        return Message.FocusUpdated();
-      const results = row.closest(".workspace-results");
-      const list = results?.closest<HTMLElement>(".task-list");
-      const next =
-        row.nextElementSibling?.querySelector<HTMLButtonElement>(
-          actionSelector,
-        );
-      const previous =
-        row.previousElementSibling?.querySelector<HTMLButtonElement>(
-          actionSelector,
-        );
-      yield* Render.afterCommit;
-      // Only replace focus lost with the removed row in this same list.
-      if (
-        list &&
-        results?.isConnected &&
-        !list.inert &&
-        !focused?.isConnected &&
-        document.activeElement === document.body
-      ) {
-        const neighbor = [next, previous].find(
-          (button) => button?.isConnected && !button.disabled,
-        );
-        (neighbor ?? list).focus();
-      }
-      return Message.FocusUpdated();
-    }),
-});
-
 const FocusCreateSubmit = Command.define("FocusTaskCreateSubmit", {
   messages: [Message.FocusUpdated],
   execute: focus(`#${creationSubmitId}`).pipe(
@@ -367,8 +319,7 @@ const Request = Command.define("RequestTasks", {
             return Message.TaskCreated({ request, task: result.value });
           break;
         }
-        case "Save":
-        case "ToggleCompletion": {
+        case "Save": {
           const result = await requestJson(
             signal,
             Task,
@@ -405,7 +356,6 @@ const Request = Command.define("RequestTasks", {
               Load: "Could not load tasks. Try again.",
               Create: "Could not add the task. Try again.",
               Save: "Could not save the task. Try again.",
-              ToggleCompletion: "Could not change the task status. Try again.",
               AddTag: "Could not add the tag. Try again.",
             }[operation._tag],
           }),
@@ -444,23 +394,6 @@ const isInView = ({ status }: Task, view: TaskView) =>
 
 export const tasksInView = (model: Model) =>
   (model.index?.tasks ?? []).filter((task) => isInView(task, model.view));
-
-export const completionTooltip = (model: Model, id: string) =>
-  model.completionTooltips[id] ?? Tooltip.init({ id: `task-complete-${id}` });
-
-const completionTooltipIsAvailable = (model: Model, id: string) =>
-  model.view === "active" &&
-  model.selectedId === null &&
-  model.index?.tasks.some(
-    (task) =>
-      task.id === id &&
-      isInView(task, model.view) &&
-      matchesTaskFilters(task, model),
-  );
-
-const toCompletionTooltipMessage =
-  (id: string) => (message: typeof Tooltip.Message.Type) =>
-    Message.GotCompletionTooltipMessage({ id, message });
 
 export const writingCreation = (model: Model) =>
   isCreationWrite(model, model.request?.operation);
@@ -566,7 +499,7 @@ const replaceTask = (model: Model, task: Task): Model => ({
   request: null,
 });
 
-const updateTasks = (
+export const update = (
   model: Model,
   message: Message,
 ): Update.ReturnWithOutMessage<Model, Message, OutMessage> => {
@@ -696,40 +629,6 @@ const updateTasks = (
                   draft: editField(editor.draft, field, value),
                 })
               : model,
-        };
-      },
-      ToggledCompletion: ({ id }) => {
-        const task = model.index?.tasks.find((entry) => entry.id === id);
-        const draft = model.editor?.draft;
-        if (!task || (draft?.id === id && hasEdits(draft, task)))
-          return { model };
-        const { id: itemId, ...input } = toDraft(task);
-        return start(model, {
-          _tag: "ToggleCompletion",
-          id: itemId,
-          input: {
-            ...input,
-            status: task.status === "completed" ? "not-started" : "completed",
-          },
-        });
-      },
-      GotCompletionTooltipMessage: ({ id, message }) => {
-        if (!completionTooltipIsAvailable(model, id)) return { model };
-        const tooltip = completionTooltip(model, id);
-        const result = Tooltip.update(tooltip, message);
-        if (result.model === tooltip) return { model };
-        return {
-          model: {
-            ...model,
-            completionTooltips: {
-              ...model.completionTooltips,
-              [id]: result.model,
-            },
-          },
-          commands: Command.mapMessages(
-            result.commands ?? [],
-            toCompletionTooltipMessage(id),
-          ),
         };
       },
       GotFilterPopoverMessage: ({ message }) =>
@@ -887,7 +786,6 @@ const updateTasks = (
       },
       TaskSaved: ({ task, conflict }) => {
         const next = replaceTask(model, task);
-        const operation = model.request?.operation;
         if (task.id !== model.selectedId)
           return {
             model: {
@@ -899,9 +797,6 @@ const updateTasks = (
                   }
                 : null,
             },
-            ...(operation?._tag === "ToggleCompletion"
-              ? { commands: [FocusAfterCompletion({ id: operation.id })] }
-              : {}),
           };
         return {
           model: {
@@ -992,39 +887,4 @@ const updateTasks = (
       }),
     },
   );
-};
-
-export const update = (model: Model, message: Message) => {
-  const result = updateTasks(model, message);
-  const next = result.model;
-  const refreshed = message._tag === "Opened" && message.refresh;
-  if (
-    !refreshed &&
-    next.index === model.index &&
-    next.view === model.view &&
-    next.selectedId === model.selectedId &&
-    next.filters === model.filters
-  )
-    return result;
-
-  const tracked = Object.entries(next.completionTooltips);
-  if (!tracked.length) return result;
-  const visible = new Set(
-    !refreshed && next.view === "active" && next.selectedId === null
-      ? tasksInView(next)
-          .filter((task) => matchesTaskFilters(task, next))
-          .map(({ id }) => id)
-      : [],
-  );
-  const hidden = tracked.filter(([id]) => !visible.has(id));
-  if (!hidden.length) return result;
-  const completionTooltips = { ...next.completionTooltips };
-  for (const [id, tooltip] of hidden) {
-    // Hidden rows may unmount without emitting blur or pointer leave.
-    completionTooltips[id] = {
-      ...Tooltip.init({ id: tooltip.id }),
-      pendingShowVersion: tooltip.pendingShowVersion + 1,
-    };
-  }
-  return { ...result, model: { ...next, completionTooltips } };
 };

@@ -1,4 +1,9 @@
-import { Tooltip, unreadBadge } from "@oneapp/ui";
+import {
+  calendarIconPaths,
+  taskIconPaths,
+  Tooltip,
+  unreadBadge,
+} from "@oneapp/ui";
 import { Option, Schema } from "effect";
 import { Update } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";
@@ -45,16 +50,13 @@ const destinations = [
     page: "calendar",
     href: calendarPath,
     label: "Calendar",
-    paths: [
-      "M5 5h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z",
-      "M3 10h18M8 3v4m8-4v4m-8 8h2m4 0h2",
-    ],
+    paths: calendarIconPaths,
   },
   {
     page: "tasks",
     href: tasksPath,
     label: "Tasks",
-    paths: ["m3 7 2 2 4-4m2 3h10", "m3 16 2 2 4-4m2 3h10"],
+    paths: taskIconPaths,
   },
   {
     page: "files",

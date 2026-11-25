@@ -53,6 +53,10 @@ clicks. If a save blocks dismissal, guard that message in the parent and close
 on success. Keep the same dialog model when replacing the contents of an open
 dialog, and focus the next step's field after the update commits.
 
+For a command palette, set `showHeader: false` and `padded: false` to let the
+search row span the panel. The dialog keeps its accessible name from `title`,
+with Escape and backdrop dismissal.
+
 ## Toast notifications
 
 `Toast` from `@oneapp/ui` adapts CreaseUI's StyleX toast to OneApp's tokens and

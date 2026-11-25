@@ -37,7 +37,6 @@ const styles = stylex.create({
     maxBlockSize: "calc(100dvh - 2rem)",
     overflow: "auto",
     overscrollBehavior: "contain",
-    padding: "clamp(1rem, 4vw, 1.5rem)",
     borderStyle: "solid",
     borderWidth: 1,
     borderColor: controls.border,
@@ -46,6 +45,7 @@ const styles = stylex.create({
     color: controls.foreground,
     boxShadow: "0 10px 24px rgb(0 0 0 / 20%)",
   },
+  padding: { padding: "clamp(1rem, 4vw, 1.5rem)" },
   native: {
     "::backdrop": { backgroundColor: "rgb(10 11 18 / 65%)" },
   },
@@ -86,6 +86,8 @@ export const view = <ParentMessage>(
     model: typeof Model.Type;
     title: string;
     content: (initialFocus: ReadonlyArray<ChildAttribute>) => Html;
+    padded?: boolean;
+    showHeader?: boolean;
     showCloseButton?: boolean;
     toParentMessage: (message: typeof Message.Type) => ParentMessage;
   }>,
@@ -122,46 +124,55 @@ export const view = <ParentMessage>(
                     ...panel,
                     h.DataAttribute("slot", "dialog-content"),
                     h.Class(
-                      stylex.props(styles.panel, styles.surface).className ??
-                        "",
+                      stylex.props(
+                        styles.panel,
+                        styles.surface,
+                        props.padded !== false && styles.padding,
+                      ).className ?? "",
                     ),
                   ],
                   [
-                    h.header(
-                      [
-                        h.DataAttribute("slot", "dialog-header"),
-                        h.Class(stylex.props(styles.header).className ?? ""),
-                      ],
-                      [
-                        h.h2(
+                    props.showHeader === false
+                      ? h.span([...title, h.Hidden(true)], [props.title])
+                      : h.header(
                           [
-                            ...title,
-                            h.DataAttribute("slot", "dialog-title"),
-                            h.Class(stylex.props(styles.title).className ?? ""),
+                            h.DataAttribute("slot", "dialog-header"),
+                            h.Class(
+                              stylex.props(styles.header).className ?? "",
+                            ),
                           ],
-                          [props.title],
-                        ),
-                        ...((props.showCloseButton ?? true)
-                          ? [
-                              h.button(
-                                [
-                                  ...closeButton,
-                                  h.AriaLabel("Close"),
-                                  h.DataAttribute("slot", "dialog-close"),
-                                  h.Class(
-                                    buttonClassName({
-                                      variant: "ghost",
-                                      size: "icon",
-                                      rounded: true,
-                                    }),
+                          [
+                            h.h2(
+                              [
+                                ...title,
+                                h.DataAttribute("slot", "dialog-title"),
+                                h.Class(
+                                  stylex.props(styles.title).className ?? "",
+                                ),
+                              ],
+                              [props.title],
+                            ),
+                            ...((props.showCloseButton ?? true)
+                              ? [
+                                  h.button(
+                                    [
+                                      ...closeButton,
+                                      h.AriaLabel("Close"),
+                                      h.DataAttribute("slot", "dialog-close"),
+                                      h.Class(
+                                        buttonClassName({
+                                          variant: "ghost",
+                                          size: "icon",
+                                          rounded: true,
+                                        }),
+                                      ),
+                                    ],
+                                    [outlineIcon(h, ["M6 6l12 12M6 18L18 6"])],
                                   ),
-                                ],
-                                [outlineIcon(h, ["M6 6l12 12M6 18L18 6"])],
-                              ),
-                            ]
-                          : []),
-                      ],
-                    ),
+                                ]
+                              : []),
+                          ],
+                        ),
                     props.content(initialFocus),
                   ],
                 ),
@@ -186,7 +197,10 @@ export const dialog = <Message>(
       ...props.attributes,
       h.AriaLabelledBy(props.titleId),
       h.DataAttribute("slot", "dialog"),
-      h.Class(stylex.props(styles.surface, styles.native).className ?? ""),
+      h.Class(
+        stylex.props(styles.surface, styles.padding, styles.native).className ??
+          "",
+      ),
     ],
     [
       h.div(

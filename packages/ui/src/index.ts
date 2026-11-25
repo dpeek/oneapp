@@ -27,10 +27,12 @@ export {
 } from "./field.ts";
 export {
   backIcon,
+  calendarIconPaths,
   ellipsisIcon,
   noiseIconPath,
   outlineIcon,
   plusIcon,
+  taskIconPaths,
   trashIconPaths,
 } from "./icons.ts";
 export { createInputGroup } from "./input-group.ts";

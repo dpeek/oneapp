@@ -3,6 +3,7 @@ import {
   button,
   CalendarPicker,
   ColorPicker,
+  Dialog,
   dialog,
   DropdownMenu,
   ellipsisIcon,
@@ -19,7 +20,8 @@ import {
 import { Effect, Option, Queue, Schema, Stream } from "effect";
 import { Command, Mount, Submodel, Update } from "foldkit";
 import { defaultEnglishLocale } from "foldkit/calendar";
-import type { HtmlBuilder } from "foldkit/html";
+import { focus } from "foldkit/dom";
+import type { ChildAttribute, HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import {
   calendarApi,
@@ -77,6 +79,7 @@ const Editor = Schema.Struct({
   repeat: Schema.NullOr(CalendarRepeat),
   scope: Schema.Literals(["event", "occurrence", "series"]),
   occurrence: Schema.NullOr(Schema.String),
+  fromCreateMenu: Schema.Boolean,
 });
 const CalendarEditor = Schema.Struct({
   id: CalendarId,
@@ -128,6 +131,10 @@ export const Model = Schema.Struct({
   notice: Schema.NullOr(Schema.String),
 });
 type Model = typeof Model.Type;
+export const hasGlobalEventEditor = (model: Model) =>
+  model.editor?.fromCreateMenu === true;
+export const creationTitleId = "event-create-title-input";
+const creationSubmitId = "event-create-submit";
 
 const today = () => Temporal.Now.plainDateISO();
 const pickerDate = ({
@@ -187,6 +194,7 @@ export const Message = defineMessageUnion({
   OpenedEvent: SelectedEvent.fields,
   ClosedEventDetails: { anchorId: Schema.String },
   NewEvent: { day: Schema.String, minute: Schema.NullOr(Schema.Number) },
+  OpenedCreate: { useCalendarContext: Schema.Boolean },
   FocusedSlot: { slot: Slot },
   EditEvent: { series: Schema.Boolean },
   ChangedFrequency: { frequency: Schema.NullOr(CalendarFrequency) },
@@ -456,6 +464,14 @@ const FocusEvent = Command.define("FocusCalendarEvent", {
     }),
 });
 
+const FocusCreateSubmit = Command.define("FocusEventCreateSubmit", {
+  messages: [Message.Focused],
+  execute: focus(`#${creationSubmitId}`).pipe(
+    Effect.ignore,
+    Effect.as(Message.Focused()),
+  ),
+});
+
 const MountEventDetails = Mount.defineStream("MountCalendarEventDetails", {
   args: { anchorId: Schema.String },
   messages: [Message.ClosedEventDetails],
@@ -470,7 +486,12 @@ const MountEventDetails = Mount.defineStream("MountCalendarEventDetails", {
             focusAfterPosition: true,
           });
           const dismiss = (event: Event) => {
-            if (document.querySelector(":modal")) return;
+            if (
+              document.querySelector(
+                'dialog:modal, dialog[open][aria-modal="true"]',
+              )
+            )
+              return;
             event.preventDefault();
             event.stopPropagation();
             Queue.offerUnsafe(queue, Message.ClosedEventDetails({ anchorId }));
@@ -562,6 +583,43 @@ const busy = (model: Model) =>
 const openPanel = (model: Model, panel: Partial<Model>) => ({
   model: { ...model, ...closedPanel, error: null, notice: null, ...panel },
 });
+
+const openNewEvent = (
+  model: Model,
+  {
+    day,
+    minute,
+    calendarId,
+    fromCreateMenu = false,
+  }: {
+    day: string;
+    minute: number | null;
+    calendarId: string | null;
+    fromCreateMenu?: boolean;
+  },
+) =>
+  openPanel(model, {
+    editor: {
+      id: crypto.randomUUID(),
+      calendarId: calendarId ?? defaultCalendarId,
+      revision: null,
+      repeat: null,
+      scope: "event",
+      occurrence: null,
+      fromCreateMenu,
+      draft: {
+        title: "",
+        location: "",
+        description: "",
+        allDay: false,
+        ...(minute === null
+          ? { start: `${day}T09:00`, end: `${day}T10:00` }
+          : calendarSlotTimes(day, minute, model.zone)),
+        timeZone: model.zone,
+        reminder: false,
+      },
+    },
+  });
 
 const afterMutation = (
   model: Model,
@@ -804,27 +862,17 @@ export const update = (
       NewEvent: ({ day, minute }) =>
         busy(model)
           ? { model }
-          : openPanel(model, {
-              editor: {
-                id: crypto.randomUUID(),
-                calendarId: model.visible ?? defaultCalendarId,
-                revision: null,
-                repeat: null,
-                scope: "event",
-                occurrence: null,
-                draft: {
-                  title: "",
-                  location: "",
-                  description: "",
-                  allDay: false,
-                  ...(minute === null
-                    ? { start: `${day}T09:00`, end: `${day}T10:00` }
-                    : calendarSlotTimes(day, minute, model.zone)),
-                  timeZone: model.zone,
-                  reminder: false,
-                },
-              },
-            }),
+          : openNewEvent(model, { day, minute, calendarId: model.visible }),
+      OpenedCreate: ({ useCalendarContext }) => {
+        if (busy(model)) return { model };
+        const result = openNewEvent(model, {
+          day: useCalendarContext ? model.date : today().toString(),
+          minute: null,
+          calendarId: useCalendarContext ? model.visible : null,
+          fromCreateMenu: true,
+        });
+        return !model.week && !model.request ? load(result.model) : result;
+      },
       FocusedSlot: ({ slot }) => ({ model: { ...model, slotFocus: slot } }),
       EditEvent: ({ series }) => {
         const event = model.selected?.event;
@@ -842,6 +890,7 @@ export const update = (
             repeat: series ? (event.series?.repeat ?? null) : null,
             scope: series ? "series" : event.recurring ? "occurrence" : "event",
             occurrence: !series && event.recurring ? event.occurrence : null,
+            fromCreateMenu: false,
           },
         });
       },
@@ -925,7 +974,10 @@ export const update = (
         const id = crypto.randomUUID();
         return {
           model: { ...model, error: null, request: { id, kind: "save" } },
-          commands: [SaveEvent({ id, editor: model.editor })],
+          commands: [
+            ...(hasGlobalEventEditor(model) ? [FocusCreateSubmit()] : []),
+            SaveEvent({ id, editor: model.editor }),
+          ],
         };
       },
       ClosedEventEditor: () =>
@@ -987,7 +1039,11 @@ export const update = (
       Changed: ({ request, notice, calendarId }) =>
         request !== model.request?.id
           ? { model }
-          : afterMutation(model, notice, model.visible ? calendarId : null),
+          : afterMutation(
+              model,
+              notice,
+              model.visible && !hasGlobalEventEditor(model) ? calendarId : null,
+            ),
       CalendarSaved: ({ request, calendar }) => {
         if (request !== model.request?.id) return { model };
         const created = model.calendarEditor?.create === true;
@@ -1267,18 +1323,44 @@ const repeatOptions = [
   { label: "Monthly", value: "monthly" },
 ];
 
-const eventEditorView = (model: Model, h: H) => {
+const eventEditorContent = (
+  model: Model,
+  h: H,
+  initialFocus?: ReadonlyArray<ChildAttribute>,
+) => {
   const editor = model.editor!;
   const { draft } = editor;
   const disabled = busy(model);
-  const title =
-    editor.scope === "series"
-      ? "Edit series"
-      : editor.scope === "occurrence"
-        ? "Edit occurrence"
-        : editor.revision
-          ? "Edit event"
-          : "New event";
+  const saving = model.request?.kind === "save";
+  const save = button(
+    {
+      type: "submit",
+      disabled,
+      ...(editor.fromCreateMenu
+        ? {
+            attributes: [h.Id(creationSubmitId)],
+            focusableWhenDisabled: saving,
+          }
+        : {}),
+      children: [
+        saving
+          ? "Saving…"
+          : editor.scope === "series"
+            ? "Save series"
+            : "Save event",
+      ],
+    },
+    h,
+  );
+  const cancel = button(
+    {
+      variant: "ghost",
+      disabled,
+      onClick: Message.ClosedEventEditor(),
+      children: ["Cancel"],
+    },
+    h,
+  );
   const textInput = (
     label: string,
     field: "title" | "location" | "start" | "end",
@@ -1294,7 +1376,11 @@ const eventEditorView = (model: Model, h: H) => {
           h.Value(draft[field]),
           h.Required(required),
           h.Disabled(disabled),
-          ...(field === "title" ? [h.Autofocus(true)] : []),
+          ...(field === "title"
+            ? initialFocus
+              ? [h.Id(creationTitleId), ...initialFocus]
+              : [h.Autofocus(true)]
+            : []),
           h.OnInput((value) => Message.ChangedText({ field, value })),
           ...(type === "datetime-local" ? [h.Attribute("step", "1")] : []),
           ...(field === "title" || field === "location"
@@ -1303,6 +1389,160 @@ const eventEditorView = (model: Model, h: H) => {
         ]),
       ],
     );
+  return [
+    ...(model.error ? [h.p([h.Role("alert")], [model.error])] : []),
+    h.form(
+      [h.OnSubmit(Message.SavedEvent())],
+      [
+        textInput("Title", "title", "text"),
+        nativeSelect(
+          {
+            label: "Calendar",
+            value: editor.calendarId,
+            options: calendarOptions(model),
+            disabled: disabled || editor.scope === "occurrence",
+            onChange: (id) => Message.ChangedEventCalendar({ id }),
+          },
+          h,
+        ),
+        h.label(
+          [h.Class("calendar-checkbox")],
+          [
+            h.input([
+              h.Type("checkbox"),
+              h.Checked(draft.allDay),
+              h.Disabled(disabled),
+              h.OnChange(() => Message.ToggledAllDay()),
+            ]),
+            "All day",
+          ],
+        ),
+        h.div(
+          [h.Class("calendar-form-dates")],
+          [
+            textInput(
+              draft.allDay
+                ? "First day"
+                : editor.scope === "series"
+                  ? "Series starts"
+                  : "Starts",
+              "start",
+              draft.allDay ? "date" : "datetime-local",
+            ),
+            textInput(
+              draft.allDay ? "Last day" : "Ends",
+              "end",
+              draft.allDay ? "date" : "datetime-local",
+            ),
+          ],
+        ),
+        ...(draft.allDay
+          ? []
+          : [h.p([h.Class("calendar-muted")], [draft.timeZone])]),
+        ...(editor.scope === "occurrence"
+          ? []
+          : [
+              nativeSelect(
+                {
+                  label: "Repeat",
+                  value: editor.repeat?.frequency ?? "",
+                  options: repeatOptions,
+                  disabled,
+                  onChange: (value) =>
+                    Message.ChangedFrequency({
+                      frequency: isFrequency(value) ? value : null,
+                    }),
+                },
+                h,
+              ),
+              ...(editor.repeat
+                ? [
+                    h.label(
+                      [h.Class("calendar-field")],
+                      [
+                        h.span([], ["Repeat until (optional)"]),
+                        h.input([
+                          h.Type("date"),
+                          h.Value(editor.repeat.until ?? ""),
+                          h.Disabled(disabled),
+                          h.Min(draft.start.slice(0, 10)),
+                          h.OnInput((until) =>
+                            Message.ChangedRepeatEnd({ until }),
+                          ),
+                        ]),
+                      ],
+                    ),
+                  ]
+                : []),
+            ]),
+        textInput("Location", "location", "text", false),
+        h.label(
+          [h.Class("calendar-field")],
+          [
+            h.span([], ["Notes"]),
+            h.textarea([
+              h.Value(draft.description),
+              h.Maxlength(8000),
+              h.Disabled(disabled),
+              h.OnInput((value) =>
+                Message.ChangedText({ field: "description", value }),
+              ),
+            ]),
+          ],
+        ),
+        ...(draft.allDay || editor.repeat || editor.scope === "occurrence"
+          ? []
+          : [
+              h.label(
+                [h.Class("calendar-checkbox")],
+                [
+                  h.input([
+                    h.Type("checkbox"),
+                    h.Checked(draft.reminder),
+                    h.Disabled(disabled),
+                    h.OnChange(() => Message.ToggledReminder()),
+                  ]),
+                  `Remind me ${calendarReminderMinutes} minutes before`,
+                ],
+              ),
+              ...(!model.week?.remindersAvailable
+                ? [
+                    h.p(
+                      [h.Class("calendar-muted")],
+                      [
+                        "Set up notifications on a device in ",
+                        h.a([h.Href("/settings")], ["Settings"]),
+                        ".",
+                      ],
+                    ),
+                  ]
+                : []),
+            ]),
+        editor.fromCreateMenu
+          ? Dialog.footer([cancel, save], h)
+          : h.div([h.Class("calendar-actions")], [save, cancel]),
+      ],
+    ),
+  ];
+};
+
+export const createView = Submodel.defineView(
+  (model: Model, initialFocus: ReadonlyArray<ChildAttribute>, h: H) =>
+    hasGlobalEventEditor(model)
+      ? h.div([], eventEditorContent(model, h, initialFocus))
+      : h.empty,
+);
+
+const eventEditorView = (model: Model, h: H) => {
+  const editor = model.editor!;
+  const title =
+    editor.scope === "series"
+      ? "Edit series"
+      : editor.scope === "occurrence"
+        ? "Edit occurrence"
+        : editor.revision
+          ? "Edit event"
+          : "New event";
   return dialog(
     {
       title,
@@ -1311,166 +1551,7 @@ const eventEditorView = (model: Model, h: H) => {
         h.OnMount(OpenCalendarDialog()),
         h.OnCancel(Message.ClosedEventEditor()),
       ],
-      children: [
-        ...(model.error ? [h.p([h.Role("alert")], [model.error])] : []),
-        h.form(
-          [h.OnSubmit(Message.SavedEvent())],
-          [
-            textInput("Title", "title", "text"),
-            nativeSelect(
-              {
-                label: "Calendar",
-                value: editor.calendarId,
-                options: calendarOptions(model),
-                disabled: disabled || editor.scope === "occurrence",
-                onChange: (id) => Message.ChangedEventCalendar({ id }),
-              },
-              h,
-            ),
-            h.label(
-              [h.Class("calendar-checkbox")],
-              [
-                h.input([
-                  h.Type("checkbox"),
-                  h.Checked(draft.allDay),
-                  h.Disabled(disabled),
-                  h.OnChange(() => Message.ToggledAllDay()),
-                ]),
-                "All day",
-              ],
-            ),
-            h.div(
-              [h.Class("calendar-form-dates")],
-              [
-                textInput(
-                  draft.allDay
-                    ? "First day"
-                    : editor.scope === "series"
-                      ? "Series starts"
-                      : "Starts",
-                  "start",
-                  draft.allDay ? "date" : "datetime-local",
-                ),
-                textInput(
-                  draft.allDay ? "Last day" : "Ends",
-                  "end",
-                  draft.allDay ? "date" : "datetime-local",
-                ),
-              ],
-            ),
-            ...(draft.allDay
-              ? []
-              : [h.p([h.Class("calendar-muted")], [draft.timeZone])]),
-            ...(editor.scope === "occurrence"
-              ? []
-              : [
-                  nativeSelect(
-                    {
-                      label: "Repeat",
-                      value: editor.repeat?.frequency ?? "",
-                      options: repeatOptions,
-                      disabled,
-                      onChange: (value) =>
-                        Message.ChangedFrequency({
-                          frequency: isFrequency(value) ? value : null,
-                        }),
-                    },
-                    h,
-                  ),
-                  ...(editor.repeat
-                    ? [
-                        h.label(
-                          [h.Class("calendar-field")],
-                          [
-                            h.span([], ["Repeat until (optional)"]),
-                            h.input([
-                              h.Type("date"),
-                              h.Value(editor.repeat.until ?? ""),
-                              h.Disabled(disabled),
-                              h.Min(draft.start.slice(0, 10)),
-                              h.OnInput((until) =>
-                                Message.ChangedRepeatEnd({ until }),
-                              ),
-                            ]),
-                          ],
-                        ),
-                      ]
-                    : []),
-                ]),
-            textInput("Location", "location", "text", false),
-            h.label(
-              [h.Class("calendar-field")],
-              [
-                h.span([], ["Notes"]),
-                h.textarea([
-                  h.Value(draft.description),
-                  h.Maxlength(8000),
-                  h.Disabled(disabled),
-                  h.OnInput((value) =>
-                    Message.ChangedText({ field: "description", value }),
-                  ),
-                ]),
-              ],
-            ),
-            ...(draft.allDay || editor.repeat || editor.scope === "occurrence"
-              ? []
-              : [
-                  h.label(
-                    [h.Class("calendar-checkbox")],
-                    [
-                      h.input([
-                        h.Type("checkbox"),
-                        h.Checked(draft.reminder),
-                        h.Disabled(disabled),
-                        h.OnChange(() => Message.ToggledReminder()),
-                      ]),
-                      `Remind me ${calendarReminderMinutes} minutes before`,
-                    ],
-                  ),
-                  ...(!model.week?.remindersAvailable
-                    ? [
-                        h.p(
-                          [h.Class("calendar-muted")],
-                          [
-                            "Set up notifications on a device in ",
-                            h.a([h.Href("/settings")], ["Settings"]),
-                            ".",
-                          ],
-                        ),
-                      ]
-                    : []),
-                ]),
-            h.div(
-              [h.Class("calendar-actions")],
-              [
-                button(
-                  {
-                    type: "submit",
-                    disabled,
-                    children: [
-                      model.request?.kind === "save"
-                        ? "Saving…"
-                        : editor.scope === "series"
-                          ? "Save series"
-                          : "Save event",
-                    ],
-                  },
-                  h,
-                ),
-                button(
-                  {
-                    variant: "ghost",
-                    disabled,
-                    onClick: Message.ClosedEventEditor(),
-                    children: ["Cancel"],
-                  },
-                  h,
-                ),
-              ],
-            ),
-          ],
-        ),
-      ],
+      children: eventEditorContent(model, h),
     },
     h,
   );
@@ -2127,7 +2208,9 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
       ...(model.week && !missing
         ? [schedule(model, days, events, current, h)]
         : []),
-      ...(model.editor ? [eventEditorView(model, h)] : []),
+      ...(model.editor && !hasGlobalEventEditor(model)
+        ? [eventEditorView(model, h)]
+        : []),
       ...(model.selected && !model.editor
         ? [detailsView(model.selected, model, h)]
         : []),

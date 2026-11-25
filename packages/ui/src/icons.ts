@@ -2,6 +2,16 @@ import type { HtmlBuilder } from "foldkit/html";
 
 export const noiseIconPath = "M3 10v4m4-7v10m5-14v18m5-14v10m4-7v4";
 
+export const calendarIconPaths = [
+  "M5 5h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z",
+  "M3 10h18M8 3v4m8-4v4m-8 8h2m4 0h2",
+] as const;
+
+export const taskIconPaths = [
+  "m3 7 2 2 4-4m2 3h10",
+  "m3 16 2 2 4-4m2 3h10",
+] as const;
+
 export const trashIconPaths = [
   "M3 6h18M9 6V4h6v2m4 0-1 14H6L5 6m5 4v6m4-6v6",
 ] as const;

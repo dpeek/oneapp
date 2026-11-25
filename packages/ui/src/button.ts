@@ -19,7 +19,10 @@ const styles = stylex.create({
     fontSize: "0.9375rem",
     fontWeight: 600,
     lineHeight: 1.3,
-    cursor: { default: "pointer", ":disabled": "default" },
+    cursor: {
+      default: "pointer",
+      ':is(:disabled, [aria-disabled="true"])': "default",
+    },
     outline: {
       default: null,
       ":focus-visible": `2px solid ${controls.focus}`,
@@ -31,23 +34,23 @@ const styles = stylex.create({
     backgroundColor: {
       default: controls.primary,
       "@media (hover: hover)": {
-        ":hover:not(:disabled)": controls.primaryHover,
+        ':hover:not(:disabled, [aria-disabled="true"])': controls.primaryHover,
       },
     },
     color: controls.onPrimary,
-    opacity: { default: 1, ":disabled": 0.55 },
+    opacity: { default: 1, ':is(:disabled, [aria-disabled="true"])': 0.55 },
   },
   outline: {
     borderColor: controls.border,
     backgroundColor: {
       default: controls.surface,
       "@media (hover: hover)": {
-        ":hover:not(:disabled)": controls.hover,
+        ':hover:not(:disabled, [aria-disabled="true"])': controls.hover,
       },
     },
     color: {
       default: controls.foreground,
-      ":disabled": controls.mutedForeground,
+      ':is(:disabled, [aria-disabled="true"])': controls.mutedForeground,
     },
   },
   ghost: {
@@ -55,11 +58,11 @@ const styles = stylex.create({
     backgroundColor: {
       default: "transparent",
       "@media (hover: hover)": {
-        ":hover:not(:disabled)": controls.hover,
+        ':hover:not(:disabled, [aria-disabled="true"])': controls.hover,
       },
     },
     color: controls.mutedForeground,
-    opacity: { default: 1, ":disabled": 0.55 },
+    opacity: { default: 1, ':is(:disabled, [aria-disabled="true"])': 0.55 },
   },
   sm: {
     minBlockSize: "2rem",
@@ -93,6 +96,8 @@ type ButtonProps<Message> = Readonly<{
   rounded?: boolean;
   type?: "button" | "submit";
   disabled?: boolean;
+  /** Keeps a disabled action in the tab order while it reports progress. */
+  focusableWhenDisabled?: boolean;
   onClick?: Message;
   attributes?: ReadonlyArray<Attribute<Message>>;
 }>;
@@ -113,7 +118,10 @@ export const button = <Message>(
 ): Html =>
   ButtonPrimitive.view(
     {
-      type: props.type ?? "button",
+      type:
+        props.disabled && props.focusableWhenDisabled
+          ? "button"
+          : (props.type ?? "button"),
       isDisabled: props.disabled ?? false,
       ...(props.onClick === undefined ? {} : { onClick: props.onClick }),
       toView: ({ button: attributes }) =>
@@ -121,7 +129,7 @@ export const button = <Message>(
           [
             ...attributes,
             ...(props.attributes ?? []),
-            h.Disabled(props.disabled ?? false),
+            h.Disabled(props.disabled === true && !props.focusableWhenDisabled),
             h.DataAttribute("slot", "button"),
             ...(props.ariaLabel ? [h.AriaLabel(props.ariaLabel)] : []),
             ...(props.dialogId

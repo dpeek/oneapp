@@ -12,7 +12,7 @@ import { appName } from "@oneapp/core";
 import {
   button,
   CommandMenu,
-  dialog,
+  Dialog,
   item,
   itemGroup,
   outlineIcon,
@@ -22,13 +22,13 @@ import * as Client from "@yielded/auth/Client";
 import { Effect, Option, Schema, Stream } from "effect";
 import {
   Command,
-  Mount,
   Navigation,
   Runtime,
   Subscription,
   Update,
   Url,
 } from "foldkit";
+import { focus } from "foldkit/dom";
 import type { Document, HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import * as AccountSettings from "./account-settings.ts";
@@ -107,6 +107,7 @@ const Model = Schema.Struct({
   tasks: Tasks.Model,
   files: Files.Model,
   fileRoute: Schema.NullOr(FileRoute),
+  creationDialog: Dialog.Model,
   creationMenu: Schema.NullOr(CommandMenu.Model),
   taskRoute: Schema.NullOr(TaskRoute),
   mailRoute: Schema.NullOr(MailRoute),
@@ -146,8 +147,8 @@ const Message = defineMessageUnion({
   GotTasksMessage: { message: Tasks.Message },
   GotFilesMessage: { message: Files.Message },
   OpenedCreationMenu: {},
-  ClosedCreationMenu: {},
-  CreationMenuMounted: {},
+  GotCreationDialogMessage: { message: Dialog.Message },
+  FocusedTaskTitle: {},
   GotCreationMenuMessage: { message: CommandMenu.Message },
   GotLinksMessage: { message: Links.Message },
   GotNotificationMessage: { message: Notifications.Message },
@@ -338,7 +339,28 @@ const foldCalendar = Update.foldChild({
 
 const toTasksMessage = (message: Tasks.Message) =>
   Message.GotTasksMessage({ message });
-const foldTasks = Update.foldChild({
+const toCreationDialogMessage = (message: typeof Dialog.Message.Type) =>
+  Message.GotCreationDialogMessage({ message });
+const foldCreationDialog = Update.foldChild({
+  update: Dialog.update,
+  read: (model: Model) => Option.some(model.creationDialog),
+  write: (model, creationDialog) => ({ ...model, creationDialog }),
+  toParentMessage: toCreationDialogMessage,
+  foldOutMessage: () => (model) => ({ model }),
+});
+const closeCreationMenu = (model: Model) =>
+  foldCreationDialog(
+    { ...model, creationMenu: null },
+    Dialog.Message.RequestedClose(),
+  );
+const FocusTaskTitle = Command.define("FocusTaskTitle", {
+  messages: [Message.FocusedTaskTitle],
+  execute: focus(`#${Tasks.creationTitleId}`).pipe(
+    Effect.ignore,
+    Effect.as(Message.FocusedTaskTitle()),
+  ),
+});
+const foldTaskFeature = Update.foldChild({
   update: Tasks.update,
   read: (model: Model) =>
     model.account ? Option.some(model.tasks) : Option.none(),
@@ -362,6 +384,24 @@ const foldTasks = Update.foldChild({
         : { model };
     },
 });
+
+const foldTasks = (model: Model, message: Tasks.Message) =>
+  Update.combine(model, [
+    (next) => foldTaskFeature(next, message),
+    (next) => {
+      if (model.tasks.creation && !next.tasks.creation)
+        return foldCreationDialog(next, Dialog.Message.RequestedClose());
+      if (!model.tasks.creation && next.tasks.creation) {
+        if (next.creationMenu)
+          return {
+            model: { ...next, creationMenu: null },
+            commands: [FocusTaskTitle()],
+          };
+        return foldCreationDialog(next, Dialog.Message.RequestedOpen());
+      }
+      return { model: next };
+    },
+  ]);
 
 const toFilesMessage = (message: Files.Message) =>
   Message.GotFilesMessage({ message });
@@ -414,27 +454,8 @@ const foldCreationMenu = Update.foldChild({
     (out): Update.Step<Model, Message> =>
     (model) =>
       out._tag === "Selected"
-        ? foldTasks(
-            { ...model, creationMenu: null },
-            Tasks.Message.OpenedCreate({ preserveView: true }),
-          )
+        ? foldTasks(model, Tasks.Message.OpenedCreate({ preserveView: true }))
         : { model },
-});
-
-const OpenCreationMenu = Mount.define("OpenCreationMenu", {
-  messages: [Message.CreationMenuMounted],
-  execute: ({ element }) =>
-    Effect.acquireRelease(
-      Effect.sync(() => {
-        if (element instanceof HTMLDialogElement && !element.open)
-          element.showModal();
-      }),
-      () =>
-        Effect.sync(() => {
-          if (element instanceof HTMLDialogElement && element.open)
-            element.close();
-        }),
-    ).pipe(Effect.as(Message.CreationMenuMounted())),
 });
 
 const canonicalMailNavigation = (url: Url.Url, route: Model["mailRoute"]) => {
@@ -562,6 +583,7 @@ const isCreationShortcut = (event: KeyboardEvent) =>
   !event.ctrlKey &&
   !event.metaKey &&
   !event.shiftKey &&
+  !document.querySelector("dialog:modal") &&
   !isEditable(event.target) &&
   !isEditable(document.activeElement);
 
@@ -702,6 +724,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     tasks: Tasks.initial,
     files: Files.initial,
     fileRoute: fileRouteFor(url.pathname),
+    creationDialog: Dialog.init({ id: Tasks.creationDialogId }),
     creationMenu: null,
     taskRoute: taskRouteFor(url.pathname),
     mailRoute: mailRouteFor(url.pathname),
@@ -783,6 +806,8 @@ const update = (
         : Update.combine(model, [
             closeFolderSheet,
             (next) =>
+              next.creationMenu ? closeCreationMenu(next) : { model: next },
+            (next) =>
               loadPage(
                 {
                   ...next,
@@ -792,7 +817,6 @@ const update = (
                   fileRoute,
                   mailRoute,
                   peopleRoute,
-                  creationMenu: null,
                   error: null,
                 },
                 model.page,
@@ -848,6 +872,7 @@ const update = (
         tasks: Tasks.initial,
         files: Files.initial,
         fileRoute: model.fileRoute,
+        creationDialog: Dialog.init({ id: Tasks.creationDialogId }),
         creationMenu: null,
         taskRoute: model.taskRoute,
         mailRoute: model.mailRoute,
@@ -1088,15 +1113,32 @@ const update = (
       !isApproval(model) &&
       !model.creationMenu &&
       !model.tasks.creation
-        ? {
-            model: {
+        ? foldCreationDialog(
+            {
               ...model,
               creationMenu: CommandMenu.init({ id: "creation-command" }),
             },
-          }
+            Dialog.Message.RequestedOpen(),
+          )
         : { model },
-    ClosedCreationMenu: () => ({ model: { ...model, creationMenu: null } }),
-    CreationMenuMounted: () => ({ model }),
+    GotCreationDialogMessage: ({ message }) => {
+      if (message._tag === "RequestedClose")
+        return model.tasks.creation
+          ? foldTasks(model, Tasks.Message.ClosedCreate())
+          : closeCreationMenu(model);
+      const result = foldCreationDialog(model, message);
+      return model.creationDialog.isOpen && !result.model.creationDialog.isOpen
+        ? {
+            ...result,
+            model: {
+              ...result.model,
+              creationMenu: null,
+              tasks: { ...result.model.tasks, creation: null },
+            },
+          }
+        : result;
+    },
+    FocusedTaskTitle: () => ({ model }),
     GotCreationMenuMessage: ({ message }) => foldCreationMenu(model, message),
     GotLinksMessage: ({ message }) =>
       model.pending &&
@@ -1514,6 +1556,7 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
     model.page === "contacts" ||
     model.page === "settings" ||
     (model.page === "vault" && model.vaultSetup.status?.initialized === true);
+  const menu = model.creationMenu;
   return {
     title: `${title} · ${appName}`,
     body: h.div(
@@ -1595,42 +1638,33 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
           model: model.people,
           toParentMessage: toPeopleMessage,
         }),
-        ...(model.creationMenu
-          ? [
-              dialog(
-                {
-                  title: "Create",
-                  titleId: "creation-command-title",
-                  attributes: [
-                    h.Key("creation-command-dialog"),
-                    h.OnMount(OpenCreationMenu()),
-                    h.OnCancel(Message.ClosedCreationMenu()),
-                  ],
-                  children: [
-                    creationMenu.view(
-                      {
-                        model: model.creationMenu,
-                        items: creationItems,
-                        toParentMessage: toCreationMenu,
-                      },
-                      h,
-                    ),
-                  ],
-                },
-                h,
-              ),
-            ]
-          : []),
-        ...(model.tasks.creation
-          ? [
-              h.submodel({
-                slotId: "task-creation",
-                view: taskCreateView,
-                model: model.tasks,
-                toParentMessage: toTasksMessage,
-              }),
-            ]
-          : []),
+        Dialog.view(
+          {
+            model: model.creationDialog,
+            title: menu ? "Create" : "Add task",
+            showCloseButton: menu !== null,
+            content: (initialFocus) =>
+              menu
+                ? creationMenu.view(
+                    {
+                      model: menu,
+                      items: creationItems,
+                      initialFocus,
+                      toParentMessage: toCreationMenu,
+                    },
+                    h,
+                  )
+                : h.submodel({
+                    slotId: "task-creation",
+                    view: taskCreateView,
+                    model: model.tasks,
+                    viewInputs: initialFocus,
+                    toParentMessage: toTasksMessage,
+                  }),
+            toParentMessage: toCreationDialogMessage,
+          },
+          h,
+        ),
       ],
     ),
   };

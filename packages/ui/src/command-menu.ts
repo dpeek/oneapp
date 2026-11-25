@@ -2,7 +2,7 @@
 import { Combobox } from "@foldkit/ui";
 import * as stylex from "@stylexjs/stylex";
 import { Option } from "effect";
-import type { Html, HtmlBuilder } from "foldkit/html";
+import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html";
 import { inputClassName } from "./field.ts";
 import { outlineIcon } from "./icons.ts";
 import { controls } from "./tokens.stylex.ts";
@@ -50,10 +50,12 @@ export const create = <Value extends string>() => {
       {
         model,
         items,
+        initialFocus,
         toParentMessage,
       }: {
         model: Model;
         items: readonly Item<Value>[];
+        initialFocus: ReadonlyArray<ChildAttribute>;
         toParentMessage: (message: Message) => ParentMessage;
       },
       h: HtmlBuilder<ParentMessage>,
@@ -99,7 +101,7 @@ export const create = <Value extends string>() => {
                 h.AriaControls(listId),
                 h.AriaAutocomplete("list"),
                 ...(item ? [h.AriaActiveDescendant(itemId(index))] : []),
-                h.Autofocus(true),
+                ...initialFocus,
                 h.Autocomplete("off"),
                 h.Placeholder("Search commands"),
                 h.Value(model.inputValue),

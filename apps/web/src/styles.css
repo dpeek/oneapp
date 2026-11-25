@@ -114,7 +114,7 @@ body:has(.app-shell) {
 :where(
   a:not([data-slot="item-link"]),
   button:not([data-slot]),
-  input:not([data-slot="input"])
+  input:not([data-slot="input"], [data-slot="command-input"])
 ):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;

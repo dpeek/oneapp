@@ -3,6 +3,56 @@
 See [Components and style system](STYLE_SYSTEM.md) for Crease component adoption,
 StyleX tokens, and theme guidance.
 
+## Dialogs
+
+Initialize a `Dialog.Model` with a stable, unique ID. Add `Dialog.Message` to
+the parent message schema and route it through `Dialog.update`, retaining the
+model and mapping its commands to the parent. Dispatch `RequestedOpen` from
+the trigger. Foldkit manages the backdrop, Escape, focus, and scroll lock.
+
+```ts
+import { button, Dialog, field, input } from "@oneapp/ui";
+
+const editDialog = Dialog.init({ id: "edit-label" });
+const toDialogMessage = (message: typeof Dialog.Message.Type) =>
+  Message.GotDialogMessage({ message });
+
+Dialog.view(
+  {
+    model: model.editDialog,
+    title: "Edit label",
+    showCloseButton: false,
+    toParentMessage: toDialogMessage,
+    content: (initialFocus) =>
+      h.form(
+        [h.OnSubmit(Message.Saved())],
+        [
+          field("Label", input([...initialFocus], h), h),
+          Dialog.footer(
+            [
+              button(
+                {
+                  onClick: toDialogMessage(Dialog.Message.RequestedClose()),
+                  children: ["Cancel"],
+                },
+                h,
+              ),
+              button({ type: "submit", children: ["Save"] }, h),
+            ],
+            h,
+          ),
+        ],
+      ),
+  },
+  h,
+);
+```
+
+Send Cancel through the same `RequestedClose` path as Escape and backdrop
+clicks. If a save blocks dismissal, guard that message in the parent and close
+on success. Keep the same dialog model when replacing the contents of an open
+dialog, and focus the next step's field after the update commits.
+
 ## Toast notifications
 
 `Toast` from `@oneapp/ui` adapts CreaseUI's StyleX toast to OneApp's tokens and

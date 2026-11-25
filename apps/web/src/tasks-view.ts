@@ -3,7 +3,7 @@ import {
   badge,
   button,
   buttonClassName,
-  dialog,
+  Dialog,
   field,
   input,
   MultiCombobox,
@@ -17,7 +17,7 @@ import {
 } from "@oneapp/ui";
 import { Effect, Option, Queue, Schema, Stream } from "effect";
 import { Mount, Submodel } from "foldkit";
-import type { HtmlBuilder } from "foldkit/html";
+import type { ChildAttribute, HtmlBuilder } from "foldkit/html";
 import { tagNameKey, tagNameLimit, type Tag } from "./items-contract.ts";
 import {
   activeTaskStatuses,
@@ -33,6 +33,9 @@ import {
 import { matchesTaskFilters, taskFilterCount } from "./tasks-filters.ts";
 import {
   FilterCategory,
+  creationDialogId,
+  creationSubmitId,
+  creationTitleId,
   filterOptionsId,
   hasEdits,
   Message,
@@ -509,9 +512,11 @@ const taskFields = (
   editor: Editor,
   tags: ReadonlyArray<Tag>,
   busy: boolean,
-  creating: boolean,
   h: HtmlBuilder<Message>,
-  tagsUnavailable = false,
+  creation?: {
+    initialFocus: ReadonlyArray<ChildAttribute>;
+    tagsUnavailable: boolean;
+  },
 ) => {
   const { draft } = editor;
   const tagsFull = draft.tagIds.length >= taskTagLimit;
@@ -524,8 +529,13 @@ const taskFields = (
           h.Type("text"),
           h.Value(draft.title),
           h.Maxlength(taskTitleLimit),
-          h.Required(creating),
-          h.Autofocus(creating),
+          ...(creation
+            ? [
+                h.Id(creationTitleId),
+                h.Required(true),
+                ...creation.initialFocus,
+              ]
+            : []),
           h.Disabled(busy),
           h.OnInput((value) => Message.EditedField({ field: "title", value })),
         ],
@@ -595,12 +605,12 @@ const taskFields = (
         model: editor.tagPicker,
         label: "Tags",
         placeholder: "Search or create tags",
-        ...(creating ? { placement: "top-start" } : {}),
+        ...(creation ? { placement: "top-start" } : {}),
         emptyMessage: "No matching tags",
         items: search.items,
         selected: tags.filter(({ id }) => draft.tagIds.includes(id)),
         maxLength: tagNameLimit,
-        busy: busy || tagsUnavailable,
+        busy: busy || creation?.tagsUnavailable === true,
         full: tagsFull,
         description: tagsFull
           ? `A task can have up to ${taskTagLimit} tags.`
@@ -615,115 +625,81 @@ const taskFields = (
   ];
 };
 
-const OpenCreateDialog = Mount.define("OpenTaskCreateDialog", {
-  messages: [Message.CreateDialogMounted],
-  execute: ({ element }) =>
-    Effect.acquireRelease(
-      Effect.sync(() => {
-        if (element instanceof HTMLDialogElement && !element.open)
-          element.showModal();
-      }),
-      () =>
-        Effect.sync(() => {
-          if (element instanceof HTMLDialogElement && element.open)
-            element.close();
-        }),
-    ).pipe(Effect.as(Message.CreateDialogMounted())),
-});
-
-const createDialogId = "task-create-dialog";
 const sortedTags = (model: Model) =>
   [...(model.index?.tags ?? [])].sort((left, right) =>
     left.name.localeCompare(right.name),
   );
 
-export const createView = Submodel.defineView<Model, Message>((model, h) => {
-  const editor = model.creation;
-  if (!editor) return h.empty;
-  const busy =
-    model.request !== null && model.request.operation._tag !== "Load";
-  return dialog(
-    {
-      title: "Add task",
-      titleId: "task-create-title",
-      attributes: [
-        h.Key(createDialogId),
-        h.Id(createDialogId),
-        h.OnMount(OpenCreateDialog()),
-        h.OnCancel(Message.ClosedCreate()),
-      ],
-      children: [
-        h.form(
+export const createView = Submodel.defineView(
+  (
+    model: Model,
+    initialFocus: ReadonlyArray<ChildAttribute>,
+    h: HtmlBuilder<Message>,
+  ) => {
+    const editor = model.creation;
+    if (!editor) return h.empty;
+    const busy =
+      model.request !== null && model.request.operation._tag !== "Load";
+    const submitting = model.request?.operation._tag === "Create";
+    return h.form(
+      [h.Class("task-editor task-create-form"), h.OnSubmit(Message.Created())],
+      [
+        ...(editor.error ? [h.p([h.Role("alert")], [editor.error])] : []),
+        ...(!model.index
+          ? model.error
+            ? [h.p([h.Role("alert")], [model.error])]
+            : [h.p([h.Role("status")], ["Loading tasks and tags…"])]
+          : []),
+        ...taskFields(editor, sortedTags(model), busy, h, {
+          initialFocus,
+          tagsUnavailable: !model.index,
+        }),
+        Dialog.footer(
           [
-            h.Class("task-editor task-create-form"),
-            h.OnSubmit(Message.Created()),
-          ],
-          [
-            ...(editor.error ? [h.p([h.Role("alert")], [editor.error])] : []),
-            ...(!model.index
-              ? model.error
-                ? [h.p([h.Role("alert")], [model.error])]
-                : [h.p([h.Role("status")], ["Loading tasks and tags…"])]
-              : []),
-            ...taskFields(
-              editor,
-              sortedTags(model),
-              busy,
-              true,
+            button(
+              {
+                variant: "outline",
+                size: "sm",
+                disabled: writingCreation(model),
+                onClick: Message.ClosedCreate(),
+                children: ["Cancel"],
+              },
               h,
-              !model.index,
             ),
-            h.div(
-              [h.Class("task-actions")],
-              [
-                button(
-                  {
-                    variant: "outline",
-                    size: "sm",
-                    disabled: writingCreation(model),
-                    onClick: Message.ClosedCreate(),
-                    children: ["Cancel"],
-                  },
-                  h,
-                ),
-                ...(!model.index && !model.request
-                  ? [
-                      button(
-                        {
-                          variant: "outline",
-                          size: "sm",
-                          onClick: Message.Retried(),
-                          children: ["Retry"],
-                        },
-                        h,
-                      ),
-                    ]
-                  : []),
-                button(
-                  {
-                    type: "submit",
-                    size: "sm",
-                    disabled:
-                      model.request !== null ||
-                      !model.index ||
-                      !editor.draft.title.trim(),
-                    children: [
-                      model.request?.operation._tag === "Create"
-                        ? "Adding…"
-                        : "Add task",
-                    ],
-                  },
-                  h,
-                ),
-              ],
+            ...(!model.index && !model.request
+              ? [
+                  button(
+                    {
+                      variant: "outline",
+                      size: "sm",
+                      onClick: Message.Retried(),
+                      children: ["Retry"],
+                    },
+                    h,
+                  ),
+                ]
+              : []),
+            button(
+              {
+                type: "submit",
+                size: "sm",
+                attributes: [h.Id(creationSubmitId)],
+                focusableWhenDisabled: submitting,
+                disabled:
+                  model.request !== null ||
+                  !model.index ||
+                  !editor.draft.title.trim(),
+                children: [submitting ? "Adding…" : "Add task"],
+              },
+              h,
             ),
           ],
+          h,
         ),
       ],
-    },
-    h,
-  );
-});
+    );
+  },
+);
 
 const FocusDetail = Mount.define("FocusTaskDetail", {
   messages: [Message.FocusUpdated],
@@ -777,7 +753,7 @@ const taskDetail = (
             h.div(
               [h.Key(task.id), h.Class("task-editor")],
               [
-                ...taskFields(editor, tags, busy, false, h),
+                ...taskFields(editor, tags, busy, h),
                 h.div(
                   [h.Class("task-actions")],
                   [
@@ -902,7 +878,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
           {
             size: "sm",
             disabled: model.request !== null || !model.index,
-            dialogId: createDialogId,
+            dialogId: creationDialogId,
             onClick: Message.OpenedCreate({ preserveView: false }),
             children: ["Add task"],
           },

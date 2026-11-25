@@ -1,6 +1,7 @@
 import * as stylex from "@stylexjs/stylex";
 import type {
   Attribute,
+  ChildAttribute,
   Html,
   HtmlBuilder,
   TextareaAttribute,
@@ -128,7 +129,7 @@ export const field = <Message>(
 export const inputClassName = stylex.props(styles.control).className ?? "";
 
 export const input = <Message>(
-  attributes: ReadonlyArray<Attribute<Message>>,
+  attributes: ReadonlyArray<Attribute<Message> | ChildAttribute>,
   h: HtmlBuilder<Message>,
 ): Html =>
   h.input([

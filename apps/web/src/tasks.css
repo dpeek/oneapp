@@ -318,10 +318,6 @@
   gap: 1rem;
 }
 
-.task-create-form .task-actions {
-  justify-content: flex-end;
-}
-
 .task-create-form p[role="alert"] {
   margin: 0;
   color: light-dark(#ab3723, #ffa693);

@@ -59,6 +59,9 @@ const Operation = Schema.Union([
 type Operation = typeof Operation.Type;
 export const FilterCategory = Schema.Literals(["status", "priority", "tags"]);
 export const filterOptionsId = "task-filter-options";
+export const creationDialogId = "task-create-dialog";
+export const creationTitleId = "task-create-title-input";
+export const creationSubmitId = "task-create-submit";
 const filterPopover = Popover.init({ id: "task-filters" });
 const filterTags = MultiCombobox.init("task-filter-tags");
 const closedFilterOptions = { filterCategory: null, filterTags };
@@ -114,7 +117,6 @@ export const Message = defineMessageUnion({
   FocusUpdated: {},
   Retried: {},
   OpenedCreate: { preserveView: Schema.Boolean },
-  CreateDialogMounted: {},
   ClosedCreate: {},
   Created: {},
   EditedField: { field: Field, value: Schema.String },
@@ -237,6 +239,14 @@ const FocusList = Command.define("FocusTaskList", {
       Effect.as(Message.FocusUpdated()),
     );
   },
+});
+
+const FocusCreateSubmit = Command.define("FocusTaskCreateSubmit", {
+  messages: [Message.FocusUpdated],
+  execute: focus(`#${creationSubmitId}`).pipe(
+    Effect.ignore,
+    Effect.as(Message.FocusUpdated()),
+  ),
 });
 
 const requestJson = async <A>(
@@ -543,7 +553,6 @@ export const update = (
         };
         return model.index ? { model: next } : start(next, { _tag: "Load" });
       },
-      CreateDialogMounted: () => ({ model }),
       ClosedCreate: () => ({
         model:
           model.creation && !writingCreation(model)
@@ -564,10 +573,14 @@ export const update = (
               },
             },
           };
-        return start(
+        const result = start(
           { ...model, creation: { ...model.creation, error: null } },
           { _tag: "Create", input },
         );
+        return {
+          model: result.model,
+          commands: [FocusCreateSubmit(), ...(result.commands ?? [])],
+        };
       },
       EditedField: ({ field, value }) => {
         const editor = model.creation ?? model.editor;

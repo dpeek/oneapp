@@ -12,6 +12,7 @@ export { buttonGroup, createButtonGroup } from "./button-group.ts";
 export * as CalendarPicker from "./calendar-picker.ts";
 export * as ColorPicker from "./color-picker.ts";
 export * as CommandMenu from "./command-menu.ts";
+export * as Dialog from "./dialog.ts";
 export { dialog } from "./dialog.ts";
 export * as DropdownMenu from "./dropdown-menu.ts";
 export {

@@ -1,5 +1,6 @@
 @import "@oneapp/ui/theme.css";
 @import "./tasks.css";
+@import "./filter-menu.css";
 
 :root {
   color-scheme: light dark;
@@ -1260,6 +1261,11 @@ button {
   place-items: center;
   inline-size: 1rem;
   block-size: 1rem;
+}
+
+.inbox-filter-control {
+  display: flex;
+  margin-inline-start: auto;
 }
 
 .inbox-refresh-indicator svg {

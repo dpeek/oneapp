@@ -1413,6 +1413,7 @@ const update = (
       if (
         message._tag === "SessionExpired" &&
         (message.request === model.inbox.listRequest?.id ||
+          message.request === model.inbox.filters.contactsRequest ||
           message.request === model.inbox.entryRequest ||
           message.request === model.inbox.imageRequest ||
           message.request === model.inbox.recovery.request ||

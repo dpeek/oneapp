@@ -7,6 +7,7 @@ import {
   MailMessageId,
   MailPeople,
   type ConversationMessage,
+  type MailFilters,
   type MailFolder,
   type MailPerson,
   type MailboxView,
@@ -19,6 +20,11 @@ import {
   senderAppearanceRules,
   withSenderAppearances,
 } from "./mail-sender-appearance.ts";
+import {
+  contactFilterQuery,
+  matchesContactFilters,
+  resolveContactFilters,
+} from "./mail-conversation-filters.ts";
 import { mailPeople } from "./mail-people.ts";
 import { enqueueMailPush, pushLifetimeMs } from "./push-store.ts";
 
@@ -324,11 +330,21 @@ export const listConversations = async (
   db: MailDatabase,
   cursor: NonNullable<ReturnType<typeof conversationCursor>>,
   view: ConversationView,
+  filters?: MailFilters,
+  mailboxAddresses: readonly string[] = [],
 ) => {
   const all = view === "all";
-  const { results } = await db
-    .prepare(
-      `
+  const contacts = filters
+    ? await resolveContactFilters(db, filters, mailboxAddresses)
+    : {};
+  const contact = contactFilterQuery(contacts);
+  const status = filters?.status ?? "all";
+  const unreadMembers = `FROM mail_index_messages member
+    WHERE member.mailbox_id = m.mailbox_id AND member.thread_id = m.thread_id
+      AND member.folder = 'inbox' AND member.deleted = 0 AND member.unread = 1`;
+  const statement = db.prepare(
+    `
+    WITH page_size(size) AS (VALUES (?3))
     SELECT m.id, m.sender AS "from", m.timestamp AS sortAt,
            ${all ? "incoming.id" : "m.id"} AS latestIncomingId,
            ${all ? "coalesce(incoming.archived, 0)" : "m.archived"} AS archived,
@@ -338,9 +354,7 @@ export const listConversations = async (
             ) ORDER BY member.timestamp, member.id)
             FROM mail_index_messages member
             WHERE member.mailbox_id = m.mailbox_id AND member.thread_id = m.thread_id AND member.deleted = 0) AS metadata,
-           (SELECT count(*) FROM mail_index_messages member
-            WHERE member.mailbox_id = m.mailbox_id AND member.thread_id = m.thread_id AND member.folder = 'inbox'
-              AND member.deleted = 0 AND member.unread = 1) AS unreadCount
+           (SELECT count(*) ${unreadMembers}) AS unreadCount
     FROM mail_index_messages m
     ${
       all
@@ -360,41 +374,68 @@ export const listConversations = async (
           ${all ? "" : "AND newer.folder = 'inbox'"}
           AND (newer.timestamp, newer.id) > (m.timestamp, m.id)
       )
-    ORDER BY m.timestamp DESC, m.id DESC LIMIT ?3
+      ${status === "all" ? "" : `AND ${status === "read" ? "NOT " : ""}EXISTS (SELECT 1 ${unreadMembers})`}
+      ${contact.where}
+    ORDER BY m.timestamp DESC, m.id DESC LIMIT (SELECT size FROM page_size)
   `,
-    )
-    .bind(
-      cursor.timestamp,
-      cursor.id,
-      pageSize + 1,
-      ...(all ? [] : [view === "archive" ? 1 : 0]),
-      ...(isInboxView(view) ? [view === "noise" ? "noise" : "signal"] : []),
-    )
-    .all<{
-      id: string;
-      from: string;
-      subject: string;
-      sortAt: number;
-      latestIncomingId: string | null;
-      archived: number;
-      metadata: string;
-      unreadCount: number;
-    }>();
-  const memberSets = results.map(({ metadata }) =>
-    (JSON.parse(metadata) as IndexedThreadMember[]).map(withPeople),
   );
+  const readPage = (after: typeof cursor, limit: number) =>
+    statement
+      .bind(
+        after.timestamp,
+        after.id,
+        limit,
+        ...(all ? [] : [view === "archive" ? 1 : 0]),
+        ...(isInboxView(view) ? [view === "noise" ? "noise" : "signal"] : []),
+        ...contact.values,
+      )
+      .all<{
+        id: string;
+        from: string;
+        sortAt: number;
+        latestIncomingId: string | null;
+        archived: number;
+        metadata: string;
+        unreadCount: number;
+      }>();
+  const matches = [];
+  let after = cursor;
+  let limit = pageSize + 1;
+  while (matches.length < pageSize + 1) {
+    const { results } = await readPage(after, limit);
+    for (const { metadata, ...row } of results) {
+      const indexed = JSON.parse(metadata) as IndexedThreadMember[];
+      const members = indexed.map(withPeople);
+      if (
+        contact.where &&
+        indexed.some(({ people }) => people === null) &&
+        !matchesContactFilters(
+          contacts,
+          members.flatMap(({ people }) => people.members),
+        )
+      )
+        continue;
+      matches.push({ row, members });
+      if (matches.length > pageSize) break;
+    }
+    const last = results.at(-1);
+    if (!last || results.length < limit) break;
+    after = { timestamp: last.sortAt, id: last.id };
+    // Amortize the extra queries if we have to check a stretch of legacy rows.
+    limit = 100;
+  }
+  const page = matches.slice(0, pageSize);
   const rules = await senderAppearanceRules(
     db,
-    memberSets.flatMap((members) =>
+    page.flatMap(({ members }) =>
       members.flatMap(({ people }) =>
         people.sender ? [people.sender.address] : [],
       ),
     ),
   );
-  const messages = results
-    .slice(0, pageSize)
-    .map(({ metadata: _metadata, sortAt, archived, ...row }, index) => {
-      const members = memberSets[index]!.map((member) => ({
+  const messages = page.map(
+    ({ row: { sortAt, archived, ...row }, members: rawMembers }) => {
+      const members = rawMembers.map((member) => ({
         ...member,
         people: applySenderAppearance(member.people, rules),
       }));
@@ -430,12 +471,13 @@ export const listConversations = async (
         senders: [...senders.values()],
         ...(avatarSender ? { avatarSender } : {}),
       };
-    });
-  const last = results[pageSize - 1];
+    },
+  );
+  const last = page.at(-1)?.row;
   return {
     messages,
     cursor:
-      last && results.length > pageSize ? `${last.sortAt}/${last.id}` : null,
+      last && matches.length > pageSize ? `${last.sortAt}/${last.id}` : null,
   };
 };
 
@@ -531,6 +573,7 @@ export const scanMail = async (
   describe: (object: R2Object) => Promise<IndexedMail | null>,
   reconcile: boolean,
   incomingOnly = false,
+  requirePeople = false,
 ) => {
   const scanId = incomingOnly
     ? "inbox:push"
@@ -546,7 +589,7 @@ export const scanMail = async (
   if (state?.ready && !reconcile) return false;
   // A mailbox indexed by the older scan can be used while list headers backfill.
   const alreadyIndexed =
-    folder === "inbox" && !state?.ready
+    folder === "inbox" && !state?.ready && !requirePeople
       ? await db
           .prepare(
             `SELECT ready FROM mail_index_scans WHERE mailbox_id = ${mailboxSql(db)} AND folder = 'inbox:people'`,

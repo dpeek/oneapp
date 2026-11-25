@@ -28,6 +28,7 @@ import {
 } from "./mail-import-completion.ts";
 import {
   indexMail,
+  conversationCursor,
   readThread,
   removeIndexedMail,
   setInboxUnread,
@@ -37,6 +38,7 @@ import {
   setSenderRule,
   scanMail,
 } from "./mail-index.ts";
+import { mailPeople } from "./mail-people.ts";
 import { describeStoredRawMail, storedMailTimestamp } from "./raw-mail.ts";
 import {
   describeStoredSent,
@@ -190,6 +192,157 @@ const setup = async (sqlite: Database) => {
     },
   };
 };
+
+it("filters conversation members and unread state before paging in mailbox order", async () => {
+  using sqlite = new Database(":memory:");
+  const { DB } = await setup(sqlite);
+  const contact = (
+    kind: "person" | "company",
+    email?: string,
+    domain?: string,
+  ) => {
+    const id = crypto.randomUUID();
+    sqlite.run("INSERT INTO people (id, kind, revision) VALUES (?, ?, ?)", [
+      id,
+      kind,
+      id,
+    ]);
+    if (email)
+      sqlite.run(
+        "INSERT INTO person_addresses (email, person_id) VALUES (?, ?)",
+        [email, id],
+      );
+    if (domain)
+      sqlite.run(
+        "INSERT INTO company_domains (domain, company_id) VALUES (?, ?)",
+        [domain, id],
+      );
+    return id;
+  };
+  const ownAddress = "mail@cedar.example.com";
+  const alexAddress = "alex@team.cedar.example.com";
+  const joAddress = "jo@example.net";
+  const pineEmail = "sales@example.org";
+  const alex = contact("person", alexAddress);
+  const jo = contact("person", joAddress);
+  const cedar = contact("company", undefined, "cedar.example.com");
+  const pine = contact("company", pineEmail, "pine.example.net");
+  const add = async (
+    subject: string,
+    from: string,
+    options: {
+      folder?: "inbox" | "sent";
+      to?: string;
+      cc?: string;
+      thread?: string;
+      unread?: boolean;
+      archived?: boolean;
+      listMail?: boolean;
+    } = {},
+  ) => {
+    const folder = options.folder ?? "inbox";
+    const to = options.to ?? ownAddress;
+    const id = `0-8199999999999-${crypto.randomUUID()}${folder === "inbox" ? ".eml" : ""}`;
+    await indexMail(DB, {
+      id,
+      folder,
+      from,
+      to,
+      subject,
+      timestamp: ++time,
+      messageIds: [options.thread ?? subject],
+      unread: options.unread ?? true,
+      initialArchived: options.archived,
+      listMail: options.listMail,
+      people: mailPeople(
+        (name) => (name === "cc" ? options.cc : undefined),
+        from,
+        to,
+      ),
+    });
+    return id;
+  };
+  let time = 1_800_000_000_000;
+  const first = await add("Alex at Cedar", alexAddress);
+  await add("Alex at Cedar", alexAddress, { unread: false });
+  await add("Jo at Pine", joAddress, { thread: "Jo and Pine" });
+  await add("Pine reply", ownAddress, {
+    folder: "sent",
+    to: pineEmail,
+    thread: "Jo and Pine",
+    unread: false,
+  });
+  await add("Jo at Cedar, read", joAddress, {
+    cc: "liaison@cedar.example.com",
+    unread: false,
+  });
+  await add("Jo at similar domain", joAddress, {
+    cc: "liaison@notcedar.example.com",
+  });
+  await add("Alex noise", alexAddress, { listMail: true });
+  await add("Alex archive", alexAddress, { archived: true });
+  await add("Alex sent only", ownAddress, {
+    folder: "sent",
+    to: alexAddress,
+  });
+  const legacy = await add("Jo with legacy participants", ownAddress, {
+    folder: "sent",
+    to: `Jo <${joAddress}>, Pine <${pineEmail}>`,
+    unread: false,
+  });
+  sqlite.run("UPDATE mail_index_messages SET people = NULL WHERE id = ?", [
+    legacy,
+  ]);
+  for (let index = 0; index < 22; index++)
+    await add(`Unrelated ${index}`, "outsider@example.net");
+
+  const cursor = { timestamp: null, id: "" };
+  const filters = {
+    status: "unread",
+    people: [alex, jo],
+    companies: [cedar, pine],
+  } as const;
+  const list = (
+    view: "inbox" | "noise" | "archive" | "all",
+    status: "unread" | "read" = "unread",
+  ) =>
+    listConversations(DB, cursor, view, { ...filters, status }, [ownAddress]);
+  const subjects = ({
+    messages,
+  }: Awaited<ReturnType<typeof listConversations>>) =>
+    messages.map(({ subject }) => subject);
+  expect(
+    subjects(await listConversations(DB, cursor, "inbox")).every((subject) =>
+      subject.startsWith("Unrelated "),
+    ),
+  ).toBe(true);
+  expect(subjects(await list("inbox"))).toEqual([
+    "Jo at Pine",
+    "Alex at Cedar",
+  ]);
+  expect(subjects(await list("noise"))).toEqual(["Alex noise"]);
+  expect(subjects(await list("archive"))).toEqual(["Alex archive"]);
+  expect(subjects(await list("all", "read"))).toEqual([
+    "Jo with legacy participants",
+    "Alex sent only",
+    "Jo at Cedar, read",
+  ]);
+  await setInboxUnread(DB, first, false);
+  expect(subjects(await list("inbox"))).toEqual(["Jo at Pine"]);
+  for (let index = 0; index < 20; index++)
+    await add(`Alex ${index}`, alexAddress);
+  const filtered = await list("inbox");
+  expect(subjects(filtered)).toEqual(
+    Array.from({ length: 20 }, (_, index) => `Alex ${19 - index}`),
+  );
+  const next = conversationCursor(filtered.cursor ?? undefined, "inbox");
+  expect(filtered.cursor).not.toBeNull();
+  expect(
+    subjects(
+      await listConversations(DB, next!, "inbox", filters, [ownAddress]),
+    ),
+  ).toEqual(["Jo at Pine"]);
+});
 
 it("preserves original bytes, dates, flags, people and archive state through index rebuild", async () => {
   using sqlite = new Database(":memory:");

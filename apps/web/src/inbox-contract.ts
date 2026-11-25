@@ -1,7 +1,7 @@
 import { FileMetadata } from "@oneapp/core/files";
 import { Schema as AuthSchema } from "@yielded/auth";
 import { Schema } from "effect";
-import { PersonEmail, PersonMatch } from "./people-contract.ts";
+import { PersonEmail, PersonId, PersonMatch } from "./people-contract.ts";
 
 export const mailPath = "/mail";
 export const inboxApiPath = "/api/inbox";
@@ -63,6 +63,22 @@ export const MailboxView = Schema.Literals([
 export type MailboxView = typeof MailboxView.Type;
 export const isInboxView = (view: MailboxView) =>
   view === "inbox" || view === "noise";
+export const supportsMailFilters = (view: MailboxView) =>
+  isInboxView(view) || view === "archive" || view === "all";
+export const MailReadFilter = Schema.Literals(["all", "read", "unread"]);
+export const MailFilters = Schema.Struct({
+  status: MailReadFilter,
+  people: Schema.Array(PersonId),
+  companies: Schema.Array(PersonId),
+});
+export type MailFilters = typeof MailFilters.Type;
+export const emptyMailFilters: MailFilters = {
+  status: "all",
+  people: [],
+  companies: [],
+};
+export const mailFilterCount = ({ status, people, companies }: MailFilters) =>
+  Number(status !== "all") + people.length + companies.length;
 const mailboxPaths = {
   inbox: mailPath,
   noise: noisePath,

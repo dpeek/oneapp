@@ -2,10 +2,17 @@ import { expect, it } from "@effect/vitest";
 import { Duration, Option } from "effect";
 import { vi } from "vitest";
 vi.mock("@oneapp/ui", async () => {
-  const { Menu, Dialog, Popover } = await import(
+  const { Combobox, Menu, Dialog, Popover } = await import(
     import.meta.resolve("@foldkit/ui", import.meta.resolve("@oneapp/ui"))
   );
+  const picker = Combobox.Multi.create();
   return {
+    MultiCombobox: {
+      Model: Combobox.Multi.Model,
+      Message: Combobox.Message,
+      init: (id: string) => picker.open(Combobox.Multi.init({ id })).model,
+      update: picker.update,
+    },
     Dialog,
     DropdownMenu: Menu,
     Sheet: Dialog,

@@ -25,6 +25,7 @@ import type { HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import * as Mount from "foldkit/mount";
 import * as Attachments from "./inbox-attachments.ts";
+import * as Filters from "./inbox-filters.ts";
 import { mailHtmlDocument, mailHtmlSandbox } from "./inbox-html.ts";
 import * as Recovery from "./inbox-recovery.ts";
 import * as Compose from "./inbox-compose.ts";
@@ -60,8 +61,10 @@ import {
   InboxUnread,
   inboxUnreadPath,
   isInboxView,
+  mailFilterCount,
   MailEntry,
   MailFolder,
+  MailFilters,
   MailboxView,
   MailMessageId,
   MailPage,
@@ -80,6 +83,7 @@ import {
   SenderPriority,
   SenderRule,
   senderRuleApiPath,
+  supportsMailFilters,
 } from "./inbox-contract.ts";
 import {
   normalizePersonEmail,
@@ -148,6 +152,7 @@ const messageMenu = DropdownMenu.create<MessageAction>();
 
 export const Model = Schema.Struct({
   folder: MailboxView,
+  filters: Filters.Model,
   folderSheet: Sheet.Model,
   conversationMenu: DropdownMenu.Model,
   messageMenu: DropdownMenu.Model,
@@ -209,6 +214,7 @@ type Model = typeof Model.Type;
 
 export const initial: Model = {
   folder: "inbox",
+  filters: Filters.initial,
   folderSheet: Sheet.init({ id: "mail-folders" }),
   conversationMenu: DropdownMenu.init({ id: "mail-conversation-actions" }),
   messageMenu: DropdownMenu.init({ id: "mail-message-actions" }),
@@ -247,6 +253,7 @@ export const initial: Model = {
 export const Message = defineMessageUnion({
   Opened: MailRoute.fields,
   GotFolderSheetMessage: { message: Sheet.Message },
+  GotFiltersMessage: { message: Filters.Message },
   RetriedList: {},
   RefreshedUnread: {},
   GotRecoveryMessage: { message: Recovery.Message },
@@ -316,6 +323,22 @@ export const Message = defineMessageUnion({
   FocusUpdated: {},
 });
 type Message = typeof Message.Type;
+const toFiltersMessage = (message: typeof Filters.Message.Type) =>
+  message._tag === "SessionExpired"
+    ? Message.SessionExpired({ request: message.request })
+    : Message.GotFiltersMessage({ message });
+
+const foldFilters = Update.foldChild({
+  update: Filters.update,
+  read: (model: Model) =>
+    supportsMailFilters(model.folder) && model.selected === null
+      ? Option.some(model.filters)
+      : Option.none(),
+  write: (model, filters) => ({ ...model, filters }),
+  toParentMessage: toFiltersMessage,
+  foldOutMessage: () => (model) => ({ model }),
+});
+
 export const OutMessage = defineMessageUnion({
   Notify: { notification: Notification },
   DismissNotification: { key: Schema.String },
@@ -556,19 +579,20 @@ const LoadList = Command.define("LoadInboxList", {
     cursor: Schema.NullOr(Schema.String),
     folder: MailboxView,
     minimum: Schema.Number,
+    filters: MailFilters,
   },
   messages: [Message.LoadedList, Message.ListFailed, Message.SessionExpired],
-  execute: ({ request, cursor, folder, minimum }) =>
+  execute: ({ request, cursor, folder, minimum, filters }) =>
     Effect.tryPromise(async (signal) => {
       const path = mailboxApiPaths[folder];
+      const params = new URLSearchParams();
+      if (supportsMailFilters(folder) && mailFilterCount(filters))
+        params.set("filters", JSON.stringify(filters));
       let nextCursor = cursor;
       let page: typeof MailPage.Type | null = null;
       do {
-        const query =
-          nextCursor === null
-            ? ""
-            : "?" + new URLSearchParams({ cursor: nextCursor });
-        const response = await fetch(path + query, {
+        if (nextCursor !== null) params.set("cursor", nextCursor);
+        const response = await fetch(params.size ? path + "?" + params : path, {
           cache: "no-store",
           signal,
         });
@@ -871,6 +895,7 @@ const loadList = (
         request,
         cursor,
         folder: model.folder,
+        filters: model.filters.selection,
         minimum:
           cursor === null && model.folder !== "sent"
             ? (model.list?.messages.length ?? 0)
@@ -1203,6 +1228,19 @@ const foldMessageMenu = Update.foldChild({
 
 export const update = (model: Model, message: Message): Result =>
   Message.match<Result>(message, {
+    GotFiltersMessage: ({ message }) => {
+      const result = foldFilters(model, message);
+      if (model.filters.selection === result.model.filters.selection)
+        return result;
+      const restarted = loadList(
+        { ...result.model, list: null, listRequest: null },
+        null,
+      );
+      return {
+        model: restarted.model,
+        commands: [...(result.commands ?? []), ...(restarted.commands ?? [])],
+      };
+    },
     GotFolderSheetMessage: ({ message }) =>
       message._tag === "RequestedOpen" &&
       !matchMedia(workspaceDrawerMedia).matches
@@ -1218,6 +1256,7 @@ export const update = (model: Model, message: Message): Result =>
           : {
               ...initial,
               folder,
+              filters: Filters.resetMenu(model.filters),
               folderSheet: model.folderSheet,
               compose: model.compose,
               recovery: model.recovery,
@@ -1236,6 +1275,7 @@ export const update = (model: Model, message: Message): Result =>
           : {
               ...base,
               selected: id,
+              filters: Filters.resetMenu(base.filters),
               conversationMenu: initial.conversationMenu,
               messageMenu: initial.messageMenu,
               middleRevealed: false,
@@ -2131,6 +2171,23 @@ const listFailure = (message: string, h: HtmlBuilder<Message>) =>
     ],
   );
 
+const filteredEmpty = (h: HtmlBuilder<Message>) =>
+  h.div(
+    [h.Class("inbox-status")],
+    [
+      h.p([h.Role("status")], ["No conversations match your filters."]),
+      button(
+        {
+          size: "sm",
+          variant: "outline",
+          onClick: toFiltersMessage(Filters.Message.Cleared()),
+          children: ["Clear filters"],
+        },
+        h,
+      ),
+    ],
+  );
+
 const listView = (model: Model, h: HtmlBuilder<Message>) => {
   const now = Date.now();
   const { list, listRequest, listError, folder, selected } = model;
@@ -2166,18 +2223,21 @@ const listView = (model: Model, h: HtmlBuilder<Message>) => {
                 list.cursor === null &&
                 !list.indexing &&
                 listRequest === null
-                  ? h.p(
-                      [h.Class("inbox-status")],
-                      [
-                        folder === "trash"
-                          ? "Trash is empty."
-                          : folder === "archive"
-                            ? "No archived conversations."
-                            : isInboxView(folder)
-                              ? `No ${folder === "noise" ? "noise" : "signal"} conversations.`
-                              : "No messages yet.",
-                      ],
-                    )
+                  ? supportsMailFilters(folder) &&
+                    mailFilterCount(model.filters.selection)
+                    ? filteredEmpty(h)
+                    : h.p(
+                        [h.Class("inbox-status")],
+                        [
+                          folder === "trash"
+                            ? "Trash is empty."
+                            : folder === "archive"
+                              ? "No archived conversations."
+                              : isInboxView(folder)
+                                ? `No ${folder === "noise" ? "noise" : "signal"} conversations.`
+                                : "No messages yet.",
+                        ],
+                      )
                   : itemGroup(
                       list.messages.map((message) =>
                         messageItem(model, message, now, h),
@@ -2963,6 +3023,21 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
                   ? [spinner("Refreshing messages…", h)]
                   : [],
               ),
+              ...(supportsMailFilters(model.folder)
+                ? [
+                    h.div(
+                      [h.Class("inbox-filter-control")],
+                      [
+                        h.submodel({
+                          slotId: "inbox-filters",
+                          model: model.filters,
+                          view: Filters.view,
+                          toParentMessage: toFiltersMessage,
+                        }),
+                      ],
+                    ),
+                  ]
+                : []),
             ]),
         h.div(
           [h.Class("workspace-drawer-trigger")],

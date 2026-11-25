@@ -117,15 +117,21 @@ const describe = async (db: PeopleDb, row: PersonRow, managed: string[]) => {
   );
 };
 
-export const listPeople = async (db: PeopleDb, managed: string[]) => {
+export const listPeople = async (
+  db: PeopleDb,
+  managed: string[],
+  ids?: readonly string[],
+) => {
   await ensureSelf(db);
   const { results } = await db
     .prepare(
       `SELECT ${fields},
          json_group_array(a.email ORDER BY a.email) FILTER (WHERE a.email IS NOT NULL) AS emails
        FROM people p LEFT JOIN person_addresses a ON a.person_id = p.id
+       ${ids ? "WHERE p.id IN (SELECT value FROM json_each(?))" : ""}
        GROUP BY p.id`,
     )
+    .bind(...(ids ? [JSON.stringify(ids)] : []))
     .all<PersonRow & { emails: string }>();
   return results.map((row) =>
     withAddresses(row, JSON.parse(row.emails), managed),

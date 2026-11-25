@@ -37,6 +37,7 @@ import {
   InboxUnread,
   inboxUnreadPath,
   InlineReply,
+  MailFilters,
   type MailFolder,
   MailMessageId,
   noiseApiPath,
@@ -363,13 +364,19 @@ export const recoverIncomingMail = (env: InboxEnv) =>
     true,
   );
 
-export const syncMailIndex = async (env: InboxEnv, reconcile = false) => {
+export const syncMailIndex = async (
+  env: InboxEnv,
+  reconcile = false,
+  requirePeople = false,
+) => {
   const inbox = await scanMail(
     env.DB,
     "inbox",
     env.INBOX_MESSAGES,
     (object) => describeStoredInbox(env.INBOX_MESSAGES, object),
     reconcile,
+    false,
+    requirePeople,
   );
   const sent = await scanMail(
     env.DB,
@@ -572,9 +579,16 @@ const inboxErrors = {
 };
 
 const notFound = () => jsonError(404, "Message not found");
+const listCursor = Schema.optional(
+  Schema.String.check(Schema.isMaxLength(4096)),
+);
 const listQuery = HttpServerRequest.schemaSearchParams(
+  Schema.Struct({ cursor: listCursor }),
+);
+const conversationListQuery = HttpServerRequest.schemaSearchParams(
   Schema.Struct({
-    cursor: Schema.optional(Schema.String.check(Schema.isMaxLength(4096))),
+    cursor: listCursor,
+    filters: Schema.optional(Schema.fromJsonString(MailFilters)),
   }),
 );
 
@@ -1245,15 +1259,26 @@ export const inboxRoutes = (
     Effect.gen(function* () {
       if (!(yield* requireInboxOwner))
         return yield* jsonError(403, "Access denied");
-      const query = yield* listQuery.pipe(Effect.option);
-      const cursor =
-        query._tag === "Some"
-          ? conversationCursor(query.value.cursor, view)
-          : null;
+      const query = yield* conversationListQuery.pipe(Effect.option);
+      if (query._tag === "None")
+        return yield* jsonError(400, "Invalid conversation list parameters");
+      const cursor = conversationCursor(query.value.cursor, view);
       if (!cursor) return yield* jsonError(400, "Invalid page cursor");
-      const indexing = yield* Effect.tryPromise(() => syncMailIndex(env));
+      const { filters } = query.value;
+      const requirePeople = Boolean(
+        filters?.people.length || filters?.companies.length,
+      );
+      const indexing = yield* Effect.tryPromise(() =>
+        syncMailIndex(env, false, requirePeople),
+      );
       const page = yield* Effect.tryPromise(async () => {
-        const page = await listConversations(env.DB, cursor, view);
+        const page = await listConversations(
+          env.DB,
+          cursor,
+          view,
+          filters,
+          env.mailboxAddresses,
+        );
         const [matches, messages] = await Promise.all([
           profilesFor(
             env,

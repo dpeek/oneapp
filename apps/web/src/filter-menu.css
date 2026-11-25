@@ -1,0 +1,121 @@
+.filter-menu-trigger {
+  display: inline-flex;
+  position: relative;
+}
+
+.filter-menu-trigger [data-slot="badge"] {
+  position: absolute;
+  inset-block-start: -0.5rem;
+  inset-inline-start: 0.625rem;
+  pointer-events: none;
+}
+
+.filter-menu-popover {
+  box-sizing: border-box;
+  padding: 0.25rem;
+  font-size: 0.875rem;
+  /* Foldkit anchors scrollable panels by default. The submenu extends past this panel. */
+  overflow: visible !important;
+}
+
+.filter-menu-categories {
+  display: grid;
+  inline-size: 9.5rem;
+}
+
+.filter-menu-item {
+  position: relative;
+}
+
+.filter-menu-options {
+  position: absolute;
+  z-index: 1;
+  inset-block-start: 0;
+  inset-inline-start: calc(100% + 0.25rem);
+  box-sizing: border-box;
+  inline-size: 14rem;
+  padding: 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: var(--popover);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 15%);
+}
+
+.filter-menu-menuitem,
+.filter-menu-choice {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-block-size: 2rem;
+  padding: 0.25rem 0.5rem;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: var(--control-radius);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.filter-menu-menuitem {
+  inline-size: 100%;
+  justify-content: space-between;
+}
+
+.filter-menu-menuitem svg {
+  color: var(--muted);
+}
+
+.filter-menu-menuitem:hover,
+.filter-menu-choice:hover {
+  background: var(--hover);
+}
+
+.filter-menu-menuitem[aria-expanded="true"] {
+  background: var(--selected);
+}
+
+.filter-menu-menuitem:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.filter-menu-choice input {
+  inline-size: 1rem;
+  block-size: 1rem;
+  margin: 0;
+  accent-color: var(--primary);
+}
+
+.filter-menu-popover-end .filter-menu-options {
+  inset-inline-start: auto;
+  inset-inline-end: calc(100% + 0.25rem);
+}
+
+.filter-menu-popover-end .filter-menu-menuitem svg {
+  transform: scaleX(-1);
+}
+
+@media (max-width: 36rem) {
+  .filter-menu-popover {
+    overflow-y: auto !important;
+  }
+
+  .filter-menu-categories {
+    inline-size: auto;
+    min-inline-size: 9.5rem;
+  }
+
+  .filter-menu-options {
+    position: static;
+    max-inline-size: calc(100vw - 2rem);
+    margin-block: 0.25rem;
+    box-shadow: none;
+  }
+
+  .filter-menu-menuitem svg,
+  .filter-menu-popover-end .filter-menu-menuitem svg {
+    transform: rotate(90deg);
+  }
+}

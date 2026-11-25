@@ -20,6 +20,9 @@ using OneApp tokens and the installed Foldkit Dialog primitive.
 `src/alert.ts` adapts the StyleX Alert layout and announcement options from
 the same CreaseUI revision using OneApp tokens and a persistent message region.
 
+`src/checkbox.ts` adapts the StyleX Checkbox from the same CreaseUI revision
+using OneApp tokens and the installed Foldkit Checkbox primitive.
+
 MIT License
 
 Copyright (c) 2026 Potti1234

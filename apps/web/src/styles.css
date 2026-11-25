@@ -2037,36 +2037,6 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
   gap: 0.75rem;
 }
 
-.calendar-field {
-  display: grid;
-  gap: 0.375rem;
-  min-width: 0;
-}
-
-.calendar-field :is(input, textarea) {
-  box-sizing: border-box;
-  width: 100%;
-  min-width: 0;
-  min-height: 2.5rem;
-  padding: 0.5rem;
-  border: 1px solid var(--border);
-  border-radius: 0.375rem;
-  background: var(--canvas);
-  color: var(--text);
-  font: inherit;
-}
-
-.calendar-field textarea {
-  min-height: 5rem;
-  resize: vertical;
-}
-
-.calendar-checkbox {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
 .calendar-muted,
 .calendar-event-time {
   color: var(--muted);

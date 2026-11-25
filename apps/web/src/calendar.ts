@@ -3,11 +3,14 @@ import {
   button,
   calendarIconPaths,
   CalendarPicker,
+  checkbox,
   ColorPicker,
   Dialog,
   dialog,
   DropdownMenu,
   ellipsisIcon,
+  field,
+  input,
   nativeSelect,
   outlineIcon,
   plusIcon,
@@ -15,6 +18,7 @@ import {
   Sheet,
   sidebarClassNames,
   sidebarItemClassName,
+  textarea,
   toggleGroup,
   toolbar,
 } from "@oneapp/ui";
@@ -212,8 +216,8 @@ export const Message = defineMessageUnion({
     ]),
     value: Schema.String,
   },
-  ToggledAllDay: {},
-  ToggledReminder: {},
+  ToggledAllDay: { checked: Schema.Boolean },
+  ToggledReminder: { checked: Schema.Boolean },
   SavedEvent: {},
   ClosedEventEditor: {},
   RequestedDelete: {},
@@ -934,11 +938,11 @@ export const update = (
           },
         };
       },
-      ToggledAllDay: () => {
+      ToggledAllDay: ({ checked: allDay }) => {
         const editor = model.editor;
-        if (!editor || busy(model)) return { model };
+        if (!editor || busy(model) || editor.draft.allDay === allDay)
+          return { model };
         const draft = editor.draft;
-        const allDay = !draft.allDay;
         const start = draft.start.slice(0, 10);
         const end = draft.end.slice(0, 10);
         return {
@@ -958,7 +962,7 @@ export const update = (
           },
         };
       },
-      ToggledReminder: () => {
+      ToggledReminder: ({ checked }) => {
         const editor = model.editor;
         if (!editor || busy(model)) return { model };
         return {
@@ -966,7 +970,7 @@ export const update = (
             ...model,
             editor: {
               ...editor,
-              draft: { ...editor.draft, reminder: !editor.draft.reminder },
+              draft: { ...editor.draft, reminder: checked },
             },
           },
         };
@@ -1253,11 +1257,10 @@ const calendarEditorView = (model: Model, h: H) => {
         h.form(
           [h.OnSubmit(Message.SavedCalendar())],
           [
-            h.label(
-              [h.Class("calendar-field")],
-              [
-                h.span([], ["Calendar name"]),
-                h.input([
+            field(
+              "Calendar name",
+              input(
+                [
                   h.Type("text"),
                   h.Value(editor.name),
                   h.Required(true),
@@ -1265,8 +1268,10 @@ const calendarEditorView = (model: Model, h: H) => {
                   h.Disabled(disabled),
                   h.Autofocus(true),
                   h.OnInput((name) => Message.ChangedName({ name })),
-                ]),
-              ],
+                ],
+                h,
+              ),
+              h,
             ),
             h.div(
               [h.Class("calendar-colour-field")],
@@ -1361,40 +1366,41 @@ const eventEditorContent = (
     },
     h,
   );
-  const textInput = (
+  const draftInput = (
     label: string,
-    field: "title" | "location" | "start" | "end",
-    type: string,
-    required = true,
+    key: "title" | "location" | "start" | "end",
+    type: "text" | "date" | "datetime-local",
   ) =>
-    h.label(
-      [h.Class("calendar-field")],
-      [
-        h.span([], [label]),
-        h.input([
+    field(
+      label,
+      input(
+        [
           h.Type(type),
-          h.Value(draft[field]),
-          h.Required(required),
+          h.Value(draft[key]),
+          h.Required(key !== "location"),
           h.Disabled(disabled),
-          ...(field === "title"
-            ? initialFocus
-              ? [h.Id(creationTitleId), ...initialFocus]
-              : [h.Autofocus(true)]
+          h.OnInput((value) => Message.ChangedText({ field: key, value })),
+          ...(key === "title"
+            ? [
+                h.Maxlength(250),
+                ...(initialFocus
+                  ? [h.Id(creationTitleId), ...initialFocus]
+                  : [h.Autofocus(true)]),
+              ]
             : []),
-          h.OnInput((value) => Message.ChangedText({ field, value })),
-          ...(type === "datetime-local" ? [h.Attribute("step", "1")] : []),
-          ...(field === "title" || field === "location"
-            ? [h.Maxlength(field === "title" ? 250 : 500)]
-            : []),
-        ]),
-      ],
+          ...(key === "location" ? [h.Maxlength(500)] : []),
+          ...(type === "datetime-local" ? [h.Step("1")] : []),
+        ],
+        h,
+      ),
+      h,
     );
   return [
     ...(model.error ? [h.p([h.Role("alert")], [model.error])] : []),
     h.form(
       [h.OnSubmit(Message.SavedEvent())],
       [
-        textInput("Title", "title", "text"),
+        draftInput("Title", "title", "text"),
         nativeSelect(
           {
             label: "Calendar",
@@ -1405,22 +1411,20 @@ const eventEditorContent = (
           },
           h,
         ),
-        h.label(
-          [h.Class("calendar-checkbox")],
-          [
-            h.input([
-              h.Type("checkbox"),
-              h.Checked(draft.allDay),
-              h.Disabled(disabled),
-              h.OnChange(() => Message.ToggledAllDay()),
-            ]),
-            "All day",
-          ],
+        checkbox(
+          {
+            id: "calendar-event-all-day",
+            label: "All day",
+            checked: draft.allDay,
+            disabled,
+            onToggle: (checked) => Message.ToggledAllDay({ checked }),
+          },
+          h,
         ),
         h.div(
           [h.Class("calendar-form-dates")],
           [
-            textInput(
+            draftInput(
               draft.allDay
                 ? "First day"
                 : editor.scope === "series"
@@ -1429,7 +1433,7 @@ const eventEditorContent = (
               "start",
               draft.allDay ? "date" : "datetime-local",
             ),
-            textInput(
+            draftInput(
               draft.allDay ? "Last day" : "Ends",
               "end",
               draft.allDay ? "date" : "datetime-local",
@@ -1457,11 +1461,10 @@ const eventEditorContent = (
               ),
               ...(editor.repeat
                 ? [
-                    h.label(
-                      [h.Class("calendar-field")],
-                      [
-                        h.span([], ["Repeat until (optional)"]),
-                        h.input([
+                    field(
+                      "Repeat until (optional)",
+                      input(
+                        [
                           h.Type("date"),
                           h.Value(editor.repeat.until ?? ""),
                           h.Disabled(disabled),
@@ -1469,41 +1472,42 @@ const eventEditorContent = (
                           h.OnInput((until) =>
                             Message.ChangedRepeatEnd({ until }),
                           ),
-                        ]),
-                      ],
+                        ],
+                        h,
+                      ),
+                      h,
                     ),
                   ]
                 : []),
             ]),
-        textInput("Location", "location", "text", false),
-        h.label(
-          [h.Class("calendar-field")],
-          [
-            h.span([], ["Notes"]),
-            h.textarea([
+        draftInput("Location", "location", "text"),
+        field(
+          "Notes",
+          textarea(
+            [
               h.Value(draft.description),
               h.Maxlength(8000),
               h.Disabled(disabled),
               h.OnInput((value) =>
                 Message.ChangedText({ field: "description", value }),
               ),
-            ]),
-          ],
+            ],
+            h,
+          ),
+          h,
         ),
         ...(draft.allDay || editor.repeat || editor.scope === "occurrence"
           ? []
           : [
-              h.label(
-                [h.Class("calendar-checkbox")],
-                [
-                  h.input([
-                    h.Type("checkbox"),
-                    h.Checked(draft.reminder),
-                    h.Disabled(disabled),
-                    h.OnChange(() => Message.ToggledReminder()),
-                  ]),
-                  `Remind me ${calendarReminderMinutes} minutes before`,
-                ],
+              checkbox(
+                {
+                  id: "calendar-event-reminder",
+                  label: `Remind me ${calendarReminderMinutes} minutes before`,
+                  checked: draft.reminder,
+                  disabled,
+                  onToggle: (checked) => Message.ToggledReminder({ checked }),
+                },
+                h,
               ),
               ...(!model.week?.remindersAvailable
                 ? [
@@ -1742,24 +1746,20 @@ const importView = (id: string, model: Model, h: H) => {
           : h.form(
               [h.OnSubmit(Message.PreviewedFile())],
               [
-                h.label(
-                  [h.Class("calendar-field")],
-                  [
-                    h.span(
-                      [],
-                      [
-                        `Calendar file (.ics, up to ${calendarImportLimitLabel})`,
-                      ],
-                    ),
-                    h.input([
+                field(
+                  `Calendar file (.ics, up to ${calendarImportLimitLabel})`,
+                  input(
+                    [
                       h.Type("file"),
                       h.Id(fileInput),
                       h.Required(true),
                       h.Accept(".ics,text/calendar"),
                       h.Disabled(disabled),
                       h.Autofocus(true),
-                    ]),
-                  ],
+                    ],
+                    h,
+                  ),
+                  h,
                 ),
                 h.div(
                   [h.Class("calendar-actions")],

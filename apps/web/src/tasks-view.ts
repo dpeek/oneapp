@@ -15,6 +15,7 @@ import {
   skeleton,
   taskIconPaths,
   textarea,
+  timestamp,
   Tokenizer,
   visuallyHiddenStatus,
 } from "@oneapp/ui";
@@ -84,7 +85,7 @@ const viewLabels = { active: "Active", completed: "Completed" };
 const priorityOptions = Object.entries(priorityLabels).map(
   ([value, label]) => ({ value, label }),
 );
-const timestamp = new Intl.DateTimeFormat(undefined, {
+const taskDateTimeFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeStyle: "short",
 });
@@ -112,13 +113,14 @@ const sortedTasks = (tasks: readonly Task[], model: Model) =>
 const taskTimestamp = (value: number, h: HtmlBuilder<Message>) =>
   h.time(
     [h.Datetime(new Date(value).toISOString())],
-    [timestamp.format(value)],
+    [taskDateTimeFormat.format(value)],
   );
 
 const taskRow = (
   task: Task,
   tags: ReadonlyMap<string, Tag>,
   view: TaskView,
+  now: number,
   h: HtmlBuilder<Message>,
 ) =>
   h.tr(
@@ -167,7 +169,7 @@ const taskRow = (
         ],
         [priorityLabels[task.priority ?? ""]],
       ),
-      h.td([h.Class("task-updated")], [taskTimestamp(task.updatedAt, h)]),
+      h.td([], [timestamp(task.updatedAt, now, h)]),
     ],
   );
 
@@ -327,14 +329,15 @@ const taskList = (
             ? "No active tasks"
             : "No tasks yet";
   let results: Html = h.empty;
-  if (tasks.length)
+  if (tasks.length) {
+    const now = Date.now();
     results = taskTable(
       view,
-      tasks.map((task) => taskRow(task, tagMap, view, h)),
+      tasks.map((task) => taskRow(task, tagMap, view, now, h)),
       false,
       h,
     );
-  else if (loading) results = taskTable(view, taskPlaceholders(h), true, h);
+  } else if (loading) results = taskTable(view, taskPlaceholders(h), true, h);
   else if (emptyTitle) {
     const action = viewTasks.length
       ? button(

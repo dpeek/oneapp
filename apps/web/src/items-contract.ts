@@ -6,6 +6,7 @@ export const ItemTagIds = Schema.Array(ItemId).check(
   Schema.isMaxLength(itemTagLimit),
 );
 export const tagsApi = "/api/tags";
+export const tagApi = (id: string) => `${tagsApi}/${id}` as const;
 export const tagNameLimit = 48;
 export const TagName = Schema.NonEmptyString.check(
   Schema.isTrimmed(),

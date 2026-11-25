@@ -80,6 +80,7 @@ import {
   settingsSectionLabel,
   settingsSectionPath,
 } from "./settings-navigation.ts";
+import * as TagSettings from "./tag-settings.ts";
 import * as Files from "./files.ts";
 import { filePath, FileRoute, fileRouteFor } from "./files-contract.ts";
 import { view as filesView } from "./files-view.ts";
@@ -115,6 +116,7 @@ const Model = Schema.Struct({
   accountSettings: AccountSettings.Model,
   settingsSection: Schema.NullOr(SettingsSection),
   settingsSheet: Sheet.Model,
+  tagSettings: TagSettings.Model,
   pushSettings: PushSettings.Model,
   vaultSetup: VaultSetup.Model,
   inbox: Inbox.Model,
@@ -173,6 +175,7 @@ const Message = defineMessageUnion({
   GotLinksMessage: { message: Links.Message },
   GotNotificationMessage: { message: Notifications.Message },
   GotConnectedClientsMessage: { message: ConnectedClients.Message },
+  GotTagSettingsMessage: { message: TagSettings.Message },
   GotCliLoginMessage: { message: CliLogin.Message },
   GotExtensionAccessMessage: { message: ExtensionAccess.Message },
   RequestFailed: { error: Schema.String },
@@ -296,6 +299,24 @@ const foldConnectedClients = (
         out._tag === "SessionExpired"
           ? update(model, Message.LoadedAccount({ account: null }))
           : applyNotification(model, out),
+  })(parent, message);
+const toTagSettingsMessage = (message: typeof TagSettings.Message.Type) =>
+  Message.GotTagSettingsMessage({ message });
+const foldTagSettings = (
+  parent: Model,
+  message: typeof TagSettings.Message.Type,
+) =>
+  Update.foldChild({
+    update: (
+      model: typeof TagSettings.Model.Type,
+      message: typeof TagSettings.Message.Type,
+    ) => TagSettings.update(model, message, parent.settingsSection === "tags"),
+    read: (model: Model) =>
+      model.account ? Option.some(model.tagSettings) : Option.none(),
+    write: (model, tagSettings) => ({ ...model, tagSettings }),
+    toParentMessage: toTagSettingsMessage,
+    foldOutMessage: () => (model) =>
+      update(model, Message.LoadedAccount({ account: null })),
   })(parent, message);
 const toCliLoginMessage = (message: typeof CliLogin.Message.Type) =>
   Message.GotCliLoginMessage({ message });
@@ -864,6 +885,8 @@ const loadPage = (
       return foldPushSettings(model, PushSettings.Message.Requested());
     case "clients":
       return foldConnectedClients(model, ConnectedClients.Message.Requested());
+    case "tags":
+      return foldTagSettings(model, TagSettings.Message.Requested());
     case null:
       return { model };
   }
@@ -880,6 +903,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     accountSettings: AccountSettings.initial,
     settingsSection: settingsSectionFor(url),
     settingsSheet: Sheet.init({ id: settingsSheetId }),
+    tagSettings: TagSettings.initial,
     pushSettings: PushSettings.initial,
     vaultSetup: VaultSetup.initial,
     inbox: Inbox.initial,
@@ -1050,6 +1074,7 @@ const update = (
         accountSettings: AccountSettings.initial,
         settingsSection: model.settingsSection,
         settingsSheet: Sheet.init({ id: settingsSheetId }),
+        tagSettings: TagSettings.initial,
         pushSettings: PushSettings.initial,
         vaultSetup: VaultSetup.initial,
         inbox: Inbox.initial,
@@ -1607,6 +1632,7 @@ const update = (
     },
     GotConnectedClientsMessage: ({ message }) =>
       foldConnectedClients(model, message),
+    GotTagSettingsMessage: ({ message }) => foldTagSettings(model, message),
     GotCliLoginMessage: ({ message }) => foldCliLogin(model, message),
     GotExtensionAccessMessage: ({ message }) =>
       foldExtensionAccess(model, message),
@@ -1706,6 +1732,14 @@ const settingsView = (model: Model, h: HtmlBuilder<Message>) => {
         view: ConnectedClients.view,
         model: model.connectedClients,
         toParentMessage: toConnectedClientsMessage,
+      }),
+    ],
+    tags: () => [
+      h.submodel({
+        slotId: "tag-settings",
+        view: TagSettings.view,
+        model: model.tagSettings,
+        toParentMessage: toTagSettingsMessage,
       }),
     ],
   }[section]();

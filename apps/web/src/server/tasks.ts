@@ -1,7 +1,7 @@
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import { ByteSize, Clock, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
-import { ItemId, TagCreate, tagsApi } from "../items-contract.ts";
+import { ItemId, Tag, tagApi, TagCreate, tagsApi } from "../items-contract.ts";
 import { fileNameHeader } from "../files-contract.ts";
 import {
   TaskAttachmentMediaType,
@@ -13,7 +13,7 @@ import {
 import { TaskCreate, tasksApi, TaskUpdate } from "../tasks-contract.ts";
 import { jsonError, privateHeaders, readFileName } from "./api-response.ts";
 import { AppAuth, ownerId, type authHttp } from "./auth.ts";
-import { createTag } from "./items-store.ts";
+import { createTag, removeTag, renameTag, tagCatalog } from "./items-store.ts";
 import { createTask, getTask, taskIndex, updateTask } from "./tasks-store.ts";
 import { detectFilePreviewType } from "./file-preview-type.ts";
 import {
@@ -55,6 +55,7 @@ export const tasksRoutes = (
     });
   const handle = <E, R>(
     handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
+    unavailable = "Tasks are unavailable. Try again.",
   ) =>
     handler.pipe(
       Effect.catch((error) => {
@@ -65,10 +66,12 @@ export const tasksRoutes = (
         if (tag === "AuthenticationRequired")
           return jsonError(401, "Sign in required");
         if (tag === "HookDenied") return jsonError(403, "Request not allowed");
-        return jsonError(503, "Tasks are unavailable. Try again.");
+        return jsonError(503, unavailable);
       }),
     );
   const attachmentsPath = taskAttachmentsApi(":taskId");
+  const tagPath = tagApi(":id");
+  const tagsUnavailable = "Tags are unavailable. Try again.";
   const attachmentPath = taskAttachmentApi(":taskId", ":attachmentId");
   const attachmentRoute = <E, R>(
     method: "GET" | "POST" | "DELETE",
@@ -256,6 +259,18 @@ export const tasksRoutes = (
       ),
     ),
     HttpRouter.add(
+      "GET",
+      tagsApi,
+      handle(
+        authenticated((account) =>
+          Effect.tryPromise(() => tagCatalog(db, account).all<Tag>()).pipe(
+            Effect.flatMap(({ results }) => json(results)),
+          ),
+        ),
+        tagsUnavailable,
+      ),
+    ),
+    HttpRouter.add(
       "POST",
       tagsApi,
       handle(
@@ -274,6 +289,59 @@ export const tasksRoutes = (
             }),
           ),
         ),
+        tagsUnavailable,
+      ),
+    ),
+    HttpRouter.add(
+      "PUT",
+      tagPath,
+      handle(
+        http.protect(
+          authenticated((account) =>
+            Effect.gen(function* () {
+              const { id } = yield* HttpRouter.params;
+              if (!isId(id)) return yield* jsonError(404, "Tag not found.");
+              const input = yield* readInput(TagCreate);
+              if (input._tag === "None")
+                return yield* jsonError(400, "Enter a tag name.");
+              const tag = yield* Effect.tryPromise(() =>
+                renameTag(db, account, id, input.value.name),
+              );
+              if (tag === "invalid")
+                return yield* jsonError(400, "Enter a tag name.");
+              if (tag === "conflict")
+                return yield* jsonError(
+                  409,
+                  "A tag with this name already exists.",
+                );
+              return yield* tag ? json(tag) : jsonError(404, "Tag not found.");
+            }),
+          ),
+        ),
+        tagsUnavailable,
+      ),
+    ),
+    HttpRouter.add(
+      "DELETE",
+      tagPath,
+      handle(
+        http.protect(
+          authenticated((account) =>
+            Effect.gen(function* () {
+              const { id } = yield* HttpRouter.params;
+              if (!isId(id)) return yield* jsonError(404, "Tag not found.");
+              const removed = yield* Effect.tryPromise(() =>
+                removeTag(db, account, id),
+              );
+              if (!removed) return yield* jsonError(404, "Tag not found.");
+              return HttpServerResponse.empty({
+                status: 204,
+                headers: privateHeaders,
+              });
+            }),
+          ),
+        ),
+        tagsUnavailable,
       ),
     ),
   );

@@ -34,7 +34,7 @@ import {
   filesApi,
   StoredFile,
 } from "../files-contract.ts";
-import { Tag, tagsApi } from "../items-contract.ts";
+import { Tag, tagApi, tagsApi } from "../items-contract.ts";
 import {
   TaskAttachment,
   taskAttachmentApi,
@@ -313,6 +313,109 @@ const setup = async (
     },
   };
 };
+
+it("renames shared tags and cascades deletion through tasks and files", async () => {
+  using sqlite = new Database(":memory:");
+  const { env, call, request, signIn, cookies } = await setup(sqlite, {
+    FILE_UPLOADS: {
+      put: async (_key: string, bytes: ArrayBuffer) => ({
+        size: bytes.byteLength,
+      }),
+    } as unknown as WorkerEnv["FILE_UPLOADS"],
+  });
+  const cookie = cookies(await signIn(password));
+  const headers = { cookie, origin: env.APP_ORIGIN, "x-effect-auth-csrf": "1" };
+  const write = (path: string, method: "PUT" | "DELETE", body?: unknown) =>
+    request(path, {
+      method,
+      headers: { ...headers, "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  const createTag = async (name: string) =>
+    Schema.decodeUnknownSync(Tag)(
+      await (await call(tagsApi, { name }, cookie)).json(),
+    );
+  const list = async () => (await call(tagsApi, undefined, cookie)).json();
+  expect((await request(tagsApi, {})).status).toBe(401);
+  expect(await list()).toEqual([]);
+  const receipts = await createTag("Receipts");
+  const review = await createTag("Review");
+  expect(await list()).toEqual([receipts, review]);
+
+  const tagIds = [receipts.id, review.id].sort();
+  const taskId = crypto.randomUUID();
+  expect(
+    (
+      await call(
+        tasksApi,
+        { id: taskId, title: "Review receipts", tagIds },
+        cookie,
+      )
+    ).status,
+  ).toBe(201);
+  const upload = await request(filesApi, {
+    method: "POST",
+    headers: {
+      ...headers,
+      [fileNameHeader]: "receipts.txt",
+      "content-type": "text/plain",
+    },
+    body: new TextEncoder().encode("Receipts"),
+  });
+  expect(upload.status).toBe(201);
+  const uploaded = Schema.decodeUnknownSync(StoredFile)(await upload.json());
+  const filePath = fileApi(uploaded.id);
+  expect(
+    (await write(filePath, "PUT", { revision: uploaded.revision, tagIds }))
+      .status,
+  ).toBe(200);
+
+  const receiptPath = tagApi(receipts.id);
+  expect(
+    (await write(receiptPath, "PUT", { name: "Ｒｅｖｉｅｗ" })).status,
+  ).toBe(409);
+  expect(
+    (
+      await request(receiptPath, {
+        method: "DELETE",
+        headers: { cookie, origin: env.APP_ORIGIN },
+      })
+    ).status,
+  ).toBe(403);
+  const updated = await write(receiptPath, "PUT", { name: "Expenses" });
+  expect(updated.status).toBe(200);
+  expect(await updated.json()).toEqual({ ...receipts, name: "Expenses" });
+  expect(await list()).toEqual([{ ...receipts, name: "Expenses" }, review]);
+  const file = async () =>
+    (await request(filePath, { headers: { cookie } })).json();
+  const tasks = async () => (await call(tasksApi, undefined, cookie)).json();
+  expect(await tasks()).toMatchObject({ tasks: [{ id: taskId, tagIds }] });
+  expect(await file()).toMatchObject({ id: uploaded.id, tagIds });
+
+  sqlite
+    .query(
+      "INSERT INTO accounts (id, active, security_revision) VALUES ('other', 1, ?)",
+    )
+    .run(crypto.randomUUID());
+  const foreignTagId = crypto.randomUUID();
+  sqlite
+    .query(
+      "INSERT INTO tags (account_id, id, name, name_key) VALUES ('other', ?, 'Foreign', 'foreign')",
+    )
+    .run(foreignTagId);
+  expect(
+    (await write(tagApi(foreignTagId), "PUT", { name: "Renamed" })).status,
+  ).toBe(404);
+  expect((await write(tagApi(foreignTagId), "DELETE")).status).toBe(404);
+
+  expect((await write(receiptPath, "DELETE")).status).toBe(204);
+  expect((await write(receiptPath, "DELETE")).status).toBe(404);
+  expect(await list()).toEqual([review]);
+  expect(await tasks()).toMatchObject({
+    tasks: [{ id: taskId, tagIds: [review.id] }],
+  });
+  expect(await file()).toMatchObject({ id: uploaded.id, tagIds: [review.id] });
+});
 
 it("requires session ownership for uploaded file metadata, previews and downloads", async () => {
   using sqlite = new Database(":memory:");

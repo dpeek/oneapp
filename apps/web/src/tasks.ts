@@ -800,12 +800,28 @@ export const update = (
         const next = { ...model, index, request: null };
         const task = selectedTask(next);
         const previous = selectedTask(model);
+        const availableTags = new Set(index.tags.map(({ id }) => id));
+        const editor = model.editor;
         return {
           model: {
             ...next,
+            filters: {
+              ...model.filters,
+              tagIds: model.filters.tagIds.filter((id) =>
+                availableTags.has(id),
+              ),
+            },
             editor:
-              previous && model.editor && hasEdits(model.editor.draft, previous)
-                ? model.editor
+              previous && editor && hasEdits(editor.draft, previous)
+                ? {
+                    ...editor,
+                    draft: {
+                      ...editor.draft,
+                      tagIds: editor.draft.tagIds.filter((id) =>
+                        availableTags.has(id),
+                      ),
+                    },
+                  }
                 : task && makeEditor(toDraft(task)),
           },
         };

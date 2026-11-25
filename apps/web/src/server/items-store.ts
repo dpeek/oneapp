@@ -89,3 +89,33 @@ export const createTag = async (
   ]);
   return tag!.results[0]!;
 };
+
+export const renameTag = async (
+  db: D1Database,
+  account: string,
+  id: string,
+  input: string,
+) => {
+  const name = normalizeTagName(input);
+  if (!Schema.is(TagName)(name)) return "invalid";
+  const [updated, existing] = await db.batch<Tag>([
+    db
+      .prepare(
+        `UPDATE tags SET name = ?3, name_key = ?4
+         WHERE account_id = ?1 AND id = ?2
+           AND NOT EXISTS (
+             SELECT 1 FROM tags WHERE account_id = ?1 AND name_key = ?4 AND id <> ?2
+           )
+         RETURNING id, name`,
+      )
+      .bind(account, id, name, tagNameKey(name)),
+    db.prepare(`${tagProjection} AND id = ?2`).bind(account, id),
+  ]);
+  return updated!.results[0] ?? (existing!.results.length ? "conflict" : null);
+};
+
+export const removeTag = (db: D1Database, account: string, id: string) =>
+  db
+    .prepare("DELETE FROM tags WHERE account_id = ? AND id = ? RETURNING id")
+    .bind(account, id)
+    .first<{ id: string }>();

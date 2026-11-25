@@ -1839,6 +1839,20 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
   justify-self: start;
 }
 
+.settings-tag-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.5rem;
+}
+
+.settings-tag-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.25rem;
+}
+
 .settings-client-icon {
   display: grid;
   place-items: center;

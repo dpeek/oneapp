@@ -8,6 +8,7 @@ export const SettingsSection = Schema.Literals([
   "account",
   "notifications",
   "clients",
+  "tags",
 ]);
 type SettingsSection = typeof SettingsSection.Type;
 
@@ -32,6 +33,14 @@ const destinations = {
     href: `${settingsPath}/clients`,
     label: "Clients",
     paths: ["M16 14H3V4h15v5M6 18h7", "M16 9h5v11h-5z"],
+  },
+  tags: {
+    href: `${settingsPath}/tags`,
+    label: "Tags",
+    paths: [
+      "M3 3h8l10 10a2 2 0 0 1 0 2.8l-5.2 5.2a2 2 0 0 1-2.8 0L3 11V3Z",
+      "M7.5 7.5h.01",
+    ],
   },
 } satisfies Record<
   SettingsSection,

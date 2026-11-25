@@ -15,6 +15,7 @@ const FilterMenuMessage = defineMessageUnion({
 
 export const filterChoice = <Message>(
   props: {
+    key?: string;
     label: string;
     checked: boolean;
     message: Message;
@@ -23,7 +24,7 @@ export const filterChoice = <Message>(
   h: HtmlBuilder<Message>,
 ) =>
   h.label(
-    [h.Key(props.label), h.Class("filter-menu-choice")],
+    [h.Key(props.key ?? props.label), h.Class("filter-menu-choice")],
     [
       h.input([
         ...(props.radioGroup

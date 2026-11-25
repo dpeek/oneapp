@@ -1,6 +1,6 @@
-import { Tokenizer } from "@oneapp/ui";
+import { Popover, Tokenizer } from "@oneapp/ui";
 import { Effect, Option, Schema } from "effect";
-import { Command, type Update } from "foldkit";
+import { Command, Update } from "foldkit";
 import { focus } from "foldkit/dom";
 import { defineMessageUnion } from "foldkit/message";
 import {
@@ -23,6 +23,11 @@ import {
 import { createTagPrefix, searchTags } from "./tag-picker.ts";
 
 export const uploadInputId = "files-upload";
+export const filterOptionsId = "file-filter-options";
+const closedFilterMenu = {
+  filterPopover: Popover.init({ id: "file-filters" }),
+  tagOptionsOpen: false,
+};
 const Operation = Schema.Union([
   Schema.TaggedStruct("Load", {}),
   Schema.TaggedStruct("Upload", {}),
@@ -38,6 +43,8 @@ export const Model = Schema.Struct({
   index: Schema.NullOr(FileIndex),
   selectedId: Schema.NullOr(ItemId),
   tagFilter: Schema.NullOr(ItemId),
+  filterPopover: Popover.Model,
+  tagOptionsOpen: Schema.Boolean,
   tagPicker: Tokenizer.Model,
   previewFailed: Schema.Boolean,
   request: Schema.NullOr(Schema.Struct({ id: ItemId, operation: Operation })),
@@ -49,6 +56,7 @@ export const initial: Model = {
   index: null,
   selectedId: null,
   tagFilter: null,
+  ...closedFilterMenu,
   tagPicker: tagPicker(),
   previewFailed: false,
   request: null,
@@ -59,7 +67,10 @@ export const Message = defineMessageUnion({
   Retried: {},
   FocusUpdated: {},
   PickedFile: {},
-  SetTagFilter: { value: Schema.String },
+  GotFilterPopoverMessage: { message: Popover.Message },
+  OpenedTagFilterOptions: { focusOptions: Schema.Boolean },
+  ClosedTagFilterOptions: {},
+  SelectedTagFilter: { value: Schema.NullOr(ItemId) },
   ClearedTagFilter: {},
   GotTagPickerMessage: { id: ItemId, message: Tokenizer.Message },
   RemovedTag: { id: ItemId },
@@ -95,13 +106,15 @@ const FocusRetryTarget = Command.define("FocusFileRetryTarget", {
   }).pipe(Effect.ignore, Effect.as(Message.FocusUpdated())),
 });
 const FocusTagFilter = Command.define("FocusFileTagFilter", {
+  args: { target: Schema.Literals(["options", "button"]) },
   messages: [Message.FocusUpdated],
-  execute: focus(
-    '.files-workspace .task-list-filters [data-slot="native-select"]',
-    {
-      preventScroll: true,
-    },
-  ).pipe(Effect.ignore, Effect.as(Message.FocusUpdated())),
+  execute: ({ target }) =>
+    focus(
+      target === "options"
+        ? `#${filterOptionsId} input:checked`
+        : `#${Popover.buttonId(closedFilterMenu.filterPopover.id)}`,
+      { preventScroll: target === "button" },
+    ).pipe(Effect.ignore, Effect.as(Message.FocusUpdated())),
 });
 const Request = Command.define("RequestFiles", {
   args: { request: ItemId, operation: Operation },
@@ -221,6 +234,19 @@ const toTagPickerMessage =
   (id: string) => (message: typeof Tokenizer.Message.Type) =>
     Message.GotTagPickerMessage({ id, message });
 
+export const toFilterPopoverMessage = (message: typeof Popover.Message.Type) =>
+  Message.GotFilterPopoverMessage({ message });
+
+const foldFilterPopover = Update.foldChild({
+  update: Popover.update,
+  read: (model: Model) => Option.some(model.filterPopover),
+  write: (model, filterPopover) => ({ ...model, filterPopover }),
+  toParentMessage: toFilterPopoverMessage,
+  foldOutMessage: (out) => (model) => ({
+    model: out._tag === "Closed" ? { ...model, tagOptionsOpen: false } : model,
+  }),
+});
+
 export const update = (
   model: Model,
   message: Message,
@@ -231,11 +257,15 @@ export const update = (
     message,
     {
       Opened: ({ id, refresh }) => {
+        const current =
+          refresh || id !== model.selectedId
+            ? { ...model, ...closedFilterMenu }
+            : model;
         const next =
-          id === model.selectedId
-            ? model
+          id === current.selectedId
+            ? current
             : {
-                ...model,
+                ...current,
                 selectedId: id,
                 tagPicker: tagPicker(),
                 previewFailed: false,
@@ -252,13 +282,32 @@ export const update = (
       },
       FocusUpdated: () => ({ model }),
       PickedFile: () => start(model, { _tag: "Upload" }),
-      SetTagFilter: ({ value }) => ({
-        model: { ...model, tagFilter: Schema.is(ItemId)(value) ? value : null },
+      GotFilterPopoverMessage: ({ message }) =>
+        foldFilterPopover(model, message),
+      OpenedTagFilterOptions: ({ focusOptions }) => {
+        if (!model.filterPopover.isOpen) return { model };
+        return {
+          model: { ...model, tagOptionsOpen: true },
+          ...(focusOptions
+            ? { commands: [FocusTagFilter({ target: "options" })] }
+            : {}),
+        };
+      },
+      ClosedTagFilterOptions: () => ({
+        model: { ...model, tagOptionsOpen: false },
       }),
-      ClearedTagFilter: () => ({
-        model: { ...model, tagFilter: null },
-        commands: [FocusTagFilter()],
+      SelectedTagFilter: ({ value }) => ({
+        model: { ...model, tagFilter: value },
       }),
+      ClearedTagFilter: () => {
+        const cleared = { ...model, tagFilter: null };
+        return model.filterPopover.isOpen
+          ? foldFilterPopover(cleared, Popover.Message.RequestedClose())
+          : {
+              model: cleared,
+              commands: [FocusTagFilter({ target: "button" })],
+            };
+      },
       GotTagPickerMessage: ({ id, message }) => {
         const file = selectedFile(model);
         if (!file || id !== file.id) return { model };
@@ -331,7 +380,16 @@ export const update = (
         model:
           id === model.selectedId ? { ...model, previewFailed: true } : model,
       }),
-      Loaded: ({ index }) => ({ model: { ...model, index, request: null } }),
+      Loaded: ({ index }) => ({
+        model: {
+          ...model,
+          index,
+          request: null,
+          tagFilter: index.tags.some(({ id }) => id === model.tagFilter)
+            ? model.tagFilter
+            : null,
+        },
+      }),
       Uploaded: ({ file }) => ({
         model: {
           ...model,

@@ -6,7 +6,8 @@ import {
   empty,
   filesIconPaths,
   input,
-  nativeSelect,
+  item,
+  itemGroup,
   outlineIcon,
   skeleton,
   Tokenizer,
@@ -16,6 +17,7 @@ import { Effect } from "effect";
 import { Mount, Submodel } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { fileSize, renderPdf } from "./file-display.ts";
+import { filterChoice, filterMenu } from "./filter-menu.ts";
 import {
   fileContentApi,
   filePath,
@@ -23,7 +25,14 @@ import {
   fileUploadLimit,
   type StoredFile,
 } from "./files-contract.ts";
-import { Message, selectedFile, uploadInputId, type Model } from "./files.ts";
+import {
+  filterOptionsId,
+  Message,
+  selectedFile,
+  toFilterPopoverMessage,
+  uploadInputId,
+  type Model,
+} from "./files.ts";
 import {
   ItemId,
   itemTagLimit,
@@ -189,6 +198,40 @@ const filePlaceholders = (h: HtmlBuilder<Message>) =>
     ),
   );
 
+const fileFilters = (
+  model: Model,
+  tags: readonly Tag[],
+  h: HtmlBuilder<Message>,
+) =>
+  filterMenu(
+    {
+      popover: model.filterPopover,
+      category: model.tagOptionsOpen ? "tags" : null,
+      categories: [{ id: "tags", label: "Tags" }],
+      count: model.tagFilter === null ? 0 : 1,
+      optionsId: filterOptionsId,
+      options: () =>
+        [{ id: null, name: "All tags" }, ...tags].map(({ id, name }) =>
+          filterChoice(
+            {
+              key: id ?? "all",
+              label: name,
+              checked: model.tagFilter === id,
+              message: Message.SelectedTagFilter({ value: id }),
+              radioGroup: "file-tag-filter",
+            },
+            h,
+          ),
+        ),
+      onOpen: (_, focusOptions) =>
+        Message.OpenedTagFilterOptions({ focusOptions }),
+      close: Message.ClosedTagFilterOptions(),
+      clear: Message.ClearedTagFilter(),
+      toPopoverMessage: toFilterPopoverMessage,
+    },
+    h,
+  );
+
 const fileList = (
   model: Model,
   tags: readonly Tag[],
@@ -207,77 +250,46 @@ const fileList = (
         ? "No files match this tag"
         : "No files uploaded";
   return h.section(
-    [h.Class("workspace-list task-list"), h.AriaLabel("File list")],
+    [h.Class("workspace-list file-list"), h.AriaLabel("File list")],
     [
-      h.div(
-        [h.Class("task-list-toolbar task-list-filters")],
-        [
-          nativeSelect(
-            {
-              label: "Tag filter",
-              value: model.tagFilter ?? "",
-              options: [
-                { value: "", label: "All tags" },
-                ...tags.map(({ id, name }) => ({
-                  value: id,
-                  label: name,
-                })),
-              ],
-              onChange: (value) => Message.SetTagFilter({ value }),
-            },
-            h,
-          ),
-        ],
-      ),
       visuallyHiddenStatus(emptyTitle, h),
       h.div(
         [h.Class("workspace-results")],
         files.length
           ? [
-              h.ul(
-                [h.Class("task-rows")],
-                files.map((file) => {
-                  const selected = model.selectedId === file.id;
-                  return h.li(
-                    [
-                      h.Key(file.id),
-                      h.Class("task-row file-row"),
-                      h.DataAttribute("selected", String(selected)),
-                    ],
-                    [
-                      h.a(
+              itemGroup(
+                files.map((file) =>
+                  item(
+                    {
+                      key: file.id,
+                      href: filePath(file.id),
+                      title: file.name,
+                      linkAttributes:
+                        model.selectedId === file.id
+                          ? [h.AriaCurrent("page")]
+                          : [],
+                      description: h.div(
+                        [h.Class("file-row-metadata")],
                         [
-                          h.Class("task-row-link"),
-                          h.Href(filePath(file.id)),
-                          ...(selected ? [h.AriaCurrent("page")] : []),
-                        ],
-                        [
-                          h.span(
-                            [h.Class("task-row-main")],
-                            [
-                              h.span([h.Class("task-row-title")], [file.name]),
-                              ...file.tagIds.flatMap((id) => {
-                                const name = tagMap.get(id);
-                                return name
-                                  ? [
-                                      h.span(
-                                        [h.Key(id), h.Class("task-tag")],
-                                        [name],
-                                      ),
-                                    ]
-                                  : [];
-                              }),
-                            ],
-                          ),
-                          h.span(
-                            [h.Class("task-row-properties")],
-                            [fileSize(file.size)],
-                          ),
+                          h.span([], [fileSize(file.size)]),
+                          ...file.tagIds.flatMap((id) => {
+                            const name = tagMap.get(id);
+                            return name
+                              ? [
+                                  h.span(
+                                    [h.Key(id), h.Class("task-tag")],
+                                    [name],
+                                  ),
+                                ]
+                              : [];
+                          }),
                         ],
                       ),
-                    ],
-                  );
-                }),
+                    },
+                    h,
+                  ),
+                ),
+                h,
               ),
             ]
           : emptyTitle
@@ -329,7 +341,7 @@ const uploadControl = (model: Model, h: HtmlBuilder<Message>) =>
             : "Upload file",
         ],
       ),
-      input(
+      input<Message>(
         [
           h.Type("file"),
           h.Id(uploadInputId),
@@ -362,6 +374,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
     {
       className: "tasks-workspace files-workspace",
       title: "Files",
+      titleAccessory: fileFilters(model, tags, h),
       headerAttributes: [h.Tabindex(-1)],
       headerActions: [
         ...(!uploadInEmpty ? [upload] : []),

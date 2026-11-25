@@ -26,6 +26,7 @@ export {
   inputGroupControlClassName,
   textarea,
 } from "./field.ts";
+export { fileInput } from "./file-input.ts";
 export {
   backIcon,
   calendarIconPaths,

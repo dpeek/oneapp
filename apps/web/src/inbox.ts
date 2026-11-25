@@ -2607,6 +2607,7 @@ const messageHeaderActions = (model: Model, h: HtmlBuilder<Message>) => {
         size: "icon-sm",
         rounded: true,
         ariaLabel: label,
+        dialogId: Compose.dialogId,
         attributes: [h.Title(label)],
         onClick,
         children: [outlineIcon(h, paths)],

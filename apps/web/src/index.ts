@@ -644,7 +644,7 @@ const isCreationShortcut = (event: KeyboardEvent) =>
   !event.ctrlKey &&
   !event.metaKey &&
   !event.shiftKey &&
-  !document.querySelector("dialog:modal") &&
+  !document.querySelector('dialog:modal, dialog[open][aria-modal="true"]') &&
   !isEditable(event.target) &&
   !isEditable(document.activeElement);
 

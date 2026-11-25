@@ -45,6 +45,7 @@ const styles = stylex.create({
     color: controls.foreground,
     boxShadow: "0 10px 24px rgb(0 0 0 / 20%)",
   },
+  wide: { inlineSize: "min(36rem, calc(100% - 2rem))" },
   padding: { padding: "clamp(1rem, 4vw, 1.5rem)" },
   native: {
     "::backdrop": { backgroundColor: "rgb(10 11 18 / 65%)" },
@@ -86,6 +87,7 @@ export const view = <ParentMessage>(
     model: typeof Model.Type;
     title: string;
     content: (initialFocus: ReadonlyArray<ChildAttribute>) => Html;
+    size?: "wide";
     padded?: boolean;
     showHeader?: boolean;
     showCloseButton?: boolean;
@@ -127,6 +129,7 @@ export const view = <ParentMessage>(
                       stylex.props(
                         styles.panel,
                         styles.surface,
+                        props.size === "wide" && styles.wide,
                         props.padded !== false && styles.padding,
                       ).className ?? "",
                     ),

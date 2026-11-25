@@ -6,6 +6,7 @@ vi.mock("@oneapp/ui", async () => {
     import.meta.resolve("@foldkit/ui", import.meta.resolve("@oneapp/ui"))
   );
   return {
+    Dialog,
     DropdownMenu: Menu,
     Sheet: Dialog,
     Popover,

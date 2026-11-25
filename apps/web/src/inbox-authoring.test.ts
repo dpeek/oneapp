@@ -1,8 +1,15 @@
 import { vi } from "vitest";
 // These tests exercise state transitions without rendering StyleX components.
-vi.mock("@oneapp/ui", () => ({ button: vi.fn(), plusIcon: vi.fn() }));
+vi.mock("@oneapp/ui", async () => {
+  const { Dialog } = await import(
+    import.meta.resolve("@foldkit/ui", import.meta.resolve("@oneapp/ui"))
+  );
+  return { Dialog };
+});
 import { expect, it } from "@effect/vitest";
+import { Dialog } from "@oneapp/ui";
 import * as Compose from "./inbox-compose.ts";
+import { outgoingAttachmentLimit } from "./inbox-contract.ts";
 import * as Reply from "./inbox-inline-reply.ts";
 
 const id = "0-8199999999990-00000000-0000-4000-8000-000000000000.eml";
@@ -17,8 +24,23 @@ it("preserves a formatted compose draft on send failure and resets it after send
     Compose.Message.Opened({ from: "mail@example.net" }),
   ).model;
   model = Compose.update(model, Compose.Message.EditedBody({ body })).model;
+  const cc = "copy@example.net";
+  model = Compose.update(
+    model,
+    Compose.Message.EditedHeader({ field: "cc", value: cc }),
+  ).model;
+  expect(model.dialog.isOpen).toBe(true);
   model = Compose.update(model, Compose.Message.Submitted()).model;
   const request = model.request!;
+  expect(Compose.update(model, Compose.Message.Closed()).model).toBe(model);
+  expect(
+    Compose.update(
+      model,
+      Compose.Message.GotDialogMessage({
+        message: Dialog.Message.RequestedClose(),
+      }),
+    ).model,
+  ).toBe(model);
   expect(
     Compose.update(
       model,
@@ -30,6 +52,7 @@ it("preserves a formatted compose draft on send failure and resets it after send
     Compose.Message.Failed({ request, error: "Retry" }),
   ).model;
   expect(model.body).toEqual(body);
+  expect(model.headers.cc).toBe(cc);
   model = Compose.update(model, Compose.Message.Submitted()).model;
   model = Compose.update(
     model,
@@ -41,6 +64,8 @@ it("preserves a formatted compose draft on send failure and resets it after send
     }),
   ).model;
   expect(model.body).toEqual({ text: "" });
+  expect(model.headers.cc).toBe("");
+  expect(model.dialog.isOpen).toBe(false);
 });
 
 it("retains quick-reply formatting and the original target as new mail arrives", () => {
@@ -71,7 +96,7 @@ it("retains quick-reply formatting and the original target as new mail arrives",
   expect(model).toMatchObject({ ...body, target: id });
 });
 
-it("preserves forward attachments after failure and allows removing originals", () => {
+it("counts originals toward the attachment limit and preserves them after a failed forward", () => {
   const forward = Compose.Message.OpenedReply({
     from: "me@example.net",
     reply: {
@@ -86,13 +111,24 @@ it("preserves forward attachments after failure and allows removing originals", 
           part: 0,
           name: "report.pdf",
           mediaType: "application/pdf",
-          size: 12,
+          size: outgoingAttachmentLimit,
           preview: "pdf",
         },
       ],
     },
   });
   let model = Compose.update(Compose.initial, forward).model;
+  model = Compose.update(model, Compose.Message.PickedFiles()).model;
+  model = Compose.update(
+    model,
+    Compose.Message.LoadedFiles({
+      request: model.loadingFiles!,
+      files: [{ filename: "extra.txt", type: "text/plain", content: "YQ==" }],
+      error: null,
+    }),
+  ).model;
+  expect(model.attachments).toEqual([]);
+  expect(model.fileError).toContain("10 MB");
   const submitted = Compose.update(model, Compose.Message.Submitted());
   expect(submitted.commands?.[0]?.args).toMatchObject({
     reply: { mode: "forward", forwarded: [{ name: "report.pdf" }] },
@@ -110,4 +146,5 @@ it("preserves forward attachments after failure and allows removing originals", 
     Compose.Message.RemovedForwarded({ part: 0 }),
   ).model;
   expect(model.reply?.forwarded).toEqual([]);
+  expect(model.fileError).toBeNull();
 });

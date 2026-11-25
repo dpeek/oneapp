@@ -140,7 +140,6 @@ export const filterMenu = <Message, Category extends string>(
     count: number;
     optionsId: string;
     options: (category: Category) => readonly Html[];
-    placement?: "bottom-start" | "bottom-end";
     onOpen: (category: Category, focusOptions: boolean) => Message;
     close: Message;
     clear: Message;
@@ -170,12 +169,9 @@ export const filterMenu = <Message, Category extends string>(
           ...(count ? [badge(String(count), h)] : []),
         ],
       ),
-      placement: props.placement ?? "bottom-start",
+      placement: "bottom-start",
       portal: false,
-      panelClassName:
-        props.placement === "bottom-end"
-          ? "filter-menu-popover filter-menu-popover-end"
-          : "filter-menu-popover",
+      panelClassName: "filter-menu-popover",
       focusSelector: ".filter-menu-categories [data-filter-category]",
       content: h.div(
         [

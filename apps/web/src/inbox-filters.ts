@@ -231,7 +231,6 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
       categories,
       count: mailFilterCount(model.selection),
       optionsId,
-      placement: "bottom-end",
       onOpen: (category, focusOptions) =>
         Message.OpenedCategory({ category, focusOptions }),
       close: Message.ClosedCategory(),

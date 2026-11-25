@@ -1259,9 +1259,14 @@ button {
   block-size: 1rem;
 }
 
-.inbox-filter-control {
+.inbox > .workspace-header > .workspace-heading {
+  margin-inline-end: auto;
+}
+
+.inbox-heading-controls {
   display: flex;
-  margin-inline-start: auto;
+  align-items: center;
+  gap: 0.625rem;
 }
 
 .inbox-refresh-indicator svg {

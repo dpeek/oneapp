@@ -2996,8 +2996,23 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
       ...(model.selected === null
         ? {
             title: mailboxLabels[model.folder],
-            ...(isInboxView(model.folder)
-              ? { titleAccessory: inboxPriorityTabs(model.folder, h) }
+            ...(supportsMailFilters(model.folder)
+              ? {
+                  titleAccessory: h.div(
+                    [h.Class("inbox-heading-controls")],
+                    [
+                      ...(isInboxView(model.folder)
+                        ? [inboxPriorityTabs(model.folder, h)]
+                        : []),
+                      h.submodel({
+                        slotId: "inbox-filters",
+                        model: model.filters,
+                        view: Filters.view,
+                        toParentMessage: toFiltersMessage,
+                      }),
+                    ],
+                  ),
+                }
               : {}),
           }
         : {}),
@@ -3023,21 +3038,6 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
                   ? [spinner("Refreshing messages…", h)]
                   : [],
               ),
-              ...(supportsMailFilters(model.folder)
-                ? [
-                    h.div(
-                      [h.Class("inbox-filter-control")],
-                      [
-                        h.submodel({
-                          slotId: "inbox-filters",
-                          model: model.filters,
-                          view: Filters.view,
-                          toParentMessage: toFiltersMessage,
-                        }),
-                      ],
-                    ),
-                  ]
-                : []),
             ]),
         h.div(
           [h.Class("workspace-drawer-trigger")],

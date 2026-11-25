@@ -88,16 +88,7 @@
   accent-color: var(--primary);
 }
 
-.filter-menu-popover-end .filter-menu-options {
-  inset-inline-start: auto;
-  inset-inline-end: calc(100% + 0.25rem);
-}
-
-.filter-menu-popover-end .filter-menu-menuitem svg {
-  transform: scaleX(-1);
-}
-
-@media (max-width: 36rem) {
+@media (max-width: 44rem) {
   .filter-menu-popover {
     overflow-y: auto !important;
   }
@@ -114,8 +105,7 @@
     box-shadow: none;
   }
 
-  .filter-menu-menuitem svg,
-  .filter-menu-popover-end .filter-menu-menuitem svg {
+  .filter-menu-menuitem svg {
     transform: rotate(90deg);
   }
 }

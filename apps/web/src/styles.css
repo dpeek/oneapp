@@ -187,6 +187,15 @@ body:has(.app-shell) {
   display: none;
 }
 
+.vault-export-passwords:not([hidden]) {
+  display: grid;
+  gap: 0.75rem;
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
 oneapp-vault-reader {
   display: block;
 }
@@ -282,7 +291,11 @@ oneapp-vault-reader {
 }
 
 .workspace
-  :is(button:not([data-slot]), summary:not([data-slot="button"]), select) {
+  :is(
+    button:not([data-slot]),
+    summary:not([data-slot="button"]),
+    select:not([data-slot="native-select"])
+  ) {
   font: inherit;
   font-size: 0.875rem;
 }
@@ -291,7 +304,7 @@ oneapp-vault-reader {
   :is(
     button:not([data-slot]),
     summary:not([data-slot="button"]),
-    select
+    select:not([data-slot="native-select"])
   ):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -349,16 +362,6 @@ oneapp-vault-reader {
 .vault-item-filters:not([hidden]) {
   display: grid;
   gap: var(--vault-group-gap);
-}
-
-.vault-workspace select {
-  min-width: 0;
-  max-width: 100%;
-  padding: 0.45rem;
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
-  background: var(--surface);
-  color: var(--text);
 }
 
 .workspace-list {
@@ -1103,7 +1106,10 @@ oneapp-vault-reader {
 }
 
 .page
-  :is(input:where(:not([data-slot="input"])), button:where(:not([data-slot]))) {
+  :is(
+    input:where(:not([data-slot="input"], [data-slot="file-input-control"])),
+    button:where(:not([data-slot]))
+  ) {
   box-sizing: border-box;
   max-width: 100%;
   border: 1px solid var(--border);
@@ -1183,7 +1189,13 @@ form {
   gap: 0.75rem;
 }
 
-input:where(:not([data-slot="input"], [data-slot="command-input"])),
+input:where(
+  :not(
+    [data-slot="input"],
+    [data-slot="command-input"],
+    [data-slot="file-input-control"]
+  )
+),
 button:where(:not([data-slot])) {
   padding: 0.65rem;
   font: inherit;

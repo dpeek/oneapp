@@ -1,6 +1,6 @@
 import * as stylex from "@stylexjs/stylex";
 import type { HtmlBuilder } from "foldkit/html";
-import { field } from "./field.ts";
+import { createField, field } from "./field.ts";
 import { outlineIcon } from "./icons.ts";
 import { alertColors, controls } from "./tokens.stylex.ts";
 
@@ -46,6 +46,14 @@ const styles = stylex.create({
     opacity: 0,
     cursor: { default: "pointer", ":disabled": "default" },
   },
+  fileName: {
+    contain: "inline-size",
+    flexGrow: 1,
+    minInlineSize: 0,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
   feedback: {
     margin: 0,
     color: controls.mutedForeground,
@@ -54,6 +62,11 @@ const styles = stylex.create({
   },
   error: { color: alertColors.error },
 });
+
+const uploadIconPath = "M12 15V3m-4 4 4-4 4 4M4 15v5h16v-5";
+const controlClassName = stylex.props(styles.control).className ?? "";
+const triggerClassName = (invalid = false) =>
+  stylex.props(styles.compact, invalid && styles.invalid).className ?? "";
 
 // Crease's compact File Input layout with a native picker and a separate file list.
 export const fileInput = <Message>(
@@ -82,10 +95,7 @@ export const fileInput = <Message>(
           [
             h.DataAttribute("slot", "file-input-trigger"),
             ...(disabled ? [h.DataAttribute("disabled", "")] : []),
-            h.Class(
-              stylex.props(styles.compact, !!props.error && styles.invalid)
-                .className ?? "",
-            ),
+            h.Class(triggerClassName(!!props.error)),
           ],
           [
             h.input([
@@ -98,9 +108,9 @@ export const fileInput = <Message>(
               ...(props.error
                 ? [h.AriaInvalid(true), h.AriaDescribedBy(errorId)]
                 : []),
-              h.Class(stylex.props(styles.control).className ?? ""),
+              h.Class(controlClassName),
             ]),
-            outlineIcon(h, ["M12 15V3m-4 4 4-4 4 4M4 15v5h16v-5"]),
+            outlineIcon(h, [uploadIconPath]),
             h.span(
               [h.AriaHidden(true)],
               [props.multiple ? "Choose files" : "Choose file"],
@@ -126,4 +136,51 @@ export const fileInput = <Message>(
       ),
     ],
   );
+};
+
+export const createFileInput = ({
+  label,
+  accept,
+  required = false,
+}: {
+  label: string;
+  accept: string;
+  required?: boolean;
+}) => {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = accept;
+  input.required = required;
+  input.dataset.slot = "file-input-control";
+  input.className = controlClassName;
+
+  const caption = document.createElement("output");
+  caption.setAttribute("aria-hidden", "true");
+  caption.className = stylex.props(styles.fileName).className ?? "";
+  caption.defaultValue = "Choose file";
+  input.addEventListener("change", () => {
+    caption.value = input.files?.[0]?.name ?? caption.defaultValue;
+  });
+
+  const svgNamespace = "http://www.w3.org/2000/svg";
+  const icon = document.createElementNS(svgNamespace, "svg");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("width", "16");
+  icon.setAttribute("height", "16");
+  icon.setAttribute("fill", "none");
+  icon.setAttribute("stroke", "currentColor");
+  icon.setAttribute("stroke-width", "2");
+  icon.setAttribute("stroke-linecap", "round");
+  icon.setAttribute("stroke-linejoin", "round");
+  icon.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS(svgNamespace, "path");
+  path.setAttribute("d", uploadIconPath);
+  icon.append(path);
+
+  const trigger = document.createElement("span");
+  trigger.dataset.slot = "file-input-trigger";
+  trigger.className = triggerClassName();
+  trigger.append(input, icon, caption);
+  const element = createField({ label, content: trigger, control: input });
+  return { element, input };
 };

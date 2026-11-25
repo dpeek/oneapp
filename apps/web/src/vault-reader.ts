@@ -2,7 +2,9 @@ import {
   actionBar,
   buttonClassName,
   createButtonGroup,
+  createField,
   createFieldGroup,
+  createFileInput,
   createNativeSelect,
   inputClassName,
   itemClassName,
@@ -246,6 +248,29 @@ const itemField = ([label, input]: ItemField) => {
   input.spellcheck = false;
   field.append(input);
   return field;
+};
+
+const transferPassword = (label: string, required = true) => {
+  const input = create("input");
+  input.type = "password";
+  input.required = required;
+  input.maxLength = vaultPasswordMaximum;
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.dataset.slot = "input";
+  input.className = inputClassName;
+  return {
+    input,
+    element: createField({ label, content: input, control: input }),
+  };
+};
+
+const transferSubmit = (label: string) => {
+  const button = create("button", label);
+  button.type = "submit";
+  button.dataset.slot = "button";
+  button.className = buttonClassName({ variant: "primary" });
+  return button;
 };
 
 const passwordForm = (
@@ -1088,24 +1113,19 @@ class VaultReader extends HTMLElement {
     if (!vault) return;
     const form = create("form");
     form.method = "post";
-    const file = create("input");
-    file.type = "file";
-    file.accept = ".csv,.json,text/csv,application/json";
-    file.required = true;
-    const password = create("input");
-    password.type = "password";
-    password.maxLength = vaultPasswordMaximum;
-    password.autocomplete = "off";
-    const review = create("button", "Review import");
-    review.type = "submit";
+    const { element: fileField, input: file } = createFileInput({
+      label: "Bitwarden export file",
+      accept: ".csv,.json,text/csv,application/json",
+      required: true,
+    });
+    const { element: passwordField, input: password } = transferPassword(
+      "File password, if protected",
+      false,
+    );
+    const review = transferSubmit("Review import");
     const error = alert("");
     error.hidden = true;
-    form.append(
-      itemField(["Bitwarden export file", file]),
-      itemField(["File password, if protected", password]),
-      review,
-      error,
-    );
+    form.append(fileField, passwordField, review, error);
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       const selected = file.files?.[0];
@@ -1114,6 +1134,7 @@ class VaultReader extends HTMLElement {
       password.value = "";
       error.hidden = true;
       review.disabled = true;
+      review.textContent = "Preparing import…";
       let problem = "Could not prepare your import.";
       void this.#run(
         async (signal) => {
@@ -1154,6 +1175,7 @@ class VaultReader extends HTMLElement {
         },
         () => {
           review.disabled = false;
+          review.textContent = "Review import";
           error.textContent = problem;
           error.hidden = false;
         },
@@ -1172,6 +1194,7 @@ class VaultReader extends HTMLElement {
     error.hidden = true;
     const submit = action("Import items", () => {
       submit.disabled = true;
+      submit.textContent = "Importing…";
       error.hidden = true;
       let failure = "Could not confirm the import. Try again.";
       void this.#run(
@@ -1197,6 +1220,7 @@ class VaultReader extends HTMLElement {
         },
         () => {
           submit.disabled = false;
+          submit.textContent = "Import items";
           error.textContent = failure;
           error.hidden = false;
         },
@@ -1223,27 +1247,28 @@ class VaultReader extends HTMLElement {
     if (!vault) return;
     const form = create("form");
     form.method = "post";
-    const format = create("select");
-    format.add(new Option("Bitwarden JSON", "json"));
-    format.add(new Option("Bitwarden CSV", "csv"));
-    format.add(new Option("Bitwarden ZIP with attachments", "zip"));
-    format.add(new Option("Password-protected Bitwarden JSON", "protected"));
-    const formatLabel = create("label", "File format");
-    formatLabel.className = "vault-item-field";
-    formatLabel.append(format);
-    const master = create("input");
-    master.type = "password";
-    master.autocomplete = "off";
-    master.required = true;
-    master.maxLength = vaultPasswordMaximum;
-    const secret = master.cloneNode() as HTMLInputElement;
-    const repeat = master.cloneNode() as HTMLInputElement;
-    const encryption = create("fieldset");
-    const warning = create("p");
-    encryption.append(
-      itemField(["Export password", secret]),
-      itemField(["Confirm export password", repeat]),
+    const { element: formatField, select: format } = createNativeSelect({
+      label: "File format",
+      value: "json",
+      options: [
+        { value: "json", label: "Bitwarden JSON" },
+        { value: "csv", label: "Bitwarden CSV" },
+        { value: "zip", label: "Bitwarden ZIP with attachments" },
+        { value: "protected", label: "Password-protected Bitwarden JSON" },
+      ],
+    });
+    const { element: masterField, input: master } = transferPassword(
+      "Vault master password",
     );
+    const { element: secretField, input: secret } =
+      transferPassword("Export password");
+    const { element: repeatField, input: repeat } = transferPassword(
+      "Confirm export password",
+    );
+    const encryption = create("fieldset");
+    encryption.className = "vault-export-passwords";
+    const warning = create("p");
+    encryption.append(secretField, repeatField);
     const changeFormat = () => {
       const protectedFile = format.value === "protected";
       encryption.hidden = !protectedFile;
@@ -1259,18 +1284,10 @@ class VaultReader extends HTMLElement {
     };
     format.addEventListener("change", changeFormat);
     changeFormat();
-    const submit = create("button", "Download export");
-    submit.type = "submit";
+    const submit = transferSubmit("Download export");
     const error = alert("");
     error.hidden = true;
-    form.append(
-      formatLabel,
-      warning,
-      encryption,
-      itemField(["Vault master password", master]),
-      submit,
-      error,
-    );
+    form.append(formatField, warning, encryption, masterField, submit, error);
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       if (submit.disabled) return;
@@ -1280,6 +1297,7 @@ class VaultReader extends HTMLElement {
         return;
       }
       submit.disabled = true;
+      submit.textContent = "Preparing export…";
       error.hidden = true;
       const password = master.value;
       const exportPassword = secret.value;
@@ -1347,6 +1365,7 @@ class VaultReader extends HTMLElement {
         },
         () => {
           submit.disabled = false;
+          submit.textContent = "Download export";
           error.textContent = problem;
           error.hidden = false;
           master.focus();

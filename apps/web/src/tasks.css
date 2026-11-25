@@ -179,7 +179,8 @@
 }
 
 .tasks-workspace .task-detail {
-  padding: 0.875rem clamp(0.75rem, 2vw, 1.5rem) 1.5rem;
+  padding: 0.875rem clamp(0.75rem, 2vw, 1.5rem)
+    calc(1.5rem + var(--mobile-nav-clearance, 0px));
 }
 
 .task-detail > * {

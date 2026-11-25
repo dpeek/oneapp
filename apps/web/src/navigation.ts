@@ -1,4 +1,5 @@
 import {
+  button,
   calendarIconPaths,
   ellipsisIcon,
   filesIconPaths,
@@ -6,6 +7,7 @@ import {
   mailIconPaths,
   navigationLinks,
   outlineIcon,
+  plusIcon,
   Popover,
   taskIconPaths,
   Tooltip,
@@ -206,10 +208,7 @@ const overflowNavigation = <ParentMessage>(
           triggerLabel: current
             ? `More destinations, current page: ${current.label}`
             : "More destinations",
-          trigger: h.span(
-            [h.Class("app-nav-more-label"), h.AriaHidden(true)],
-            [ellipsisIcon(h), h.span([h.Class("app-nav-label")], ["More"])],
-          ),
+          trigger: ellipsisIcon(h),
           triggerClassName: "app-nav-link",
           placement: "top-end",
           focusSelector: '[data-slot="navigation-link"]',
@@ -239,6 +238,7 @@ export const navigationView = <ParentMessage>(
   page: Page,
   unreadCount: number,
   model: Model,
+  create: { dialogId: string; onClick: ParentMessage },
   toParentMessage: (message: Message) => ParentMessage,
   h: HtmlBuilder<ParentMessage>,
 ) =>
@@ -289,16 +289,29 @@ export const navigationView = <ParentMessage>(
                     destination.paths.map((path) => h.path([h.D(path)], [])),
                   ),
                   ...(count ? [unreadBadge(h, count)] : []),
-                  h.span(
-                    [h.Class("app-nav-label"), h.AriaHidden(true)],
-                    [destination.label],
-                  ),
                 ],
               ),
           },
           h,
         );
       }),
+      h.div(
+        [h.Class("app-nav-create")],
+        [
+          button(
+            {
+              variant: "ghost",
+              size: "icon",
+              rounded: true,
+              ariaLabel: "Create",
+              dialogId: create.dialogId,
+              onClick: create.onClick,
+              children: [plusIcon(h, "22")],
+            },
+            h,
+          ),
+        ],
+      ),
       overflowNavigation(page, model, toParentMessage, h),
     ],
   );

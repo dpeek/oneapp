@@ -49,15 +49,29 @@ dialog .notification-host {
 }
 
 @media (max-width: 40rem) {
+  :root:has(.app-shell) {
+    --mobile-nav-control-size: 2.75rem;
+    --mobile-nav-padding: 0.25rem;
+    --mobile-nav-size: calc(
+      var(--mobile-nav-control-size) + 2 * var(--mobile-nav-padding)
+    );
+    --mobile-nav-bottom: max(0.5rem, env(safe-area-inset-bottom, 0px));
+    --mobile-nav-clearance: calc(
+      var(--mobile-nav-size) + var(--mobile-nav-bottom)
+    );
+    scroll-padding-block-end: var(--mobile-nav-clearance);
+  }
+
   body:has(.app-shell) .notification-anchor {
-    --bottom-nav-size: 3.75rem;
+    --bottom-nav-size: calc(
+      var(--mobile-nav-clearance) - env(safe-area-inset-bottom, 0px)
+    );
   }
 }
 
 .app-shell {
   --top-safe-area: env(safe-area-inset-top, 0px);
   --nav-size: 3.75rem;
-  --bottom-nav-size: 0px;
   min-height: 100svh;
   background: var(--canvas);
   color: var(--text);
@@ -66,14 +80,11 @@ dialog .notification-host {
   box-sizing: border-box;
 }
 
-/* Give iOS a solid surface behind its status bar. Controls and scrolling
-   content start below it, rather than underneath the system's edge effect. */
-.app-shell::before {
-  content: "";
+.status-bar-surface {
   position: fixed;
   inset: 0 0 auto;
-  block-size: var(--top-safe-area);
-  background: var(--surface);
+  block-size: env(safe-area-inset-top, 0px);
+  background-color: var(--surface);
   z-index: 2;
   pointer-events: none;
 }
@@ -130,6 +141,7 @@ body:has(.app-shell) {
   color: var(--text);
 }
 
+.app-nav-create,
 .app-nav-more {
   display: none;
 }
@@ -145,10 +157,6 @@ body:has(.app-shell) {
 ):focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 3px;
-}
-
-.app-nav-label {
-  display: none;
 }
 
 .page {
@@ -238,7 +246,7 @@ oneapp-vault-reader {
     "header items detail" auto
     "filters items detail" minmax(0, 1fr)
     / var(--workspace-sidebar-width) clamp(17rem, 29vw, 32rem) minmax(0, 1fr);
-  block-size: calc(100dvh - var(--bottom-nav-size) - var(--top-safe-area));
+  block-size: calc(100dvh - var(--top-safe-area));
   background: var(--surface);
 }
 
@@ -440,7 +448,7 @@ oneapp-vault-reader {
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  padding: 1rem 1.25rem;
+  padding: 1rem 1.25rem calc(1rem + var(--mobile-nav-clearance, 0px));
   overflow-wrap: anywhere;
 }
 
@@ -1167,32 +1175,51 @@ oneapp-vault-reader {
 
 @media (max-width: 40rem) {
   .app-shell {
-    --bottom-nav-size: calc(var(--nav-size) + env(safe-area-inset-bottom));
     padding-inline-start: 0;
-    padding-block-end: var(--bottom-nav-size);
   }
 
   .app-nav {
-    inset: auto 0 0;
-    width: auto;
-    min-height: var(--bottom-nav-size);
+    inset: auto env(safe-area-inset-right, 0px) var(--mobile-nav-bottom)
+      env(safe-area-inset-left, 0px);
+    inline-size: min(
+      20rem,
+      calc(
+        100% - 2rem - env(safe-area-inset-left, 0px) -
+          env(safe-area-inset-right, 0px)
+      )
+    );
+    margin-inline: auto;
     display: grid;
     grid-auto-flow: column;
     grid-auto-columns: minmax(0, 1fr);
     justify-items: center;
     gap: 0;
-    padding: 0.25rem max(0.25rem, env(safe-area-inset-right))
-      calc(0.25rem + env(safe-area-inset-bottom))
-      max(0.25rem, env(safe-area-inset-left));
-    border-inline-end: 0;
-    border-block-start: 1px solid var(--border);
+    padding: var(--mobile-nav-padding) 0.375rem;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
   }
 
-  .app-nav-link {
+  .app-nav::before {
+    /* Keep the filter off the nav so More can anchor to the viewport. */
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    border: 1px solid var(--border);
+    border-radius: inherit;
+    background: color-mix(in srgb, var(--surface) 85%, transparent);
+    backdrop-filter: blur(12px);
+    box-shadow: 0 4px 16px rgb(0 0 0 / 16%);
+  }
+
+  .app-nav-link,
+  .app-nav-more .app-nav-link {
+    display: grid;
     inline-size: min(100%, 4rem);
-    block-size: 3rem;
-    align-content: center;
-    gap: 0.1875rem;
+    block-size: var(--mobile-nav-control-size);
+    border-radius: 999px;
   }
 
   .app-nav > span {
@@ -1209,32 +1236,123 @@ oneapp-vault-reader {
     inline-size: 100%;
   }
 
+  .app-nav-create {
+    display: grid;
+    place-items: center;
+  }
+
+  .app-nav-create > button {
+    padding: 0;
+  }
+
   .app-nav-more > div {
     display: flex;
     justify-content: center;
   }
 
-  .app-nav-more .app-nav-link {
-    display: grid;
-    inline-size: min(100%, 4rem);
-    border-radius: 0.65rem;
-  }
-
-  .app-nav-more-label {
-    display: grid;
-    justify-items: center;
-    gap: inherit;
-  }
-
-  .app-nav-label {
-    display: block;
-    font-size: 0.6875rem;
-    line-height: 1;
-    font-weight: 500;
-  }
-
   .app-nav [data-slot="tooltip-content"] {
     display: none;
+  }
+
+  .page:not(:has(.workspace)) {
+    padding-block-end: calc(
+      clamp(1.25rem, 5vw, 3rem) + var(--mobile-nav-clearance)
+    );
+  }
+
+  .page,
+  .workspace-results,
+  .workspace-detail,
+  .calendar-timeline-scroll {
+    scroll-padding-block-end: var(--mobile-nav-clearance);
+  }
+
+  .workspace-results,
+  .calendar-timeline-scroll {
+    padding-block-end: calc(var(--mobile-nav-clearance) + 0.5rem);
+  }
+
+  .vault-bulk {
+    margin-block-end: calc(var(--mobile-nav-clearance) + 0.75rem);
+  }
+
+  .workspace-results:has(+ .vault-bulk:not([hidden])) {
+    padding-block-end: 0;
+    scroll-padding-block-end: 0;
+  }
+}
+
+@media (display-mode: standalone) {
+  :root:has(.app-shell) {
+    overflow: hidden;
+    overscroll-behavior-y: none;
+  }
+
+  .status-bar-surface {
+    /* WebKit samples a fixed element's solid background when it is over
+       10px tall. Clip the paint so the element can sit over the header. */
+    min-block-size: 12px;
+    background-clip: text;
+  }
+
+  .app-shell {
+    display: grid;
+    grid-template: "nav page" minmax(0, 1fr) / var(--nav-size) minmax(0, 1fr);
+    block-size: 100dvh;
+    min-block-size: 0;
+    padding-inline: env(safe-area-inset-left, 0px)
+      env(safe-area-inset-right, 0px);
+    padding-block-end: env(safe-area-inset-bottom, 0px);
+  }
+
+  .app-shell > .app-nav {
+    grid-area: nav;
+    position: static;
+    padding-block-start: 1rem;
+  }
+
+  .app-shell > .page {
+    grid-area: page;
+    overflow: auto;
+  }
+
+  .app-shell > .page:has(.workspace) {
+    container-type: size;
+  }
+
+  .app-shell .workspace {
+    block-size: 100cqb;
+  }
+}
+
+@media (display-mode: standalone) and (max-width: 40rem) {
+  :root:has(.app-shell) {
+    --mobile-nav-bottom: max(
+      0.5rem,
+      calc(env(safe-area-inset-bottom, 0px) - var(--mobile-nav-padding))
+    );
+  }
+
+  .app-shell {
+    grid-template: "page" minmax(0, 1fr) / minmax(0, 1fr);
+    padding-block-end: 0;
+  }
+
+  .app-shell > .app-nav {
+    grid-area: page;
+    position: relative;
+    inset: auto;
+    align-self: end;
+    justify-self: center;
+    inline-size: min(20rem, calc(100% - 2rem));
+    margin-block-end: var(--mobile-nav-bottom);
+    padding-block-start: var(--mobile-nav-padding);
+  }
+}
+
+@media (display-mode: standalone) and (width > 40rem) and (max-height: 30rem) {
+  .app-shell > .app-nav {
+    overflow-y: auto;
   }
 }
 

@@ -1936,6 +1936,10 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
           model.page,
           model.inbox.unreadCount,
           model.navigation,
+          {
+            dialogId: model.creationDialog.id,
+            onClick: Message.OpenedCreationMenu(),
+          },
           toNavigationMessage,
           h,
         ),

@@ -17,9 +17,23 @@ export default defineConfig({
   // Development serves source files, independently of production's dist/.
   plugins: [
     foldkit({ devToolsMcpPort: false }),
-    stylex({ ...stylexOptions, dev: true }),
+    // Recovery pages allow same-origin stylesheets through their CSP.
+    stylex({ ...stylexOptions, dev: true, devMode: "css-only" }),
     {
       name: "oneapp-dev-assets",
+      apply: "serve",
+      transformIndexHtml: () => [
+        {
+          tag: "link",
+          attrs: { rel: "stylesheet", href: "/virtual:stylex.css" },
+          injectTo: "head",
+        },
+        {
+          tag: "script",
+          attrs: { type: "module", src: "/@id/virtual:stylex:css-only" },
+          injectTo: "head",
+        },
+      ],
       configureServer(server) {
         server.middlewares.use((request, response, next) => {
           const pathname = request.url?.split("?")[0];

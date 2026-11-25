@@ -25,6 +25,13 @@ body {
   padding: 0 1rem;
 }
 
+.password-recovery-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  margin-block-start: 1rem;
+}
+
 .notification-anchor,
 .notification-host {
   display: contents;

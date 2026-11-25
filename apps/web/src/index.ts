@@ -10,10 +10,13 @@ import {
 } from "./bitwarden-connection.ts";
 import { appName } from "@oneapp/core";
 import {
+  alert,
   button,
   calendarIconPaths,
   CommandMenu,
   Dialog,
+  field,
+  input,
   item,
   itemGroup,
   outlineIcon,
@@ -1587,23 +1590,47 @@ const signInView = (model: Model, h: HtmlBuilder<Message>) =>
         : model.extensionAccess.approvalId
           ? [h.p([], ["Sign in to connect the OneApp extension."])]
           : []),
-      h.label([h.For("email")], ["Email"]),
-      h.input([
-        h.Id("email"),
-        h.Name("email"),
-        h.Type("email"),
-        h.Autocomplete("username"),
-        h.Required(true),
-      ]),
-      h.label([h.For("password")], ["Password"]),
-      h.input([
-        h.Id("password"),
-        h.Name("password"),
-        h.Type("password"),
-        h.Autocomplete("current-password"),
-        h.Required(true),
-      ]),
-      h.button([h.Type("submit"), h.Disabled(model.pending)], ["Sign in"]),
+      field(
+        "Email",
+        input(
+          [
+            h.Id("email"),
+            h.Name("email"),
+            h.Type("email"),
+            h.Autocomplete("username"),
+            h.Required(true),
+          ],
+          h,
+        ),
+        h,
+      ),
+      field(
+        "Password",
+        input(
+          [
+            h.Id("password"),
+            h.Name("password"),
+            h.Type("password"),
+            h.Autocomplete("current-password"),
+            h.Required(true),
+          ],
+          h,
+        ),
+        h,
+      ),
+      alert(
+        { message: model.error, severity: "error", announcement: "alert" },
+        h,
+      ),
+      button(
+        {
+          type: "submit",
+          disabled: model.pending,
+          focusableWhenDisabled: true,
+          children: [model.pending ? "Signing in…" : "Sign in"],
+        },
+        h,
+      ),
       h.a([h.Href(forgotPasswordPage)], ["Forgot password?"]),
     ],
   );
@@ -1665,7 +1692,7 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
             ? [h.p([h.Role("status")], [model.signInNotice])]
             : []),
           model.account ? approvalView(model, h) : signInView(model, h),
-          error,
+          ...(model.account ? [error] : []),
         ],
       ),
     };

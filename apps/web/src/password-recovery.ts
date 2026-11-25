@@ -1,4 +1,5 @@
 import { appName } from "@oneapp/core";
+import { alert, button, field, input } from "@oneapp/ui";
 import { EmailDelivery } from "@yielded/auth";
 import { Effect, Option, Redacted, Schema } from "effect";
 import { Command, Runtime, Update } from "foldkit";
@@ -21,7 +22,7 @@ const Model = Schema.Struct({
     "invalid",
   ]),
   pending: Schema.Boolean,
-  error: Schema.String,
+  error: Schema.NullOr(Schema.String),
   notifications: Notifications.Model,
 });
 type Model = typeof Model.Type;
@@ -142,7 +143,7 @@ export const run = (pathname: string) => {
           : "invalid"
         : "request",
       pending: false,
-      error: "",
+      error: null,
       notifications: Notifications.init(),
     },
   });
@@ -153,14 +154,19 @@ export const run = (pathname: string) => {
         model.pending
           ? { model }
           : {
-              model: { ...model, pending: true, error: "" },
+              model: { ...model, pending: true, error: null },
               commands: [Submit({})],
             },
       Requested: () => ({
-        model: { ...model, phase: "requested", pending: false, error: "" },
+        model: { ...model, phase: "requested", pending: false, error: null },
       }),
       ResetComplete: () => ({
-        model: { ...model, phase: "reset-complete", pending: false, error: "" },
+        model: {
+          ...model,
+          phase: "reset-complete",
+          pending: false,
+          error: null,
+        },
       }),
       Failed: ({ error }) => ({ model: { ...model, pending: false, error } }),
       GotNotification: ({ message }) => {
@@ -176,16 +182,36 @@ export const run = (pathname: string) => {
 
   const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
     const title = resetting ? "Reset password" : "Forgot password";
-    const passwordField = (id: string, label: string) => [
-      h.label([h.For(id)], [label]),
-      h.input([
-        h.Id(id),
-        h.Name(id),
-        h.Type("password"),
-        h.Autocomplete("new-password"),
-        h.Required(true),
-      ]),
-    ];
+    const passwordField = (id: string, label: string) =>
+      field(
+        label,
+        input(
+          [
+            h.Id(id),
+            h.Name(id),
+            h.Type("password"),
+            h.Autocomplete("new-password"),
+            h.Required(true),
+          ],
+          h,
+        ),
+        h,
+      );
+    const formError = () =>
+      alert(
+        { message: model.error, severity: "error", announcement: "alert" },
+        h,
+      );
+    const submitButton = (label: string, pendingLabel: string) =>
+      button(
+        {
+          type: "submit",
+          disabled: model.pending,
+          focusableWhenDisabled: true,
+          children: [model.pending ? pendingLabel : label],
+        },
+        h,
+      );
     const formAttributes = [
       h.Id("password-recovery"),
       h.Method("post"),
@@ -194,18 +220,22 @@ export const run = (pathname: string) => {
     const body = {
       request: () =>
         h.form(formAttributes, [
-          h.label([h.For("recovery-email")], ["Email"]),
-          h.input([
-            h.Id("recovery-email"),
-            h.Name("email"),
-            h.Type("email"),
-            h.Autocomplete("username"),
-            h.Required(true),
-          ]),
-          h.button(
-            [h.Type("submit"), h.Disabled(model.pending)],
-            [model.pending ? "Requesting…" : "Send reset link"],
+          field(
+            "Email",
+            input(
+              [
+                h.Id("recovery-email"),
+                h.Name("email"),
+                h.Type("email"),
+                h.Autocomplete("username"),
+                h.Required(true),
+              ],
+              h,
+            ),
+            h,
           ),
+          formError(),
+          submitButton("Send reset link", "Requesting…"),
         ]),
       requested: () =>
         h.p(
@@ -222,12 +252,10 @@ export const run = (pathname: string) => {
               "Use at least 15 characters. Resetting your password signs out all browsers.",
             ],
           ),
-          ...passwordField("new-password", "New password"),
-          ...passwordField("confirm-password", "Confirm new password"),
-          h.button(
-            [h.Type("submit"), h.Disabled(model.pending)],
-            [model.pending ? "Resetting…" : "Reset password"],
-          ),
+          passwordField("new-password", "New password"),
+          passwordField("confirm-password", "Confirm new password"),
+          formError(),
+          submitButton("Reset password", "Resetting…"),
         ]),
       "reset-complete": () =>
         h.p(
@@ -235,11 +263,14 @@ export const run = (pathname: string) => {
           ["Password reset. Sign in with your new password."],
         ),
       invalid: () =>
-        h.p(
-          [h.Role("alert")],
-          [
-            "This reset link is invalid or missing. Reopen it from your email or request a new link.",
-          ],
+        alert(
+          {
+            message:
+              "This reset link is invalid or missing. Reopen it from your email or request a new link.",
+            severity: "error",
+            announcement: "alert",
+          },
+          h,
         ),
     }[model.phase]();
     return {
@@ -249,16 +280,15 @@ export const run = (pathname: string) => {
         [
           h.h1([], [title]),
           body,
-          h.p([h.Role("alert")], [model.error]),
-          ...(model.phase === "invalid" || model.phase === "reset"
-            ? [
-                h.p(
-                  [],
-                  [h.a([h.Href(forgotPasswordPage)], ["Request a new link"])],
-                ),
-              ]
-            : []),
-          h.a([h.Href("/")], ["Back to sign in"]),
+          h.div(
+            [h.Class("password-recovery-links")],
+            [
+              ...(model.phase === "invalid" || model.phase === "reset"
+                ? [h.a([h.Href(forgotPasswordPage)], ["Request a new link"])]
+                : []),
+              h.a([h.Href("/")], ["Back to sign in"]),
+            ],
+          ),
         ],
       ),
     };

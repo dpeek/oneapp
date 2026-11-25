@@ -7,7 +7,6 @@ import {
   checkbox,
   ColorPicker,
   Dialog,
-  dialog,
   DropdownMenu,
   ellipsisIcon,
   field,
@@ -132,6 +131,8 @@ export const Model = Schema.Struct({
   request: Schema.NullOr(RequestState),
   selected: Schema.NullOr(SelectedEvent),
   editor: Schema.NullOr(Editor),
+  formDialog: Dialog.Model,
+  formReturnFocus: Schema.NullOr(Schema.String),
   deleteDialog: Dialog.Model,
   deleteError: Schema.NullOr(Schema.String),
   importing: Schema.NullOr(CalendarId),
@@ -143,9 +144,19 @@ type Model = typeof Model.Type;
 export const hasGlobalEventEditor = (model: Model) =>
   model.editor?.fromCreateMenu === true;
 export const creationTitleId = "event-create-title-input";
-const creationSubmitId = "event-create-submit";
+const eventSubmitId = "calendar-event-submit";
+const calendarSubmitId = "calendar-editor-submit";
+const importPreviewId = "calendar-import-preview-submit";
+const importSubmitId = "calendar-import-submit";
+const importChooseId = "calendar-import-choose";
+const formDialogId = "calendar-form-dialog";
 const deleteDialogId = "calendar-delete-event";
 const calendarTodayId = "calendar-today";
+const newEventId = "calendar-new-event";
+const newCalendarId = "calendar-new-calendar";
+const calendarDrawerId = "calendar-drawer";
+const editEventId = (series: boolean) =>
+  series ? "calendar-edit-series" : "calendar-edit-occurrence";
 
 const today = () => Temporal.Now.plainDateISO();
 const pickerDate = ({
@@ -179,6 +190,8 @@ export const initial = (): Model => {
     request: null,
     selected: null,
     editor: null,
+    formDialog: Dialog.init({ id: formDialogId }),
+    formReturnFocus: null,
     deleteDialog: Dialog.init({ id: deleteDialogId }),
     deleteError: null,
     importing: null,
@@ -198,7 +211,7 @@ export const Message = defineMessageUnion({
   Retried: {},
   GotFolderSheetMessage: { message: Sheet.Message },
   GotMenuMessage: { target: MenuTarget, message: DropdownMenu.Message },
-  NewCalendar: {},
+  NewCalendar: { surface: Surface },
   DownloadStarted: {},
   ChangedName: { name: Schema.String },
   GotColorPicker: { message: ColorPicker.Message },
@@ -226,13 +239,13 @@ export const Message = defineMessageUnion({
   ToggledReminder: { checked: Schema.Boolean },
   SavedEvent: {},
   ClosedEventEditor: {},
+  GotFormDialogMessage: { message: Dialog.Message },
   RequestedDelete: {},
   GotDeleteDialogMessage: { message: Dialog.Message },
   ConfirmedDelete: {},
   ChangedImportFile: {},
   PreviewedFile: {},
   CommittedImport: {},
-  ClosedPanel: {},
   Loaded: { request: Schema.String, week: CalendarWeek },
   Previewed: { request: Schema.String, preview: ImportState },
   Imported: { request: Schema.String, report: CalendarImportReport },
@@ -454,32 +467,42 @@ const DownloadCalendar = Command.define("DownloadCalendar", {
     }),
 });
 
-const OpenCalendarDialog = Mount.define("OpenCalendarDialog", {
-  messages: [Message.Focused],
-  execute: ({ element }) =>
-    Effect.sync(() => {
-      if (element instanceof HTMLDialogElement && !element.open)
-        element.showModal();
-      return Message.Focused();
-    }),
-});
-
 const FocusEvent = Command.define("FocusCalendarEvent", {
   args: { anchorId: Schema.String },
   messages: [Message.Focused],
   execute: ({ anchorId }) =>
-    Effect.sync(() => {
-      document.getElementById(anchorId)?.focus({ preventScroll: true });
-      return Message.Focused();
-    }),
+    focus(`#${CSS.escape(anchorId)}`, { preventScroll: true }).pipe(
+      Effect.ignore,
+      Effect.as(Message.Focused()),
+    ),
 });
 
-const FocusCreateSubmit = Command.define("FocusEventCreateSubmit", {
+const FocusFormControl = Command.define("FocusCalendarFormControl", {
+  args: { id: Schema.String },
   messages: [Message.Focused],
-  execute: focus(`#${creationSubmitId}`).pipe(
-    Effect.ignore,
-    Effect.as(Message.Focused()),
-  ),
+  execute: ({ id }) =>
+    focus(`#${CSS.escape(id)}`).pipe(
+      Effect.ignore,
+      Effect.as(Message.Focused()),
+    ),
+});
+
+const RestoreFormFocus = Command.define("RestoreCalendarFormFocus", {
+  args: { id: Schema.String },
+  messages: [Message.Focused],
+  execute: ({ id }) =>
+    focus(`#${CSS.escape(id)}`, { preventScroll: true }).pipe(
+      Effect.ignore,
+      Effect.andThen(() =>
+        document.activeElement === document.body &&
+        id !== editEventId(false) &&
+        id !== editEventId(true)
+          ? focus(`#${calendarTodayId}`, { preventScroll: true })
+          : Effect.void,
+      ),
+      Effect.ignore,
+      Effect.as(Message.Focused()),
+    ),
 });
 
 const FocusAfterDelete = Command.define("FocusCalendarAfterDelete", {
@@ -554,14 +577,31 @@ const ScrollTimeline = Mount.define("ScrollCalendarTimeline", {
     }),
 });
 
-const closedPanel = {
-  selected: null,
+const closedForms = {
   editor: null,
   importing: null,
   preview: null,
   calendarEditor: null,
+} as const;
+
+const closedPanel = {
+  ...closedForms,
+  selected: null,
   deleteError: null,
 } as const;
+
+const toFormDialogMessage = (message: typeof Dialog.Message.Type) =>
+  Message.GotFormDialogMessage({ message });
+const foldFormDialog = Update.foldChild({
+  update: Dialog.update,
+  read: (model: Model) => Option.some(model.formDialog),
+  write: (model, formDialog) => ({ ...model, formDialog }),
+  toParentMessage: toFormDialogMessage,
+  foldOutMessage: () => (model) => ({ model }),
+});
+const showFormDialog = foldFormDialog(Dialog.Message.RequestedOpen());
+const hideFormDialog = foldFormDialog(Dialog.Message.RequestedClose());
+const requestFormClose = toFormDialogMessage(Dialog.Message.RequestedClose());
 
 const load = (
   model: Model,
@@ -591,18 +631,26 @@ const navigateDate = (model: Model, date: string) => {
     slotFocus: null,
     notice: null,
   };
-  if (weekStart(date) !== weekStart(model.date))
-    return load({ ...next, week: null });
-  return !next.week && !next.request ? load(next) : { model: next };
+  return Update.combine(next, [
+    hideFormDialog,
+    (next) => {
+      if (weekStart(date) !== weekStart(model.date))
+        return load({ ...next, week: null });
+      return !next.week && !next.request ? load(next) : { model: next };
+    },
+  ]);
 };
 
 const busy = (model: Model) =>
   model.request !== null && model.request.kind !== "load";
+// Global Create isolates the workspace while preserving its return focus target.
+const workspaceBusy = (model: Model) =>
+  busy(model) && !hasGlobalEventEditor(model);
 const openPanel = (model: Model, panel: Partial<Model>) => ({
   model: { ...model, ...closedPanel, error: null, notice: null, ...panel },
 });
 
-const openNewEvent = (
+const newEventEditor = (
   model: Model,
   {
     day,
@@ -615,36 +663,44 @@ const openNewEvent = (
     calendarId: string | null;
     fromCreateMenu?: boolean;
   },
-) =>
-  openPanel(model, {
-    editor: {
-      id: crypto.randomUUID(),
-      calendarId: calendarId ?? defaultCalendarId,
-      revision: null,
-      repeat: null,
-      scope: "event",
-      occurrence: null,
-      fromCreateMenu,
-      draft: {
-        title: "",
-        location: "",
-        description: "",
-        allDay: false,
-        ...(minute === null
-          ? { start: `${day}T09:00`, end: `${day}T10:00` }
-          : calendarSlotTimes(day, minute, model.zone)),
-        timeZone: model.zone,
-        reminder: false,
-      },
-    },
-  });
+): typeof Editor.Type => ({
+  id: crypto.randomUUID(),
+  calendarId: calendarId ?? defaultCalendarId,
+  revision: null,
+  repeat: null,
+  scope: "event",
+  occurrence: null,
+  fromCreateMenu,
+  draft: {
+    title: "",
+    location: "",
+    description: "",
+    allDay: false,
+    ...(minute === null
+      ? { start: `${day}T09:00`, end: `${day}T10:00` }
+      : calendarSlotTimes(day, minute, model.zone)),
+    timeZone: model.zone,
+    reminder: false,
+  },
+});
 
 const afterMutation = (
   model: Model,
   notice: string,
   destination: string | null,
 ) => {
-  const result = load({ ...model, ...closedPanel, notice });
+  const result = Update.combine(
+    {
+      ...model,
+      ...closedPanel,
+      notice,
+      formReturnFocus:
+        model.editor?.revision && model.formDialog.isOpen
+          ? calendarTodayId
+          : model.formReturnFocus,
+    },
+    [hideFormDialog, load],
+  );
   return destination && destination !== model.visible
     ? { ...result, outMessage: OutMessage.OpenCalendar({ id: destination }) }
     : result;
@@ -722,11 +778,45 @@ const foldColorPicker = Update.foldChild({
   toParentMessage: toColorPicker,
 });
 
-const closeSheetAndOpenPanel = (model: Model, panel: Partial<Model>) =>
-  foldFolderSheet(
-    openPanel(model, panel).model,
-    Sheet.Message.RequestedClose(),
-  );
+const openForm = (model: Model, panel: Partial<Model>, returnFocus: string) => {
+  const next = openPanel(model, {
+    ...panel,
+    formReturnFocus: returnFocus,
+  }).model;
+  return model.folderSheet.isOpen
+    ? foldFolderSheet(next, Sheet.Message.RequestedClose())
+    : showFormDialog(next);
+};
+
+const updateFormDialog = (
+  model: Model,
+  message: typeof Dialog.Message.Type,
+) => {
+  if (message._tag === "RequestedClose" && busy(model)) return { model };
+  if (
+    message._tag === "CompletedCloseDialog" &&
+    !model.formDialog.isOpen &&
+    model.formReturnFocus
+  )
+    return {
+      model: { ...model, formReturnFocus: null },
+      commands: [RestoreFormFocus({ id: model.formReturnFocus })],
+    };
+
+  const result = foldFormDialog(model, message);
+  return model.formDialog.isOpen && !result.model.formDialog.isOpen
+    ? {
+        ...result,
+        model: {
+          ...result.model,
+          ...closedForms,
+          error: null,
+          formReturnFocus:
+            message._tag === "RequestedClose" ? model.formReturnFocus : null,
+        },
+      }
+    : result;
+};
 
 const foldMenu = Update.foldChildAt({
   update: menu.update,
@@ -748,11 +838,14 @@ const foldMenu = Update.foldChildAt({
       if (busy(model) || !calendar) return { model };
       if (value === "export")
         return { model, commands: [DownloadCalendar({ id: calendar.id })] };
-      return closeSheetAndOpenPanel(
+      return openForm(
         model,
         value === "edit"
           ? { calendarEditor: calendarEditorFor(calendar) }
           : { importing: calendar.id },
+        target.surface === "sheet"
+          ? calendarDrawerId
+          : DropdownMenu.buttonId(menuId(target)),
       );
     },
 });
@@ -808,7 +901,10 @@ const beginImport = (model: Model, ics: string | null) => {
         kind: ics === null ? ("preview" as const) : ("import" as const),
       },
     },
-    commands: [ImportFile({ id, calendarId: model.importing, ics })],
+    commands: [
+      FocusFormControl({ id: ics === null ? importPreviewId : importSubmitId }),
+      ImportFile({ id, calendarId: model.importing, ics }),
+    ],
   };
 };
 
@@ -823,6 +919,7 @@ export const update = (
         if (busy(model)) return { model: { ...model, visible: id } };
         const next: Model = { ...model, ...closedPanel, visible: id };
         return Update.combine(next, [
+          hideFormDialog,
           (next) => foldDeleteDialog(next, Dialog.Message.RequestedClose()),
           (next) =>
             refresh || (!next.week && !next.request)
@@ -859,15 +956,32 @@ export const update = (
       JumpedToToday: () =>
         busy(model) ? { model } : navigateDate(model, today().toString()),
       Retried: () =>
-        busy(model) ? { model } : load({ ...model, ...closedPanel }),
-      GotFolderSheetMessage: ({ message }) => updateFolderSheet(model, message),
-      GotMenuMessage: ({ target, message }) => foldMenu(model, target, message),
-      NewCalendar: () =>
         busy(model)
           ? { model }
-          : closeSheetAndOpenPanel(model, {
-              calendarEditor: calendarEditorFor(),
-            }),
+          : Update.combine({ ...model, ...closedPanel }, [
+              hideFormDialog,
+              load,
+            ]),
+      GotFolderSheetMessage: ({ message }) =>
+        Update.combine(model, [
+          (model) => updateFolderSheet(model, message),
+          (model) =>
+            message._tag === "CompletedCloseDialog" &&
+            !model.folderSheet.isOpen &&
+            !model.formDialog.isOpen &&
+            (model.calendarEditor || model.importing)
+              ? showFormDialog(model)
+              : { model },
+        ]),
+      GotMenuMessage: ({ target, message }) => foldMenu(model, target, message),
+      NewCalendar: ({ surface }) =>
+        busy(model)
+          ? { model }
+          : openForm(
+              model,
+              { calendarEditor: calendarEditorFor() },
+              surface === "sheet" ? calendarDrawerId : newCalendarId,
+            ),
       DownloadStarted: () => ({ model }),
       ChangedName: ({ name }) =>
         !model.calendarEditor || busy(model)
@@ -887,6 +1001,7 @@ export const update = (
         return {
           model: { ...model, error: null, request: { id, kind: "calendar" } },
           commands: [
+            FocusFormControl({ id: calendarSubmitId }),
             SaveCalendar({
               request: id,
               calendarId: editor.id,
@@ -921,14 +1036,26 @@ export const update = (
       NewEvent: ({ day, minute }) =>
         busy(model)
           ? { model }
-          : openNewEvent(model, { day, minute, calendarId: model.visible }),
+          : openForm(
+              model,
+              {
+                editor: newEventEditor(model, {
+                  day,
+                  minute,
+                  calendarId: model.visible,
+                }),
+              },
+              minute === null ? newEventId : slotId({ day, minute }),
+            ),
       OpenedCreate: ({ useCalendarContext }) => {
         if (busy(model)) return { model };
-        const result = openNewEvent(model, {
-          day: useCalendarContext ? model.date : today().toString(),
-          minute: null,
-          calendarId: useCalendarContext ? model.visible : null,
-          fromCreateMenu: true,
+        const result = openPanel(model, {
+          editor: newEventEditor(model, {
+            day: useCalendarContext ? model.date : today().toString(),
+            minute: null,
+            calendarId: useCalendarContext ? model.visible : null,
+            fromCreateMenu: true,
+          }),
         });
         return !model.week && !model.request ? load(result.model) : result;
       },
@@ -937,21 +1064,29 @@ export const update = (
         const event = model.selected?.event;
         const draft = series ? event?.series?.draft : event?.draft;
         if (!event || !draft || busy(model)) return { model };
-        return openPanel(model, {
-          selected: model.selected,
-          editor: {
-            id: event.id,
-            calendarId: event.calendarId,
-            revision: event.revision,
-            draft: draft.allDay
-              ? { ...draft, end: calendarDays(draft.end, -1) }
-              : draft,
-            repeat: series ? (event.series?.repeat ?? null) : null,
-            scope: series ? "series" : event.recurring ? "occurrence" : "event",
-            occurrence: !series && event.recurring ? event.occurrence : null,
-            fromCreateMenu: false,
+        return openForm(
+          model,
+          {
+            selected: model.selected,
+            editor: {
+              id: event.id,
+              calendarId: event.calendarId,
+              revision: event.revision,
+              draft: draft.allDay
+                ? { ...draft, end: calendarDays(draft.end, -1) }
+                : draft,
+              repeat: series ? (event.series?.repeat ?? null) : null,
+              scope: series
+                ? "series"
+                : event.recurring
+                  ? "occurrence"
+                  : "event",
+              occurrence: !series && event.recurring ? event.occurrence : null,
+              fromCreateMenu: false,
+            },
           },
-        });
+          editEventId(series),
+        );
       },
       ChangedEventCalendar: ({ id }) =>
         !model.editor || busy(model) || model.editor.scope === "occurrence"
@@ -1034,7 +1169,7 @@ export const update = (
         return {
           model: { ...model, error: null, request: { id, kind: "save" } },
           commands: [
-            ...(hasGlobalEventEditor(model) ? [FocusCreateSubmit()] : []),
+            FocusFormControl({ id: eventSubmitId }),
             SaveEvent({ id, editor: model.editor }),
           ],
         };
@@ -1042,7 +1177,10 @@ export const update = (
       ClosedEventEditor: () =>
         busy(model)
           ? { model }
-          : { model: { ...model, editor: null, error: null } },
+          : hasGlobalEventEditor(model)
+            ? { model: { ...model, editor: null, error: null } }
+            : updateFormDialog(model, Dialog.Message.RequestedClose()),
+      GotFormDialogMessage: ({ message }) => updateFormDialog(model, message),
       RequestedDelete: () => {
         const event = model.selected?.event;
         if (
@@ -1097,13 +1235,13 @@ export const update = (
           ? { model }
           : {
               model: { ...model, preview: null, error: null },
+              commands: [FocusFormControl({ id: fileInput })],
             },
       PreviewedFile: () => (busy(model) ? { model } : beginImport(model, null)),
       CommittedImport: () =>
         !model.preview || busy(model)
           ? { model }
           : beginImport(model, model.preview.ics),
-      ClosedPanel: () => (busy(model) ? { model } : openPanel(model, {})),
       Loaded: ({ request, week }) =>
         request !== model.request?.id
           ? { model }
@@ -1118,7 +1256,16 @@ export const update = (
       Previewed: ({ request, preview }) =>
         request !== model.request?.id
           ? { model }
-          : { model: { ...model, preview, request: null } },
+          : {
+              model: { ...model, preview, request: null },
+              commands: [
+                FocusFormControl({
+                  id: preview.report.available
+                    ? importSubmitId
+                    : importChooseId,
+                }),
+              ],
+            },
       Imported: ({ request, report }) =>
         request !== model.request?.id
           ? { model }
@@ -1211,16 +1358,20 @@ const calendarOptions = (model: Model) =>
 
 const allCalendars = "All calendars";
 
-const newCalendarButton = (model: Model, h: H) =>
+const newCalendarButton = (model: Model, surface: typeof Surface.Type, h: H) =>
   button(
     {
       variant: "ghost",
       size: "icon-sm",
       rounded: true,
       ariaLabel: "New calendar",
-      attributes: [h.Title("New calendar")],
-      disabled: busy(model),
-      onClick: Message.NewCalendar(),
+      dialogId: formDialogId,
+      attributes: [
+        h.Title("New calendar"),
+        ...(surface === "sidebar" ? [h.Id(newCalendarId)] : []),
+      ],
+      disabled: workspaceBusy(model),
+      onClick: Message.NewCalendar({ surface }),
       children: [plusIcon(h, "16")],
     },
     h,
@@ -1281,7 +1432,7 @@ const calendarNavigation = (
         ? [
             h.div(
               [h.Class("calendar-nav-header")],
-              [h.h2([], ["Calendars"]), newCalendarButton(model, h)],
+              [h.h2([], ["Calendars"]), newCalendarButton(model, surface, h)],
             ),
           ]
         : []),
@@ -1300,7 +1451,7 @@ const calendarNavigation = (
                     model: menuModel(model, target),
                     label: `Actions for ${calendar.name}`,
                     trigger: ellipsisIcon(h),
-                    disabled: busy(model),
+                    disabled: workspaceBusy(model),
                     toParentMessage: (message) =>
                       Message.GotMenuMessage({ target, message }),
                     items: [
@@ -1338,82 +1489,87 @@ const calendarNavigation = (
   );
 };
 
-const calendarEditorView = (model: Model, h: H) => {
+const formError = (model: Model, h: H) =>
+  alert({ message: model.error, severity: "error", announcement: "alert" }, h);
+
+const calendarEditorContent = (
+  model: Model,
+  initialFocus: ReadonlyArray<ChildAttribute>,
+  h: H,
+) => {
   const editor = model.calendarEditor!;
   const disabled = busy(model);
-  return dialog(
-    {
-      title: editor.create ? "New calendar" : "Edit calendar",
-      titleId: "calendar-editor-title",
-      attributes: [
-        h.OnMount(OpenCalendarDialog()),
-        h.OnCancel(Message.ClosedPanel()),
-      ],
-      children: [
-        ...(model.error ? [h.p([h.Role("alert")], [model.error])] : []),
-        h.form(
-          [h.OnSubmit(Message.SavedCalendar())],
-          [
-            field(
-              "Calendar name",
-              input(
-                [
-                  h.Type("text"),
-                  h.Value(editor.name),
-                  h.Required(true),
-                  h.Maxlength(calendarNameLimit),
-                  h.Disabled(disabled),
-                  h.Autofocus(true),
-                  h.OnInput((name) => Message.ChangedName({ name })),
-                ],
-                h,
-              ),
+  return h.div(
+    [h.Class("calendar-form-content")],
+    [
+      formError(model, h),
+      h.form(
+        [h.OnSubmit(Message.SavedCalendar())],
+        [
+          field(
+            "Calendar name",
+            input(
+              [
+                ...initialFocus,
+                h.Type("text"),
+                h.Value(editor.name),
+                h.Required(true),
+                h.Maxlength(calendarNameLimit),
+                h.Disabled(disabled),
+                h.OnInput((name) => Message.ChangedName({ name })),
+              ],
               h,
             ),
-            h.div(
-              [h.Class("calendar-colour-field")],
-              [
-                h.span([], ["Colour"]),
-                ColorPicker.view(
-                  {
-                    model: editor.picker,
-                    label: "Calendar colour",
-                    disabled,
-                    toParentMessage: toColorPicker,
-                  },
-                  h,
-                ),
-              ],
-            ),
-            h.div(
-              [h.Class("calendar-actions")],
-              [
-                button(
-                  {
-                    type: "submit",
-                    disabled,
-                    children: [
-                      editor.create ? "Create calendar" : "Save changes",
-                    ],
-                  },
-                  h,
-                ),
-                button(
-                  {
-                    variant: "ghost",
-                    disabled,
-                    onClick: Message.ClosedPanel(),
-                    children: ["Cancel"],
-                  },
-                  h,
-                ),
-              ],
-            ),
-          ],
-        ),
-      ],
-    },
-    h,
+            h,
+          ),
+          h.div(
+            [h.Class("calendar-colour-field")],
+            [
+              h.span([], ["Colour"]),
+              ColorPicker.view(
+                {
+                  model: editor.picker,
+                  label: "Calendar colour",
+                  disabled,
+                  toParentMessage: toColorPicker,
+                },
+                h,
+              ),
+            ],
+          ),
+          Dialog.footer(
+            [
+              button(
+                {
+                  variant: "outline",
+                  disabled,
+                  onClick: requestFormClose,
+                  children: ["Cancel"],
+                },
+                h,
+              ),
+              button(
+                {
+                  type: "submit",
+                  disabled,
+                  focusableWhenDisabled: true,
+                  attributes: [h.Id(calendarSubmitId), h.AriaBusy(disabled)],
+                  children: [
+                    disabled
+                      ? "Saving…"
+                      : editor.create
+                        ? "Create calendar"
+                        : "Save changes",
+                  ],
+                },
+                h,
+              ),
+            ],
+            h,
+          ),
+        ],
+      ),
+    ],
   );
 };
 
@@ -1428,7 +1584,7 @@ const repeatOptions = [
 const eventEditorContent = (
   model: Model,
   h: H,
-  initialFocus?: ReadonlyArray<ChildAttribute>,
+  initialFocus: ReadonlyArray<ChildAttribute>,
 ) => {
   const editor = model.editor!;
   const { draft } = editor;
@@ -1438,12 +1594,8 @@ const eventEditorContent = (
     {
       type: "submit",
       disabled,
-      ...(editor.fromCreateMenu
-        ? {
-            attributes: [h.Id(creationSubmitId)],
-            focusableWhenDisabled: saving,
-          }
-        : {}),
+      attributes: [h.Id(eventSubmitId), h.AriaBusy(saving)],
+      focusableWhenDisabled: saving,
       children: [
         saving
           ? "Saving…"
@@ -1456,7 +1608,7 @@ const eventEditorContent = (
   );
   const cancel = button(
     {
-      variant: "ghost",
+      variant: "outline",
       disabled,
       onClick: Message.ClosedEventEditor(),
       children: ["Cancel"],
@@ -1480,9 +1632,8 @@ const eventEditorContent = (
           ...(key === "title"
             ? [
                 h.Maxlength(250),
-                ...(initialFocus
-                  ? [h.Id(creationTitleId), ...initialFocus]
-                  : [h.Autofocus(true)]),
+                ...(editor.fromCreateMenu ? [h.Id(creationTitleId)] : []),
+                ...initialFocus,
               ]
             : []),
           ...(key === "location" ? [h.Maxlength(500)] : []),
@@ -1493,7 +1644,7 @@ const eventEditorContent = (
       h,
     );
   return [
-    ...(model.error ? [h.p([h.Role("alert")], [model.error])] : []),
+    formError(model, h),
     h.form(
       [h.OnSubmit(Message.SavedEvent())],
       [
@@ -1622,9 +1773,7 @@ const eventEditorContent = (
                   ]
                 : []),
             ]),
-        editor.fromCreateMenu
-          ? Dialog.footer([cancel, save], h)
-          : h.div([h.Class("calendar-actions")], [save, cancel]),
+        Dialog.footer([cancel, save], h),
       ],
     ),
   ];
@@ -1633,33 +1782,21 @@ const eventEditorContent = (
 export const createView = Submodel.defineView(
   (model: Model, initialFocus: ReadonlyArray<ChildAttribute>, h: H) =>
     hasGlobalEventEditor(model)
-      ? h.div([], eventEditorContent(model, h, initialFocus))
+      ? h.div(
+          [h.Class("calendar-form-content")],
+          eventEditorContent(model, h, initialFocus),
+        )
       : h.empty,
 );
 
-const eventEditorView = (model: Model, h: H) => {
-  const editor = model.editor!;
-  const title =
-    editor.scope === "series"
-      ? "Edit series"
-      : editor.scope === "occurrence"
-        ? "Edit occurrence"
-        : editor.revision
-          ? "Edit event"
-          : "New event";
-  return dialog(
-    {
-      title,
-      titleId: "calendar-event-editor-title",
-      attributes: [
-        h.OnMount(OpenCalendarDialog()),
-        h.OnCancel(Message.ClosedEventEditor()),
-      ],
-      children: eventEditorContent(model, h),
-    },
-    h,
-  );
-};
+const eventEditorTitle = (editor: typeof Editor.Type) =>
+  editor.scope === "series"
+    ? "Edit series"
+    : editor.scope === "occurrence"
+      ? "Edit occurrence"
+      : editor.revision
+        ? "Edit event"
+        : "New event";
 
 const eventDetailsId = "calendar-event-details";
 const eventDetailsTitleId = `${eventDetailsId}-title`;
@@ -1727,6 +1864,8 @@ const detailsView = (
                   {
                     variant: "outline",
                     disabled,
+                    dialogId: formDialogId,
+                    attributes: [h.Id(editEventId(false))],
                     onClick: Message.EditEvent({ series: false }),
                     children: [event.recurring ? "Edit occurrence" : "Edit"],
                   },
@@ -1740,6 +1879,8 @@ const detailsView = (
                   {
                     variant: "ghost",
                     disabled,
+                    dialogId: formDialogId,
+                    attributes: [h.Id(editEventId(true))],
                     onClick: Message.EditEvent({ series: true }),
                     children: ["Edit series"],
                   },
@@ -1832,113 +1973,156 @@ const deleteDialogView = (model: Model, h: H) => {
   );
 };
 
-const importView = (id: string, model: Model, h: H) => {
+const importContent = (
+  model: Model,
+  initialFocus: ReadonlyArray<ChildAttribute>,
+  h: H,
+) => {
   const report = model.preview?.report;
   const disabled = busy(model);
-  return dialog(
-    {
-      titleId: "calendar-import-title",
-      title: `Import into ${calendarName(model, id)}`,
-      attributes: [
-        h.OnMount(OpenCalendarDialog()),
-        h.OnCancel(Message.ClosedPanel()),
-      ],
-      children: [
-        ...(model.error ? [h.p([h.Role("alert")], [model.error])] : []),
-        report
-          ? h.div(
-              [h.Class("calendar-import-preview")],
-              [
-                h.p(
-                  [],
-                  [
-                    `${report.available} ready to import · ${report.existing} already imported · ${report.total - report.available - report.existing} skipped`,
-                  ],
-                ),
-                ...(report.warnings.length
-                  ? [
-                      h.ul(
-                        [h.Class("calendar-import-warnings")],
-                        report.warnings.map((warning) => h.li([], [warning])),
-                      ),
-                    ]
-                  : []),
-                h.div(
-                  [h.Class("calendar-actions")],
-                  [
-                    button(
-                      {
-                        disabled: disabled || !report.available,
-                        onClick: Message.CommittedImport(),
-                        children: [disabled ? "Importing…" : "Import events"],
-                      },
-                      h,
+  return h.div(
+    [h.Class("calendar-form-content")],
+    [
+      formError(model, h),
+      report
+        ? h.div(
+            [h.Class("calendar-import-preview")],
+            [
+              alert(
+                {
+                  message: `${report.available} ready to import · ${report.existing} already imported · ${report.total - report.available - report.existing} skipped`,
+                  severity: report.warnings.length ? "warning" : "info",
+                  announcement: "status",
+                },
+                h,
+              ),
+              ...(report.warnings.length
+                ? [
+                    h.ul(
+                      [h.Class("calendar-import-warnings")],
+                      report.warnings.map((warning) => h.li([], [warning])),
                     ),
-                    button(
-                      {
-                        variant: "ghost",
-                        disabled,
-                        onClick: Message.ChangedImportFile(),
-                        children: ["Choose another file"],
-                      },
-                      h,
-                    ),
-                    button(
-                      {
-                        variant: "ghost",
-                        disabled,
-                        onClick: Message.ClosedPanel(),
-                        children: ["Done"],
-                      },
-                      h,
-                    ),
-                  ],
-                ),
-              ],
-            )
-          : h.form(
-              [h.OnSubmit(Message.PreviewedFile())],
-              [
-                field(
-                  `Calendar file (.ics, up to ${calendarImportLimitLabel})`,
-                  input(
-                    [
-                      h.Type("file"),
-                      h.Id(fileInput),
-                      h.Required(true),
-                      h.Accept(".ics,text/calendar"),
-                      h.Disabled(disabled),
-                      h.Autofocus(true),
-                    ],
+                  ]
+                : []),
+              Dialog.footer(
+                [
+                  button(
+                    {
+                      variant: "ghost",
+                      disabled,
+                      onClick: requestFormClose,
+                      children: ["Done"],
+                    },
                     h,
                   ),
+                  button(
+                    {
+                      variant: "outline",
+                      disabled,
+                      attributes: [
+                        h.Id(importChooseId),
+                        ...(!report.available ? initialFocus : []),
+                      ],
+                      onClick: Message.ChangedImportFile(),
+                      children: ["Choose another file"],
+                    },
+                    h,
+                  ),
+                  button(
+                    {
+                      disabled: disabled || !report.available,
+                      focusableWhenDisabled: disabled,
+                      attributes: [
+                        h.Id(importSubmitId),
+                        h.AriaBusy(disabled),
+                        ...(report.available ? initialFocus : []),
+                      ],
+                      onClick: Message.CommittedImport(),
+                      children: [disabled ? "Importing…" : "Import events"],
+                    },
+                    h,
+                  ),
+                ],
+                h,
+              ),
+            ],
+          )
+        : h.form(
+            [h.OnSubmit(Message.PreviewedFile())],
+            [
+              field(
+                `Calendar file (.ics, up to ${calendarImportLimitLabel})`,
+                input(
+                  [
+                    ...initialFocus,
+                    h.Type("file"),
+                    h.Id(fileInput),
+                    h.Required(true),
+                    h.Accept(".ics,text/calendar"),
+                    h.Disabled(disabled),
+                  ],
                   h,
                 ),
-                h.div(
-                  [h.Class("calendar-actions")],
-                  [
-                    button(
-                      {
-                        type: "submit",
-                        disabled,
-                        children: [disabled ? "Reading…" : "Preview import"],
-                      },
-                      h,
-                    ),
-                    button(
-                      {
-                        variant: "ghost",
-                        disabled,
-                        onClick: Message.ClosedPanel(),
-                        children: ["Cancel"],
-                      },
-                      h,
-                    ),
-                  ],
-                ),
-              ],
-            ),
-      ],
+                h,
+              ),
+              Dialog.footer(
+                [
+                  button(
+                    {
+                      variant: "outline",
+                      disabled,
+                      onClick: requestFormClose,
+                      children: ["Cancel"],
+                    },
+                    h,
+                  ),
+                  button(
+                    {
+                      type: "submit",
+                      disabled,
+                      focusableWhenDisabled: true,
+                      attributes: [h.Id(importPreviewId), h.AriaBusy(disabled)],
+                      children: [disabled ? "Reading…" : "Preview import"],
+                    },
+                    h,
+                  ),
+                ],
+                h,
+              ),
+            ],
+          ),
+    ],
+  );
+};
+
+const formDialogView = (model: Model, h: H) => {
+  const { calendarEditor, editor, importing } = model;
+  const title = calendarEditor
+    ? calendarEditor.create
+      ? "New calendar"
+      : "Edit calendar"
+    : importing
+      ? `Import into ${calendarName(model, importing)}`
+      : editor
+        ? eventEditorTitle(editor)
+        : "Calendar";
+  return Dialog.view(
+    {
+      model: model.formDialog,
+      title,
+      showCloseButton: !busy(model),
+      toParentMessage: toFormDialogMessage,
+      content: (initialFocus) =>
+        calendarEditor
+          ? calendarEditorContent(model, initialFocus, h)
+          : importing
+            ? importContent(model, initialFocus, h)
+            : editor
+              ? h.div(
+                  [h.Class("calendar-form-content")],
+                  eventEditorContent(model, h, initialFocus),
+                )
+              : h.empty,
     },
     h,
   );
@@ -2062,7 +2246,7 @@ const schedule = (
       timed.slice(0, 1).map((item) => item.start),
     ),
   );
-  const disabled = busy(model);
+  const disabled = workspaceBusy(model);
 
   const eventButton = (
     day: string,
@@ -2074,7 +2258,7 @@ const schedule = (
     const name = calendarName(model, event.calendarId);
     const label = [event.title, accessibleTime, name].join(", ");
     const anchorId = `calendar-event-${day}-${event.id}-${event.occurrence}`;
-    const expanded = model.selected?.anchorId === anchorId && !model.editor;
+    const expanded = model.selected?.anchorId === anchorId;
     return h.button(
       [
         h.Key(`${event.id}:${event.occurrence}`),
@@ -2227,6 +2411,8 @@ const schedule = (
                           h.Id(slotId(slot)),
                           h.Type("button"),
                           h.DataAttribute("slot", "calendar-time-slot"),
+                          h.AriaHasPopup("dialog"),
+                          h.AriaControls(formDialogId),
                           h.AriaLabel(
                             `New event, ${dateLabel}, ${timeLabel(minute)}`,
                           ),
@@ -2312,7 +2498,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
       : Array.from({ length: 7 }, (_, offset) =>
           calendarDays(weekStart(model.date), offset),
         );
-  const disabled = busy(model);
+  const disabled = workspaceBusy(model);
   const calendars = calendarChoices(model);
   const selectedCalendar = calendars.find(
     (calendar) => calendar.id === model.visible,
@@ -2323,24 +2509,38 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
     ) ?? [];
   const missing =
     model.week !== null && model.visible !== null && !selectedCalendar;
-  const error = model.error ?? (model.selected ? null : model.deleteError);
+  const hasForm = model.importing || model.calendarEditor || model.editor;
+  const error = hasForm ? null : model.error;
+  const deleteError = !hasForm && !model.selected ? model.deleteError : null;
   const list = h.div(
     [h.Class("workspace-list calendar")],
     [
-      ...(error && !model.importing && !model.calendarEditor && !model.editor
+      alert(
+        {
+          message: error,
+          severity: "error",
+          announcement: "alert",
+          action: error ? refreshCalendarButton(h) : undefined,
+        },
+        h,
+      ),
+      ...(!error && deleteError
         ? [
-            h.div(
-              [h.Class("calendar-error")],
-              [
-                h.p(model.error ? [h.Role("alert")] : [], [error]),
-                refreshCalendarButton(h),
-              ],
+            alert(
+              {
+                message: deleteError,
+                severity: "error",
+                announcement: "static",
+                action: refreshCalendarButton(h),
+              },
+              h,
             ),
           ]
         : []),
-      ...(model.notice ? [h.p([h.Role("status")], [model.notice])] : []),
-      ...(model.calendarEditor ? [calendarEditorView(model, h)] : []),
-      ...(model.importing ? [importView(model.importing, model, h)] : []),
+      alert(
+        { message: model.notice, severity: "success", announcement: "status" },
+        h,
+      ),
       ...(missing ? [h.p([h.Role("alert")], ["Calendar not found."])] : []),
       ...(!model.week && model.request?.kind === "load"
         ? [h.p([h.Role("status")], ["Loading calendar…"])]
@@ -2356,12 +2556,8 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
       ...(model.week && !missing
         ? [schedule(model, days, events, current, h)]
         : []),
-      ...(model.editor && !hasGlobalEventEditor(model)
-        ? [eventEditorView(model, h)]
-        : []),
-      ...(model.selected && !model.editor
-        ? [detailsView(model.selected, model, h)]
-        : []),
+      ...(model.selected ? [detailsView(model.selected, model, h)] : []),
+      formDialogView(model, h),
       deleteDialogView(model, h),
     ],
   );
@@ -2386,6 +2582,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
                 size: "icon",
                 rounded: true,
                 ariaLabel: "Calendars",
+                attributes: [h.Id(calendarDrawerId)],
                 dialogId: model.folderSheet.id,
                 disabled,
                 onClick: toFolderSheet(Sheet.Message.RequestedOpen()),
@@ -2402,6 +2599,8 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
             button(
               {
                 size: "sm",
+                dialogId: formDialogId,
+                attributes: [h.Id(newEventId)],
                 disabled:
                   disabled || (model.visible !== null && !selectedCalendar),
                 onClick: Message.NewEvent({ day: model.date, minute: null }),
@@ -2419,7 +2618,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
         {
           model: model.folderSheet,
           title: "Calendars",
-          headerActions: [newCalendarButton(model, h)],
+          headerActions: [newCalendarButton(model, "sheet", h)],
           content: calendarNavigation(model, "sheet", h),
           toParentMessage: toFolderSheet,
         },

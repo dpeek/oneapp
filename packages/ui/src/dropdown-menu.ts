@@ -6,7 +6,7 @@ import { buttonClassName } from "./button.ts";
 import { outlineIcon } from "./icons.ts";
 import { controls } from "./tokens.stylex.ts";
 
-export const { Model, Message, init } = Menu;
+export const { Model, Message, init, buttonId } = Menu;
 
 const styles = stylex.create({
   openGhostTrigger: {

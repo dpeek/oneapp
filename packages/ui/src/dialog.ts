@@ -1,12 +1,7 @@
 import { Dialog } from "@foldkit/ui";
 import * as stylex from "@stylexjs/stylex";
 import { Predicate } from "effect";
-import type {
-  Attribute,
-  ChildAttribute,
-  Html,
-  HtmlBuilder,
-} from "foldkit/html";
+import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html";
 import { buttonClassName } from "./button.ts";
 import { outlineIcon } from "./icons.ts";
 import { controls } from "./tokens.stylex.ts";
@@ -49,10 +44,6 @@ const styles = stylex.create({
   wide: { inlineSize: "min(36rem, calc(100% - 2rem))" },
   extraWide: { inlineSize: "min(50rem, calc(100% - 2rem))" },
   padding: { padding: "clamp(1rem, 4vw, 1.5rem)" },
-  native: {
-    "::backdrop": { backgroundColor: "rgb(0 0 0 / 65%)" },
-  },
-  content: { display: "grid", gap: "1rem" },
   header: {
     display: "flex",
     alignItems: "center",
@@ -271,43 +262,3 @@ export const view = <ParentMessage>(
     toParentMessage: props.toParentMessage,
   });
 };
-
-export const dialog = <Message>(
-  props: Readonly<{
-    titleId: string;
-    title: string;
-    children: ReadonlyArray<Html>;
-    attributes: ReadonlyArray<Attribute<Message>>;
-  }>,
-  h: HtmlBuilder<Message>,
-): Html =>
-  h.dialog(
-    [
-      ...props.attributes,
-      h.AriaLabelledBy(props.titleId),
-      h.DataAttribute("slot", "dialog"),
-      h.Class(
-        stylex.props(styles.surface, styles.padding, styles.native).className ??
-          "",
-      ),
-    ],
-    [
-      h.div(
-        [
-          h.DataAttribute("slot", "dialog-content"),
-          h.Class(stylex.props(styles.content).className ?? ""),
-        ],
-        [
-          h.h2(
-            [
-              h.Id(props.titleId),
-              h.DataAttribute("slot", "dialog-title"),
-              h.Class(stylex.props(styles.title).className ?? ""),
-            ],
-            [props.title],
-          ),
-          ...props.children,
-        ],
-      ),
-    ],
-  );

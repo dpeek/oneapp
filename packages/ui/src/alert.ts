@@ -62,28 +62,34 @@ const icons = {
 export type AlertSeverity = keyof typeof icons;
 export type AlertAnnouncement = "static" | "status" | "alert";
 
+type AlertContent = Readonly<{
+  message: string | null;
+  severity: AlertSeverity;
+  announcement: AlertAnnouncement;
+  messageId?: string;
+}>;
+
+const rootClassName = (severity: AlertSeverity, empty: boolean) =>
+  stylex.props(styles.root, styles[severity], empty && styles.empty)
+    .className ?? "";
+const iconClassName = stylex.props(styles.icon).className ?? "";
+const titleClassName = stylex.props(styles.title).className ?? "";
+
 export const alert = <Message>(
   {
     message,
     severity,
     announcement,
+    messageId,
     action,
-  }: Readonly<{
-    message: string | null;
-    severity: AlertSeverity;
-    announcement: AlertAnnouncement;
-    action?: Html | undefined;
-  }>,
+  }: AlertContent & Readonly<{ action?: Html | undefined }>,
   h: HtmlBuilder<Message>,
 ): Html =>
   h.div(
     [
       h.DataAttribute("slot", "alert"),
       h.DataAttribute("severity", severity),
-      h.Class(
-        stylex.props(styles.root, styles[severity], !message && styles.empty)
-          .className ?? "",
-      ),
+      h.Class(rootClassName(severity, !message)),
     ],
     [
       message
@@ -91,7 +97,7 @@ export const alert = <Message>(
             [
               h.Key("icon"),
               h.DataAttribute("slot", "alert-icon"),
-              h.Class(stylex.props(styles.icon).className ?? ""),
+              h.Class(iconClassName),
             ],
             [outlineIcon(h, icons[severity])],
           )
@@ -100,6 +106,7 @@ export const alert = <Message>(
         [
           h.Key("title"),
           h.DataAttribute("slot", "alert-title"),
+          ...(messageId ? [h.Id(messageId)] : []),
           ...(announcement === "static"
             ? []
             : [
@@ -107,7 +114,7 @@ export const alert = <Message>(
                 h.AriaLive(announcement === "alert" ? "assertive" : "polite"),
                 h.AriaAtomic(true),
               ]),
-          h.Class(stylex.props(styles.title).className ?? ""),
+          h.Class(titleClassName),
         ],
         message ? [message] : [],
       ),
@@ -125,3 +132,49 @@ export const alert = <Message>(
         : []),
     ],
   );
+
+// Shared Alert styling for callers that render directly into the DOM.
+export const createAlert = ({
+  message,
+  severity,
+  announcement,
+  messageId,
+}: AlertContent & { message: string }) => {
+  const element = document.createElement("div");
+  element.dataset.slot = "alert";
+  element.dataset.severity = severity;
+  element.className = rootClassName(severity, false);
+
+  const ns = "http://www.w3.org/2000/svg";
+  const icon = document.createElementNS(ns, "svg");
+  icon.dataset.slot = "alert-icon";
+  icon.setAttribute("class", iconClassName);
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("fill", "none");
+  icon.setAttribute("stroke", "currentColor");
+  icon.setAttribute("stroke-width", "2");
+  icon.setAttribute("stroke-linecap", "round");
+  icon.setAttribute("stroke-linejoin", "round");
+  icon.setAttribute("aria-hidden", "true");
+  for (const data of icons[severity]) {
+    const path = document.createElementNS(ns, "path");
+    path.setAttribute("d", data);
+    icon.append(path);
+  }
+
+  const title = document.createElement("div");
+  title.dataset.slot = "alert-title";
+  title.className = titleClassName;
+  title.textContent = message;
+  if (messageId) title.id = messageId;
+  if (announcement !== "static") {
+    title.setAttribute("role", announcement);
+    title.setAttribute(
+      "aria-live",
+      announcement === "alert" ? "assertive" : "polite",
+    );
+    title.setAttribute("aria-atomic", "true");
+  }
+  element.append(icon, title);
+  return element;
+};

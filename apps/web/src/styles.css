@@ -189,11 +189,21 @@ body:has(.app-shell) {
   max-width: 26rem;
 }
 
+.vault-setup-form,
+.vault-password-form {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.vault-setup-field > [data-slot="alert"],
+.vault-setup > [data-slot="alert"] {
+  margin-block-start: 0.5rem;
+}
+
 .vault-unlock-form {
   margin-inline: auto;
 }
 
-.vault-password-field,
 .vault-item-field {
   display: grid;
   gap: 0.375rem;
@@ -829,7 +839,7 @@ oneapp-vault-reader {
   display: none;
 }
 
-.vault-setup [role="alert"] {
+.vault-setup p[role="alert"] {
   margin-block-start: 1rem;
 }
 

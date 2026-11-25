@@ -5,7 +5,12 @@ import type { Document, HtmlBuilder } from "foldkit/html";
 
 export { avatar, createAvatar } from "./avatar.ts";
 export { actionBar } from "./action-bar.ts";
-export { alert, type AlertAnnouncement, type AlertSeverity } from "./alert.ts";
+export {
+  alert,
+  createAlert,
+  type AlertAnnouncement,
+  type AlertSeverity,
+} from "./alert.ts";
 export { avatarGroup } from "./avatar-group.ts";
 export { badge } from "./badge.ts";
 export { button, buttonClassName } from "./button.ts";

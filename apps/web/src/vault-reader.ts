@@ -1,6 +1,7 @@
 import {
   actionBar,
   buttonClassName,
+  createAlert,
   createButtonGroup,
   createField,
   createFieldGroup,
@@ -136,6 +137,7 @@ type VaultWorkspace = {
   detail: HTMLElement;
   detailContent: HTMLElement;
 };
+type UnlockFailure = { message: string; invalidPassword?: true };
 
 const decodeSnapshot = Schema.decodeUnknownSync(VaultSnapshot);
 const decodeItem = Schema.decodeUnknownSync(VaultItem);
@@ -265,7 +267,7 @@ const transferPassword = (label: string, required = true) => {
   };
 };
 
-const transferSubmit = (label: string) => {
+const primarySubmit = (label: string) => {
   const button = create("button", label);
   button.type = "submit";
   button.dataset.slot = "button";
@@ -274,32 +276,16 @@ const transferSubmit = (label: string) => {
 };
 
 const passwordForm = (
-  buttonLabel: string | null,
+  buttonLabel: string,
   submit: (password: string) => void,
 ) => {
   const form = create("form");
   form.method = "post";
-  const input = create("input");
-  input.type = "password";
-  input.required = true;
-  input.maxLength = vaultPasswordMaximum;
-  input.autocomplete = "off";
-  const label = "Vault master password";
-  if (buttonLabel) {
-    const field = create("label", label);
-    field.className = "vault-password-field";
-    field.append(input);
-    const button = create("button", buttonLabel);
-    button.type = "submit";
-    form.append(field, button);
-  } else {
-    input.className = inputClassName;
-    input.dataset.slot = "input";
-    input.placeholder = label;
-    input.setAttribute("aria-label", label);
-    input.enterKeyHint = "go";
-    form.append(input);
-  }
+  form.className = "vault-password-form";
+  const { element, input } = transferPassword("Vault master password");
+  input.enterKeyHint = "go";
+  const button = primarySubmit(buttonLabel);
+  form.append(element, button);
   // The password stays out of native form submissions and the app's message history.
   form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -308,7 +294,7 @@ const passwordForm = (
     form.reset();
     submit(password);
   });
-  return { form, input };
+  return { form, input, button };
 };
 
 const readText = (ciphertext: string | null, key: VaultKey) =>
@@ -523,15 +509,27 @@ class VaultReader extends HTMLElement {
     });
   }
 
-  #showUnlock(error?: string) {
-    const feedback = error ? alert(error) : undefined;
-    const { form, input } = passwordForm(null, (password) => {
+  #showUnlock(failure?: UnlockFailure) {
+    const errorId = "vault-unlock-error";
+    const feedback = failure
+      ? createAlert({
+          message: failure.message,
+          messageId: errorId,
+          severity: "error",
+          announcement: "static",
+        })
+      : undefined;
+    const { form, input, button } = passwordForm("Unlock vault", (password) => {
       feedback?.remove();
       input.removeAttribute("aria-describedby");
+      input.removeAttribute("aria-invalid");
       input.readOnly = true;
-      input.placeholder = "Unlocking vault…";
+      button.textContent = "Unlocking vault…";
+      button.setAttribute("aria-disabled", "true");
       form.setAttribute("aria-busy", "true");
-      let failure = "Could not load your vault. Try again.";
+      let error: UnlockFailure = {
+        message: "Could not load your vault. Try again.",
+      };
       void this.#run(
         async (signal) => {
           const response = await fetch(vaultItemsPath, {
@@ -539,10 +537,13 @@ class VaultReader extends HTMLElement {
             signal,
           });
           if (response.status === 401)
-            failure = "Sign in to OneApp to open your vault.";
+            error = { message: "Sign in to OneApp to open your vault." };
           if (!response.ok) throw new Error("Vault fetch failed");
           const snapshot = decodeSnapshot(await response.json());
-          failure = "Could not unlock the vault. Check your master password.";
+          error = {
+            message: "Could not unlock the vault. Check your master password.",
+            invalidPassword: true,
+          };
           const key = await unlockVault(password, snapshot);
           signal.throwIfAborted();
           return openSnapshot(snapshot, key, signal);
@@ -552,14 +553,14 @@ class VaultReader extends HTMLElement {
           this.#mountWorkspace();
           this.#showItems("active");
         },
-        () => this.#showUnlock(failure),
+        () => this.#showUnlock(error),
       );
     });
-    form.className = "vault-unlock-form";
+    form.classList.add("vault-unlock-form");
     if (feedback) {
-      feedback.id = "vault-unlock-error";
-      input.setAttribute("aria-describedby", feedback.id);
-      form.append(feedback);
+      input.setAttribute("aria-describedby", errorId);
+      if (failure?.invalidPassword) input.setAttribute("aria-invalid", "true");
+      form.insertBefore(feedback, button);
     }
     this.replaceChildren(form);
     input.focus({ preventScroll: true });
@@ -1122,7 +1123,7 @@ class VaultReader extends HTMLElement {
       "File password, if protected",
       false,
     );
-    const review = transferSubmit("Review import");
+    const review = primarySubmit("Review import");
     const error = alert("");
     error.hidden = true;
     form.append(fileField, passwordField, review, error);
@@ -1284,7 +1285,7 @@ class VaultReader extends HTMLElement {
     };
     format.addEventListener("change", changeFormat);
     changeFormat();
-    const submit = transferSubmit("Download export");
+    const submit = primarySubmit("Download export");
     const error = alert("");
     error.hidden = true;
     form.append(formatField, warning, encryption, masterField, submit, error);

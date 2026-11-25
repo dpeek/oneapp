@@ -1,9 +1,9 @@
 import * as stylex from "@stylexjs/stylex";
 
 export const controls = stylex.defineVars({
-  primary: "var(--accent)",
-  primaryHover: "var(--accent-hover)",
-  onPrimary: "var(--on-accent)",
+  primary: "var(--primary)",
+  primaryHover: "var(--primary-hover)",
+  onPrimary: "var(--on-primary)",
   destructive: "var(--destructive)",
   destructiveHover: "var(--destructive-hover)",
   onDestructive: "var(--on-destructive)",
@@ -12,8 +12,9 @@ export const controls = stylex.defineVars({
   foreground: "var(--text)",
   mutedForeground: "var(--muted)",
   border: "var(--border)",
-  hover: "var(--selected)",
-  focus: "var(--accent)",
+  hover: "var(--hover)",
+  selected: "var(--selected)",
+  focus: "var(--focus)",
   radius: "var(--control-radius)",
 });
 

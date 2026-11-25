@@ -23,8 +23,9 @@ In StyleX, reference the semantic roles from [`tokens.stylex.ts`](src/tokens.sty
 Use roles such as `controls.surface`, `controls.border`, and `controls.focus` so
 components respond to the same theme. When a reusable role is missing, add it to
 the shared token module and map it to a CSS custom property. Define light and dark
-values in the theme. The current values are in [shared theme CSS](src/theme.css)
-and the [web root stylesheet](../../apps/web/src/styles.css).
+values in [shared theme CSS](src/theme.css). The web app, MCP consent page, and
+extension popup all load this theme. Use separate roles for primary actions,
+keyboard focus, hover, selection, and status.
 
 Aim for the restrained look of the Macro reference. Use neutral surfaces, subtle
 borders, readable text, and one prominent primary action. Start with Crease's

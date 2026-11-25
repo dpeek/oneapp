@@ -1,12 +1,10 @@
+@import "@oneapp/ui/theme.css";
+
 :root {
   color-scheme: light dark;
   font-family: Inter, system-ui, sans-serif;
-  color: light-dark(#1c2030, #eef0f8);
-  background: light-dark(#f5f6fb, #151621);
-  --surface: light-dark(#fff, #1e2030);
-  --border: light-dark(#dcdeea, #3c4055);
-  --muted: light-dark(#53576b, #b8bbcf);
-  --accent: light-dark(#4b43ad, #c5bfff);
+  color: var(--text);
+  background: var(--canvas);
 }
 
 body {
@@ -26,7 +24,7 @@ main {
   border: 1px solid var(--border);
   border-radius: 1rem;
   background: var(--surface);
-  box-shadow: 0 12px 36px light-dark(#2a245211, #0003);
+  box-shadow: 0 12px 36px light-dark(#0001, #0003);
   overflow-wrap: anywhere;
 }
 
@@ -39,7 +37,7 @@ dl,
 
 .app-name {
   margin: 0 0 0.5rem;
-  color: var(--accent);
+  color: var(--muted);
   font-size: 0.875rem;
   font-weight: 700;
 }
@@ -59,11 +57,7 @@ h2 {
   margin: 0;
   padding: 0.75rem 1rem 0.75rem 2rem;
   border-radius: 0.5rem;
-  background: light-dark(#eeecfc, #2a2845);
-}
-
-.permissions li::marker {
-  color: var(--accent);
+  background: var(--canvas);
 }
 
 dl {
@@ -111,13 +105,13 @@ button {
 }
 
 .primary {
-  color: light-dark(#fff, #1d1844);
-  background: var(--accent);
-  border-color: var(--accent);
+  color: var(--on-primary);
+  background: var(--primary);
+  border-color: transparent;
 }
 
 .primary:hover {
-  background: light-dark(#3d3693, #d8d3ff);
+  background: var(--primary-hover);
 }
 
 .secondary {
@@ -126,11 +120,11 @@ button {
 }
 
 .secondary:hover {
-  background: light-dark(#f5f6fb, #2a2c3d);
+  background: var(--hover);
 }
 
 :where(button, a):focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus);
   outline-offset: 3px;
 }
 
@@ -138,7 +132,7 @@ button {
   display: block;
   width: fit-content;
   margin: 1rem auto 0;
-  color: var(--accent);
+  color: var(--text);
   font-size: 0.875rem;
   text-underline-offset: 0.2em;
 }

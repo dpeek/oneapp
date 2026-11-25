@@ -37,21 +37,16 @@ export default defineConfig({
       configureServer(server) {
         server.middlewares.use((request, response, next) => {
           const pathname = request.url?.split("?")[0];
-          const asset =
-            pathname === `/pdf.worker-${pdfPackage.version}.mjs`
-              ? { path: pdfWorker, type: "text/javascript" }
-              : pathname === "/mcp-consent.css"
-                ? {
-                    path: fileURLToPath(
-                      new URL("./src/mcp-consent.css", import.meta.url),
-                    ),
-                    type: "text/css",
-                  }
-                : undefined;
-          if (!asset) return next();
-          response.setHeader("Content-Type", asset.type);
+          if (pathname === "/mcp-consent.css") {
+            // Let Vite resolve the shared theme import before serving CSS.
+            request.url = "/src/mcp-consent.css?direct";
+            return next();
+          }
+          if (pathname !== `/pdf.worker-${pdfPackage.version}.mjs`)
+            return next();
+          response.setHeader("Content-Type", "text/javascript");
           response.setHeader("Cache-Control", "no-cache");
-          createReadStream(asset.path).on("error", next).pipe(response);
+          createReadStream(pdfWorker).on("error", next).pipe(response);
         });
       },
     },

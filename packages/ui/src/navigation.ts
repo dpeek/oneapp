@@ -47,8 +47,11 @@ const styles = stylex.create({
     fontWeight: 400,
   },
   sidebarSelected: {
-    color: controls.primary,
-    backgroundColor: controls.hover,
+    color: controls.foreground,
+    backgroundColor: {
+      default: controls.selected,
+      "@media (hover: hover)": { ":hover": controls.selected },
+    },
     fontWeight: 500,
   },
   sidebarButton: {

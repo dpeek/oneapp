@@ -25,7 +25,7 @@ const styles = stylex.create({
   overlay: {
     position: "absolute",
     inset: 0,
-    backgroundColor: "rgb(10 11 18 / 65%)",
+    backgroundColor: "rgb(0 0 0 / 65%)",
   },
   panel: {
     position: "relative",
@@ -50,7 +50,7 @@ const styles = stylex.create({
   extraWide: { inlineSize: "min(50rem, calc(100% - 2rem))" },
   padding: { padding: "clamp(1rem, 4vw, 1.5rem)" },
   native: {
-    "::backdrop": { backgroundColor: "rgb(10 11 18 / 65%)" },
+    "::backdrop": { backgroundColor: "rgb(0 0 0 / 65%)" },
   },
   content: { display: "grid", gap: "1rem" },
   header: {

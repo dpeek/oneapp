@@ -39,10 +39,15 @@ await Bun.write(
     `<link rel="stylesheet" href="/${stylexFileName}"></head>`,
   ),
 );
-await Bun.write(
-  new URL("mcp-consent.css", output),
-  Bun.file(new URL("./src/mcp-consent.css", import.meta.url)),
-);
+await Bun.build({
+  entrypoints: [
+    fileURLToPath(new URL("./src/mcp-consent.css", import.meta.url)),
+  ],
+  outdir: fileURLToPath(output),
+  naming: "mcp-consent.css",
+  minify: true,
+  throw: true,
+});
 
 const pdfPackage = await Bun.file(
   fileURLToPath(import.meta.resolve("pdfjs-dist/package.json")),

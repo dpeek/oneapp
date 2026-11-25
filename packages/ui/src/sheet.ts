@@ -16,7 +16,7 @@ const styles = stylex.create({
   overlay: {
     position: "absolute",
     inset: 0,
-    backgroundColor: "rgb(10 11 18 / 60%)",
+    backgroundColor: "rgb(0 0 0 / 60%)",
   },
   panel: {
     position: "relative",

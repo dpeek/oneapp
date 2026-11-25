@@ -1,19 +1,21 @@
 :root {
-  --surface: light-dark(#fff, #1e2030);
-  --popover: light-dark(#fff, #2b2e43);
-  --canvas: light-dark(#f5f6fb, #151621);
-  --text: light-dark(#1c2030, #eef0f8);
-  --muted: light-dark(#53576b, #b8bbcf);
-  --border: light-dark(#dcdeea, #3c4055);
-  --selected: light-dark(#eeecfc, #2a2845);
-  --accent: light-dark(#4b43ad, #c5bfff);
-  --accent-hover: light-dark(#3d3693, #d8d3ff);
-  --on-accent: light-dark(#fff, #1d1844);
+  --canvas: light-dark(#f7f7f7, #181818);
+  --surface: light-dark(#fff, #222);
+  --popover: light-dark(#fff, #2d2d2d);
+  --text: light-dark(#202020, #f0f0f0);
+  --muted: light-dark(#5c5c5c, #b5b5b5);
+  --border: light-dark(#dedede, #3e3e3e);
+  --hover: light-dark(#ebebeb, #393939);
+  --selected: light-dark(#e0e0e0, #454545);
+  --focus: light-dark(#646464, #a3a3a3);
+  --primary: light-dark(#262626, #e8e8e8);
+  --primary-hover: light-dark(#414141, #ccc);
+  --on-primary: light-dark(#fff, #1b1b1b);
   --destructive: light-dark(#ab3723, #ffa693);
   --destructive-hover: light-dark(#922b1a, #ffbbaa);
   --on-destructive: light-dark(#fff, #36150e);
   --control-radius: 0.5rem;
-  --alert-info: var(--accent);
+  --alert-info: light-dark(#205f93, #96c5f0);
   --alert-success: light-dark(#247047, #8ddbb1);
   --alert-warning: light-dark(#7d4e0c, #f3cb85);
   --alert-error: light-dark(#ab3723, #ffa693);
@@ -102,25 +104,27 @@
 }
 
 .calendar-picker [data-today] button {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: currentColor;
   font-weight: 700;
 }
 
 .calendar-picker
-  :is([data-slot="calendar-day"], [data-slot="calendar-period"]):hover,
+  :where(
+    :not([data-disabled])
+      > :is([data-slot="calendar-day"], [data-slot="calendar-period"])
+  ):hover,
 .calendar-picker [data-focused] button {
-  background: color-mix(in srgb, var(--accent) 13%, var(--surface));
+  background: var(--hover);
 }
 
 .calendar-picker [data-selected] button {
-  background: var(--accent);
-  color: var(--on-accent);
+  background: var(--primary);
+  color: var(--on-primary);
   font-weight: 700;
 }
 
 .calendar-picker [role="grid"]:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
   border-radius: var(--control-radius);
 }

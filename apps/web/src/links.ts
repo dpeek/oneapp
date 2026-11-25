@@ -412,6 +412,7 @@ const savedLinkAvatar = (url: string, h: HtmlBuilder<Message>) => {
   const hostname = websiteIconHostname(url);
   return avatar(
     {
+      variant: "square",
       src: hostname ? websiteIconPath(hostname) : null,
       imageMounted: Message.CompletedLinkAvatarImageMount(),
       fallback: h.svg(

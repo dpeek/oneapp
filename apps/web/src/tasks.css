@@ -181,13 +181,10 @@
   background: var(--hover);
 }
 
-.task-row [data-task-complete] {
+.task-row-action {
+  display: flex;
   margin-block: 0.375rem;
   margin-inline-start: 0.125rem;
-}
-
-.task-row [data-task-complete="true"] {
-  color: var(--task-completed);
 }
 
 .task-list .task-row-link {

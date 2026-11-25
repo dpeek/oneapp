@@ -15,6 +15,7 @@ import {
   Sheet,
   textarea,
   Tokenizer,
+  Tooltip,
 } from "@oneapp/ui";
 import { Effect, Option, Queue, Schema, Stream } from "effect";
 import { Mount, Submodel } from "foldkit";
@@ -33,6 +34,7 @@ import {
 } from "./tasks-contract.ts";
 import { matchesTaskFilters, taskFilterCount } from "./tasks-filters.ts";
 import {
+  completionTooltip,
   FilterCategory,
   creationDialogId,
   creationSubmitId,
@@ -43,6 +45,7 @@ import {
   selectedTask,
   tagSearch,
   taskSortMenu,
+  tasksInView,
   toFilterPopoverMessage,
   toFilterTagsMessage,
   toFolderSheetMessage,
@@ -116,30 +119,63 @@ const taskRow = (
   h: HtmlBuilder<Message>,
 ) => {
   const completed = task.status === "completed";
+  const operation = model.request?.operation;
+  const action = {
+    disabled: model.request !== null,
+    focusableWhenDisabled:
+      operation?._tag === "ToggleCompletion" && operation.id === task.id,
+    onClick: Message.ToggledCompletion({ id: task.id }),
+  };
+  const actionId = h.DataAttribute("task-action", task.id);
   return h.li(
     [h.Key(task.id), h.Class("task-row")],
     [
-      button(
-        {
-          ariaLabel: completed
-            ? `Reopen ${task.title}`
-            : `Complete ${task.title}`,
-          variant: "ghost",
-          size: "icon-sm",
-          rounded: true,
-          disabled: model.request !== null,
-          attributes: [h.DataAttribute("task-complete", String(completed))],
-          onClick: Message.ToggledCompletion({ id: task.id }),
-          children: [
-            outlineIcon(
-              h,
-              completed
-                ? ["m5 12 4 4L19 6"]
-                : ["M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z"],
-            ),
-          ],
-        },
-        h,
+      h.div(
+        [h.Class("task-row-action")],
+        [
+          completed
+            ? button(
+                {
+                  ...action,
+                  ariaLabel: `Reopen ${task.title}`,
+                  variant: "outline",
+                  size: "sm",
+                  attributes: [actionId],
+                  children: ["Reopen"],
+                },
+                h,
+              )
+            : Tooltip.tooltip(
+                {
+                  model: completionTooltip(model, task.id),
+                  content: "Mark complete",
+                  toParentMessage: (message) =>
+                    Message.GotCompletionTooltipMessage({
+                      id: task.id,
+                      message,
+                    }),
+                  renderTrigger: (attributes) =>
+                    button(
+                      {
+                        ...action,
+                        ariaLabel: `Mark complete: ${task.title}`,
+                        variant: "ghost",
+                        size: "icon-sm",
+                        rounded: true,
+                        attributes: [...attributes, actionId],
+                        children: [
+                          outlineIcon(h, [
+                            "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z",
+                            "m9 12 2 2 4-4",
+                          ]),
+                        ],
+                      },
+                      h,
+                    ),
+                },
+                h,
+              ),
+        ],
       ),
       h.a(
         [
@@ -464,11 +500,7 @@ const taskList = (
   h: HtmlBuilder<Message>,
 ) => {
   const { view } = model;
-  const viewTasks = (model.index?.tasks ?? []).filter(({ status }) =>
-    view === "completed"
-      ? status === "completed"
-      : status !== "completed" && status !== "canceled",
-  );
+  const viewTasks = tasksInView(model);
   const tasks = sortedTasks(viewTasks, model);
   const busy = model.request !== null;
   const tagMap = new Map(tags.map((tag) => [tag.id, tag]));

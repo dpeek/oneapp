@@ -137,6 +137,13 @@ const taskRow = (
                   h.Class("task-row-link"),
                   h.Href(taskPath(task.id, view)),
                   h.DataAttribute("task-id", task.id),
+                  ...(Number.isFinite(new Date(task.updatedAt).getTime())
+                    ? [
+                        h.Title(
+                          `Updated ${taskDateTimeFormat.format(task.updatedAt)}`,
+                        ),
+                      ]
+                    : []),
                 ],
                 [task.title],
               ),

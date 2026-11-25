@@ -19,6 +19,10 @@
   font-size: 0.875rem;
 }
 
+.task-table-scroll {
+  padding-inline: clamp(0.5rem, 1vw, 0.875rem);
+}
+
 .task-table-scroll:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: -2px;
@@ -27,7 +31,6 @@
 .task-table :is(th, td) {
   box-sizing: border-box;
   padding: 0.625rem clamp(0.75rem, 1.5vw, 1.25rem);
-  border-block-end: 1px solid var(--border);
   text-align: start;
 }
 
@@ -56,8 +59,29 @@
   text-align: end;
 }
 
-.task-row:is(:hover, :focus-within) {
+.task-row {
+  position: relative;
+  z-index: 0;
+}
+
+.task-row > td:first-child {
+  border-start-start-radius: var(--control-radius);
+  border-end-start-radius: var(--control-radius);
+}
+
+.task-row > td:last-child {
+  border-start-end-radius: var(--control-radius);
+  border-end-end-radius: var(--control-radius);
+}
+
+.task-row:focus-within > td {
   background: var(--hover);
+}
+
+@media (hover: hover) {
+  .task-row:hover > td {
+    background: var(--hover);
+  }
 }
 
 .task-row-main {
@@ -77,6 +101,22 @@
 
 .task-row-link:hover {
   text-decoration: underline;
+}
+
+.task-row-link::after {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--control-radius);
+  content: "";
+}
+
+.task-row-link:focus-visible {
+  outline: none;
+}
+
+.task-row-link:focus-visible::after {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
 }
 
 .task-tag,

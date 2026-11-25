@@ -67,7 +67,7 @@ export const create = <Action extends string>() => {
         label: string;
         trigger: Html;
         triggerVariant?: "primary" | "ghost";
-        placement?: "top-start" | "bottom-start";
+        placement?: "top-start" | "bottom-start" | "bottom-end";
         disabled?: boolean;
         items: ReadonlyArray<Item<Action>>;
         toParentMessage: (message: typeof Message.Type) => ParentMessage;

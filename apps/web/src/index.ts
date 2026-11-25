@@ -90,7 +90,7 @@ import {
 } from "./tasks-view.ts";
 import { vaultPath } from "./vault-setup-contract.ts";
 import * as VaultSetup from "./vault-setup.ts";
-import { workspace, workspaceDrawerMedia } from "./workspace.ts";
+import { screenHeader, workspace, workspaceDrawerMedia } from "./workspace.ts";
 
 type Page = typeof AppNavigation.Page.Type;
 const pageFor = (url: Url.Url): Page => {
@@ -1669,26 +1669,33 @@ const settingsView = (model: Model, h: HtmlBuilder<Message>) => {
   return workspace(
     {
       className: "workspace-stacked settings-workspace",
-      title: settingsSectionLabel(section),
-      headerActions: [
-        h.div(
-          [h.Class("workspace-drawer-trigger")],
-          [
-            button(
-              {
-                variant: "ghost",
-                size: "icon",
-                rounded: true,
-                ariaLabel: "Settings sections",
-                dialogId: model.settingsSheet.id,
-                onClick: toSettingsSheetMessage(Sheet.Message.RequestedOpen()),
-                children: [outlineIcon(h, ["M4 6h16M4 12h16M4 18h16"])],
-              },
-              h,
+      header: screenHeader(
+        {
+          title: settingsSectionLabel(section),
+          navigation: [
+            h.div(
+              [h.Class("workspace-drawer-trigger")],
+              [
+                button(
+                  {
+                    variant: "ghost",
+                    size: "icon-sm",
+                    rounded: true,
+                    ariaLabel: "Settings sections",
+                    dialogId: model.settingsSheet.id,
+                    onClick: toSettingsSheetMessage(
+                      Sheet.Message.RequestedOpen(),
+                    ),
+                    children: [outlineIcon(h, ["M4 6h16M4 12h16M4 18h16"])],
+                  },
+                  h,
+                ),
+              ],
             ),
           ],
-        ),
-      ],
+        },
+        h,
+      ),
       sidebar: navigation,
       hasSelection: false,
       list: h.div(
@@ -1840,15 +1847,6 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
     contacts: "Contacts",
     settings: "Settings",
   }[model.page];
-  const usesOwnHeading =
-    model.page === "links" ||
-    model.page === "mail" ||
-    model.page === "calendar" ||
-    model.page === "tasks" ||
-    model.page === "files" ||
-    model.page === "contacts" ||
-    model.page === "settings" ||
-    (model.page === "vault" && model.vaultSetup.status?.initialized === true);
   const menu = model.creationMenu;
   const editor = creationEditor(model);
   return {
@@ -1864,16 +1862,18 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
           h,
         ),
         h.main(
-          [h.Class("page"), ...(usesOwnHeading ? [h.AriaLabel(title)] : [])],
+          [h.Class("page"), h.AriaLabel(title)],
           [
-            ...(usesOwnHeading ? [] : [h.h1([], [title])]),
             {
               links: () =>
                 h.submodel({
                   slotId: "links",
                   view: Links.view,
                   model: model.links,
-                  viewInputs: { disabled: model.pending },
+                  viewInputs: {
+                    disabled: model.pending,
+                    creationDialogId: model.creationDialog.id,
+                  },
                   toParentMessage: toLinksMessage,
                 }),
               mail: () =>

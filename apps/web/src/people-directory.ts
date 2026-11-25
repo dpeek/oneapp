@@ -1,11 +1,10 @@
 import {
-  backIcon,
   button,
-  buttonClassName,
   item,
   itemGroup,
   navigationLinks,
   outlineIcon,
+  plusIcon,
   Sheet,
   spinner,
   trashIconPaths,
@@ -30,7 +29,7 @@ import {
   profileAvatar,
   profileHeader,
 } from "./people.ts";
-import { workspace } from "./workspace.ts";
+import { screenHeader, screenHeaderBack, workspace } from "./workspace.ts";
 
 type DirectoryMessage = typeof Message.Type;
 type Directory = (typeof Model.Type)["directory"];
@@ -279,66 +278,63 @@ export const view = Submodel.defineView<
   const person = directory.records?.find(({ id }) => id === selected);
   const currentSection = person?.kind ?? section;
   const backLabel = `Back to ${sectionLabels[currentSection]}`;
+  const contactLabel = section === "company" ? "Company" : "Person";
   const toFolderSheetMessage = (message: typeof Sheet.Message.Type) =>
     Message.GotFolderSheetMessage({ message });
   return workspace(
     {
       className: "workspace-stacked people-workspace",
-      title: selected ? undefined : sectionLabels[section],
-      headerActions: [
-        ...(selected
-          ? [
-              h.a(
-                [
-                  h.Href(contactsListPath(currentSection)),
-                  h.Class(
-                    buttonClassName({
-                      variant: "ghost",
-                      size: "icon-sm",
-                      rounded: true,
-                    }),
+      header: screenHeader(
+        {
+          title: person ? displayName(person) : sectionLabels[currentSection],
+          navigation: [
+            ...(selected
+              ? [
+                  screenHeaderBack(
+                    {
+                      href: contactsListPath(currentSection),
+                      label: backLabel,
+                    },
+                    h,
                   ),
-                  h.DataAttribute("slot", "button"),
-                  h.AriaLabel(backLabel),
-                  h.Title(backLabel),
-                ],
-                [backIcon(h)],
-              ),
-            ]
-          : []),
-        h.div(
-          [h.Class("workspace-drawer-trigger")],
-          [
-            button(
-              {
-                variant: "ghost",
-                size: "icon",
-                rounded: true,
-                ariaLabel: "Contact folders",
-                dialogId: folderSheet.id,
-                onClick: toFolderSheetMessage(Sheet.Message.RequestedOpen()),
-                children: [outlineIcon(h, ["M4 6h16M4 12h16M4 18h16"])],
-              },
-              h,
+                ]
+              : []),
+            h.div(
+              [h.Class("workspace-drawer-trigger")],
+              [
+                button(
+                  {
+                    variant: "ghost",
+                    size: "icon-sm",
+                    rounded: true,
+                    ariaLabel: "Contact folders",
+                    dialogId: folderSheet.id,
+                    onClick: toFolderSheetMessage(
+                      Sheet.Message.RequestedOpen(),
+                    ),
+                    children: [outlineIcon(h, ["M4 6h16M4 12h16M4 18h16"])],
+                  },
+                  h,
+                ),
+              ],
             ),
           ],
-        ),
-        ...(selected
-          ? []
-          : [
-              button(
+          primaryAction: selected
+            ? undefined
+            : button(
                 {
                   size: "sm",
+                  rounded: true,
+                  ariaLabel: `Add ${contactLabel.toLowerCase()}`,
                   dialogId,
                   onClick: Message.Created({ kind: section }),
-                  children: [
-                    section === "company" ? "Add company" : "Add person",
-                  ],
+                  children: [plusIcon(h, "16"), contactLabel],
                 },
                 h,
               ),
-            ]),
-      ],
+        },
+        h,
+      ),
       sidebar: directoryNavigation(currentSection, h),
       list: listView(directory, currentSection, h),
       ...(selected

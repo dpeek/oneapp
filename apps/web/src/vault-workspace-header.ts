@@ -17,7 +17,7 @@ import {
   vaultItemTypeOrder,
 } from "./vault-item-content.ts";
 import { vaultItemPaths } from "./vault-item-icon.ts";
-import { workspaceDrawerMedia } from "./workspace.ts";
+import { screenHeader, workspaceDrawerMedia } from "./workspace.ts";
 
 const HeaderState = Schema.Struct({
   title: Schema.String,
@@ -129,72 +129,79 @@ export const mountVaultWorkspaceHeader = (
       ).pipe(Effect.as(Message.Completed())),
   });
   const view = ({ state, menu, filters }: Model, h: HtmlBuilder<Message>) =>
-    h.header(
-      [h.Class("workspace-header vault-workspace-header")],
+    h.div(
+      [h.Class("vault-header-mount")],
       [
-        ...(state.showBack
-          ? [
-              button(
-                {
-                  variant: "ghost",
-                  size: "icon-sm",
-                  rounded: true,
-                  ariaLabel: "Back",
-                  disabled: state.busy,
-                  onClick: Message.Back(),
-                  children: [backIcon(h)],
-                },
-                h,
-              ),
-            ]
-          : [h.h1([], [state.title])]),
-        ...(state.showFilters
-          ? [
-              h.div(
-                [h.Class("workspace-drawer-trigger")],
-                [
-                  button(
-                    {
-                      variant: "outline",
-                      dialogId: filters.id,
-                      disabled: state.busy,
-                      onClick: toFilters(Sheet.Message.RequestedOpen()),
-                      children: ["Filters"],
-                    },
-                    h,
-                  ),
-                ],
-              ),
-            ]
-          : []),
-        ...(state.showNew
-          ? [
-              h.div(
-                [h.Class("vault-new-menu")],
-                [
-                  newItemMenu.view(
-                    {
-                      model: menu,
-                      label: "New",
-                      triggerVariant: "primary",
-                      trigger: h.span(
-                        [h.Class("vault-new-label")],
-                        [plusIcon(h, "14"), "New"],
-                      ),
-                      disabled: state.busy,
-                      toParentMessage: toMenu,
-                      items: vaultItemTypeOrder.map((type) => ({
-                        action: `${type}` as const,
-                        label: itemTypes[type].label,
-                        icon: outlineIcon(h, vaultItemPaths[type]),
-                      })),
-                    },
-                    h,
-                  ),
-                ],
-              ),
-            ]
-          : []),
+        screenHeader(
+          {
+            title: state.title,
+            navigation: [
+              ...(state.showBack
+                ? [
+                    button(
+                      {
+                        variant: "ghost",
+                        size: "icon-sm",
+                        rounded: true,
+                        ariaLabel: "Back",
+                        disabled: state.busy,
+                        onClick: Message.Back(),
+                        children: [backIcon(h)],
+                      },
+                      h,
+                    ),
+                  ]
+                : []),
+              ...(state.showFilters
+                ? [
+                    h.div(
+                      [h.Class("workspace-drawer-trigger")],
+                      [
+                        button(
+                          {
+                            variant: "ghost",
+                            size: "icon-sm",
+                            rounded: true,
+                            ariaLabel: "Filters",
+                            dialogId: filters.id,
+                            disabled: state.busy,
+                            onClick: toFilters(Sheet.Message.RequestedOpen()),
+                            children: [
+                              outlineIcon(h, ["M4 7h16M7 12h10m-7 5h4"]),
+                            ],
+                          },
+                          h,
+                        ),
+                      ],
+                    ),
+                  ]
+                : []),
+            ],
+            primaryAction: state.showNew
+              ? newItemMenu.view(
+                  {
+                    model: menu,
+                    label: "Add item",
+                    triggerVariant: "primary",
+                    placement: "bottom-end",
+                    trigger: h.span(
+                      [h.Class("vault-new-label")],
+                      [plusIcon(h, "16"), "Item"],
+                    ),
+                    disabled: state.busy,
+                    toParentMessage: toMenu,
+                    items: vaultItemTypeOrder.map((type) => ({
+                      action: `${type}` as const,
+                      label: itemTypes[type].label,
+                      icon: outlineIcon(h, vaultItemPaths[type]),
+                    })),
+                  },
+                  h,
+                )
+              : undefined,
+          },
+          h,
+        ),
         Sheet.sheet(
           {
             model: filters,

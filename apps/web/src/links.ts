@@ -25,6 +25,7 @@ import {
 } from "./links-client.ts";
 import { Notification } from "./notifications.ts";
 import { websiteIconHostname, websiteIconPath } from "./website-icon-host.ts";
+import { screenHeader } from "./workspace.ts";
 
 export const creationUrlId = "create-link-url";
 const creationErrorId = `${creationUrlId}-error`;
@@ -436,11 +437,33 @@ const savedLinkAvatar = (url: string, h: HtmlBuilder<Message>) => {
   );
 };
 
-export const view = Submodel.defineView<Model, Message, { disabled: boolean }>(
-  (model, { disabled }, h) =>
+type ViewInputs = { disabled: boolean; creationDialogId: string };
+
+export const view = Submodel.defineView<Model, Message, ViewInputs>(
+  (model, { disabled, creationDialogId }, h) =>
     h.section(
       [h.Class("links")],
       [
+        screenHeader(
+          {
+            title: "Links",
+            primaryAction: button(
+              {
+                size: "sm",
+                rounded: true,
+                ariaLabel: "Save link",
+                dialogId: creationDialogId,
+                disabled:
+                  disabled ||
+                  (model.request !== null && !writingCreation(model)),
+                onClick: Message.OpenedCreate(),
+                children: [plusIcon(h, "16"), "Link"],
+              },
+              h,
+            ),
+          },
+          h,
+        ),
         ...(model.loadError ? [h.p([h.Role("alert")], [model.loadError])] : []),
         ...(model.records === null
           ? [

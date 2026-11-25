@@ -64,9 +64,7 @@ export const screenHeaderBack = <Message>(
 export const workspace = <Message>(
   props: {
     className: string;
-    title?: string;
-    header?: Html;
-    headerActions?: ReadonlyArray<Html>;
+    header: Html;
     sidebar?: Html;
     list: Html;
     detail?: Html;
@@ -74,19 +72,14 @@ export const workspace = <Message>(
     sheet?: Html;
   },
   h: HtmlBuilder<Message>,
-): Html => {
-  const title = props.title === undefined ? null : h.h1([], [props.title]);
-  return h.div(
+): Html =>
+  h.div(
     [
       h.Class(`workspace ${props.className}`),
       ...(props.hasSelection ? [h.DataAttribute("panel", "")] : []),
     ],
     [
-      props.header ??
-        h.header(
-          [h.Class("workspace-header")],
-          [...(title ? [title] : []), ...(props.headerActions ?? [])],
-        ),
+      props.header,
       ...(props.sidebar
         ? [h.div([h.Class("workspace-sidebar")], [props.sidebar])]
         : []),
@@ -95,6 +88,5 @@ export const workspace = <Message>(
       ...(props.sheet ? [props.sheet] : []),
     ],
   );
-};
 
 export const workspaceDrawerMedia = "(max-width: 64rem)";

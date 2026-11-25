@@ -9,6 +9,7 @@ import {
   VaultSetupStatus,
 } from "./vault-setup-contract.ts";
 import { createVaultSetup } from "./vault-crypto.ts";
+import { screenHeader } from "./workspace.ts";
 
 const formId = "vault-setup";
 const passwordId = "vault-master-password";
@@ -162,6 +163,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
       h.AriaBusy(model.pending),
     ],
     [
+      screenHeader({ title: "Vault" }, h),
       ...(model.status === null
         ? model.pending || !model.error
           ? [h.p([h.Role("status")], ["Checking vault status…"])]

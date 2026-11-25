@@ -810,7 +810,9 @@ oneapp-vault-reader {
   justify-self: start;
 }
 
-.account-form {
+.account-form,
+.account-dialog-content,
+.person-dialog-content {
   display: grid;
   gap: 0.875rem;
 }
@@ -827,7 +829,8 @@ oneapp-vault-reader {
 }
 
 .account-form p,
-.account-form + [role="alert"] {
+.account-dialog-content > p,
+.person-dialog-content > p {
   margin: 0;
 }
 
@@ -977,12 +980,6 @@ oneapp-vault-reader {
 
 .person-value-fields :is(.person-value-error, .person-value-status):empty {
   display: none;
-}
-
-.person-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
 }
 
 .people-workspace {

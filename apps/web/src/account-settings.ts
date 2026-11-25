@@ -1,10 +1,9 @@
-import { button, dialog, field, input, item, itemGroup } from "@oneapp/ui";
-import { Effect, Option, Schema } from "effect";
+import { button, Dialog, field, input, item, itemGroup } from "@oneapp/ui";
+import { Effect, Schema } from "effect";
 import { Command } from "foldkit";
 import { focus } from "foldkit/dom";
-import type { Html, HtmlBuilder } from "foldkit/html";
+import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
-import * as Mount from "foldkit/mount";
 import {
   ChangedEmail,
   emailChangePath,
@@ -16,7 +15,8 @@ import {
 import type { Account } from "./auth-contract.ts";
 import { Notification } from "./notifications.ts";
 
-const Dialog = Schema.Literals(["email", "password"]);
+const DialogKind = Schema.Literals(["email", "password"]);
+const dialogId = "account-settings-dialog";
 
 export const Model = Schema.Struct({
   request: Schema.NullOr(Schema.String),
@@ -30,7 +30,10 @@ export const Model = Schema.Struct({
     ]),
   ),
   verification: Schema.NullOr(EmailVerification),
-  dialog: Schema.NullOr(Dialog),
+  modal: Dialog.Model,
+  dialog: Schema.NullOr(
+    Schema.Struct({ kind: DialogKind, key: Schema.String }),
+  ),
   emailChange: Schema.NullOr(PendingEmailChange),
   error: Schema.String,
 });
@@ -39,6 +42,7 @@ export const initial: Model = {
   request: null,
   pending: null,
   verification: null,
+  modal: Dialog.init({ id: dialogId }),
   dialog: null,
   emailChange: null,
   error: "",
@@ -48,8 +52,9 @@ export const Message = defineMessageUnion({
   SendCode: {},
   VerifyCode: {},
   ChangePassword: {},
-  OpenDialog: { dialog: Dialog },
+  OpenDialog: { dialog: DialogKind },
   CloseDialog: {},
+  GotDialogMessage: { message: Dialog.Message },
   DialogUpdated: {},
   SubmitEmailChange: {},
   ConfirmEmailChange: {},
@@ -97,16 +102,6 @@ export const feedback = (
     return OutMessage.DismissNotification({ key: notificationKey });
   return undefined;
 };
-
-const ShowDialog = Mount.define("ShowAccountDialog", {
-  messages: [Message.DialogUpdated],
-  execute: ({ element }) =>
-    Effect.sync(() => {
-      if (element instanceof HTMLDialogElement && !element.open)
-        element.showModal();
-      return Message.DialogUpdated();
-    }),
-});
 
 export const FocusElement = Command.define("FocusAccountElement", {
   args: { selector: Schema.String },
@@ -281,26 +276,36 @@ export const view = <Parent>(
   signOut: Html,
 ) => {
   const disabled = busy || model.pending !== null;
-  const action = (label: string, message: Message, id?: string) =>
+  const action = (label: string, message: Message, opensDialog = false) =>
     button(
       {
         variant: "outline",
         size: "sm",
         disabled,
-        attributes: id ? [h.Id(id), h.AriaHasPopup("dialog")] : [],
+        ...(opensDialog ? { dialogId } : {}),
         onClick: emit(message),
         children: [label],
       },
       h,
     );
   const submit = (label: string) =>
-    button({ type: "submit", size: "sm", disabled, children: [label] }, h);
+    button(
+      {
+        type: "submit",
+        size: "sm",
+        disabled,
+        focusableWhenDisabled: true,
+        children: [label],
+      },
+      h,
+    );
   const actions = (...children: Html[]) =>
     h.div([h.Class("account-actions")], children);
   const passwordField = (
     name: string,
     label: string,
     autocomplete: "current-password" | "new-password",
+    initialFocus: ReadonlyArray<ChildAttribute> = [],
   ) =>
     field(
       label,
@@ -311,12 +316,17 @@ export const view = <Parent>(
           h.Type("password"),
           h.Autocomplete(autocomplete),
           h.Required(true),
+          h.Readonly(disabled),
+          ...initialFocus,
         ],
         h,
       ),
       h,
     );
-  const codeField = (id: string) =>
+  const codeField = (
+    id: string,
+    initialFocus: ReadonlyArray<ChildAttribute> = [],
+  ) =>
     field(
       "Verification code",
       input(
@@ -327,6 +337,8 @@ export const view = <Parent>(
           h.InputMode("numeric"),
           h.Autocomplete("one-time-code"),
           h.Required(true),
+          h.Readonly(disabled),
+          ...initialFocus,
         ],
         h,
       ),
@@ -340,102 +352,129 @@ export const view = <Parent>(
   ]);
   const cancel = action("Cancel", Message.CloseDialog());
   const canVerify = !account.emailVerified && account.emailDeliveryEnabled;
-  const emailForm = model.emailChange
-    ? h.form(
-        [
-          h.Class("account-form"),
-          h.Id("confirm-account-email"),
-          h.Method("post"),
-          h.OnSubmit(emit(Message.ConfirmEmailChange())),
-        ],
-        [
-          h.p(
-            [h.Role("status")],
-            [
-              `Enter the code sent to ${model.emailChange.email}. It expires in 5 minutes.`,
-            ],
-          ),
-          codeField("email-change-code"),
-          actions(
-            cancel,
-            action("Start over", Message.OpenDialog({ dialog: "email" })),
-            submit(
-              model.pending === "confirm-email-change"
-                ? "Confirming…"
-                : "Confirm email change",
-            ),
-          ),
-        ],
-      )
-    : h.form(
-        [
-          h.Class("account-form"),
-          h.Id("change-account-email"),
-          h.Method("post"),
-          h.OnSubmit(emit(Message.SubmitEmailChange())),
-        ],
-        [
-          h.p(
-            [h.Class("account-hint")],
-            [
-              "After you verify the new address, OneApp will sign out all browsers and notify your old address.",
-            ],
-          ),
-          username,
-          field(
-            "New email",
-            input(
+  const emailForm = (initialFocus: ReadonlyArray<ChildAttribute>) =>
+    model.emailChange
+      ? h.form(
+          [
+            h.Class("account-form"),
+            h.Id("confirm-account-email"),
+            h.Key(`${model.dialog?.key}-confirm`),
+            h.Method("post"),
+            h.OnSubmit(emit(Message.ConfirmEmailChange())),
+          ],
+          [
+            h.p(
+              [h.Role("status")],
               [
-                h.Id("new-email"),
-                h.Name("new-email"),
-                h.Type("email"),
-                h.Autocomplete("email"),
-                h.Required(true),
+                `Enter the code sent to ${model.emailChange.email}. It expires in 5 minutes.`,
+              ],
+            ),
+            codeField("email-change-code", initialFocus),
+            Dialog.footer(
+              [
+                cancel,
+                action("Start over", Message.OpenDialog({ dialog: "email" })),
+                submit(
+                  model.pending === "confirm-email-change"
+                    ? "Confirming…"
+                    : "Confirm email change",
+                ),
               ],
               h,
             ),
-            h,
-          ),
-          passwordField(
-            "email-current-password",
-            "Current password",
-            "current-password",
-          ),
-          actions(
+          ],
+        )
+      : h.form(
+          [
+            h.Class("account-form"),
+            h.Id("change-account-email"),
+            h.Key(`${model.dialog?.key}-email`),
+            h.Method("post"),
+            h.OnSubmit(emit(Message.SubmitEmailChange())),
+          ],
+          [
+            h.p(
+              [h.Class("account-hint")],
+              [
+                "After you verify the new address, OneApp will sign out all browsers and notify your old address.",
+              ],
+            ),
+            username,
+            field(
+              "New email",
+              input(
+                [
+                  h.Id("new-email"),
+                  h.Name("new-email"),
+                  h.Type("email"),
+                  h.Autocomplete("email"),
+                  h.Required(true),
+                  h.Readonly(disabled),
+                  ...initialFocus,
+                ],
+                h,
+              ),
+              h,
+            ),
+            passwordField(
+              "email-current-password",
+              "Current password",
+              "current-password",
+            ),
+            Dialog.footer(
+              [
+                cancel,
+                submit(
+                  model.pending === "send-email-change"
+                    ? "Sending…"
+                    : "Send code to new email",
+                ),
+              ],
+              h,
+            ),
+          ],
+        );
+
+  const passwordForm = (initialFocus: ReadonlyArray<ChildAttribute>) =>
+    h.form(
+      [
+        h.Class("account-form"),
+        h.Id("change-account-password"),
+        h.Key(`${model.dialog?.key}-password`),
+        h.Method("post"),
+        h.OnSubmit(emit(Message.ChangePassword())),
+      ],
+      [
+        h.p(
+          [h.Class("account-hint")],
+          [
+            "Use at least 15 characters. Changing your password signs out all browsers.",
+          ],
+        ),
+        username,
+        passwordField(
+          "current-password",
+          "Current password",
+          "current-password",
+          initialFocus,
+        ),
+        passwordField("new-password", "New password", "new-password"),
+        passwordField(
+          "confirm-password",
+          "Confirm new password",
+          "new-password",
+        ),
+        Dialog.footer(
+          [
             cancel,
             submit(
-              model.pending === "send-email-change"
-                ? "Sending…"
-                : "Send code to new email",
+              model.pending === "password" ? "Changing…" : "Change password",
             ),
-          ),
-        ],
-      );
-
-  const passwordForm = h.form(
-    [
-      h.Class("account-form"),
-      h.Id("change-account-password"),
-      h.Method("post"),
-      h.OnSubmit(emit(Message.ChangePassword())),
-    ],
-    [
-      h.p(
-        [h.Class("account-hint")],
-        [
-          "Use at least 15 characters. Changing your password signs out all browsers.",
-        ],
-      ),
-      username,
-      passwordField("current-password", "Current password", "current-password"),
-      passwordField("new-password", "New password", "new-password"),
-      passwordField("confirm-password", "Confirm new password", "new-password"),
-      actions(
-        cancel,
-        submit(model.pending === "password" ? "Changing…" : "Change password"),
-      ),
-    ],
-  );
+          ],
+          h,
+        ),
+      ],
+    );
 
   return [
     itemGroup(
@@ -482,7 +521,7 @@ export const view = <Parent>(
                   action(
                     "Change email",
                     Message.OpenDialog({ dialog: "email" }),
-                    "open-email-dialog",
+                    true,
                   ),
                 )
               : undefined,
@@ -496,7 +535,7 @@ export const view = <Parent>(
             action: action(
               "Change password",
               Message.OpenDialog({ dialog: "password" }),
-              "open-password-dialog",
+              true,
             ),
           },
           h,
@@ -527,33 +566,29 @@ export const view = <Parent>(
         ]
       : []),
     h.div([h.Class("settings-sign-out")], [signOut]),
-    ...(model.dialog
-      ? [
-          dialog(
-            {
-              titleId: "account-dialog-title",
-              title:
-                model.dialog === "email" ? "Change email" : "Change password",
-              attributes: [
-                h.Key(model.dialog),
-                h.OnMount(Mount.mapMessage(ShowDialog(), emit)),
-                h.OnKeyDownPreventDefault((key) =>
-                  key === "Escape"
-                    ? Option.some(emit(Message.CloseDialog()))
-                    : Option.none(),
-                ),
-                h.OnCancel(emit(Message.CloseDialog())),
-              ],
-              children: [
-                model.dialog === "email" ? emailForm : passwordForm,
-                ...(model.error ? [h.p([h.Role("alert")], [model.error])] : []),
-              ],
-            },
-            h,
+    ...(!model.modal.isOpen && model.error
+      ? [h.p([h.Role("alert")], [model.error])]
+      : []),
+    Dialog.view(
+      {
+        model: model.modal,
+        title:
+          model.dialog?.kind === "email" ? "Change email" : "Change password",
+        showCloseButton: false,
+        content: (initialFocus) =>
+          h.div(
+            [h.Class("account-dialog-content")],
+            [
+              model.dialog?.kind === "email"
+                ? emailForm(initialFocus)
+                : passwordForm(initialFocus),
+              ...(model.error ? [h.p([h.Role("alert")], [model.error])] : []),
+            ],
           ),
-        ]
-      : model.error
-        ? [h.p([h.Role("alert")], [model.error])]
-        : []),
+        toParentMessage: (message) =>
+          emit(Message.GotDialogMessage({ message })),
+      },
+      h,
+    ),
   ];
 };

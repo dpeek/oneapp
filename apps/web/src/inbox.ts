@@ -29,6 +29,7 @@ import { mailHtmlDocument, mailHtmlSandbox } from "./inbox-html.ts";
 import * as Recovery from "./inbox-recovery.ts";
 import * as Compose from "./inbox-compose.ts";
 import * as QuickReply from "./inbox-inline-reply.ts";
+import { dialogId as personDialogId } from "./people.ts";
 import { Action, Notification } from "./notifications.ts";
 import { sentNotice } from "./inbox-send.ts";
 import {
@@ -2402,6 +2403,8 @@ const profileAvatar = (
           h.Class("inbox-profile-avatar"),
           h.Title(tooltip),
           h.AriaLabel(editLabel),
+          h.AriaHasPopup("dialog"),
+          h.AriaControls(personDialogId),
           h.OnClick(
             Message.RequestedPerson({
               address,

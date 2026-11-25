@@ -2,7 +2,7 @@ import {
   avatar as uiAvatar,
   button,
   buttonGroup,
-  dialog,
+  Dialog,
   field,
   input,
   nativeSelect,
@@ -41,10 +41,15 @@ import { Action, ContactUndo, Notification } from "./notifications.ts";
 import { normalizeCompanyDomain } from "./company-domains.ts";
 import { workspaceDrawerMedia } from "./workspace.ts";
 
+export const dialogId = "person-profile-dialog";
+const formId = "person-profile-form";
+const profileNameSelector = `#${formId} input[name="name"]`;
+
 export const Model = Schema.Struct({
   self: Schema.NullOr(Person),
   selfRequest: Schema.NullOr(Schema.String),
-  opened: Schema.Boolean,
+  dialog: Dialog.Model,
+  editorKey: Schema.String,
   address: Schema.NullOr(Schema.String),
   suggestedName: Schema.String,
   kind: ContactKind,
@@ -80,7 +85,8 @@ type Model = typeof Model.Type;
 export const initial: Model = {
   self: null,
   selfRequest: null,
-  opened: false,
+  dialog: Dialog.init({ id: dialogId, focusSelector: profileNameSelector }),
+  editorKey: "",
   address: null,
   suggestedName: "",
   kind: "person",
@@ -108,6 +114,7 @@ export const initial: Model = {
 
 export const Message = defineMessageUnion({
   GotFolderSheetMessage: { message: Sheet.Message },
+  GotDialogMessage: { message: Dialog.Message },
   RequestedSelf: {},
   Opened: {
     address: Schema.NullOr(Schema.String),
@@ -166,6 +173,16 @@ const foldFolderSheet = Update.foldChild({
   foldOutMessage: () => (model) => ({ model }),
 });
 
+const toDialogMessage = (message: typeof Dialog.Message.Type) =>
+  Message.GotDialogMessage({ message });
+const foldDialog = Update.foldChild({
+  update: Dialog.update,
+  read: (model: Model) => Option.some(model.dialog),
+  write: (model, dialog) => ({ ...model, dialog }),
+  toParentMessage: toDialogMessage,
+  foldOutMessage: () => (model) => ({ model }),
+});
+
 const notificationKey = (id: string) => `contact-save:${id}`;
 const deletionKey = (id: string) => `contact-delete:${id}`;
 const undoDuration = 10_000;
@@ -179,7 +196,6 @@ export const displayName = (person: Person) =>
   person.name ||
   (person.self ? "Your profile" : primaryEmail(person) || "Unnamed contact");
 
-const formId = "person-profile-form";
 const editFormId = "person-directory-edit";
 const decodeError = Schema.decodeUnknownOption(
   Schema.Struct({ error: Schema.String }),
@@ -445,6 +461,24 @@ const loadDialog = (model: Model): Update.Return<Model, Message> => {
   };
 };
 
+const FocusProfileName = Command.define("FocusPersonProfileName", {
+  args: {},
+  messages: [Message.Mounted],
+  execute: () =>
+    focus(profileNameSelector).pipe(
+      Effect.ignore,
+      Effect.as(Message.Mounted()),
+    ),
+});
+
+const resetEditor = (model: Model): Model => ({
+  ...initial,
+  dialog: model.dialog,
+  self: model.self,
+  selfRequest: model.selfRequest,
+  directory: model.directory,
+});
+
 const loadDirectory = (model: Model): Update.Return<Model, Message> => {
   const request = crypto.randomUUID();
   return {
@@ -483,23 +517,18 @@ export const update = (
         };
       },
       Created: ({ kind }) =>
-        model.opened
+        model.dialog.isOpen
           ? { model }
-          : {
-              model: {
-                ...model,
-                opened: true,
+          : foldDialog(
+              {
+                ...resetEditor(model),
+                editorKey: crypto.randomUUID(),
                 creating: true,
                 ready: true,
-                address: null,
-                person: null,
                 kind,
-                suggestedDomains: [],
-                suggestedName: "",
-                loadRequest: null,
-                error: null,
               },
-            },
+              Dialog.Message.RequestedOpen(),
+            ),
       ChangedKind: ({ kind }) => {
         if (model.saveRequest || directory.editRequest) return { model };
         if (directory.edit?.self) return { model };
@@ -514,37 +543,39 @@ export const update = (
         return { model: { ...model, kind } };
       },
       Opened: ({ address, suggestedName, suggestedKind, suggestedDomain }) =>
-        model.opened
+        model.dialog.isOpen
           ? { model }
-          : loadDialog({
-              ...initial,
-              self: model.self,
-              selfRequest: model.selfRequest,
-              directory,
-              opened: true,
-              address,
-              kind: suggestedKind ?? "person",
-              suggestedDomains: suggestedDomain ? [suggestedDomain] : [],
-              suggestedName:
-                suggestedName
-                  ?.trim()
-                  .slice(0, personNameLimit)
-                  .replace(/[\uD800-\uDBFF]$/u, "") ?? "",
-            }),
+          : Update.combine(
+              {
+                ...resetEditor(model),
+                editorKey: crypto.randomUUID(),
+                address,
+                kind: suggestedKind ?? "person",
+                suggestedDomains: suggestedDomain ? [suggestedDomain] : [],
+                suggestedName:
+                  suggestedName
+                    ?.trim()
+                    .slice(0, personNameLimit)
+                    .replace(/[\uD800-\uDBFF]$/u, "") ?? "",
+              },
+              [
+                (next) => foldDialog(next, Dialog.Message.RequestedOpen()),
+                loadDialog,
+              ],
+            ),
       Closed: () =>
         model.saveRequest
           ? { model }
-          : {
-              model: {
-                ...initial,
-                self: model.self,
-                selfRequest: model.selfRequest,
-                directory,
-              },
-            },
+          : foldDialog(resetEditor(model), Dialog.Message.RequestedClose()),
+      GotDialogMessage: ({ message }) =>
+        message._tag === "RequestedClose"
+          ? update(model, Message.Closed(), directoryVisible)
+          : foldDialog(model, message),
       Mounted: () => ({ model }),
       Retried: () =>
-        model.opened && !model.loadRequest ? loadDialog(model) : { model },
+        model.dialog.isOpen && !model.loadRequest
+          ? loadDialog(model)
+          : { model },
       Loaded: ({ request, person }) => {
         if (request === model.selfRequest)
           return { model: { ...model, selfRequest: null, self: person } };
@@ -558,10 +589,11 @@ export const update = (
             kind: person ? (person.kind ?? "person") : model.kind,
             self: person?.self ? person : model.self,
           },
+          commands: [FocusProfileName({})],
         };
       },
       Submitted: () => {
-        if (!model.ready || !model.opened || model.saveRequest)
+        if (!model.ready || !model.dialog.isOpen || model.saveRequest)
           return { model };
         const request = crypto.randomUUID();
         return {
@@ -576,28 +608,31 @@ export const update = (
         const records = directory.records
           ? [...directory.records.filter(({ id }) => id !== person.id), person]
           : null;
+        const next: Model = {
+          ...(editing ? model : resetEditor(model)),
+          self: person.self ? person : model.self,
+          selfRequest: person.self ? null : model.selfRequest,
+          directory: {
+            ...directory,
+            records,
+            listRequest: records ? null : directory.listRequest,
+            ...(editing
+              ? {
+                  edit: null,
+                  editRequest: null,
+                  editTarget: null,
+                  editError: null,
+                }
+              : {}),
+          },
+        };
         return {
+          ...(editing
+            ? { model: next }
+            : foldDialog(next, Dialog.Message.RequestedClose())),
           outMessage: OutMessage.DismissNotification({
             key: notificationKey(person.id),
           }),
-          model: {
-            ...(editing ? model : initial),
-            self: person.self ? person : model.self,
-            selfRequest: person.self ? null : model.selfRequest,
-            directory: {
-              ...directory,
-              records,
-              listRequest: records ? null : directory.listRequest,
-              ...(editing
-                ? {
-                    edit: null,
-                    editRequest: null,
-                    editTarget: null,
-                    editError: null,
-                  }
-                : {}),
-            },
-          },
         };
       },
       Failed: ({ request, error }) => {
@@ -910,16 +945,6 @@ export const update = (
   );
 };
 
-const OpenDialog = Mount.define("OpenPersonProfileDialog", {
-  messages: [Message.Mounted],
-  execute: ({ element }) =>
-    Effect.sync(() => {
-      if (element instanceof HTMLDialogElement && !element.open)
-        element.showModal();
-      return Message.Mounted();
-    }),
-});
-
 const PrepareForm = Mount.define("PrefillPersonProfileForm", {
   args: { name: Schema.String },
   messages: [Message.Mounted],
@@ -977,14 +1002,10 @@ const PreviewPhoto = Mount.define("PreviewPersonProfilePhoto", {
         const reveal = () => {
           preview.hidden = false;
         };
-        // Canceling the file picker should keep the profile dialog open.
-        const cancel = (event: Event) => event.stopPropagation();
         input.addEventListener("change", select);
-        input.addEventListener("cancel", cancel);
         preview.addEventListener("load", reveal);
         return () => {
           input.removeEventListener("change", select);
-          input.removeEventListener("cancel", cancel);
           preview.removeEventListener("load", reveal);
           clear();
         };
@@ -1127,6 +1148,7 @@ const profileForm = (
     heading?: string;
     kind?: typeof ContactKind.Type;
     domains?: readonly string[];
+    key?: string;
   },
 ) => {
   const kind = options.kind ?? person?.kind ?? "person";
@@ -1157,6 +1179,7 @@ const profileForm = (
         type: "submit",
         size: "sm",
         disabled: pending,
+        focusableWhenDisabled: true,
         children: [pending ? "Saving…" : "Save"],
       },
       h,
@@ -1165,7 +1188,7 @@ const profileForm = (
   return h.form(
     [
       h.Id(options.formId),
-      h.Key(`${options.formId}-${person?.id ?? "new"}`),
+      h.Key(`${options.formId}-${options.key ?? person?.id ?? "new"}`),
       h.Class("person-fields"),
       h.OnSubmit(options.submit),
       h.OnMount(PrepareForm({ name })),
@@ -1238,7 +1261,7 @@ const profileForm = (
             ),
           ]
         : []),
-      ...(options.heading ? [] : [h.div([h.Class("person-actions")], actions)]),
+      ...(options.heading ? [] : [Dialog.footer(actions, h)]),
     ],
   );
 };
@@ -1257,7 +1280,6 @@ export const editForm = (
   });
 
 export const view = Submodel.defineView<Model, Message>((model, h) => {
-  if (!model.opened) return h.div([], []);
   const { person, address } = model;
   const heading = model.creating
     ? model.kind === "company"
@@ -1269,67 +1291,73 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
         ? "Company profile"
         : "Contact profile";
   const pending = model.saveRequest !== null;
-  return dialog(
+  return Dialog.view(
     {
+      model: model.dialog,
       title: heading,
-      titleId: "person-dialog-title",
-      attributes: [h.OnMount(OpenDialog()), h.OnCancel(Message.Closed())],
-      children: [
-        ...(model.error ? [h.p([h.Role("alert")], [model.error])] : []),
-        ...(model.loadRequest
-          ? [h.p([h.Role("status")], ["Loading profile…"])]
-          : []),
-        ...(!model.ready
-          ? [
-              h.div(
-                [h.Class("person-actions")],
-                [
-                  button(
-                    {
-                      variant: "outline",
-                      size: "sm",
-                      onClick: Message.Closed(),
-                      children: ["Close"],
-                    },
-                    h,
-                  ),
-                  ...(!model.loadRequest
+      showCloseButton: false,
+      content: () =>
+        h.div(
+          [h.Class("person-dialog-content")],
+          [
+            ...(model.error ? [h.p([h.Role("alert")], [model.error])] : []),
+            ...(model.loadRequest
+              ? [h.p([h.Role("status")], ["Loading profile…"])]
+              : []),
+            ...(model.ready
+              ? [
+                  ...(person?.managedAddresses.length
                     ? [
-                        button(
-                          {
-                            size: "sm",
-                            onClick: Message.Retried(),
-                            children: ["Retry"],
-                          },
-                          h,
+                        h.div(
+                          [h.Class("person-managed-emails")],
+                          [
+                            h.strong([], ["Account addresses"]),
+                            h.p([], [person.managedAddresses.join(", ")]),
+                          ],
                         ),
                       ]
                     : []),
-                ],
-              ),
-            ]
-          : [
-              ...(person?.managedAddresses.length
-                ? [
-                    h.div(
-                      [h.Class("person-managed-emails")],
-                      [
-                        h.strong([], ["Account addresses"]),
-                        h.p([], [person.managedAddresses.join(", ")]),
-                      ],
-                    ),
-                  ]
-                : []),
-              profileForm(h, person, address, pending, {
-                formId,
-                submit: Message.Submitted(),
-                cancel: Message.Closed(),
-                suggestedName: model.suggestedName,
-                kind: model.kind,
-                domains: model.suggestedDomains,
-              }),
-            ]),
-      ],
+                  profileForm(h, person, address, pending, {
+                    formId,
+                    key: model.editorKey,
+                    submit: Message.Submitted(),
+                    cancel: Message.Closed(),
+                    suggestedName: model.suggestedName,
+                    kind: model.kind,
+                    domains: model.suggestedDomains,
+                  }),
+                ]
+              : [
+                  Dialog.footer(
+                    [
+                      button(
+                        {
+                          variant: "outline",
+                          size: "sm",
+                          onClick: Message.Closed(),
+                          children: ["Close"],
+                        },
+                        h,
+                      ),
+                      ...(!model.loadRequest
+                        ? [
+                            button(
+                              {
+                                size: "sm",
+                                onClick: Message.Retried(),
+                                children: ["Retry"],
+                              },
+                              h,
+                            ),
+                          ]
+                        : []),
+                    ],
+                    h,
+                  ),
+                ]),
+          ],
+        ),
+      toParentMessage: toDialogMessage,
     },
     h,
   );

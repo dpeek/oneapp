@@ -21,6 +21,7 @@ import {
   type Person,
 } from "./people-contract.ts";
 import {
+  dialogId,
   displayName,
   editForm,
   Message,
@@ -328,6 +329,7 @@ export const view = Submodel.defineView<
               button(
                 {
                   size: "sm",
+                  dialogId,
                   onClick: Message.Created({ kind: section }),
                   children: [
                     section === "company" ? "Add company" : "Add person",

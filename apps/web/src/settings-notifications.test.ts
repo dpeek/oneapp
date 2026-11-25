@@ -5,10 +5,12 @@ vi.mock("@oneapp/ui", async () => {
     import.meta.resolve("@foldkit/ui", import.meta.resolve("@oneapp/ui"))
   );
   return {
+    Dialog,
     Sheet: Dialog,
     Toast: await import("../../../packages/ui/src/toast-state.ts"),
   };
 });
+import { Dialog } from "@oneapp/ui";
 import * as People from "./people.ts";
 import * as Clients from "./connected-clients.ts";
 import * as Notifications from "./notifications.ts";
@@ -117,12 +119,16 @@ it.each(["other-contact", "other-page"])(
 it("keeps profile dialog errors inline even outside Contacts and prevents closing during save", () => {
   const opened = {
     ...People.initial,
-    opened: true,
+    dialog: { ...People.initial.dialog, isOpen: true },
     ready: true,
     person,
     saveRequest: "save",
   };
   expect(People.update(opened, People.Message.Closed()).model).toBe(opened);
+  const requestClose = People.Message.GotDialogMessage({
+    message: Dialog.Message.RequestedClose(),
+  });
+  expect(People.update(opened, requestClose).model).toBe(opened);
   const failed = People.update(
     opened,
     People.Message.Failed({
@@ -132,12 +138,15 @@ it("keeps profile dialog errors inline even outside Contacts and prevents closin
     false,
   );
   expect(failed.model).toMatchObject({
-    opened: true,
+    dialog: { isOpen: true },
     person,
     error: "Could not save the profile.",
     saveRequest: null,
   });
   expect(applyOutcome(failed.outMessage).model.toast.entries).toEqual([]);
+  const closed = People.update(failed.model, requestClose);
+  expect(closed.model.dialog.isOpen).toBe(false);
+  expect(closed.model.error).toBeNull();
 });
 
 it("silently clears an earlier hidden contact error after retry, rejects mismatched saves and ignores old sessions", () => {

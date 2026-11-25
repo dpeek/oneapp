@@ -2,9 +2,15 @@ import { expect, it } from "@effect/vitest";
 import { Schema } from "effect";
 import { PendingEmailChange } from "./account-contract.ts";
 import { vi } from "vitest";
-vi.mock("@oneapp/ui", async () => ({
-  Toast: await import("../../../packages/ui/src/toast-state.ts"),
-}));
+vi.mock("@oneapp/ui", async () => {
+  const { Dialog } = await import(
+    import.meta.resolve("@foldkit/ui", import.meta.resolve("@oneapp/ui"))
+  );
+  return {
+    Dialog,
+    Toast: await import("../../../packages/ui/src/toast-state.ts"),
+  };
+});
 import * as Account from "./account-settings.ts";
 import * as Notifications from "./notifications.ts";
 

@@ -180,6 +180,19 @@ const connectingMcp =
 const toAccountSettingsMessage = (
   message: typeof AccountSettings.Message.Type,
 ) => Message.GotAccountSettingsMessage({ message });
+const foldAccountDialog = Update.foldChild({
+  update: Dialog.update,
+  read: (model: Model) => Option.some(model.accountSettings.modal),
+  write: (model, modal) => ({
+    ...model,
+    accountSettings: { ...model.accountSettings, modal },
+  }),
+  toParentMessage: (message) =>
+    toAccountSettingsMessage(
+      AccountSettings.Message.GotDialogMessage({ message }),
+    ),
+  foldOutMessage: () => (model) => ({ model }),
+});
 const toSettingsSheetMessage = (message: typeof Sheet.Message.Type) =>
   Message.GotSettingsSheetMessage({ message });
 const foldSettingsSheet = Update.foldChild({
@@ -1018,10 +1031,17 @@ const update = (
         },
       });
       const signedOut = (notice: string | null) => {
-        const result = update(model, Message.LoadedAccount({ account: null }));
+        const closing = foldAccountDialog(
+          model,
+          Dialog.Message.RequestedClose(),
+        );
+        const result = update(
+          closing.model,
+          Message.LoadedAccount({ account: null }),
+        );
         return {
-          ...result,
           model: { ...result.model, signInNotice: notice },
+          commands: [...(closing.commands ?? []), ...(result.commands ?? [])],
         };
       };
       const result = AccountSettings.Message.match<
@@ -1048,7 +1068,7 @@ const update = (
               )
             : { model },
         ChangePassword: () =>
-          settings.dialog === "password"
+          settings.dialog?.kind === "password"
             ? start(
                 "password",
                 Command.mapMessage(
@@ -1069,34 +1089,36 @@ const update = (
                     verification,
                   },
                 },
+                commands: [focusAccountElement("#email-code")],
               }
             : verified(),
         EmailVerified: verified,
         PasswordChanged: () =>
           signedOut("Password changed. Sign in with your new password."),
-        OpenDialog: ({ dialog }) =>
-          model.pending ||
-          settings.pending ||
-          (dialog === "email" && !account.emailDeliveryEnabled)
-            ? { model }
-            : {
-                model: {
-                  ...model,
-                  accountSettings: {
-                    ...settings,
-                    dialog,
-                    emailChange: null,
-                    error: "",
-                  },
-                },
-                ...(dialog === "email" && settings.dialog === "email"
-                  ? { commands: [focusAccountElement("#new-email")] }
-                  : {}),
-              },
+        OpenDialog: ({ dialog }) => {
+          if (
+            model.pending ||
+            settings.pending ||
+            (dialog === "email" && !account.emailDeliveryEnabled)
+          )
+            return { model };
+          const next = {
+            ...model,
+            accountSettings: {
+              ...settings,
+              dialog: { kind: dialog, key: crypto.randomUUID() },
+              emailChange: null,
+              error: "",
+            },
+          };
+          return settings.modal.isOpen
+            ? { model: next, commands: [focusAccountElement("#new-email")] }
+            : foldAccountDialog(next, Dialog.Message.RequestedOpen());
+        },
         CloseDialog: () =>
-          settings.dialog && !model.pending && !settings.pending
-            ? {
-                model: {
+          settings.modal.isOpen && !model.pending && !settings.pending
+            ? foldAccountDialog(
+                {
                   ...model,
                   accountSettings: {
                     ...settings,
@@ -1105,14 +1127,19 @@ const update = (
                     error: "",
                   },
                 },
-                commands: [
-                  focusAccountElement(`#open-${settings.dialog}-dialog`),
-                ],
-              }
+                Dialog.Message.RequestedClose(),
+              )
             : { model },
+        GotDialogMessage: ({ message }) =>
+          message._tag === "RequestedClose"
+            ? update(
+                model,
+                toAccountSettingsMessage(AccountSettings.Message.CloseDialog()),
+              )
+            : foldAccountDialog(model, message),
         DialogUpdated: () => ({ model }),
         SubmitEmailChange: () =>
-          settings.dialog === "email" && !settings.emailChange
+          settings.dialog?.kind === "email" && !settings.emailChange
             ? start(
                 "send-email-change",
                 Command.mapMessage(
@@ -1122,7 +1149,7 @@ const update = (
               )
             : { model },
         ConfirmEmailChange: () =>
-          settings.dialog === "email" && settings.emailChange
+          settings.dialog?.kind === "email" && settings.emailChange
             ? start(
                 "confirm-email-change",
                 Command.mapMessage(
@@ -1437,6 +1464,7 @@ const accountSettingsView = (model: Model, h: HtmlBuilder<Message>) => [
                 {
                   size: "sm",
                   variant: "outline",
+                  dialogId: People.dialogId,
                   onClick: toPeopleMessage(
                     People.Message.Opened({ address: null }),
                   ),

@@ -2154,6 +2154,7 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
   --calendar-hour: 3.5rem;
   --calendar-columns: 3.5rem repeat(var(--calendar-days), minmax(0, 1fr));
   --calendar-grid-line: color-mix(in srgb, var(--border) 72%, transparent);
+  --calendar-now-line: light-dark(#2563eb, #7aafff);
 }
 
 .calendar-timeline[data-view="week"] {
@@ -2333,6 +2334,13 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
   inline-size: calc(var(--event-width) - 4px);
   block-size: calc(var(--event-height) - 2px);
   box-sizing: border-box;
+}
+
+.calendar-current-time {
+  position: absolute;
+  inset-inline: 0;
+  border-block-start: 2px solid var(--calendar-now-line);
+  pointer-events: none;
 }
 
 .calendar-event-title,

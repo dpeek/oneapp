@@ -22,7 +22,7 @@ import {
   toggleGroup,
   toolbar,
 } from "@oneapp/ui";
-import { Effect, Option, Queue, Schema, Stream } from "effect";
+import { Clock, Effect, Option, Queue, Schema, Stream } from "effect";
 import { Command, Mount, Submodel, Update } from "foldkit";
 import { defaultEnglishLocale } from "foldkit/calendar";
 import { focus } from "foldkit/dom";
@@ -56,6 +56,7 @@ import {
 import {
   calendarSlotTimes,
   calendarTimelineDay,
+  calendarTimelinePoint,
   minutesInDay,
   slotMinutes,
 } from "./calendar-timeline.ts";
@@ -115,6 +116,7 @@ const SelectedEvent = Schema.Struct({
 
 export const Model = Schema.Struct({
   date: Schema.String,
+  now: Schema.Int,
   view: ScheduleView,
   datePickers: Schema.Struct({
     sidebar: CalendarPicker.Model,
@@ -166,7 +168,9 @@ const pickerDate = ({
 }: Temporal.PlainDate): CalendarPicker.CalendarDate => ({ year, month, day });
 const weekStart = (date: string) => calendarWeekStart(calendarDate(date));
 export const initial = (): Model => {
-  const date = today();
+  const now = Temporal.Now.instant();
+  const zone = Temporal.Now.timeZoneId();
+  const date = now.toZonedDateTimeISO(zone).toPlainDate();
   const picker = (surface: typeof Surface.Type) =>
     CalendarPicker.init({
       id: `calendar-date-${surface}`,
@@ -175,12 +179,13 @@ export const initial = (): Model => {
     });
   return {
     date: date.toString(),
+    now: now.epochMilliseconds,
     view: globalThis.matchMedia?.(workspaceDrawerMedia).matches
       ? "day"
       : "week",
     datePickers: { sidebar: picker("sidebar"), sheet: picker("sheet") },
     slotFocus: null,
-    zone: Temporal.Now.timeZoneId(),
+    zone,
     week: null,
     calendars: [],
     visible: null,
@@ -208,6 +213,7 @@ export const Message = defineMessageUnion({
   SelectedDate: { date: Schema.String },
   GotDatePicker: { surface: Surface, message: CalendarPicker.Message },
   JumpedToToday: {},
+  UpdatedCurrentTime: { now: Schema.Int },
   Retried: {},
   GotFolderSheetMessage: { message: Sheet.Message },
   GotMenuMessage: { target: MenuTarget, message: DropdownMenu.Message },
@@ -465,6 +471,21 @@ const DownloadCalendar = Command.define("DownloadCalendar", {
       link.remove();
       return Message.DownloadStarted();
     }),
+});
+
+const nextCalendarMinute = Effect.gen(function* () {
+  const now = yield* Clock.currentTimeMillis;
+  yield* Effect.sleep(60_000 - (now % 60_000));
+  return yield* Clock.currentTimeMillis;
+});
+
+const WatchCalendarTime = Mount.defineStream("WatchCalendarTime", {
+  messages: [Message.UpdatedCurrentTime],
+  execute: () =>
+    Stream.fromEffect(Clock.currentTimeMillis).pipe(
+      Stream.concat(Stream.fromEffectRepeat(nextCalendarMinute)),
+      Stream.map((now) => Message.UpdatedCurrentTime({ now })),
+    ),
 });
 
 const FocusEvent = Command.define("FocusCalendarEvent", {
@@ -955,6 +976,7 @@ export const update = (
         busy(model) ? { model } : foldDatePicker(model, surface, message),
       JumpedToToday: () =>
         busy(model) ? { model } : navigateDate(model, today().toString()),
+      UpdatedCurrentTime: ({ now }) => ({ model: { ...model, now } }),
       Retried: () =>
         busy(model)
           ? { model }
@@ -2226,7 +2248,7 @@ const schedule = (
   model: Model,
   days: readonly string[],
   events: readonly CalendarOccurrence[],
-  current: string,
+  current: typeof Slot.Type,
   h: H,
 ) => {
   const timeline = days.map((day) => ({
@@ -2336,7 +2358,7 @@ const schedule = (
                                 "selected",
                                 String(day === model.date),
                               ),
-                              ...(day === current
+                              ...(day === current.day
                                 ? [h.AriaCurrent("date")]
                                 : []),
                               h.AriaPressed(String(day === model.date)),
@@ -2479,6 +2501,22 @@ const schedule = (
                         item,
                       );
                     }),
+                    ...(day === current.day
+                      ? [
+                          h.span(
+                            [
+                              h.Key("current-time"),
+                              h.Class("calendar-current-time"),
+                              h.Role("img"),
+                              h.AriaLabel(
+                                `Current time, ${timeLabel(current.minute)}`,
+                              ),
+                              h.Style({ top: percent(current.minute) }),
+                            ],
+                            [],
+                          ),
+                        ]
+                      : []),
                   ],
                 );
               }),
@@ -2491,7 +2529,7 @@ const schedule = (
 };
 
 export const view = Submodel.defineView<Model, Message>((model, h) => {
-  const current = today().toString();
+  const current = calendarTimelinePoint(model.now, model.zone);
   const days =
     model.view === "day"
       ? [model.date]
@@ -2572,6 +2610,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
         [h.Class("calendar-date-range"), h.AriaLive("polite")],
         [scheduleTitle(model.view, days)],
       ),
+      headerAttributes: [h.OnMount(WatchCalendarTime())],
       headerActions: [
         h.div(
           [h.Class("workspace-drawer-trigger")],

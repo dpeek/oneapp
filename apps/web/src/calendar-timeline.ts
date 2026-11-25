@@ -39,6 +39,20 @@ export const calendarSlotTimes = (
 const wallMinute = (time: Temporal.ZonedDateTime) =>
   time.hour * 60 + time.minute + time.second / 60;
 
+export const calendarTimelinePoint = (
+  epochMilliseconds: number,
+  zone: string,
+) => {
+  const time =
+    Temporal.Instant.fromEpochMilliseconds(
+      epochMilliseconds,
+    ).toZonedDateTimeISO(zone);
+  return {
+    day: time.toPlainDate().toString(),
+    minute: Math.floor(wallMinute(time)),
+  };
+};
+
 type Segment = {
   event: CalendarOccurrence;
   start: number;

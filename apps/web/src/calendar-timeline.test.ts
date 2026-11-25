@@ -7,6 +7,7 @@ import {
   calendarSlots,
   calendarSlotTimes,
   calendarTimelineDay,
+  calendarTimelinePoint,
 } from "./calendar-timeline.ts";
 
 const zone = "Australia/Sydney";
@@ -78,5 +79,26 @@ it("offers valid creation times across the clock change and midnight", () => {
   expect(calendarSlotTimes(gap, 1410, zone)).toEqual({
     start: "2026-10-04T23:30",
     end: "2026-10-05T00:00",
+  });
+});
+
+it("places the current time on the local day and minute across midnight and daylight saving", () => {
+  const point = (timestamp: string) =>
+    calendarTimelinePoint(Date.parse(timestamp), zone);
+  expect(point("2026-11-25T12:59:59Z")).toEqual({
+    day: "2026-11-25",
+    minute: 1439,
+  });
+  expect(point("2026-11-25T13:00:00Z")).toEqual({
+    day: "2026-11-26",
+    minute: 0,
+  });
+  expect(point("2026-10-03T15:59:59Z")).toEqual({
+    day: "2026-10-04",
+    minute: 119,
+  });
+  expect(point("2026-10-03T16:00:00Z")).toEqual({
+    day: "2026-10-04",
+    minute: 180,
   });
 });

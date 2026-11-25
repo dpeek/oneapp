@@ -1,14 +1,19 @@
 import {
   calendarIconPaths,
+  ellipsisIcon,
   filesIconPaths,
+  navigationLinks,
+  outlineIcon,
+  Popover,
   taskIconPaths,
   Tooltip,
   unreadBadge,
 } from "@oneapp/ui";
-import { Option, Schema } from "effect";
-import { Update } from "foldkit";
+import { Option, Schema, Stream } from "effect";
+import { Mount, Update } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
+import { mapMessage } from "foldkit/mount";
 import { calendarPath } from "./calendar-contract.ts";
 import { filesPath } from "./files-contract.ts";
 import { mailPath } from "./inbox-contract.ts";
@@ -100,22 +105,35 @@ const destinations = [
   paths: readonly string[];
 }>;
 
-export const Model = Schema.Record(Page, Tooltip.Model);
+const primaryPages = new Set<Page>(["mail", "calendar", "tasks", "files"]);
+const overflowDestinations = destinations.filter(
+  ({ page }) => !primaryPages.has(page),
+);
+const mobileNavMedia = "(max-width: 40rem)";
+
+export const Model = Schema.Struct({
+  tooltips: Schema.Record(Page, Tooltip.Model),
+  overflow: Popover.Model,
+});
 type Model = typeof Model.Type;
 
 export const initial: Model = {
-  links: Tooltip.init({ id: "nav-links" }),
-  mail: Tooltip.init({ id: "nav-mail" }),
-  calendar: Tooltip.init({ id: "nav-calendar" }),
-  tasks: Tooltip.init({ id: "nav-tasks" }),
-  files: Tooltip.init({ id: "nav-files" }),
-  vault: Tooltip.init({ id: "nav-vault" }),
-  contacts: Tooltip.init({ id: "nav-contacts" }),
-  settings: Tooltip.init({ id: "nav-settings" }),
+  tooltips: {
+    links: Tooltip.init({ id: "nav-links" }),
+    mail: Tooltip.init({ id: "nav-mail" }),
+    calendar: Tooltip.init({ id: "nav-calendar" }),
+    tasks: Tooltip.init({ id: "nav-tasks" }),
+    files: Tooltip.init({ id: "nav-files" }),
+    vault: Tooltip.init({ id: "nav-vault" }),
+    contacts: Tooltip.init({ id: "nav-contacts" }),
+    settings: Tooltip.init({ id: "nav-settings" }),
+  },
+  overflow: Popover.init({ id: "nav-more" }),
 };
 
 export const Message = defineMessageUnion({
   GotTooltipMessage: { page: Page, message: Tooltip.Message },
+  GotOverflowMessage: { message: Popover.Message },
 });
 type Message = typeof Message.Type;
 
@@ -124,14 +142,100 @@ const foldTooltip = Update.foldChildAt({
     const { model: next, commands } = Tooltip.update(model, message);
     return { model: next, commands };
   },
-  readAt: (model: Model, page: Page) => Option.some(model[page]),
-  writeAt: (model, page, tooltip) => ({ ...model, [page]: tooltip }),
+  readAt: (model: Model, page: Page) => Option.some(model.tooltips[page]),
+  writeAt: (model, page, tooltip) => ({
+    ...model,
+    tooltips: { ...model.tooltips, [page]: tooltip },
+  }),
   toParentMessage: (page, message) =>
     Message.GotTooltipMessage({ page, message }),
 });
 
-export const update = (model: Model, { page, message }: Message) =>
-  foldTooltip(model, page, message);
+const toOverflowMessage = (message: typeof Popover.Message.Type) =>
+  Message.GotOverflowMessage({ message });
+
+export const closeOverflow = () =>
+  toOverflowMessage(Popover.Message.RequestedClose());
+
+const foldOverflow = Update.foldChild({
+  update: Popover.update,
+  read: (model: Model) => Option.some(model.overflow),
+  write: (model, overflow) => ({ ...model, overflow }),
+  toParentMessage: toOverflowMessage,
+  foldOutMessage: () => (model) => ({ model }),
+});
+
+export const update = (
+  model: Model,
+  message: Message,
+): Update.Return<Model, Message> =>
+  Message.match(message, {
+    GotTooltipMessage: ({ page, message }) => foldTooltip(model, page, message),
+    GotOverflowMessage: ({ message }) => foldOverflow(model, message),
+  });
+
+const WatchNavigationLayout = Mount.defineStream("WatchNavigationLayout", {
+  messages: [Message.GotOverflowMessage],
+  execute: () =>
+    Stream.fromEventListener<MediaQueryListEvent>(
+      matchMedia(mobileNavMedia),
+      "change",
+    ).pipe(
+      Stream.filter(({ matches }) => !matches),
+      Stream.map(closeOverflow),
+    ),
+});
+
+const overflowNavigation = <ParentMessage>(
+  page: Page,
+  model: Model,
+  toParentMessage: (message: Message) => ParentMessage,
+  h: HtmlBuilder<ParentMessage>,
+) => {
+  const current = overflowDestinations.find(
+    (destination) => destination.page === page,
+  );
+  return h.div(
+    [
+      h.Class("app-nav-more"),
+      h.DataAttribute("current", String(current !== undefined)),
+    ],
+    [
+      Popover.view(
+        {
+          model: model.overflow,
+          label: "More destinations",
+          triggerLabel: current
+            ? `More destinations, current page: ${current.label}`
+            : "More destinations",
+          trigger: h.span(
+            [h.Class("app-nav-more-label"), h.AriaHidden(true)],
+            [ellipsisIcon(h), h.span([h.Class("app-nav-label")], ["More"])],
+          ),
+          triggerClassName: "app-nav-link",
+          placement: "top-end",
+          focusSelector: '[data-slot="navigation-link"]',
+          content: navigationLinks(
+            {
+              label: "Additional destinations",
+              variant: "sidebar",
+              destinations: overflowDestinations.map((destination) => ({
+                href: destination.href,
+                label: destination.label,
+                icon: outlineIcon(h, destination.paths),
+                current: page === destination.page,
+              })),
+            },
+            h,
+          ),
+          toParentMessage: (message) =>
+            toParentMessage(toOverflowMessage(message)),
+        },
+        h,
+      ),
+    ],
+  );
+};
 
 export const navigationView = <ParentMessage>(
   page: Page,
@@ -141,52 +245,62 @@ export const navigationView = <ParentMessage>(
   h: HtmlBuilder<ParentMessage>,
 ) =>
   h.nav(
-    [h.Class("app-nav"), h.AriaLabel("Main navigation")],
-    destinations.map((destination) => {
-      const count = destination.page === "mail" ? unreadCount : 0;
-      return Tooltip.tooltip(
-        {
-          model: model[destination.page],
-          content: destination.label,
-          toParentMessage: (message) =>
-            toParentMessage(
-              Message.GotTooltipMessage({ page: destination.page, message }),
-            ),
-          renderTrigger: (attributes) =>
-            h.a(
-              [
-                ...attributes,
-                h.Class("app-nav-link"),
-                h.Href(destination.href),
-                h.AriaLabel(
-                  count
-                    ? `${destination.label}, ${count} unread`
-                    : destination.label,
-                ),
-                ...(page === destination.page ? [h.AriaCurrent("page")] : []),
-              ],
-              [
-                h.svg(
-                  [
-                    h.ViewBox("0 0 24 24"),
-                    h.Fill("none"),
-                    h.Stroke("currentColor"),
-                    h.StrokeWidth("1.75"),
-                    h.StrokeLinecap("round"),
-                    h.StrokeLinejoin("round"),
-                    h.AriaHidden(true),
-                  ],
-                  destination.paths.map((path) => h.path([h.D(path)], [])),
-                ),
-                ...(count ? [unreadBadge(h, count)] : []),
-                h.span(
-                  [h.Class("app-nav-label"), h.AriaHidden(true)],
-                  [destination.label],
-                ),
-              ],
-            ),
-        },
-        h,
-      );
-    }),
+    [
+      h.Class("app-nav"),
+      h.AriaLabel("Main navigation"),
+      h.OnMount(mapMessage(WatchNavigationLayout(), toParentMessage)),
+    ],
+    [
+      ...destinations.map((destination) => {
+        const count = destination.page === "mail" ? unreadCount : 0;
+        return Tooltip.tooltip(
+          {
+            model: model.tooltips[destination.page],
+            content: destination.label,
+            toParentMessage: (message) =>
+              toParentMessage(
+                Message.GotTooltipMessage({ page: destination.page, message }),
+              ),
+            renderTrigger: (attributes) =>
+              h.a(
+                [
+                  ...attributes,
+                  h.Class("app-nav-link"),
+                  ...(!primaryPages.has(destination.page)
+                    ? [h.DataAttribute("overflow", "")]
+                    : []),
+                  h.Href(destination.href),
+                  h.AriaLabel(
+                    count
+                      ? `${destination.label}, ${count} unread`
+                      : destination.label,
+                  ),
+                  ...(page === destination.page ? [h.AriaCurrent("page")] : []),
+                ],
+                [
+                  h.svg(
+                    [
+                      h.ViewBox("0 0 24 24"),
+                      h.Fill("none"),
+                      h.Stroke("currentColor"),
+                      h.StrokeWidth("1.75"),
+                      h.StrokeLinecap("round"),
+                      h.StrokeLinejoin("round"),
+                      h.AriaHidden(true),
+                    ],
+                    destination.paths.map((path) => h.path([h.D(path)], [])),
+                  ),
+                  ...(count ? [unreadBadge(h, count)] : []),
+                  h.span(
+                    [h.Class("app-nav-label"), h.AriaHidden(true)],
+                    [destination.label],
+                  ),
+                ],
+              ),
+          },
+          h,
+        );
+      }),
+      overflowNavigation(page, model, toParentMessage, h),
+    ],
   );

@@ -33,8 +33,9 @@ export const view = <ParentMessage>(
     disabled?: boolean;
     trigger: Html;
     triggerButton?: Parameters<typeof buttonClassName>[0];
+    triggerClassName?: string;
     content: Html;
-    placement?: "bottom-start" | "bottom-end";
+    placement?: "bottom-start" | "bottom-end" | "top-end";
     portal?: boolean;
     panelClassName?: string;
     focusSelector?: string;
@@ -79,7 +80,10 @@ export const view = <ParentMessage>(
                       },
                     ),
                     stylex.props(styles.button).className,
-                  ].join(" "),
+                    props.triggerClassName,
+                  ]
+                    .filter(Boolean)
+                    .join(" "),
                 ),
               ],
               [props.trigger],

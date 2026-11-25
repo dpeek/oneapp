@@ -652,6 +652,11 @@ const closeFolderSheet = (model: Model): Update.Return<Model, Message> => {
     : foldInbox(model, Inbox.closeFolderSheet());
 };
 
+const closeNavigationOverflow = (model: Model) =>
+  model.navigation.overflow.isOpen
+    ? foldNavigation(model, AppNavigation.closeOverflow())
+    : { model };
+
 const isEditable = (target: EventTarget | null) =>
   target instanceof HTMLElement &&
   (target.isContentEditable ||
@@ -856,7 +861,10 @@ const update = (
           mailRouteFor(request.url.pathname) ||
           contactsRouteFor(request.url.pathname))
       ) {
-        const from = closeFolderSheet(model);
+        const from = Update.combine(model, [
+          closeNavigationOverflow,
+          closeFolderSheet,
+        ]);
         if (
           request.url.pathname === window.location.pathname &&
           (!settingsSection || settingsSection === model.settingsSection)
@@ -896,6 +904,7 @@ const update = (
       const result = sameRoute
         ? { model }
         : Update.combine(model, [
+            closeNavigationOverflow,
             closeFolderSheet,
             (next) =>
               next.creationMenu ? closeCreationMenu(next) : { model: next },

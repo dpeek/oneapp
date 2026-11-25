@@ -36,6 +36,11 @@ export const Page = Schema.Literals([
 ]);
 type Page = typeof Page.Type;
 
+export const contactsIconPaths = [
+  "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2m20 0v-2a4 4 0 0 0-3-3.87",
+  "M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0Zm3-3.87a4 4 0 0 1 0 7.75",
+] as const;
+
 const destinations = [
   {
     page: "links",
@@ -80,10 +85,7 @@ const destinations = [
     page: "contacts",
     href: contactsPath,
     label: "Contacts",
-    paths: [
-      "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2m20 0v-2a4 4 0 0 0-3-3.87",
-      "M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0Zm3-3.87a4 4 0 0 1 0 7.75",
-    ],
+    paths: contactsIconPaths,
   },
   {
     page: "settings",

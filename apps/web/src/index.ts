@@ -126,7 +126,7 @@ const Model = Schema.Struct({
   fileRoute: Schema.NullOr(FileRoute),
   creationDialog: Dialog.Model,
   creationMenu: Schema.NullOr(CommandMenu.Model),
-  openingEmailComposer: Schema.Boolean,
+  pendingCreateAction: Schema.NullOr(Schema.Literals(["email", "contact"])),
   taskRoute: Schema.NullOr(TaskRoute),
   mailRoute: Schema.NullOr(MailRoute),
   peopleRoute: Schema.NullOr(ContactsRoute),
@@ -563,6 +563,11 @@ const creationItems = [
   { value: "email", label: "New email", iconPaths: mailIconPaths },
   { value: "link", label: "Save link", iconPaths: linkIconPaths },
   {
+    value: "contact",
+    label: "Add contact",
+    iconPaths: AppNavigation.contactsIconPaths,
+  },
+  {
     value: "upload",
     label: "Upload file",
     iconPaths: filesIconPaths,
@@ -600,8 +605,13 @@ const foldCreationMenu = Update.foldChild({
           );
         case "email":
           return Inbox.composeSender(model.inbox)
-            ? closeCreationMenu({ ...model, openingEmailComposer: true })
+            ? closeCreationMenu({ ...model, pendingCreateAction: "email" })
             : { model };
+        case "contact":
+          return closeCreationMenu({
+            ...model,
+            pendingCreateAction: "contact",
+          });
         case "link":
           return foldLinks(model, Links.Message.OpenedCreate());
         case "upload":
@@ -881,7 +891,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     fileRoute: fileRouteFor(url.pathname),
     creationDialog: Dialog.init({ id: Tasks.creationDialogId }),
     creationMenu: null,
-    openingEmailComposer: false,
+    pendingCreateAction: null,
     taskRoute: taskRouteFor(url.pathname),
     mailRoute: mailRouteFor(url.pathname),
     peopleRoute: contactsRouteFor(url.pathname),
@@ -989,7 +999,7 @@ const update = (
                   fileRoute,
                   mailRoute,
                   peopleRoute,
-                  openingEmailComposer: false,
+                  pendingCreateAction: null,
                   error: null,
                 },
                 model.page,
@@ -1051,7 +1061,7 @@ const update = (
         fileRoute: model.fileRoute,
         creationDialog: Dialog.init({ id: Tasks.creationDialogId }),
         creationMenu: null,
-        openingEmailComposer: false,
+        pendingCreateAction: null,
         taskRoute: model.taskRoute,
         mailRoute: model.mailRoute,
         peopleRoute: model.peopleRoute,
@@ -1357,7 +1367,7 @@ const update = (
       model.account &&
       !isApproval(model) &&
       !model.creationMenu &&
-      !model.openingEmailComposer &&
+      model.pendingCreateAction === null &&
       !creationEditor(model)
         ? foldCreationDialog(
             {
@@ -1368,11 +1378,15 @@ const update = (
           )
         : { model },
     GotCreationDialogMessage: ({ message }) => {
-      if (message._tag === "CompletedCloseDialog" && model.openingEmailComposer)
-        return foldInbox(
-          { ...model, openingEmailComposer: false },
-          Inbox.Message.OpenedCompose(),
-        );
+      if (
+        message._tag === "CompletedCloseDialog" &&
+        model.pendingCreateAction
+      ) {
+        const next = { ...model, pendingCreateAction: null };
+        return model.pendingCreateAction === "contact"
+          ? foldPeople(next, People.Message.Created({ kind: "person" }))
+          : foldInbox(next, Inbox.Message.OpenedCompose());
+      }
       if (message._tag === "RequestedClose") {
         switch (creationEditor(model)) {
           case "task":

@@ -1,8 +1,12 @@
 import { Link, LinkList } from "@oneapp/core/links";
 import {
+  alert,
   avatar,
   button,
   buttonGroup,
+  Dialog,
+  field,
+  input,
   item,
   itemGroup,
   outlineIcon,
@@ -11,7 +15,7 @@ import {
 } from "@oneapp/ui";
 import { Effect, Schema } from "effect";
 import { Command, Mount, Submodel, type Update } from "foldkit";
-import type { HtmlBuilder } from "foldkit/html";
+import type { ChildAttribute, HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import {
   deleteLink,
@@ -22,23 +26,37 @@ import {
 import { Notification } from "./notifications.ts";
 import { websiteIconHostname, websiteIconPath } from "./website-icon-host.ts";
 
+export const creationUrlId = "create-link-url";
+const creationErrorId = `${creationUrlId}-error`;
+const invalidUrl = "Enter a valid HTTP or HTTPS URL without credentials.";
+const LinkDraft = Schema.Struct({
+  url: Schema.String,
+  validationError: Schema.NullOr(Schema.String),
+});
+
 export const Model = Schema.Struct({
   records: Schema.NullOr(LinkList),
-  url: Schema.String,
+  ...LinkDraft.fields,
+  creation: Schema.NullOr(
+    Schema.Struct({
+      ...LinkDraft.fields,
+      saveError: Schema.NullOr(Schema.String),
+    }),
+  ),
   request: Schema.NullOr(
     Schema.Struct({
       id: Schema.String,
-      kind: Schema.Literals(["load", "save", "delete"]),
+      kind: Schema.Literals(["load", "save", "create", "delete"]),
       linkId: Schema.NullOr(Schema.String),
     }),
   ),
-  validationError: Schema.NullOr(Schema.String),
   loadError: Schema.NullOr(Schema.String),
 });
 export type Model = typeof Model.Type;
 export const initial: Model = {
   records: null,
   url: "",
+  creation: null,
   request: null,
   validationError: null,
   loadError: null,
@@ -48,6 +66,10 @@ export const Message = defineMessageUnion({
   Retried: {},
   EditedUrl: { url: Schema.String },
   Submitted: {},
+  OpenedCreate: {},
+  EditedCreateUrl: { url: Schema.String },
+  SubmittedCreate: {},
+  ClosedCreate: {},
   RequestedDeletion: { id: Schema.String },
   Loaded: { request: Schema.String, links: LinkList },
   Saved: { request: Schema.String, link: Link },
@@ -61,6 +83,7 @@ export type Message = typeof Message.Type;
 export const OutMessage = defineMessageUnion({
   Notify: { notification: Notification },
   DismissNotification: { key: Schema.String },
+  Created: {},
   SessionExpired: {},
 });
 export type OutMessage = typeof OutMessage.Type;
@@ -155,6 +178,35 @@ const notification = (
   variant: Notification["variant"],
   title: string,
 ) => OutMessage.Notify({ notification: { key, variant, title } });
+
+const writingCreation = (model: Model) => model.request?.kind === "create";
+
+const submit = (model: Model, kind: "create" | "save") => {
+  const draft = kind === "create" ? model.creation : model;
+  if (!draft || model.request) return { model };
+  const link = parseLinkInput(draft.url);
+  const validationError = link ? null : invalidUrl;
+  const next =
+    kind === "create" && model.creation
+      ? {
+          ...model,
+          creation: { ...model.creation, validationError, saveError: null },
+        }
+      : { ...model, validationError };
+  if (!link) return { model: next };
+  const request = crypto.randomUUID();
+  return {
+    model: { ...next, request: { id: request, kind, linkId: null } },
+    commands: [Save({ request, ...link })],
+  };
+};
+
+const withSavedLink = (records: Model["records"], link: typeof Link.Type) =>
+  records &&
+  [link, ...records.filter((item) => item.id !== link.id)].sort(
+    (a, b) => b.savedAt - a.savedAt || b.id.localeCompare(a.id),
+  );
+
 export const update = (
   model: Model,
   message: Message,
@@ -171,27 +223,30 @@ export const update = (
         model.request
           ? { model }
           : { model: { ...model, url, validationError: null } },
-      Submitted: () => {
-        if (model.request || model.records === null) return { model };
-        const input = parseLinkInput(model.url);
-        if (!input)
-          return {
-            model: {
-              ...model,
-              validationError:
-                "Enter a valid HTTP or HTTPS URL without credentials.",
-            },
-          };
-        const request = crypto.randomUUID();
-        return {
-          model: {
-            ...model,
-            request: { id: request, kind: "save", linkId: null },
-            validationError: null,
-          },
-          commands: [Save({ request, ...input })],
-        };
-      },
+      Submitted: () =>
+        model.records === null ? { model } : submit(model, "save"),
+      OpenedCreate: () => ({
+        model:
+          model.creation || writingCreation(model)
+            ? model
+            : {
+                ...model,
+                creation: { url: "", validationError: null, saveError: null },
+              },
+      }),
+      EditedCreateUrl: ({ url }) => ({
+        model:
+          !model.creation || writingCreation(model)
+            ? model
+            : {
+                ...model,
+                creation: { ...model.creation, url, validationError: null },
+              },
+      }),
+      SubmittedCreate: () => submit(model, "create"),
+      ClosedCreate: () => ({
+        model: writingCreation(model) ? model : { ...model, creation: null },
+      }),
       RequestedDeletion: ({ id }) => {
         if (model.request || !model.records?.some((link) => link.id === id))
           return { model };
@@ -215,25 +270,24 @@ export const update = (
               },
             }
           : { model },
-      Saved: ({ link }) =>
-        model.request?.kind === "save"
+      Saved: ({ link }) => {
+        const kind = model.request?.kind;
+        if (kind !== "save" && kind !== "create") return { model };
+        const next = {
+          ...model,
+          records: withSavedLink(model.records, link),
+          request: null,
+        };
+        return kind === "create"
           ? {
-              model: {
-                ...model,
-                records: [
-                  link,
-                  ...(model.records ?? []).filter(
-                    (item) => item.id !== link.id,
-                  ),
-                ].sort(
-                  (a, b) => b.savedAt - a.savedAt || b.id.localeCompare(a.id),
-                ),
-                url: "",
-                request: null,
-              },
-              outMessage: OutMessage.DismissNotification({ key: "links-save" }),
+              model: { ...next, creation: null },
+              outMessage: OutMessage.Created(),
             }
-          : { model },
+          : {
+              model: { ...next, url: "" },
+              outMessage: OutMessage.DismissNotification({ key: "links-save" }),
+            };
+      },
       Deleted: ({ id }) =>
         model.request?.kind === "delete" && model.request.linkId === id
           ? {
@@ -248,17 +302,26 @@ export const update = (
               }),
             }
           : { model },
-      Failed: ({ error }) =>
-        model.request?.kind === "load"
-          ? { model: { ...model, request: null, loadError: error } }
-          : {
-              model: { ...model, request: null },
-              outMessage: notification(
-                model.request?.kind === "save" ? "links-save" : "links-delete",
-                "Error",
-                error,
-              ),
+      Failed: ({ error }) => {
+        const kind = model.request?.kind;
+        const next = { ...model, request: null };
+        if (kind === "load") return { model: { ...next, loadError: error } };
+        if (kind === "create" && model.creation)
+          return {
+            model: {
+              ...next,
+              creation: { ...model.creation, saveError: error },
             },
+          };
+        return {
+          model: next,
+          outMessage: notification(
+            kind === "delete" ? "links-delete" : "links-save",
+            "Error",
+            error,
+          ),
+        };
+      },
       SessionExpired: () => ({
         model: initial,
         outMessage: OutMessage.SessionExpired(),
@@ -268,6 +331,81 @@ export const update = (
     },
   );
 };
+
+export const createView = Submodel.defineView<
+  Model,
+  Message,
+  { initialFocus: ReadonlyArray<ChildAttribute>; disabled: boolean }
+>((model, { initialFocus, disabled }, h) => {
+  const draft = model.creation;
+  if (!draft) return h.empty;
+  const saving = writingCreation(model);
+  return h.form(
+    [h.Class("link-create-form"), h.OnSubmit(Message.SubmittedCreate())],
+    [
+      field(
+        "Link URL",
+        input(
+          [
+            ...initialFocus,
+            h.Id(creationUrlId),
+            h.Type("text"),
+            h.InputMode("url"),
+            h.Autocapitalize("off"),
+            h.Spellcheck(false),
+            h.AriaInvalid(draft.validationError !== null),
+            ...(draft.validationError
+              ? [h.AriaDescribedBy(creationErrorId)]
+              : []),
+            h.Placeholder("Paste a URL"),
+            h.EnterKeyHint("done"),
+            h.Required(true),
+            h.Value(draft.url),
+            h.Readonly(disabled || saving),
+            h.OnInput((url) => Message.EditedCreateUrl({ url })),
+          ],
+          h,
+        ),
+        h,
+      ),
+      ...(draft.validationError
+        ? [
+            h.p(
+              [h.Id(creationErrorId), h.Role("alert")],
+              [draft.validationError],
+            ),
+          ]
+        : []),
+      alert(
+        { message: draft.saveError, severity: "error", announcement: "alert" },
+        h,
+      ),
+      Dialog.footer(
+        [
+          button(
+            {
+              variant: "outline",
+              disabled: saving,
+              onClick: Message.ClosedCreate(),
+              children: ["Cancel"],
+            },
+            h,
+          ),
+          button(
+            {
+              type: "submit",
+              focusableWhenDisabled: saving,
+              disabled: disabled || model.request !== null || !draft.url.trim(),
+              children: [saving ? "Saving…" : "Save link"],
+            },
+            h,
+          ),
+        ],
+        h,
+      ),
+    ],
+  );
+});
 
 const savedLinkAvatar = (url: string, h: HtmlBuilder<Message>) => {
   const hostname = websiteIconHostname(url);

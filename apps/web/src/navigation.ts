@@ -2,6 +2,7 @@ import {
   calendarIconPaths,
   ellipsisIcon,
   filesIconPaths,
+  linkIconPaths,
   mailIconPaths,
   navigationLinks,
   outlineIcon,
@@ -40,10 +41,7 @@ const destinations = [
     page: "links",
     href: "/links",
     label: "Links",
-    paths: [
-      "M10 13a4 4 0 0 0 6 .4l4-4a4 4 0 0 0-5.7-5.7L12 6",
-      "M14 11a4 4 0 0 0-6-.4l-4 4a4 4 0 0 0 5.7 5.7L12 18",
-    ],
+    paths: linkIconPaths,
   },
   {
     page: "mail",

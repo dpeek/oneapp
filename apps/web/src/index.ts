@@ -19,6 +19,7 @@ import {
   input,
   item,
   itemGroup,
+  linkIconPaths,
   mailIconPaths,
   outlineIcon,
   plusIcon,
@@ -166,7 +167,7 @@ const Message = defineMessageUnion({
   GotFilesMessage: { message: Files.Message },
   OpenedCreationMenu: {},
   GotCreationDialogMessage: { message: Dialog.Message },
-  FocusedCreationTitle: {},
+  FocusedCreationField: {},
   GotCreationMenuMessage: { message: CommandMenu.Message },
   GotLinksMessage: { message: Links.Message },
   GotNotificationMessage: { message: Notifications.Message },
@@ -348,7 +349,7 @@ const foldNotifications = Update.foldChild({
 });
 const toLinksMessage = (message: Links.Message) =>
   Message.GotLinksMessage({ message });
-const foldLinks = Update.foldChild({
+const foldLinksFeature = Update.foldChild({
   update: Links.update,
   read: (model: Model) =>
     model.account ? Option.some(model.links) : Option.none(),
@@ -359,6 +360,17 @@ const foldLinks = Update.foldChild({
     (model) => {
       if (out._tag === "SessionExpired")
         return update(model, Message.LoadedAccount({ account: null }));
+      if (out._tag === "Created")
+        return model.page === "links" && model.links.records !== null
+          ? { model }
+          : applyNotification(model, {
+              _tag: "Notify",
+              notification: {
+                key: "links-create",
+                variant: "Success",
+                title: "Link saved.",
+              },
+            });
       return applyNotification(model, out);
     },
 });
@@ -403,13 +415,13 @@ const closeCreationMenu = (model: Model) =>
     { ...model, creationMenu: null },
     Dialog.Message.RequestedClose(),
   );
-const FocusCreationTitle = Command.define("FocusCreationTitle", {
+const FocusCreationField = Command.define("FocusCreationField", {
   args: { id: Schema.String },
-  messages: [Message.FocusedCreationTitle],
+  messages: [Message.FocusedCreationField],
   execute: ({ id }) =>
     focus(`#${id}`).pipe(
       Effect.ignore,
-      Effect.as(Message.FocusedCreationTitle()),
+      Effect.as(Message.FocusedCreationField()),
     ),
 });
 const foldTaskFeature = Update.foldChild({
@@ -437,12 +449,17 @@ const foldTaskFeature = Update.foldChild({
     },
 });
 
-const creationEditor = (model: Model) =>
-  model.tasks.creation
-    ? "task"
-    : Calendar.hasGlobalEventEditor(model.calendar)
-      ? "event"
-      : null;
+const creationEditors = {
+  task: { title: "Add task", focusId: Tasks.creationTitleId },
+  event: { title: "New event", focusId: Calendar.creationTitleId },
+  link: { title: "Save link", focusId: Links.creationUrlId },
+};
+
+const creationEditor = (model: Model): keyof typeof creationEditors | null => {
+  if (model.tasks.creation) return "task";
+  if (Calendar.hasGlobalEventEditor(model.calendar)) return "event";
+  return model.links.creation ? "link" : null;
+};
 
 const foldCreationEditor = (model: Model, step: Update.Step<Model, Message>) =>
   Update.combine(model, [
@@ -456,12 +473,7 @@ const foldCreationEditor = (model: Model, step: Update.Step<Model, Message>) =>
         return {
           model: { ...next, creationMenu: null },
           commands: [
-            FocusCreationTitle({
-              id:
-                editor === "task"
-                  ? Tasks.creationTitleId
-                  : Calendar.creationTitleId,
-            }),
+            FocusCreationField({ id: creationEditors[editor].focusId }),
           ],
         };
       return foldCreationDialog(next, Dialog.Message.RequestedOpen());
@@ -473,6 +485,20 @@ const foldTasks = (model: Model, message: Tasks.Message) =>
 
 const foldCalendar = (model: Model, message: typeof Calendar.Message.Type) =>
   foldCreationEditor(model, (next) => foldCalendarFeature(next, message));
+
+const foldLinks = (model: Model, message: Links.Message) =>
+  foldCreationEditor(model, (next) =>
+    Update.combine(next, [
+      (current) => foldLinksFeature(current, message),
+      // History navigation can reach Links while a global save holds the request slot.
+      (current) =>
+        model.links.request?.kind === "create" &&
+        current.links.request === null &&
+        current.page === "links"
+          ? foldLinksFeature(current, Links.Message.Requested())
+          : { model: current },
+    ]),
+  );
 
 const toFilesMessage = (message: Files.Message) =>
   Message.GotFilesMessage({ message });
@@ -516,6 +542,7 @@ const creationItems = [
   { value: "task", label: "Task", iconPaths: taskIconPaths },
   { value: "event", label: "Event", iconPaths: calendarIconPaths },
   { value: "email", label: "New email", iconPaths: mailIconPaths },
+  { value: "link", label: "Save link", iconPaths: linkIconPaths },
 ] as const;
 const creationMenu =
   CommandMenu.create<(typeof creationItems)[number]["value"]>();
@@ -547,6 +574,8 @@ const foldCreationMenu = Update.foldChild({
           return Inbox.composeSender(model.inbox)
             ? closeCreationMenu({ ...model, openingEmailComposer: true })
             : { model };
+        case "link":
+          return foldLinks(model, Links.Message.OpenedCreate());
       }
     },
 });
@@ -1320,6 +1349,8 @@ const update = (
             return foldTasks(model, Tasks.Message.ClosedCreate());
           case "event":
             return foldCalendar(model, Calendar.Message.ClosedEventEditor());
+          case "link":
+            return foldLinks(model, Links.Message.ClosedCreate());
           case null:
             return closeCreationMenu(model);
         }
@@ -1332,6 +1363,7 @@ const update = (
               ...result.model,
               creationMenu: null,
               tasks: { ...result.model.tasks, creation: null },
+              links: { ...result.model.links, creation: null },
               calendar: Calendar.hasGlobalEventEditor(model.calendar)
                 ? { ...result.model.calendar, editor: null }
                 : result.model.calendar,
@@ -1339,11 +1371,13 @@ const update = (
           }
         : result;
     },
-    FocusedCreationTitle: () => ({ model }),
+    FocusedCreationField: () => ({ model }),
     GotCreationMenuMessage: ({ message }) => foldCreationMenu(model, message),
     GotLinksMessage: ({ message }) =>
       model.pending &&
-      ["Submitted", "RequestedDeletion", "Retried"].includes(message._tag)
+      ["Submitted", "SubmittedCreate", "RequestedDeletion", "Retried"].includes(
+        message._tag,
+      )
         ? { model }
         : foldLinks(model, message),
     GotNotificationMessage: ({ message }) =>
@@ -1816,7 +1850,7 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
     model.page === "settings" ||
     (model.page === "vault" && model.vaultSetup.status?.initialized === true);
   const menu = model.creationMenu;
-  const creatingEvent = creationEditor(model) === "event";
+  const editor = creationEditor(model);
   return {
     title: `${title} · ${appName}`,
     body: h.div(
@@ -1907,40 +1941,54 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
         Dialog.view(
           {
             model: model.creationDialog,
-            title: menu ? "Create" : creatingEvent ? "New event" : "Add task",
+            title: menu || !editor ? "Create" : creationEditors[editor].title,
             padded: menu === null,
             showHeader: menu === null,
             showCloseButton: false,
-            content: (initialFocus) =>
-              menu
-                ? creationMenu.view(
-                    {
-                      model: menu,
-                      items: creationItems.filter(
-                        ({ value }) =>
-                          value !== "email" || Inbox.composeSender(model.inbox),
-                      ),
-                      searchLabel: "Search create options",
-                      initialFocus,
-                      toParentMessage: toCreationMenu,
-                    },
-                    h,
-                  )
-                : creatingEvent
-                  ? h.submodel({
-                      slotId: "event-creation",
-                      view: Calendar.createView,
-                      model: model.calendar,
-                      viewInputs: initialFocus,
-                      toParentMessage: toCalendarMessage,
-                    })
-                  : h.submodel({
-                      slotId: "task-creation",
-                      view: taskCreateView,
-                      model: model.tasks,
-                      viewInputs: initialFocus,
-                      toParentMessage: toTasksMessage,
-                    }),
+            content: (initialFocus) => {
+              if (menu)
+                return creationMenu.view(
+                  {
+                    model: menu,
+                    items: creationItems.filter(
+                      ({ value }) =>
+                        value !== "email" || Inbox.composeSender(model.inbox),
+                    ),
+                    searchLabel: "Search create options",
+                    initialFocus,
+                    toParentMessage: toCreationMenu,
+                  },
+                  h,
+                );
+              switch (editor) {
+                case "event":
+                  return h.submodel({
+                    slotId: "event-creation",
+                    view: Calendar.createView,
+                    model: model.calendar,
+                    viewInputs: initialFocus,
+                    toParentMessage: toCalendarMessage,
+                  });
+                case "task":
+                  return h.submodel({
+                    slotId: "task-creation",
+                    view: taskCreateView,
+                    model: model.tasks,
+                    viewInputs: initialFocus,
+                    toParentMessage: toTasksMessage,
+                  });
+                case "link":
+                  return h.submodel({
+                    slotId: "link-creation",
+                    view: Links.createView,
+                    model: model.links,
+                    viewInputs: { initialFocus, disabled: model.pending },
+                    toParentMessage: toLinksMessage,
+                  });
+                case null:
+                  return h.empty;
+              }
+            },
             toParentMessage: toCreationDialogMessage,
           },
           h,

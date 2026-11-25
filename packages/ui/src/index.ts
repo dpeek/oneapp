@@ -33,6 +33,7 @@ export {
   calendarIconPaths,
   ellipsisIcon,
   filesIconPaths,
+  linkIconPaths,
   mailIconPaths,
   noiseIconPath,
   outlineIcon,

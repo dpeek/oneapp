@@ -1246,6 +1246,11 @@ button {
   color: light-dark(#a42020, #ff9797);
 }
 
+.link-create-form {
+  display: grid;
+  gap: 1rem;
+}
+
 .links [data-slot="button-group"] > input {
   flex: 1;
   min-inline-size: 0;

@@ -21,6 +21,7 @@ import {
   emailChangePath,
   emailVerificationPath,
   passwordChangePath,
+  themePreferencePath,
 } from "../account-contract.ts";
 import { bitwardenDevicesPath } from "../bitwarden-device-contract.ts";
 import { calendarApi, calendarImportLimit } from "../calendar-contract.ts";
@@ -3173,6 +3174,50 @@ it("uses scoped MCP tools to read and edit the same tasks and tags as the web ap
   expect(sqlite.query("SELECT id FROM items").all()).toHaveLength(2);
 });
 
+it("stores the validated theme for the authenticated account across sessions", async () => {
+  using sqlite = new Database(":memory:");
+  const { call, signIn, cookies } = await setup(sqlite);
+  const session = cookies(await signIn(password));
+  const otherSession = cookies(await signIn(password));
+  sqlite.run(
+    "INSERT INTO accounts (id, active, security_revision, theme) VALUES ('other', 1, 'revision', 'light')",
+  );
+
+  expect(
+    await (await call("/api/me", undefined, session)).json(),
+  ).toMatchObject({
+    theme: "system",
+  });
+  expect((await call(themePreferencePath, { theme: "dark" })).status).toBe(401);
+  expect(
+    (
+      await call(
+        themePreferencePath,
+        { theme: "dark" },
+        session,
+        "https://another.example",
+      )
+    ).status,
+  ).toBe(403);
+  expect(
+    (await call(themePreferencePath, { theme: "automatic" }, session)).status,
+  ).toBe(400);
+
+  for (const theme of ["dark", "light", "system"]) {
+    expect((await call(themePreferencePath, { theme }, session)).status).toBe(
+      204,
+    );
+    expect(
+      await (await call("/api/me", undefined, otherSession)).json(),
+    ).toMatchObject({ theme });
+  }
+  expect(
+    sqlite.query("SELECT theme FROM accounts WHERE id = 'other'").get(),
+  ).toEqual({
+    theme: "light",
+  });
+});
+
 it("verifies the signed-in address and changes the password with session invalidation", async () => {
   using sqlite = new Database(":memory:");
   const { call, signIn, cookies, messages, from, setEmailAvailable } =
@@ -5835,7 +5880,7 @@ it("imports through a separately approved CLI permission with pinned plans, boun
   expect((await api(base)).status).toBe(200);
   expect((await api("/api/mail-import/missing")).status).toBe(404);
   sqlite.exec(
-    "INSERT INTO accounts VALUES ('family',1,'1'); INSERT INTO mailboxes VALUES ('family','family','Family')",
+    "INSERT INTO accounts (id, active, security_revision) VALUES ('family',1,'1'); INSERT INTO mailboxes VALUES ('family','family','Family')",
   );
   expect((await api("/api/mail-import/family")).status).toBe(404);
   const bytes = new TextEncoder().encode(
@@ -6241,7 +6286,9 @@ it("persists reusable task tags and rejects stale or cross-account task edits at
   expect(stale.status).toBe(409);
   expect(await stale.json()).toEqual(saved);
   const foreignTag = crypto.randomUUID();
-  sqlite.run("INSERT INTO accounts VALUES ('other', 1, 'revision')");
+  sqlite.run(
+    "INSERT INTO accounts (id, active, security_revision) VALUES ('other', 1, 'revision')",
+  );
   sqlite.run("INSERT INTO tags VALUES ('other', ?, 'Other tag', 'other tag')", [
     foreignTag,
   ]);

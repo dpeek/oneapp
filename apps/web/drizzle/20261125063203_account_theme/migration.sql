@@ -1,0 +1,1 @@
+ALTER TABLE `accounts` ADD `theme` text DEFAULT 'system' NOT NULL;

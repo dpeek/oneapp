@@ -16,6 +16,7 @@ import {
   sqliteTable,
   text,
 } from "drizzle-orm/sqlite-core";
+import { ThemePreference } from "../account-contract.ts";
 import {
   AppAuth,
   AccountActionEvidence,
@@ -31,6 +32,7 @@ export const accounts = sqliteTable("accounts", {
   id: text().primaryKey(),
   active: integer({ mode: "boolean" }).notNull(),
   securityRevision: text("security_revision").notNull(),
+  theme: text({ enum: ThemePreference.literals }).notNull().default("system"),
 });
 
 export const accountEmailChanges = sqliteTable("account_email_changes", {

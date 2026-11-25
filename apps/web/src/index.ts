@@ -37,6 +37,7 @@ import {
 import { focus } from "foldkit/dom";
 import type { Document, HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
+import { ThemePreference } from "./account-contract.ts";
 import * as AccountSettings from "./account-settings.ts";
 import { Account, AuthApi } from "./auth-contract.ts";
 import * as Calendar from "./calendar.ts";
@@ -106,6 +107,7 @@ const Model = Schema.Struct({
   page: AppNavigation.Page,
   navigation: AppNavigation.Model,
   account: Schema.NullOr(Account),
+  appearance: AccountSettings.Appearance,
   sessionCheck: Schema.Literals(["checking", "failed", "resolved"]),
   accountSettings: AccountSettings.Model,
   settingsSection: Schema.NullOr(SettingsSection),
@@ -146,6 +148,7 @@ const Message = defineMessageUnion({
   SubmittedSignIn: {},
   ClickedSignOut: {},
   LoadedAccount: { account: Schema.NullOr(Account) },
+  GotAppearanceMessage: { message: AccountSettings.AppearanceMessage },
   GotAccountSettingsMessage: { message: AccountSettings.Message },
   GotSettingsSheetMessage: { message: Sheet.Message },
   GotPushSettingsMessage: { message: PushSettings.Message },
@@ -183,6 +186,11 @@ const connectingMcp =
 const toAccountSettingsMessage = (
   message: typeof AccountSettings.Message.Type,
 ) => Message.GotAccountSettingsMessage({ message });
+
+const toAppearanceMessage = (
+  message: typeof AccountSettings.AppearanceMessage.Type,
+) => Message.GotAppearanceMessage({ message });
+const isThemePreference = Schema.is(ThemePreference);
 const foldAccountDialog = Update.foldChild({
   update: Dialog.update,
   read: (model: Model) => Option.some(model.accountSettings.modal),
@@ -783,6 +791,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     page,
     navigation: AppNavigation.initial,
     account: null,
+    appearance: AccountSettings.initialAppearance,
     sessionCheck: "checking",
     accountSettings: AccountSettings.initial,
     settingsSection: settingsSectionFor(url),
@@ -946,6 +955,7 @@ const update = (
         page: model.page,
         navigation: AppNavigation.initial,
         account,
+        appearance: AccountSettings.initialAppearance,
         sessionCheck: "resolved",
         accountSettings: AccountSettings.initial,
         settingsSection: model.settingsSection,
@@ -987,6 +997,59 @@ const update = (
         model: unread.model,
         commands: [...(result.commands ?? []), ...(unread.commands ?? [])],
       };
+    },
+    GotAppearanceMessage: ({ message }) => {
+      const { account, appearance } = model;
+      if (!account) return { model };
+      const save = (theme: ThemePreference): Update.Return<Model, Message> => {
+        if (
+          model.pending ||
+          appearance._tag === "Saving" ||
+          theme === account.theme
+        )
+          return { model };
+        const request = crypto.randomUUID();
+        return {
+          model: { ...model, appearance: { _tag: "Saving", request, theme } },
+          commands: [
+            Command.mapMessage(
+              AccountSettings.SaveTheme({ requestId: request, theme }),
+              toAppearanceMessage,
+            ),
+          ],
+        };
+      };
+      switch (message._tag) {
+        case "SelectedTheme":
+          return isThemePreference(message.value)
+            ? save(message.value)
+            : { model };
+        case "RetriedTheme":
+          return appearance._tag === "Failed"
+            ? save(appearance.theme)
+            : { model };
+        case "FinishedSavingTheme":
+          if (
+            appearance._tag !== "Saving" ||
+            appearance.request !== message.request
+          )
+            return { model };
+          if (message.outcome === "signed-out" && !model.pending)
+            return update(model, Message.LoadedAccount({ account: null }));
+          return {
+            model:
+              message.outcome === "saved"
+                ? {
+                    ...model,
+                    account: { ...account, theme: appearance.theme },
+                    appearance: AccountSettings.initialAppearance,
+                  }
+                : {
+                    ...model,
+                    appearance: { _tag: "Failed", theme: appearance.theme },
+                  },
+          };
+      }
     },
     CompletedAccountSettingsRequest: ({ request, message }) =>
       model.accountSettings.request === request &&
@@ -1485,6 +1548,13 @@ const accountSettingsView = (model: Model, h: HtmlBuilder<Message>) => [
   ),
   ...(model.account
     ? [
+        AccountSettings.appearanceView(
+          model.account.theme,
+          model.appearance,
+          model.pending,
+          h,
+          toAppearanceMessage,
+        ),
         h.section(
           [h.Class("settings-section"), h.AriaLabelledBy("settings-account")],
           [
@@ -1856,6 +1926,19 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
   };
 };
 
+const themeFor = (model: Model) =>
+  model.account
+    ? AccountSettings.displayedTheme(model.account.theme, model.appearance)
+    : "system";
+
+const updateWithTheme = (model: Model, message: Message) => {
+  const result = update(model, message);
+  const theme = themeFor(result.model);
+  // Project the preference before Foldkit renders the next workspace frame.
+  if (theme !== themeFor(model)) AccountSettings.applyDocumentTheme(theme);
+  return result;
+};
+
 if (window.isSecureContext && "serviceWorker" in navigator)
   void registerServiceWorker().catch(() => {
     /* Settings exposes registration failures. */
@@ -1870,7 +1953,7 @@ if (bitwardenAuthorization && !connectingBitwarden) {
     Runtime.makeApplication({
       Model,
       init,
-      update,
+      update: updateWithTheme,
       view,
       subscriptions,
       routing: {

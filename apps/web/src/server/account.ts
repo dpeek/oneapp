@@ -13,9 +13,12 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { SqlClient } from "effect/sql";
 import {
   ChangePassword,
+  ChangeTheme,
   EmailVerification,
   emailVerificationPath,
   passwordChangePath,
+  type ThemePreference,
+  themePreferencePath,
   VerifyEmail,
 } from "../account-contract.ts";
 import { Account } from "../auth-contract.ts";
@@ -32,12 +35,18 @@ const readAccount = Effect.fnUntraced(function* (
   email: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const [identifier] = yield* sql<{ verified_at: number | null }>`
-    SELECT verified_at FROM oneapp_auth_identifiers
-    WHERE subject_id = ${subjectId} AND namespace = 'email'
-      AND value = ${email} AND active = 1
+  const [account] = yield* sql<{
+    theme: ThemePreference;
+    email_active: number | null;
+    verified_at: number | null;
+  }>`
+    SELECT a.theme, i.active AS email_active, i.verified_at
+    FROM accounts a
+    LEFT JOIN oneapp_auth_identifiers i ON i.subject_id = a.id
+      AND i.namespace = 'email' AND i.value = ${email} AND i.active = 1
+    WHERE a.id = ${subjectId}
   `;
-  return identifier;
+  return account;
 });
 
 export const accountRoutes = (
@@ -55,20 +64,58 @@ export const accountRoutes = (
       Effect.gen(function* () {
         const auth = yield* AppAuth;
         const session = yield* auth.requireSession;
-        const identifier = yield* readAccount(
+        const account = yield* readAccount(
           session.subjectId,
           session.claims.email,
         );
+        if (!account) return yield* sessionRequired();
         return yield* HttpServerResponse.schemaJson(Account)(
           {
             id: Account.fields.id.make(session.subjectId),
             email: session.claims.email,
-            emailVerified: identifier?.verified_at != null,
+            emailVerified: account.verified_at !== null,
             emailDeliveryEnabled: email.enabled,
+            theme: account.theme,
           },
           { headers: privateHeaders },
         );
       }).pipe(Effect.catchTag("AuthenticationRequired", sessionRequired)),
+    ),
+    HttpRouter.add(
+      "POST",
+      themePreferencePath,
+      http
+        .protect(
+          Effect.gen(function* () {
+            const auth = yield* AppAuth;
+            const session = yield* auth.requireSession;
+            const input = yield* HttpServerRequest.schemaBodyJson(
+              ChangeTheme,
+            ).pipe(
+              Effect.provideService(
+                HttpServerRequest.MaxBodySize,
+                ByteSize.kibibytes(2),
+              ),
+              Effect.option,
+            );
+            if (input._tag === "None")
+              return yield* jsonError(400, "Choose System, Light, or Dark");
+            const sql = yield* SqlClient.SqlClient;
+            const [account] = yield* sql<{ id: string }>`
+              UPDATE accounts SET theme = ${input.value.theme}
+              WHERE id = ${session.subjectId} AND active = 1
+              RETURNING id
+            `;
+            if (!account) return yield* sessionRequired();
+            return noContent();
+          }),
+        )
+        .pipe(
+          Effect.catchTags({
+            AuthenticationRequired: sessionRequired,
+            HookDenied: notAllowed,
+          }),
+        ),
     ),
     HttpRouter.add(
       "POST",
@@ -79,9 +126,9 @@ export const accountRoutes = (
             const auth = yield* AppAuth;
             const session = yield* auth.requireSession;
             const address = AuthSchema.Email.make(session.claims.email);
-            const identifier = yield* readAccount(session.subjectId, address);
-            if (!identifier) return yield* notAllowed();
-            if (identifier.verified_at !== null) return noContent();
+            const account = yield* readAccount(session.subjectId, address);
+            if (!account?.email_active) return yield* notAllowed();
+            if (account.verified_at !== null) return noContent();
             if (!email.enabled)
               return yield* jsonError(503, "Email sending is unavailable");
             const admitted = yield* Effect.promise(() =>
@@ -249,13 +296,13 @@ export const accountRoutes = (
               return yield* jsonError(400, "Choose a different new password");
 
             const address = AuthSchema.Email.make(session.claims.email);
-            const identifier = yield* readAccount(session.subjectId, address);
+            const account = yield* readAccount(session.subjectId, address);
             yield* auth.changePassword({
               commandId: Password.PasswordCommandId.make(crypto.randomUUID()),
               currentPassword: Redacted.value(currentPassword),
               newPassword: Redacted.value(newPassword),
             });
-            if (email.enabled && identifier?.verified_at != null) {
+            if (email.enabled && account?.verified_at != null) {
               const delivery = yield* EmailDelivery.EmailDelivery;
               yield* delivery
                 .send({

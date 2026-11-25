@@ -1,4 +1,13 @@
-import { button, Dialog, field, input, item, itemGroup } from "@oneapp/ui";
+import {
+  alert,
+  button,
+  Dialog,
+  field,
+  input,
+  item,
+  itemGroup,
+  nativeSelect,
+} from "@oneapp/ui";
 import { Effect, Schema } from "effect";
 import { Command } from "foldkit";
 import { focus } from "foldkit/dom";
@@ -11,6 +20,8 @@ import {
   emailVerificationPath,
   passwordChangePath,
   PendingEmailChange,
+  ThemePreference,
+  themePreferencePath,
 } from "./account-contract.ts";
 import type { Account } from "./auth-contract.ts";
 import { Notification } from "./notifications.ts";
@@ -68,6 +79,51 @@ export const Message = defineMessageUnion({
 });
 type Message = typeof Message.Type;
 
+export const Appearance = Schema.Union([
+  Schema.TaggedStruct("Idle", {}),
+  Schema.TaggedStruct("Saving", {
+    request: Schema.String,
+    theme: ThemePreference,
+  }),
+  Schema.TaggedStruct("Failed", { theme: ThemePreference }),
+]);
+type Appearance = typeof Appearance.Type;
+
+export const initialAppearance: Appearance = { _tag: "Idle" };
+
+export const AppearanceMessage = defineMessageUnion({
+  SelectedTheme: { value: Schema.String },
+  RetriedTheme: {},
+  FinishedSavingTheme: {
+    request: Schema.String,
+    outcome: Schema.Literals(["saved", "failed", "signed-out"]),
+  },
+});
+type AppearanceMessage = typeof AppearanceMessage.Type;
+
+export const displayedTheme = (
+  saved: ThemePreference,
+  appearance: Appearance,
+) => (appearance._tag === "Saving" ? appearance.theme : saved);
+
+export const applyDocumentTheme = (theme: ThemePreference) => {
+  const root = document.documentElement;
+  if (theme === "system") delete root.dataset.theme;
+  else root.dataset.theme = theme;
+
+  for (const meta of document.querySelectorAll<HTMLMetaElement>(
+    'meta[name="theme-color"][data-color-scheme]',
+  )) {
+    const scheme = meta.dataset.colorScheme;
+    meta.media =
+      theme === "system"
+        ? `(prefers-color-scheme: ${scheme})`
+        : theme === scheme
+          ? "all"
+          : "not all";
+  }
+};
+
 export const notificationKey = "account-settings";
 export const OutMessage = defineMessageUnion({
   Notify: { notification: Notification },
@@ -110,7 +166,7 @@ export const FocusElement = Command.define("FocusAccountElement", {
     focus(selector).pipe(Effect.ignore, Effect.as(Message.DialogUpdated())),
 });
 
-const request = <Success extends Message>(
+const request = <Success>(
   path: string,
   body: object,
   onSuccess: (response: Response) => Promise<Success>,
@@ -138,6 +194,25 @@ const request = <Success extends Message>(
       ),
     ),
   );
+
+export const SaveTheme = Command.define("SaveAccountTheme", {
+  args: { requestId: Schema.String, theme: ThemePreference },
+  messages: [AppearanceMessage.FinishedSavingTheme],
+  execute: ({ requestId, theme }) =>
+    request(themePreferencePath, { theme }, async () => null).pipe(
+      Effect.map((result) =>
+        AppearanceMessage.FinishedSavingTheme({
+          request: requestId,
+          outcome:
+            result === null
+              ? "saved"
+              : result._tag === "SignedOut"
+                ? "signed-out"
+                : "failed",
+        }),
+      ),
+    ),
+});
 
 const form = (id: string) => {
   const element = document.getElementById(id);
@@ -266,6 +341,66 @@ export const ChangePassword = Command.define("ChangeAccountPassword", {
       );
     }),
 });
+
+const themeLabels = {
+  system: "System",
+  light: "Light",
+  dark: "Dark",
+} satisfies Record<ThemePreference, string>;
+
+export const appearanceView = <Parent>(
+  saved: ThemePreference,
+  appearance: Appearance,
+  busy: boolean,
+  h: HtmlBuilder<Parent>,
+  emit: (message: AppearanceMessage) => Parent,
+) => {
+  const saving = appearance._tag === "Saving";
+  return h.section(
+    [h.Class("settings-section"), h.AriaLabelledBy("settings-appearance")],
+    [
+      h.h2([h.Id("settings-appearance")], ["Appearance"]),
+      nativeSelect(
+        {
+          label: "Theme",
+          value: displayedTheme(saved, appearance),
+          options: ThemePreference.literals.map((value) => ({
+            value,
+            label: themeLabels[value],
+          })),
+          disabled: busy || saving,
+          onChange: (value) => emit(AppearanceMessage.SelectedTheme({ value })),
+        },
+        h,
+      ),
+      h.p([h.Role("status")], saving ? ["Saving theme…"] : []),
+      alert(
+        {
+          message:
+            appearance._tag === "Failed"
+              ? "Could not save your theme. Your previous theme has been restored."
+              : null,
+          severity: "error",
+          announcement: "alert",
+          action:
+            appearance._tag === "Failed"
+              ? button(
+                  {
+                    variant: "outline",
+                    size: "sm",
+                    disabled: busy,
+                    onClick: emit(AppearanceMessage.RetriedTheme()),
+                    children: ["Retry"],
+                  },
+                  h,
+                )
+              : undefined,
+        },
+        h,
+      ),
+    ],
+  );
+};
 
 export const view = <Parent>(
   account: typeof Account.Type,

@@ -6,6 +6,11 @@ export const accountPath = "/api/account";
 export const emailVerificationPath = `${accountPath}/email-verification`;
 export const passwordChangePath = `${accountPath}/password`;
 export const emailChangePath = `${accountPath}/email`;
+export const themePreferencePath = `${accountPath}/theme`;
+
+export const ThemePreference = Schema.Literals(["system", "light", "dark"]);
+export type ThemePreference = typeof ThemePreference.Type;
+export const ChangeTheme = Schema.Struct({ theme: ThemePreference });
 
 export const EmailVerification = Schema.Struct({
   flowId: Operations.RequestBindingFlowId,

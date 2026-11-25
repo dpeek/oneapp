@@ -2,6 +2,7 @@ import {
   calendarIconPaths,
   ellipsisIcon,
   filesIconPaths,
+  mailIconPaths,
   navigationLinks,
   outlineIcon,
   Popover,
@@ -48,10 +49,7 @@ const destinations = [
     page: "mail",
     href: mailPath,
     label: "Mail",
-    paths: [
-      "M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z",
-      "m3 7 9 6 9-6",
-    ],
+    paths: mailIconPaths,
   },
   {
     page: "calendar",

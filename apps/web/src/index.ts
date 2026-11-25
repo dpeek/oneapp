@@ -19,6 +19,7 @@ import {
   input,
   item,
   itemGroup,
+  mailIconPaths,
   outlineIcon,
   plusIcon,
   Sheet,
@@ -123,6 +124,7 @@ const Model = Schema.Struct({
   fileRoute: Schema.NullOr(FileRoute),
   creationDialog: Dialog.Model,
   creationMenu: Schema.NullOr(CommandMenu.Model),
+  openingEmailComposer: Schema.Boolean,
   taskRoute: Schema.NullOr(TaskRoute),
   mailRoute: Schema.NullOr(MailRoute),
   peopleRoute: Schema.NullOr(ContactsRoute),
@@ -513,6 +515,7 @@ const Navigate = Command.define("Navigate", {
 const creationItems = [
   { value: "task", label: "Task", iconPaths: taskIconPaths },
   { value: "event", label: "Event", iconPaths: calendarIconPaths },
+  { value: "email", label: "New email", iconPaths: mailIconPaths },
 ] as const;
 const creationMenu =
   CommandMenu.create<(typeof creationItems)[number]["value"]>();
@@ -525,20 +528,27 @@ const foldCreationMenu = Update.foldChild({
   toParentMessage: toCreationMenu,
   foldOutMessage:
     (out): Update.Step<Model, Message> =>
-    (model) =>
-      out._tag !== "Selected"
-        ? { model }
-        : out.value === "event"
-          ? foldCalendar(
-              model,
-              Calendar.Message.OpenedCreate({
-                useCalendarContext: model.page === "calendar",
-              }),
-            )
-          : foldTasks(
-              model,
-              Tasks.Message.OpenedCreate({ preserveView: true }),
-            ),
+    (model) => {
+      if (out._tag !== "Selected") return { model };
+      switch (out.value) {
+        case "event":
+          return foldCalendar(
+            model,
+            Calendar.Message.OpenedCreate({
+              useCalendarContext: model.page === "calendar",
+            }),
+          );
+        case "task":
+          return foldTasks(
+            model,
+            Tasks.Message.OpenedCreate({ preserveView: true }),
+          );
+        case "email":
+          return Inbox.composeSender(model.inbox)
+            ? closeCreationMenu({ ...model, openingEmailComposer: true })
+            : { model };
+      }
+    },
 });
 
 const canonicalMailNavigation = (url: Url.Url, route: Model["mailRoute"]) => {
@@ -812,6 +822,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     fileRoute: fileRouteFor(url.pathname),
     creationDialog: Dialog.init({ id: Tasks.creationDialogId }),
     creationMenu: null,
+    openingEmailComposer: false,
     taskRoute: taskRouteFor(url.pathname),
     mailRoute: mailRouteFor(url.pathname),
     peopleRoute: contactsRouteFor(url.pathname),
@@ -919,6 +930,7 @@ const update = (
                   fileRoute,
                   mailRoute,
                   peopleRoute,
+                  openingEmailComposer: false,
                   error: null,
                 },
                 model.page,
@@ -980,6 +992,7 @@ const update = (
         fileRoute: model.fileRoute,
         creationDialog: Dialog.init({ id: Tasks.creationDialogId }),
         creationMenu: null,
+        openingEmailComposer: false,
         taskRoute: model.taskRoute,
         mailRoute: model.mailRoute,
         peopleRoute: model.peopleRoute,
@@ -1285,6 +1298,7 @@ const update = (
       model.account &&
       !isApproval(model) &&
       !model.creationMenu &&
+      !model.openingEmailComposer &&
       !creationEditor(model)
         ? foldCreationDialog(
             {
@@ -1295,6 +1309,11 @@ const update = (
           )
         : { model },
     GotCreationDialogMessage: ({ message }) => {
+      if (message._tag === "CompletedCloseDialog" && model.openingEmailComposer)
+        return foldInbox(
+          { ...model, openingEmailComposer: false },
+          Inbox.Message.OpenedCompose(),
+        );
       if (message._tag === "RequestedClose") {
         switch (creationEditor(model)) {
           case "task":
@@ -1879,6 +1898,12 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
           model: model.people,
           toParentMessage: toPeopleMessage,
         }),
+        h.submodel({
+          slotId: "mail-composer",
+          view: Inbox.composeView,
+          model: model.inbox,
+          toParentMessage: toInboxMessage,
+        }),
         Dialog.view(
           {
             model: model.creationDialog,
@@ -1891,7 +1916,10 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
                 ? creationMenu.view(
                     {
                       model: menu,
-                      items: creationItems,
+                      items: creationItems.filter(
+                        ({ value }) =>
+                          value !== "email" || Inbox.composeSender(model.inbox),
+                      ),
                       searchLabel: "Search create options",
                       initialFocus,
                       toParentMessage: toCreationMenu,

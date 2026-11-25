@@ -117,7 +117,10 @@ export const inboxAttachmentPreviewApi = (
 export const inboxAttachmentTextPreviewLimit = 32 * 1024;
 export const inboxReadApi = (id: string) => `${inboxMessageApi(id)}/read`;
 export const inboxReplyApi = (id: string) => `${inboxMessageApi(id)}/reply`;
-export const InboxUnread = Schema.Struct({ unreadCount: Schema.Number });
+export const InboxUnread = Schema.Struct({
+  unreadCount: Schema.Number,
+  sender: Schema.optionalKey(Schema.String),
+});
 export const InboxReadUpdate = Schema.Struct({ unread: Schema.Boolean });
 export const ConversationArchiveUpdate = Schema.Struct({
   archived: Schema.Boolean,

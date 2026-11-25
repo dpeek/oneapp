@@ -1109,6 +1109,9 @@ it("lets only the owner send plain-text mail from the configured Inbox address",
   expect(
     await (await call(inboxApiPath, undefined, session)).json(),
   ).toMatchObject({ address: from, sender: from });
+  expect(
+    await (await call(inboxUnreadPath, undefined, session)).json(),
+  ).toEqual({ unreadCount: 0, sender: from });
   expect((await call(inboxSendPath, draft)).status).toBe(401);
   expect((await call(sentApiPath)).status).toBe(401);
   expect(

@@ -6,7 +6,6 @@ import {
   fieldClassNames,
   fileInput,
   input,
-  plusIcon,
 } from "@oneapp/ui";
 import { Effect, Option, Schema } from "effect";
 import { Command, Submodel, Update } from "foldkit";
@@ -545,37 +544,16 @@ const composeForm = (
   );
 };
 
-export const view = Submodel.defineView<
-  Model & { sender: string | undefined },
-  Message
->((model, h) =>
-  h.div(
-    [h.Class("inbox-compose")],
-    [
-      button(
-        {
-          size: "sm",
-          rounded: true,
-          ariaLabel: "New email",
-          dialogId,
-          children: [plusIcon(h, "16"), "New"],
-          ...(model.sender
-            ? { onClick: Message.Opened({ from: model.sender }) }
-            : { disabled: true }),
-        },
-        h,
-      ),
-      Dialog.view(
-        {
-          model: model.dialog,
-          title: composeTitle(model.reply),
-          size: "wide",
-          showCloseButton: false,
-          content: (initialFocus) => composeForm(model, initialFocus, h),
-          toParentMessage: toDialogMessage,
-        },
-        h,
-      ),
-    ],
+export const view = Submodel.defineView<Model, Message>((model, h) =>
+  Dialog.view(
+    {
+      model: model.dialog,
+      title: composeTitle(model.reply),
+      size: "wide",
+      showCloseButton: false,
+      content: (initialFocus) => composeForm(model, initialFocus, h),
+      toParentMessage: toDialogMessage,
+    },
+    h,
   ),
 );

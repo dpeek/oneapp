@@ -1378,9 +1378,11 @@ export const inboxRoutes = (
         if (!(yield* requireInboxOwner))
           return yield* jsonError(403, "Access denied");
         const unread = yield* Effect.tryPromise(() => inboxUnread(env.DB));
-        return yield* HttpServerResponse.schemaJson(InboxUnread)(unread, {
-          headers: privateHeaders,
-        });
+        const sender = inboxSender(env);
+        return yield* HttpServerResponse.schemaJson(InboxUnread)(
+          { ...unread, ...(sender ? { sender: sender.from } : {}) },
+          { headers: privateHeaders },
+        );
       }).pipe(Effect.catchTags(inboxErrors)),
     ),
     HttpRouter.add(

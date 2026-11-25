@@ -12,6 +12,7 @@ import {
   navigationLinks,
   noiseIconPath,
   outlineIcon,
+  plusIcon,
   Sheet,
   Popover,
   spinner,
@@ -167,6 +168,7 @@ export const Model = Schema.Struct({
       cursor: Schema.NullOr(Schema.String),
     }),
   ),
+  sender: Schema.NullOr(Schema.String),
   unreadCount: Schema.Number,
   unreadRequest: Schema.NullOr(Schema.String),
   unreadRefreshQueued: Schema.Boolean,
@@ -222,6 +224,7 @@ export const initial: Model = {
   listRequest: null,
   listRefreshQueued: false,
   listError: null,
+  sender: null,
   unreadCount: 0,
   unreadRequest: null,
   unreadRefreshQueued: false,
@@ -257,6 +260,7 @@ export const Message = defineMessageUnion({
   RetriedList: {},
   RefreshedUnread: {},
   GotRecoveryMessage: { message: Recovery.Message },
+  OpenedCompose: {},
   GotComposeMessage: { message: Compose.Message },
   GotQuickReplyMessage: { message: QuickReply.Message },
   GotAttachmentMessage: { message: Attachments.Message },
@@ -424,6 +428,18 @@ const foldCompose = Update.foldChild({
   write: (model, compose) => ({ ...model, compose }),
   toParentMessage: toComposeMessage,
 });
+
+export const composeSender = (model: Model) =>
+  model.sender ?? model.list?.sender;
+
+export const composeView = Submodel.defineView<Model, Message>((model, h) =>
+  h.submodel({
+    slotId: "inbox-compose",
+    view: Compose.view,
+    model: model.compose,
+    toParentMessage: toComposeMessage,
+  }),
+);
 
 const toQuickReplyMessage = (message: typeof QuickReply.Message.Type) =>
   message._tag === "SessionExpired"
@@ -1087,10 +1103,17 @@ const setUnread = (
 const finishUnread = (
   model: Model,
   request: string,
-  unreadCount = model.unreadCount,
+  status?: typeof InboxUnread.Type,
 ) => {
   if (request !== model.unreadRequest) return { model };
-  const next = { ...model, unreadCount, unreadRequest: null };
+  const next = {
+    ...model,
+    ...(status && {
+      unreadCount: status.unreadCount,
+      sender: status.sender ?? null,
+    }),
+    unreadRequest: null,
+  };
   return next.unreadRefreshQueued ? refreshUnread(next) : { model: next };
 };
 
@@ -1264,6 +1287,7 @@ export const update = (model: Model, message: Message): Result =>
               deleteRequest: model.deleteRequest,
               archiveRequest: model.archiveRequest,
               senderRuleRequest: model.senderRuleRequest,
+              sender: model.sender,
               unreadCount: model.unreadCount,
               unreadRequest: model.unreadRequest,
               unreadRefreshQueued: model.unreadRefreshQueued,
@@ -1400,6 +1424,12 @@ export const update = (model: Model, message: Message): Result =>
         },
         deleteKey(message.id, Boolean(model.recovery.batchId)),
       );
+    },
+    OpenedCompose: () => {
+      const from = composeSender(model);
+      return from
+        ? foldCompose(model, Compose.Message.Opened({ from }))
+        : { model };
     },
     GotComposeMessage: ({ message }) => {
       const result = foldCompose(model, message);
@@ -1822,8 +1852,7 @@ export const update = (model: Model, message: Message): Result =>
       };
       return next.listRefreshQueued ? loadList(next, null) : { model: next };
     },
-    LoadedUnread: ({ request, unreadCount }) =>
-      finishUnread(model, request, unreadCount),
+    LoadedUnread: (message) => finishUnread(model, message.request, message),
     UnreadFailed: ({ request }) => finishUnread(model, request),
     UpdatedReadStatus: ({ request, id, unread }) => {
       const change = model.readRequests[id];
@@ -3058,12 +3087,23 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
             ),
           ],
         ),
-        h.submodel({
-          slotId: "inbox-compose",
-          view: Compose.view,
-          model: { ...model.compose, sender: model.list?.sender },
-          toParentMessage: toComposeMessage,
-        }),
+        h.div(
+          [h.Class("inbox-compose")],
+          [
+            button(
+              {
+                size: "sm",
+                rounded: true,
+                ariaLabel: "New email",
+                dialogId: Compose.dialogId,
+                disabled: !composeSender(model),
+                onClick: Message.OpenedCompose(),
+                children: [plusIcon(h, "16"), "New"],
+              },
+              h,
+            ),
+          ],
+        ),
       ],
       sidebar: folderNavigation(model, h),
       list: listView(model, h),

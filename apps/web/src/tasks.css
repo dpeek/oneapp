@@ -3,20 +3,6 @@
   --task-completed: light-dark(#4b43ad, #c5bfff);
 }
 
-.tasks-workspace .workspace-header > a {
-  color: var(--muted);
-}
-
-.task-header-menus {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-}
-
-.tasks-workspace .workspace-header > button {
-  margin-inline-start: auto;
-}
-
 .task-fields,
 .task-actions {
   display: flex;
@@ -166,21 +152,6 @@
   margin-inline: auto;
 }
 
-.task-detail .task-back {
-  display: flex;
-  inline-size: min(100%, var(--task-editor-width));
-  align-items: center;
-  gap: 0.375rem;
-  margin-block-end: 1rem;
-  color: var(--text);
-  font-size: 0.875rem;
-  text-decoration: none;
-}
-
-.task-back:hover {
-  text-decoration: underline;
-}
-
 .task-editor {
   display: grid;
   gap: 1rem;
@@ -289,14 +260,6 @@
     "header" auto
     "items" minmax(0, 1fr)
     / minmax(0, 1fr);
-}
-
-.files-workspace > .workspace-header {
-  border-inline-end: 0;
-}
-
-.files-workspace > .workspace-header > .file-upload {
-  margin-inline-start: auto;
 }
 
 .workspace.files-workspace .workspace-detail {
@@ -423,6 +386,10 @@
   outline: 2px solid var(--focus);
   outline-offset: 2px;
   border-radius: 0.375rem;
+}
+
+.workspace-screen-header .file-upload:focus-within {
+  border-radius: 9999px;
 }
 
 .file-upload:has(input:disabled) {

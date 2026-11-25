@@ -1,6 +1,5 @@
 import {
   alert,
-  backIcon,
   button,
   buttonClassName,
   Dialog,
@@ -11,6 +10,7 @@ import {
   navigationLinks,
   nativeSelect,
   outlineIcon,
+  plusIcon,
   Sheet,
   skeleton,
   taskIconPaths,
@@ -58,7 +58,7 @@ import {
   type Model,
 } from "./tasks.ts";
 import { filterChoice, filterMenu } from "./filter-menu.ts";
-import { workspace } from "./workspace.ts";
+import { screenHeader, screenHeaderBack, workspace } from "./workspace.ts";
 
 const statusLabels = {
   "": "No status",
@@ -311,7 +311,6 @@ const taskList = (
   model: Model,
   tags: ReadonlyArray<Tag>,
   viewTasks: readonly Task[],
-  addTask: Html | undefined,
   h: HtmlBuilder<Message>,
 ) => {
   const { view } = model;
@@ -358,7 +357,7 @@ const taskList = (
             ],
             ["View active tasks"],
           )
-        : addTask;
+        : undefined;
     results = empty(
       {
         title: emptyTitle,
@@ -742,18 +741,15 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
   const tags = sortedTags(model);
   const { selectedId, folderSheet } = model;
   const viewTasks = tasksInView(model);
-  const addTaskInEmpty =
-    !selectedId &&
-    model.view === "active" &&
-    !!model.index &&
-    !viewTasks.length;
   const addTask = button(
     {
       size: "sm",
+      rounded: true,
+      ariaLabel: "Add task",
       disabled: model.request !== null || !model.index,
       dialogId: creationDialogId,
       onClick: Message.OpenedCreate({ preserveView: false }),
-      children: ["Add task"],
+      children: [plusIcon(h, "16"), "Task"],
     },
     h,
   );
@@ -770,73 +766,60 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
   return workspace(
     {
       className: "workspace-stacked tasks-workspace",
-      headerAttributes: [h.Tabindex(-1)],
-      title: selectedId ? undefined : viewLabels[model.view],
-      titleAccessory: selectedId
-        ? undefined
-        : h.div(
-            [h.Class("task-header-menus")],
-            [taskFilters(model, tags, h), taskSort(model, h)],
-          ),
-      headerActions: [
-        ...(selectedId
-          ? [
-              h.a(
-                [
-                  h.Href(taskListPath(model.view)),
-                  h.Class(
-                    buttonClassName({
-                      variant: "ghost",
-                      size: "icon-sm",
-                      rounded: true,
-                    }),
+      header: screenHeader(
+        {
+          title: selectedTask(model)?.title ?? viewLabels[model.view],
+          navigation: [
+            ...(selectedId
+              ? [
+                  screenHeaderBack(
+                    { href: taskListPath(model.view), label: backLabel },
+                    h,
                   ),
-                  h.DataAttribute("slot", "button"),
-                  h.AriaLabel(backLabel),
-                  h.Title(backLabel),
-                ],
-                [backIcon(h)],
-              ),
-            ]
-          : []),
-        h.div(
-          [h.Class("workspace-drawer-trigger")],
-          [
-            button(
+                ]
+              : []),
+            h.div(
+              [h.Class("workspace-drawer-trigger")],
+              [
+                button(
+                  {
+                    variant: "ghost",
+                    size: "icon-sm",
+                    rounded: true,
+                    ariaLabel: "Task views",
+                    dialogId: folderSheet.id,
+                    onClick: toFolderSheetMessage(
+                      Sheet.Message.RequestedOpen(),
+                    ),
+                    children: [outlineIcon(h, ["M4 6h16M4 12h16M4 18h16"])],
+                  },
+                  h,
+                ),
+              ],
+            ),
+          ],
+          controls: selectedId
+            ? []
+            : [taskFilters(model, tags, h), taskSort(model, h)],
+          primaryAction: addTask,
+          feedback: [
+            visuallyHiddenStatus(loadStatus, h),
+            alert(
               {
-                variant: "ghost",
-                size: "icon",
-                rounded: true,
-                ariaLabel: "Task views",
-                dialogId: folderSheet.id,
-                onClick: toFolderSheetMessage(Sheet.Message.RequestedOpen()),
-                children: [outlineIcon(h, ["M4 6h16M4 12h16M4 18h16"])],
+                message: model.error?.message ?? null,
+                severity: "error",
+                announcement: loadErrorInDialog ? "static" : "status",
+                action:
+                  model.error && !model.index ? retryTasksButton(h) : undefined,
               },
               h,
             ),
           ],
-        ),
-        ...(!addTaskInEmpty ? [addTask] : []),
-        visuallyHiddenStatus(loadStatus, h),
-        alert(
-          {
-            message: model.error?.message ?? null,
-            severity: "error",
-            announcement: loadErrorInDialog ? "static" : "status",
-            action:
-              model.error && !model.index ? retryTasksButton(h) : undefined,
-          },
-          h,
-        ),
-      ],
-      sidebar: taskNavigation(model.view, h),
-      list: taskList(
-        model,
-        tags,
-        viewTasks,
-        addTaskInEmpty ? addTask : undefined,
+        },
         h,
       ),
+      sidebar: taskNavigation(model.view, h),
+      list: taskList(model, tags, viewTasks, h),
       hasSelection: selectedId !== null,
       ...(selectedId ? { detail: taskDetail(selectedId, model, tags, h) } : {}),
       sheet: Sheet.sheet(

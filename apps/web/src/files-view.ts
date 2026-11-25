@@ -1,6 +1,5 @@
 import {
   alert,
-  backIcon,
   button,
   buttonClassName,
   empty,
@@ -9,6 +8,7 @@ import {
   item,
   itemGroup,
   outlineIcon,
+  plusIcon,
   skeleton,
   Tokenizer,
   visuallyHiddenStatus,
@@ -40,7 +40,7 @@ import {
   type Tag,
 } from "./items-contract.ts";
 import { searchTags } from "./tag-picker.ts";
-import { workspace } from "./workspace.ts";
+import { screenHeader, screenHeaderBack, workspace } from "./workspace.ts";
 
 const RenderPdf = Mount.define("RenderFilePdf", {
   args: { id: ItemId },
@@ -177,13 +177,7 @@ const fileDetail = (
       h.Class("workspace-detail task-detail file-detail"),
       h.AriaLabel("File details"),
     ],
-    [
-      h.a(
-        [h.Class("task-back"), h.Href(filesPath)],
-        [backIcon(h), "All files"],
-      ),
-      detail(),
-    ],
+    [detail()],
   );
 };
 
@@ -235,7 +229,6 @@ const fileFilters = (
 const fileList = (
   model: Model,
   tags: readonly Tag[],
-  upload: Html | undefined,
   h: HtmlBuilder<Message>,
 ) => {
   const files = (model.index?.files ?? []).filter(
@@ -313,7 +306,7 @@ const fileList = (
                           },
                           h,
                         )
-                      : upload,
+                      : undefined,
                   },
                   h,
                 ),
@@ -332,14 +325,11 @@ const uploadControl = (model: Model, h: HtmlBuilder<Message>) =>
     [
       h.span(
         [
-          h.Class(buttonClassName({ size: "sm" })),
+          h.Class(buttonClassName({ size: "sm", rounded: true })),
           h.DataAttribute("slot", "button"),
+          h.AriaHidden(true),
         ],
-        [
-          model.request?.operation._tag === "Upload"
-            ? "Uploading…"
-            : "Upload file",
-        ],
+        [plusIcon(h, "16"), "File"],
       ),
       input<Message>(
         [
@@ -358,50 +348,61 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
   const tags = [...(model.index?.tags ?? [])].sort((left, right) =>
     left.name.localeCompare(right.name),
   );
-  const upload = uploadControl(model, h);
-  const uploadInEmpty =
-    model.selectedId === null && model.index?.files.length === 0;
   const operation = model.request?.operation._tag;
   const loadStatus =
     operation === "Load"
       ? model.index
         ? "Refreshing files…"
         : "Loading files…"
-      : operation === "Upload"
-        ? "Uploading file…"
-        : null;
+      : null;
   return workspace(
     {
       className: "tasks-workspace files-workspace",
-      title: "Files",
-      titleAccessory: fileFilters(model, tags, h),
-      headerAttributes: [h.Tabindex(-1)],
-      headerActions: [
-        ...(!uploadInEmpty ? [upload] : []),
-        visuallyHiddenStatus(loadStatus, h),
-        alert(
-          {
-            message: model.error,
-            severity: "error",
-            announcement: "status",
-            action:
-              model.error && !model.index
-                ? button(
-                    {
-                      variant: "outline",
-                      size: "sm",
-                      onClick: Message.Retried(),
-                      children: ["Retry"],
-                    },
-                    h,
-                  )
-                : undefined,
-          },
-          h,
-        ),
-      ],
+      header: screenHeader(
+        {
+          title: "Files",
+          navigation: model.selectedId
+            ? [
+                screenHeaderBack(
+                  { href: filesPath, label: "Back to all files" },
+                  h,
+                ),
+              ]
+            : [],
+          controls: [fileFilters(model, tags, h)],
+          primaryAction: uploadControl(model, h),
+          feedback: [
+            visuallyHiddenStatus(loadStatus, h),
+            h.p(
+              [h.Role("status"), h.Class("workspace-header-progress")],
+              operation === "Upload" ? ["Uploading file…"] : [],
+            ),
+            alert(
+              {
+                message: model.error,
+                severity: "error",
+                announcement: "status",
+                action:
+                  model.error && !model.index
+                    ? button(
+                        {
+                          variant: "outline",
+                          size: "sm",
+                          onClick: Message.Retried(),
+                          children: ["Retry"],
+                        },
+                        h,
+                      )
+                    : undefined,
+              },
+              h,
+            ),
+          ],
+        },
+        h,
+      ),
       hasSelection: model.selectedId !== null,
-      list: fileList(model, tags, uploadInEmpty ? upload : undefined, h),
+      list: fileList(model, tags, h),
       ...(model.selectedId ? { detail: fileDetail(model, tags, h) } : {}),
     },
     h,

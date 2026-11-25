@@ -606,8 +606,60 @@ oneapp-vault-reader {
     font-size: 0.875rem;
   }
 
-  .workspace-header button {
+  .workspace-header:not(.workspace-screen-header) button {
     font-size: 0.8125rem;
+  }
+}
+
+.workspace > .workspace-screen-header {
+  display: block;
+  min-inline-size: 0;
+  padding: 0.5rem 1rem;
+  border: 0;
+  background: transparent;
+}
+
+.workspace-screen-header [data-slot="toolbar-start"] > :not(h1) {
+  flex: none;
+}
+
+.workspace-header.workspace-screen-header h1 {
+  min-inline-size: 0;
+  overflow: hidden;
+  font-size: 1rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-screen-header .workspace-drawer-trigger {
+  order: 0;
+}
+
+.workspace-header-progress {
+  margin: 0.5rem 0 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.workspace-header-progress:empty {
+  margin: 0;
+}
+
+.workspace-screen-header > [data-slot="alert"]:has([data-slot="alert-icon"]) {
+  margin-block-start: 0.5rem;
+}
+
+@media (max-width: 40rem) {
+  .workspace > .workspace-screen-header {
+    padding-inline: 0.75rem;
+  }
+}
+
+@media (pointer: coarse) {
+  .workspace-screen-header [data-slot="toolbar"] [data-slot="button"] {
+    min-block-size: 2.75rem;
+    min-inline-size: 2.75rem;
   }
 }
 

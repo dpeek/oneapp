@@ -48,6 +48,26 @@ search field has a StyleX focus treatment and also matches the global fallback
 for inputs whose slot differs from `input`. Give the component a single visible
 focus treatment as part of that migration.
 
+## Workspace screen headers
+
+- Compose the web app's `screenHeader` in [`workspace.ts`](../../apps/web/src/workspace.ts).
+  It uses the compact, transparent Crease Toolbar layout. Put the back link or
+  navigation trigger, the `h1`, then view controls such as filters and sort in
+  the start slot. The title truncates when space is tight, and the controls stay
+  visible. Keep DOM order aligned with visual order at every width.
+- Put a single small rounded primary Button at the far end, including on the
+  first-use empty screen. Use a plus icon and a noun as the visible label
+  and a descriptive accessible name such as “Add task” or “Upload file”. Use
+  the same Button styles with a native file input when the action opens a file
+  chooser. Use small rounded ghost controls for secondary actions, with an
+  accessible name for each icon-only control. Allow 44px targets on coarse
+  pointers.
+- Reuse the web app's [`filter-menu.ts`](../../apps/web/src/filter-menu.ts)
+  for the filter icon, selected count, and Clear action. Keep text feedback
+  below the action row. Screen headers use native Tab order. Reserve roving
+  focus for a control group that implements the full toolbar keyboard pattern
+  and keeps arrow keys inside nested menus while they're in use.
+
 ## Dialogs and feedback
 
 - Use the shared Dialog pattern for modal forms and Crease Command for searchable

@@ -1,6 +1,7 @@
 import { Temporal } from "@js-temporal/polyfill";
 import {
   button,
+  calendarIconPaths,
   CalendarPicker,
   ColorPicker,
   Dialog,
@@ -1142,18 +1143,16 @@ const calendarNavigation = (
         h.span(
           [h.Class("calendar-nav-destination")],
           [
-            ...(color
-              ? [
-                  h.span(
-                    [
-                      h.Class("calendar-nav-swatch"),
-                      h.Style({ backgroundColor: color }),
-                      h.AriaHidden(true),
-                    ],
-                    [],
-                  ),
-                ]
-              : []),
+            color
+              ? h.span(
+                  [
+                    h.Class("calendar-nav-swatch"),
+                    h.Style({ backgroundColor: color }),
+                    h.AriaHidden(true),
+                  ],
+                  [],
+                )
+              : outlineIcon(h, calendarIconPaths),
             h.span([h.Class("calendar-nav-label"), h.Title(label)], [label]),
           ],
         ),

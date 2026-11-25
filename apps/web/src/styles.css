@@ -2027,14 +2027,25 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
 
 .calendar-nav-destination,
 .calendar-colour-field {
-  display: flex;
   align-items: center;
   gap: 0.5rem;
   min-width: 0;
 }
 
+.calendar-nav-destination {
+  display: grid;
+  grid-template-columns: 1rem minmax(0, 1fr);
+}
+
+.calendar-colour-field {
+  display: flex;
+}
+
+.calendar-nav-destination > :is(svg, .calendar-nav-swatch) {
+  justify-self: center;
+}
+
 .calendar-nav-swatch {
-  flex: none;
   width: 0.625rem;
   height: 0.625rem;
   box-sizing: border-box;

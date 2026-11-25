@@ -19,8 +19,8 @@ import {
   sidebarClassNames,
   sidebarItemClassName,
   textarea,
-  toggleGroup,
   toolbar,
+  viewToggleGroup,
 } from "@oneapp/ui";
 import { Clock, Effect, Option, Queue, Schema, Stream } from "effect";
 import { Command, Mount, Submodel, Update } from "foldkit";
@@ -2216,7 +2216,7 @@ const scheduleControls = (view: Model["view"], disabled: boolean, h: H) => {
         ),
       ],
       end: [
-        toggleGroup(
+        viewToggleGroup(
           {
             label: "Calendar view",
             value: view,

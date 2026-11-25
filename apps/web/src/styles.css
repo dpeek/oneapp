@@ -606,7 +606,8 @@ oneapp-vault-reader {
     font-size: 0.875rem;
   }
 
-  .workspace-header:not(.workspace-screen-header) button {
+  .workspace-header:not(.workspace-screen-header)
+    button:not(:where([data-slot="toggle-group"] button)) {
     font-size: 0.8125rem;
   }
 }
@@ -2210,21 +2211,13 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
   justify-content: flex-end;
 }
 
-.calendar-period-controls,
-.calendar-header-actions [data-slot="toggle-group"] {
+.calendar-period-controls {
   display: flex;
   align-items: center;
   padding: 0.125rem;
   border: 1px solid var(--border);
   border-radius: var(--control-radius);
   background: var(--canvas);
-}
-
-.calendar-header-actions
-  [data-slot="toggle-group"]
-  button[aria-pressed="true"] {
-  background: var(--selected);
-  color: var(--text);
 }
 
 .calendar-timeline-scroll {
@@ -2469,7 +2462,8 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
     gap: 0.375rem;
   }
 
-  .calendar-header-actions button {
+  .calendar-header-actions
+    button:not(:where([data-slot="toggle-group"] button)) {
     padding-inline: 0.25rem;
   }
 }

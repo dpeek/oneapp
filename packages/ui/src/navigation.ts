@@ -1,15 +1,16 @@
 import * as stylex from "@stylexjs/stylex";
 import type { Html, HtmlBuilder } from "foldkit/html";
+import { buttonClassName } from "./button.ts";
 import { controls } from "./tokens.stylex.ts";
+import { viewSwitchButton, viewSwitchGroupClassName } from "./view-switch.ts";
 
 const styles = stylex.create({
-  menu: {
-    display: "grid",
-    gap: "0.25rem",
+  menuReset: {
     listStyle: "none",
     margin: 0,
     padding: 0,
   },
+  menu: { display: "grid", gap: "0.25rem" },
   tabs: {
     display: "inline-flex",
     gap: "0.125rem",
@@ -17,12 +18,6 @@ const styles = stylex.create({
     borderRadius: controls.radius,
     padding: 3,
     backgroundColor: controls.hover,
-  },
-  lineTabs: {
-    gap: "0.25rem",
-    borderRadius: 0,
-    padding: 0,
-    backgroundColor: "transparent",
   },
   link: {
     display: "flex",
@@ -74,26 +69,6 @@ const styles = stylex.create({
     backgroundColor: controls.surface,
     boxShadow: "0 1px 3px rgb(0 0 0 / 12%)",
   },
-  lineTab: {
-    position: "relative",
-    paddingInline: "0.5rem",
-    backgroundColor: "transparent",
-    color: {
-      default: controls.mutedForeground,
-      "@media (hover: hover)": { ":hover": controls.foreground },
-    },
-  },
-  lineTabSelected: {
-    color: controls.foreground,
-    "::after": {
-      content: '""',
-      position: "absolute",
-      insetInline: 0,
-      insetBlockEnd: 0,
-      blockSize: 2,
-      backgroundColor: "currentColor",
-    },
-  },
   badge: {
     flexShrink: 0,
     display: "inline-grid",
@@ -120,7 +95,7 @@ type Destination = Readonly<{
 }>;
 
 export const sidebarClassNames = {
-  list: stylex.props(styles.menu).className ?? "",
+  list: stylex.props(styles.menuReset, styles.menu).className ?? "",
   label: stylex.props(styles.iconLabel).className ?? "",
 };
 
@@ -153,13 +128,12 @@ export const navigationLinks = <Message>(
   props: {
     label: string;
     destinations: ReadonlyArray<Destination>;
-    variant: "sidebar" | "tabs" | "tabs-line";
+    variant: "sidebar" | "tabs" | "pills";
   },
   h: HtmlBuilder<Message>,
 ): Html => {
   const sidebar = props.variant === "sidebar";
-  const line = props.variant === "tabs-line";
-  const selected = line ? styles.lineTabSelected : styles.tabSelected;
+  const pills = props.variant === "pills";
   return h.nav(
     [h.AriaLabel(props.label)],
     [
@@ -168,8 +142,9 @@ export const navigationLinks = <Message>(
           h.Class(
             sidebar
               ? sidebarClassNames.list
-              : (stylex.props(styles.menu, styles.tabs, line && styles.lineTabs)
-                  .className ?? ""),
+              : pills
+                ? `${stylex.props(styles.menuReset).className ?? ""} ${viewSwitchGroupClassName}`
+                : (stylex.props(styles.menuReset, styles.tabs).className ?? ""),
           ),
         ],
         props.destinations.map(({ href, label, icon, current, unread }) =>
@@ -189,12 +164,13 @@ export const navigationLinks = <Message>(
                   h.Class(
                     sidebar
                       ? sidebarItemClassName(current === true)
-                      : (stylex.props(
-                          styles.link,
-                          styles.tabLink,
-                          line && styles.lineTab,
-                          current && selected,
-                        ).className ?? ""),
+                      : pills
+                        ? buttonClassName(viewSwitchButton)
+                        : (stylex.props(
+                            styles.link,
+                            styles.tabLink,
+                            current && styles.tabSelected,
+                          ).className ?? ""),
                   ),
                 ],
                 [

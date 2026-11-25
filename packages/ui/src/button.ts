@@ -81,6 +81,27 @@ const styles = stylex.create({
     color: controls.mutedForeground,
     opacity: { default: 1, ':is(:disabled, [aria-disabled="true"])': 0.55 },
   },
+  quiet: {
+    borderColor: "transparent",
+    textDecoration: "none",
+    backgroundColor: {
+      default: "transparent",
+      "@media (hover: hover)": {
+        ':hover:not(:disabled, [aria-disabled="true"], [aria-current="page"], [aria-pressed="true"])':
+          controls.hover,
+      },
+      ':is([aria-current="page"], [aria-pressed="true"])': controls.selected,
+    },
+    color: {
+      default: controls.mutedForeground,
+      ':is([aria-current="page"], [aria-pressed="true"])': controls.foreground,
+    },
+    fontWeight: {
+      default: 500,
+      ':is([aria-current="page"], [aria-pressed="true"])': 600,
+    },
+    opacity: { default: 1, ':is(:disabled, [aria-disabled="true"])': 0.55 },
+  },
   sm: {
     minBlockSize: "2rem",
     gap: "0.25rem",
@@ -88,6 +109,10 @@ const styles = stylex.create({
     paddingInline: "0.625rem",
     fontSize: "0.875rem",
     lineHeight: "1.25rem",
+  },
+  smallTouchTarget: {
+    minBlockSize: { default: "2rem", "@media (pointer: coarse)": "2.75rem" },
+    minInlineSize: { "@media (pointer: coarse)": "2.75rem" },
   },
   icon: {
     inlineSize: "2.75rem",
@@ -108,7 +133,7 @@ type ButtonProps<Message> = Readonly<{
   children: ReadonlyArray<Html | string>;
   ariaLabel?: string;
   dialogId?: string;
-  variant?: "primary" | "destructive" | "outline" | "ghost";
+  variant?: "primary" | "destructive" | "outline" | "ghost" | "quiet";
   size?: "sm" | "icon" | "icon-sm";
   rounded?: boolean;
   type?: "button" | "submit";
@@ -126,6 +151,7 @@ export const buttonClassName = (
     styles.base,
     styles[props.variant ?? "primary"],
     props.size && styles[props.size],
+    props.variant === "quiet" && props.size === "sm" && styles.smallTouchTarget,
     props.rounded === true && styles.rounded,
   ).className ?? "";
 

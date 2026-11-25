@@ -2174,11 +2174,11 @@ const messageItem = (
   );
 };
 
-const inboxPriorityTabs = (selected: MailboxView, h: HtmlBuilder<Message>) =>
+const inboxPrioritySwitch = (selected: MailboxView, h: HtmlBuilder<Message>) =>
   navigationLinks(
     {
       label: "Inbox priority",
-      variant: "tabs-line",
+      variant: "pills",
       destinations: (["inbox", "noise"] as const).map((folder) => ({
         href: folderPath(folder),
         label: folder === "inbox" ? "Signal" : "Noise",
@@ -3031,7 +3031,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
                     [h.Class("inbox-heading-controls")],
                     [
                       ...(isInboxView(model.folder)
-                        ? [inboxPriorityTabs(model.folder, h)]
+                        ? [inboxPrioritySwitch(model.folder, h)]
                         : []),
                       h.submodel({
                         slotId: "inbox-filters",

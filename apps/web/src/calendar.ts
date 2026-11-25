@@ -54,6 +54,7 @@ import {
   minutesInDay,
   slotMinutes,
 } from "./calendar-timeline.ts";
+import { settingsSectionPath } from "./settings-navigation.ts";
 import { workspace, workspaceDrawerMedia } from "./workspace.ts";
 
 const Surface = Schema.Literals(["sidebar", "sheet"]);
@@ -1511,7 +1512,10 @@ const eventEditorContent = (
                       [h.Class("calendar-muted")],
                       [
                         "Set up notifications on a device in ",
-                        h.a([h.Href("/settings")], ["Settings"]),
+                        h.a(
+                          [h.Href(settingsSectionPath("notifications"))],
+                          ["Settings"],
+                        ),
                         ".",
                       ],
                     ),

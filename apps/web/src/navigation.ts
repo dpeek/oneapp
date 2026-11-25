@@ -12,6 +12,7 @@ import { calendarPath } from "./calendar-contract.ts";
 import { filesPath } from "./files-contract.ts";
 import { mailPath } from "./inbox-contract.ts";
 import { contactsPath } from "./people-contract.ts";
+import { settingsPath } from "./settings-navigation.ts";
 import { tasksPath } from "./tasks-contract.ts";
 import { vaultPath } from "./vault-setup-contract.ts";
 
@@ -86,7 +87,7 @@ const destinations = [
   },
   {
     page: "settings",
-    href: "/settings",
+    href: settingsPath,
     label: "Settings",
     paths: [
       "M12 8.75a3.25 3.25 0 1 0 0 6.5 3.25 3.25 0 0 0 0-6.5Z",

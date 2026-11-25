@@ -286,7 +286,7 @@ The OneApp vault and Bitwarden clients request website icons from OneApp at `/ic
 
 Cloudflare stores invocation logs and traces at 100% sampling and groups recurring errors in Workers Issues. Query strings are redacted from request URLs in telemetry. Open **Workers & Pages → oneapp-web-production → Observability** to inspect production logs and traces. [Cloudflare Query Builder](https://developers.cloudflare.com/workers/observability/query-builder/) also documents the telemetry API.
 
-Open the URL printed at the end of the deploy and sign in with the configured email and password. Under **Links** (`/links`), enter an HTTP or HTTPS URL and press Enter. Use **Delete** next to a saved link to remove it. **Settings** (`/settings`) shows your account and connected CLI, extension, and MCP access.
+Open the URL printed at the end of the deploy and sign in with the configured email and password. Under **Links** (`/links`), enter an HTTP or HTTPS URL and press Enter. Use **Delete** next to a saved link to remove it. **Settings** (`/settings`) opens Account, with separate pages for Notifications and Clients.
 
 In **Settings → Account**, request a code to verify the current email or use your current password to set a new one. Password changes sign out all browser sessions and send a notice to the verified address when email sending is configured. New passwords must have at least 15 characters. For breach screening, the server sends the first five hexadecimal characters of the new password's SHA-1 hash to [Pwned Passwords](https://haveibeenpwned.com/API/v3#PwnedPasswords) and matches the returned hashes locally.
 

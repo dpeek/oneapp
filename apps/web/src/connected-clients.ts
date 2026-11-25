@@ -281,7 +281,6 @@ export const update = (model: Model, message: Message, visible = true) =>
     },
   );
 
-const headingId = "connected-clients-heading";
 const clientIcons = {
   CLI: ["m5 7 5 5-5 5m8 0h6"],
   Extension: ["M3 5h18v14H3zM3 9h18m-14 6h6"],
@@ -291,9 +290,8 @@ const clientIcons = {
 
 export const view = Submodel.defineView<Model, Message>((model, h) =>
   h.section(
-    [h.Class("settings-section"), h.AriaLabelledBy(headingId)],
+    [h.Class("settings-section"), h.AriaLabel("Clients")],
     [
-      h.h2([h.Id(headingId)], ["Clients"]),
       h.p(
         [h.Id("cli-access"), h.Class("account-hint")],
         ["Run ", h.code([], ["one auth login"]), " to connect a CLI device."],

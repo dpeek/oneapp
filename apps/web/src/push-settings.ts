@@ -169,9 +169,8 @@ export const view = <Parent>(
     off: "Get a notification when new mail arrives, even when OneApp is closed. Message contents stay private.",
   };
   return h.section(
-    [h.Class("settings-section"), h.AriaLabelledBy("settings-notifications")],
+    [h.Class("settings-section"), h.AriaLabel("Mail notifications")],
     [
-      h.h2([h.Id("settings-notifications")], ["Notifications"]),
       itemGroup(
         [
           item(

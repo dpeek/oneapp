@@ -1400,7 +1400,7 @@ try {
     const firstDevice = claims(token).device;
     const secondDevice = claims(secondToken).device;
     assert.notEqual(firstDevice, secondDevice);
-    await app.goto(new URL("/settings", origin).href);
+    await app.goto(new URL("/settings/clients", origin).href);
     const listing = await localResponse((response) =>
       endpoint(response, devicesPath),
     );

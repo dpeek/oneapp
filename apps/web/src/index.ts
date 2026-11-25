@@ -18,6 +18,7 @@ import {
   itemGroup,
   outlineIcon,
   plusIcon,
+  Sheet,
   taskIconPaths,
 } from "@oneapp/ui";
 import * as Client from "@yielded/auth/Client";
@@ -65,6 +66,13 @@ import {
   contactsRouteFor,
 } from "./people-contract.ts";
 import * as PeopleDirectory from "./people-directory.ts";
+import {
+  settingsNavigation,
+  SettingsSection,
+  settingsSectionFor,
+  settingsSectionLabel,
+  settingsSectionPath,
+} from "./settings-navigation.ts";
 import * as Files from "./files.ts";
 import { filePath, FileRoute, fileRouteFor } from "./files-contract.ts";
 import { view as filesView } from "./files-view.ts";
@@ -87,19 +95,18 @@ const pageFor = (url: Url.Url): Page => {
   if (contactsRouteFor(url.pathname)) return "contacts";
   if (url.pathname === vaultPath || url.pathname === `${vaultPath}/`)
     return "vault";
-  return url.pathname === "/settings" ||
-    url.pathname === "/settings/" ||
-    (url.pathname === "/" && Option.getOrUndefined(url.hash) === "cli-access")
-    ? "settings"
-    : "links";
+  return settingsSectionFor(url) ? "settings" : "links";
 };
 
+const settingsSheetId = "settings-sections";
 const Model = Schema.Struct({
   page: AppNavigation.Page,
   navigation: AppNavigation.Model,
   account: Schema.NullOr(Account),
   sessionCheck: Schema.Literals(["checking", "failed", "resolved"]),
   accountSettings: AccountSettings.Model,
+  settingsSection: Schema.NullOr(SettingsSection),
+  settingsSheet: Sheet.Model,
   pushSettings: PushSettings.Model,
   vaultSetup: VaultSetup.Model,
   inbox: Inbox.Model,
@@ -137,6 +144,7 @@ const Message = defineMessageUnion({
   ClickedSignOut: {},
   LoadedAccount: { account: Schema.NullOr(Account) },
   GotAccountSettingsMessage: { message: AccountSettings.Message },
+  GotSettingsSheetMessage: { message: Sheet.Message },
   GotPushSettingsMessage: { message: PushSettings.Message },
   CompletedAccountSettingsRequest: {
     request: Schema.String,
@@ -172,6 +180,15 @@ const connectingMcp =
 const toAccountSettingsMessage = (
   message: typeof AccountSettings.Message.Type,
 ) => Message.GotAccountSettingsMessage({ message });
+const toSettingsSheetMessage = (message: typeof Sheet.Message.Type) =>
+  Message.GotSettingsSheetMessage({ message });
+const foldSettingsSheet = Update.foldChild({
+  update: Sheet.update,
+  read: (model: Model) => Option.some(model.settingsSheet),
+  write: (model, settingsSheet) => ({ ...model, settingsSheet }),
+  toParentMessage: toSettingsSheetMessage,
+  foldOutMessage: () => (model) => ({ model }),
+});
 const toPushSettingsMessage = (message: typeof PushSettings.Message.Type) =>
   Message.GotPushSettingsMessage({ message });
 const foldPushSettings = Update.foldChild({
@@ -235,7 +252,12 @@ const foldConnectedClients = (
     update: (
       model: typeof ConnectedClients.Model.Type,
       message: typeof ConnectedClients.Message.Type,
-    ) => ConnectedClients.update(model, message, parent.page === "settings"),
+    ) =>
+      ConnectedClients.update(
+        model,
+        message,
+        parent.settingsSection === "clients",
+      ),
     read: (model: Model) =>
       model.account ? Option.some(model.connectedClients) : Option.none(),
     write: (model, connectedClients) => ({ ...model, connectedClients }),
@@ -596,6 +618,8 @@ const isApproval = (model: Model) =>
   model.extensionAccess.approved;
 
 const closeFolderSheet = (model: Model): Update.Return<Model, Message> => {
+  if (model.page === "settings")
+    return foldSettingsSheet(model, Sheet.Message.RequestedClose());
   if (model.page === "calendar")
     return foldCalendar(model, Calendar.closeFolderSheet());
   if (model.page === "tasks") return foldTasks(model, Tasks.closeFolderSheet());
@@ -648,7 +672,8 @@ const subscriptions = Subscription.make<Model, Message>()((entry) => ({
           model.inbox.folderSheet.isOpen ||
           model.people.directory.folderSheet.isOpen ||
           model.calendar.folderSheet.isOpen ||
-          model.tasks.folderSheet.isOpen,
+          model.tasks.folderSheet.isOpen ||
+          model.settingsSheet.isOpen,
       }),
       dependenciesToStream: ({ open }) =>
         open
@@ -717,31 +742,23 @@ const loadPage = (
         refresh: previousPage !== "contacts",
       }),
     );
-  const notifications = applyNotification(model, {
-    _tag: "DismissNotification",
-    key: AccountSettings.notificationKey,
-  });
-  const profile = foldPeople(
-    notifications.model,
-    People.Message.RequestedSelf(),
-  );
-  const clients = foldConnectedClients(
-    profile.model,
-    ConnectedClients.Message.Requested(),
-  );
-  const push = foldPushSettings(
-    clients.model,
-    PushSettings.Message.Requested(),
-  );
-  return {
-    model: push.model,
-    commands: [
-      ...(notifications.commands ?? []),
-      ...(profile.commands ?? []),
-      ...(clients.commands ?? []),
-      ...(push.commands ?? []),
-    ],
-  };
+  switch (model.settingsSection) {
+    case "account":
+      return Update.combine(model, [
+        (next) =>
+          applyNotification(next, {
+            _tag: "DismissNotification",
+            key: AccountSettings.notificationKey,
+          }),
+        (next) => foldPeople(next, People.Message.RequestedSelf()),
+      ]);
+    case "notifications":
+      return foldPushSettings(model, PushSettings.Message.Requested());
+    case "clients":
+      return foldConnectedClients(model, ConnectedClients.Message.Requested());
+    case null:
+      return { model };
+  }
 };
 
 const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
@@ -752,6 +769,8 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     account: null,
     sessionCheck: "checking",
     accountSettings: AccountSettings.initial,
+    settingsSection: settingsSectionFor(url),
+    settingsSheet: Sheet.init({ id: settingsSheetId }),
     pushSettings: PushSettings.initial,
     vaultSetup: VaultSetup.initial,
     inbox: Inbox.initial,
@@ -782,8 +801,11 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
   if (mailNavigation) commands.push(mailNavigation);
   if (url.pathname === "/" && !connectingBitwarden && !isApproval(model)) {
     const hash = Option.getOrUndefined(url.hash);
+    const path = model.settingsSection
+      ? settingsSectionPath(model.settingsSection)
+      : `/${page}`;
     commands.push(
-      Navigate({ href: `/${page}${hash ? "#" + hash : ""}`, mode: "replace" }),
+      Navigate({ href: `${path}${hash ? "#" + hash : ""}`, mode: "replace" }),
     );
   }
   return { model, commands };
@@ -795,11 +817,13 @@ const update = (
 ): Update.Return<Model, Message> =>
   Message.match<Update.Return<Model, Message>>(message, {
     RequestedUrl: ({ request }) => {
+      const settingsSection =
+        request._tag === "Internal" ? settingsSectionFor(request.url) : null;
       if (
         request._tag === "Internal" &&
         !isApproval(model) &&
         (request.url.pathname === "/links" ||
-          request.url.pathname === "/settings" ||
+          settingsSection ||
           request.url.pathname === vaultPath ||
           calendarRouteFor(request.url.pathname) ||
           taskRouteFor(request.url.pathname) ||
@@ -808,7 +832,11 @@ const update = (
           contactsRouteFor(request.url.pathname))
       ) {
         const from = closeFolderSheet(model);
-        if (request.url.pathname === window.location.pathname) return from;
+        if (
+          request.url.pathname === window.location.pathname &&
+          (!settingsSection || settingsSection === model.settingsSection)
+        )
+          return from;
         return {
           model: from.model,
           commands: [
@@ -823,6 +851,7 @@ const update = (
     },
     ChangedUrl: ({ url }) => {
       const page = pageFor(url);
+      const settingsSection = settingsSectionFor(url);
       const mailRoute = mailRouteFor(url.pathname);
       const calendarRoute = calendarRouteFor(url.pathname);
       const taskRoute = taskRouteFor(url.pathname);
@@ -830,6 +859,7 @@ const update = (
       const peopleRoute = contactsRouteFor(url.pathname);
       const sameRoute =
         page === model.page &&
+        settingsSection === model.settingsSection &&
         calendarRoute?.id === model.calendarRoute?.id &&
         taskRoute?.id === model.taskRoute?.id &&
         taskRoute?.view === model.taskRoute?.view &&
@@ -849,6 +879,7 @@ const update = (
                 {
                   ...next,
                   page,
+                  settingsSection,
                   calendarRoute,
                   taskRoute,
                   fileRoute,
@@ -868,6 +899,7 @@ const update = (
         : result;
     },
     RequestedFolderSheetClose: () => closeFolderSheet(model),
+    GotSettingsSheetMessage: ({ message }) => foldSettingsSheet(model, message),
     GotNavigationMessage: ({ message }) => foldNavigation(model, message),
     NavigationFinished: () => ({ model }),
     RetriedSessionCheck: () =>
@@ -900,6 +932,8 @@ const update = (
         account,
         sessionCheck: "resolved",
         accountSettings: AccountSettings.initial,
+        settingsSection: model.settingsSection,
+        settingsSheet: Sheet.init({ id: settingsSheetId }),
         pushSettings: PushSettings.initial,
         vaultSetup: VaultSetup.initial,
         inbox: Inbox.initial,
@@ -1133,7 +1167,7 @@ const update = (
       const feedback = AccountSettings.feedback(
         settings,
         message,
-        model.page === "settings",
+        model.settingsSection === "account",
       );
       if (!feedback) return result;
       const notified = applyNotification(result.model, feedback);
@@ -1378,118 +1412,143 @@ const update = (
       foldExtensionAccess(model, message),
   });
 
-const settingsView = (model: Model, h: HtmlBuilder<Message>) =>
-  workspace(
+const accountSettingsView = (model: Model, h: HtmlBuilder<Message>) => [
+  h.section(
+    [h.Class("settings-section"), h.AriaLabelledBy("settings-profile")],
+    [
+      h.h2([h.Id("settings-profile")], ["Profile"]),
+      itemGroup(
+        [
+          item(
+            {
+              key: "settings-profile",
+              title: model.people.self?.name || "Your profile",
+              media: People.profileAvatar(
+                h,
+                model.people.self,
+                model.people.self?.managedAddresses[0] ??
+                  model.account?.email ??
+                  "",
+                {
+                  imageMounted: toPeopleMessage(People.Message.Mounted()),
+                },
+              ),
+              action: button(
+                {
+                  size: "sm",
+                  variant: "outline",
+                  onClick: toPeopleMessage(
+                    People.Message.Opened({ address: null }),
+                  ),
+                  children: ["Edit profile"],
+                },
+                h,
+              ),
+            },
+            h,
+          ),
+        ],
+        h,
+      ),
+    ],
+  ),
+  ...(model.account
+    ? [
+        h.section(
+          [h.Class("settings-section"), h.AriaLabelledBy("settings-account")],
+          [
+            h.h2([h.Id("settings-account")], ["Sign-in and security"]),
+            ...AccountSettings.view(
+              model.account,
+              model.accountSettings,
+              model.pending,
+              h,
+              toAccountSettingsMessage,
+              button(
+                {
+                  size: "sm",
+                  variant: "ghost",
+                  disabled:
+                    model.pending ||
+                    model.accountSettings.pending !== null ||
+                    model.connectedClients.request !== null,
+                  onClick: Message.ClickedSignOut(),
+                  children: ["Sign out"],
+                },
+                h,
+              ),
+            ),
+          ],
+        ),
+      ]
+    : []),
+];
+
+const settingsView = (model: Model, h: HtmlBuilder<Message>) => {
+  const section = model.settingsSection ?? "account";
+  const navigation = settingsNavigation(section, h);
+  const content = {
+    account: () => accountSettingsView(model, h),
+    notifications: () => [
+      PushSettings.view(model.pushSettings, toPushSettingsMessage, h),
+    ],
+    clients: () => [
+      h.submodel({
+        slotId: "connected-clients",
+        view: ConnectedClients.view,
+        model: model.connectedClients,
+        toParentMessage: toConnectedClientsMessage,
+      }),
+    ],
+  }[section]();
+
+  return workspace(
     {
       className: "workspace-stacked settings-workspace",
-      title: "Settings",
+      title: settingsSectionLabel(section),
+      headerActions: [
+        h.div(
+          [h.Class("workspace-drawer-trigger")],
+          [
+            button(
+              {
+                variant: "ghost",
+                size: "icon",
+                rounded: true,
+                ariaLabel: "Settings sections",
+                dialogId: model.settingsSheet.id,
+                onClick: toSettingsSheetMessage(Sheet.Message.RequestedOpen()),
+                children: [outlineIcon(h, ["M4 6h16M4 12h16M4 18h16"])],
+              },
+              h,
+            ),
+          ],
+        ),
+      ],
+      sidebar: navigation,
       hasSelection: false,
       list: h.div(
         [h.Class("workspace-list")],
         [
           h.div(
-            [h.Class("workspace-results")],
-            [
-              h.div(
-                [h.Class("settings-content")],
-                [
-                  h.section(
-                    [
-                      h.Class("settings-section"),
-                      h.AriaLabelledBy("settings-profile"),
-                    ],
-                    [
-                      h.h2([h.Id("settings-profile")], ["Profile"]),
-                      itemGroup(
-                        [
-                          item(
-                            {
-                              key: "settings-profile",
-                              title: model.people.self?.name || "Your profile",
-                              media: People.profileAvatar(
-                                h,
-                                model.people.self,
-                                model.people.self?.managedAddresses[0] ??
-                                  model.account?.email ??
-                                  "",
-                                {
-                                  imageMounted: toPeopleMessage(
-                                    People.Message.Mounted(),
-                                  ),
-                                },
-                              ),
-                              action: button(
-                                {
-                                  size: "sm",
-                                  variant: "outline",
-                                  onClick: toPeopleMessage(
-                                    People.Message.Opened({ address: null }),
-                                  ),
-                                  children: ["Edit profile"],
-                                },
-                                h,
-                              ),
-                            },
-                            h,
-                          ),
-                        ],
-                        h,
-                      ),
-                    ],
-                  ),
-                  ...(model.account
-                    ? [
-                        h.section(
-                          [
-                            h.Class("settings-section"),
-                            h.AriaLabelledBy("settings-account"),
-                          ],
-                          [
-                            h.h2([h.Id("settings-account")], ["Account"]),
-                            ...AccountSettings.view(
-                              model.account,
-                              model.accountSettings,
-                              model.pending,
-                              h,
-                              toAccountSettingsMessage,
-                              button(
-                                {
-                                  size: "sm",
-                                  variant: "ghost",
-                                  disabled:
-                                    model.pending ||
-                                    model.accountSettings.pending !== null ||
-                                    model.connectedClients.request !== null,
-                                  onClick: Message.ClickedSignOut(),
-                                  children: ["Sign out"],
-                                },
-                                h,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ]
-                    : []),
-                  PushSettings.view(
-                    model.pushSettings,
-                    toPushSettingsMessage,
-                    h,
-                  ),
-                  h.submodel({
-                    slotId: "connected-clients",
-                    view: ConnectedClients.view,
-                    model: model.connectedClients,
-                    toParentMessage: toConnectedClientsMessage,
-                  }),
-                ],
-              ),
-            ],
+            [h.Key(section), h.Class("workspace-results")],
+            [h.div([h.Class("settings-content")], content)],
           ),
         ],
+      ),
+      sheet: Sheet.sheet(
+        {
+          model: model.settingsSheet,
+          title: "Settings sections",
+          content: navigation,
+          toParentMessage: toSettingsSheetMessage,
+        },
+        h,
       ),
     },
     h,
   );
+};
 
 const signInView = (model: Model, h: HtmlBuilder<Message>) =>
   h.form(

@@ -1774,11 +1774,22 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
   color: var(--muted);
 }
 
+.settings-workspace {
+  --settings-content-width: 48rem;
+}
+
+.settings-workspace .workspace-header {
+  box-sizing: border-box;
+  inline-size: min(100%, calc(var(--settings-content-width) + 1.5rem));
+  justify-self: center;
+  padding-inline: 0.75rem;
+}
+
 .settings-content {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 1.75rem;
-  inline-size: min(calc(100% - 1.5rem), 48rem);
+  inline-size: min(calc(100% - 1.5rem), var(--settings-content-width));
   margin: 0.5rem auto 1.5rem;
 }
 

@@ -7,7 +7,7 @@ import { tasksReadScope, tasksWriteScope } from "../mcp-access-contract.ts";
 const scopeLabels = new Map<string, string>([
   [linksReadScope, "Read your saved links"],
   [linksWriteScope, "Save and delete your links"],
-  [tasksReadScope, "Read your tasks and tags"],
+  [tasksReadScope, "Read your tasks, screenshots, and tags"],
   [tasksWriteScope, "Create and edit your tasks and create reusable tags"],
 ]);
 

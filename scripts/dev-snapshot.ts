@@ -53,6 +53,7 @@ const dataTables = [
   "calendar_moved_uids",
   "items",
   "tasks",
+  "task_attachments",
   "files",
   "tags",
   "item_tags",

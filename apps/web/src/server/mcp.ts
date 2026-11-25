@@ -1,4 +1,4 @@
-import type { D1Database } from "@cloudflare/workers-types";
+import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { appName } from "@oneapp/core";
 import { Link, LinkId, LinkList, SaveLink } from "@oneapp/core/links";
@@ -31,6 +31,7 @@ const createServer = (
   origin: string,
   ownerId: string,
   db: D1Database,
+  bucket: R2Bucket,
   sql: SqlClient.SqlClient,
   scopes: readonly McpScope[],
 ) => {
@@ -115,7 +116,7 @@ const createServer = (
         ),
     );
   }
-  registerTaskTools(server, origin, ownerId, db, scopes);
+  registerTaskTools(server, origin, ownerId, db, bucket, scopes);
   return server;
 };
 
@@ -132,7 +133,7 @@ const advertiseScopes = HttpRouter.middleware((effect) =>
   }),
 );
 
-export const mcpRoutes = (origin: string, db: D1Database) =>
+export const mcpRoutes = (origin: string, db: D1Database, bucket: R2Bucket) =>
   HttpRouter.add(
     "*",
     "/mcp",
@@ -153,7 +154,15 @@ export const mcpRoutes = (origin: string, db: D1Database) =>
       if (!account) return yield* jsonError(403, "Account is inactive");
       const webRequest = yield* HttpServerRequest.toWeb(request);
       const handler = createMcpHandler(
-        () => createServer(origin, access.subjectId, db, sql, access.scopes),
+        () =>
+          createServer(
+            origin,
+            access.subjectId,
+            db,
+            bucket,
+            sql,
+            access.scopes,
+          ),
         {
           maxRequestBodySize:
             (access.scopes.includes(WriteTasks) ? 128 : 16) * 1024,

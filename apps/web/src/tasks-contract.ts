@@ -10,7 +10,7 @@ export const taskListPath = (view: TaskView) =>
   view === "completed" ? completedTasksPath : tasksPath;
 export const taskPath = (id: string, view: TaskView = "active") =>
   `${taskListPath(view)}/${id}`;
-export const taskApi = (id: string) => `${tasksApi}/${id}`;
+export const taskApi = (id: string) => `${tasksApi}/${id}` as const;
 
 export const TaskRoute = Schema.Struct({
   view: TaskView,

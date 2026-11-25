@@ -1,12 +1,28 @@
-import type { D1Database } from "@cloudflare/workers-types";
+import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import { ByteSize, Clock, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { ItemId, TagCreate, tagsApi } from "../items-contract.ts";
+import { fileNameHeader } from "../files-contract.ts";
+import {
+  TaskAttachmentMediaType,
+  taskAttachmentApi,
+  taskAttachmentLimit,
+  taskAttachmentLimitMiB,
+  taskAttachmentsApi,
+} from "../task-attachment-contract.ts";
 import { TaskCreate, tasksApi, TaskUpdate } from "../tasks-contract.ts";
-import { jsonError, privateHeaders } from "./api-response.ts";
+import { jsonError, privateHeaders, readFileName } from "./api-response.ts";
 import { AppAuth, ownerId, type authHttp } from "./auth.ts";
 import { createTag } from "./items-store.ts";
-import { createTask, taskIndex, updateTask } from "./tasks-store.ts";
+import { createTask, getTask, taskIndex, updateTask } from "./tasks-store.ts";
+import { detectFilePreviewType } from "./file-preview-type.ts";
+import {
+  createTaskAttachment,
+  listTaskAttachments,
+  purgeTaskAttachment,
+  readTaskAttachment,
+  removeTaskAttachment,
+} from "./task-attachments-store.ts";
 
 const json = (value: unknown, status = 200) =>
   HttpServerResponse.json(value, { status, headers: privateHeaders });
@@ -18,10 +34,12 @@ const readInput = <A>(schema: Schema.Decoder<A>) =>
     ),
     Effect.option,
   );
+const isId = Schema.is(ItemId);
 
 export const tasksRoutes = (
   http: ReturnType<typeof authHttp>,
-  db: D1Database,
+  { DB: db, FILE_UPLOADS: bucket }: Pick<WorkerEnv, "DB" | "FILE_UPLOADS">,
+  defer: (work: Promise<unknown>) => void,
 ) => {
   const authenticated = <E, R>(
     handler: (
@@ -50,8 +68,127 @@ export const tasksRoutes = (
         return jsonError(503, "Tasks are unavailable. Try again.");
       }),
     );
+  const attachmentsPath = taskAttachmentsApi(":taskId");
+  const attachmentPath = taskAttachmentApi(":taskId", ":attachmentId");
+  const attachmentRoute = <E, R>(
+    method: "GET" | "POST" | "DELETE",
+    path: typeof attachmentsPath | typeof attachmentPath,
+    handler: (
+      account: string,
+      taskId: string,
+      attachmentId: string,
+    ) => Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
+  ) => {
+    const access = authenticated((account) =>
+      Effect.gen(function* () {
+        const { taskId, attachmentId } = yield* HttpRouter.params;
+        if (!isId(taskId)) return yield* jsonError(404, "Task not found.");
+        if (path === attachmentPath && !isId(attachmentId))
+          return yield* jsonError(404, "Screenshot not found.");
+        return yield* handler(account, taskId, attachmentId ?? "");
+      }),
+    );
+    return HttpRouter.add(
+      method,
+      path,
+      handle(method === "GET" ? access : http.protect(access)),
+    );
+  };
 
   return Layer.mergeAll(
+    attachmentRoute("GET", attachmentsPath, (account, taskId) =>
+      Effect.gen(function* () {
+        const task = yield* Effect.tryPromise(() =>
+          getTask(db, account, taskId),
+        );
+        if (!task) return yield* jsonError(404, "Task not found.");
+        const attachments = yield* Effect.tryPromise(() =>
+          listTaskAttachments(db, account, taskId),
+        );
+        return yield* json({ attachments });
+      }),
+    ),
+    attachmentRoute("POST", attachmentsPath, (account, taskId) =>
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const name = readFileName(request.headers[fileNameHeader]);
+        if (!name)
+          return yield* jsonError(400, "Rename the screenshot and try again.");
+        const tooLarge = () =>
+          jsonError(
+            413,
+            `Choose a PNG or JPEG up to ${taskAttachmentLimitMiB} MiB.`,
+          );
+        if (Number(request.headers["content-length"]) > taskAttachmentLimit)
+          return yield* tooLarge();
+        const body = yield* request.arrayBuffer.pipe(
+          Effect.provideService(
+            HttpServerRequest.MaxBodySize,
+            ByteSize.bytes(taskAttachmentLimit),
+          ),
+          Effect.option,
+        );
+        if (body._tag === "None" || body.value.byteLength > taskAttachmentLimit)
+          return yield* tooLarge();
+        const mediaType = detectFilePreviewType(new Uint8Array(body.value));
+        if (!Schema.is(TaskAttachmentMediaType)(mediaType))
+          return yield* jsonError(415, "Choose or paste a PNG or JPEG image.");
+        const now = yield* Clock.currentTimeMillis;
+        const attachment = yield* Effect.tryPromise(() =>
+          createTaskAttachment(
+            db,
+            bucket,
+            account,
+            taskId,
+            { name, mediaType },
+            body.value,
+            now,
+          ),
+        );
+        return yield* attachment
+          ? json(attachment, 201)
+          : jsonError(404, "Task not found.");
+      }),
+    ),
+    attachmentRoute("GET", attachmentPath, (account, taskId, id) =>
+      Effect.gen(function* () {
+        const stored = yield* Effect.tryPromise(() =>
+          readTaskAttachment(db, bucket, account, taskId, id),
+        );
+        if (!stored) return yield* jsonError(404, "Screenshot not found.");
+        const { attachment, object } = stored;
+        return HttpServerResponse.fromWeb(
+          new Response(object.body as unknown as ReadableStream<Uint8Array>, {
+            headers: {
+              ...privateHeaders,
+              "content-type": attachment.mediaType,
+              "content-disposition": "inline",
+              "content-length": String(object.size),
+              "x-content-type-options": "nosniff",
+              "content-security-policy": "default-src 'none'; sandbox",
+              "cross-origin-resource-policy": "same-origin",
+            },
+          }),
+        );
+      }),
+    ),
+    attachmentRoute("DELETE", attachmentPath, (account, taskId, id) =>
+      Effect.gen(function* () {
+        const removed = yield* Effect.tryPromise(() =>
+          removeTaskAttachment(db, account, taskId, id),
+        );
+        if (!removed) return yield* jsonError(404, "Screenshot not found.");
+        defer(
+          purgeTaskAttachment(db, bucket, account, taskId, id).catch(() =>
+            console.warn("Could not finish screenshot cleanup"),
+          ),
+        );
+        return HttpServerResponse.empty({
+          status: 204,
+          headers: privateHeaders,
+        });
+      }),
+    ),
     HttpRouter.add(
       "GET",
       tasksApi,

@@ -76,6 +76,7 @@ import {
 } from "./password-recovery.ts";
 import { filesRoutes } from "./files.ts";
 import { tasksRoutes } from "./tasks.ts";
+import { collectTaskAttachments } from "./task-attachments-store.ts";
 import { collectAttachments } from "./vault/attachments.ts";
 import { vaultAttachmentRoutes } from "./vault/web-attachments.ts";
 import { vaultManagementRoutes } from "./vault/management.ts";
@@ -184,6 +185,9 @@ export default {
       await Promise.all([
         collectAttachments(env.DB, env.VAULT_FILES),
         collectDeletedContacts(env),
+        collectTaskAttachments(env.DB, env.FILE_UPLOADS).catch(() =>
+          console.warn("Could not collect task screenshots"),
+        ),
       ]);
     const { results } = await env.DB.prepare("SELECT id FROM mailboxes").all<{
       id: string;
@@ -446,7 +450,7 @@ export default {
         health,
         mcpOAuth.routes,
         mcpLoginRoute,
-        mcpRoutes(env.APP_ORIGIN, env.DB),
+        mcpRoutes(env.APP_ORIGIN, env.DB, env.FILE_UPLOADS),
         Layer.mergeAll(
           accountRoutes(http, {
             enabled: emailTransport !== disabledEmail,
@@ -466,7 +470,7 @@ export default {
           mailImportRoutes(env, defer),
           peopleRoutes(http, env, defer),
           calendarRoutes(http, env),
-          tasksRoutes(http, env.DB),
+          tasksRoutes(http, env, defer),
           filesRoutes(http, env),
           vaultSetupRoutes(http, env.DB),
           vaultItemRoutes(http, env.DB),

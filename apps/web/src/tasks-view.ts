@@ -16,7 +16,8 @@ import {
 } from "@oneapp/ui";
 import { Effect, Option } from "effect";
 import { Mount, Submodel } from "foldkit";
-import type { ChildAttribute, HtmlBuilder } from "foldkit/html";
+import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html";
+import * as Attachments from "./task-attachments.ts";
 import { tagNameKey, tagNameLimit, type Tag } from "./items-contract.ts";
 import {
   activeTaskStatuses,
@@ -44,6 +45,7 @@ import {
   tasksInView,
   toFilterPopoverMessage,
   toFilterTagsMessage,
+  toAttachmentsMessage,
   toFolderSheetMessage,
   toSortMenuMessage,
   writingCreation,
@@ -341,10 +343,16 @@ const taskFields = (
   tags: ReadonlyArray<Tag>,
   busy: boolean,
   h: HtmlBuilder<Message>,
-  creation?: {
-    initialFocus: ReadonlyArray<ChildAttribute>;
-    tagsUnavailable: boolean;
-  },
+  {
+    creation,
+    attachments,
+  }: {
+    creation?: {
+      initialFocus: ReadonlyArray<ChildAttribute>;
+      tagsUnavailable: boolean;
+    };
+    attachments?: Html;
+  } = {},
 ) => {
   const { draft } = editor;
   const tagsFull = draft.tagIds.length >= taskTagLimit;
@@ -428,6 +436,7 @@ const taskFields = (
       ),
       h,
     ),
+    ...(attachments ? [attachments] : []),
     Tokenizer.view(
       {
         model: editor.tagPicker,
@@ -498,8 +507,7 @@ export const createView = Submodel.defineView(
           ? [h.p([h.Role("status")], ["Loading tasks and tags…"])]
           : []),
         ...taskFields(editor, sortedTags(model), busy, h, {
-          initialFocus,
-          tagsUnavailable: !model.index,
+          creation: { initialFocus, tagsUnavailable: !model.index },
         }),
         Dialog.footer(
           [
@@ -577,9 +585,25 @@ const taskDetail = (
           ]
         : [
             h.div(
-              [h.Key(task.id), h.Class("task-editor")],
               [
-                ...taskFields(editor, tags, busy, h),
+                h.Key(task.id),
+                h.Class("task-editor"),
+                h.OnMount(
+                  Mount.mapMessage(
+                    Attachments.WatchEditor({ taskId: task.id }),
+                    toAttachmentsMessage,
+                  ),
+                ),
+              ],
+              [
+                ...taskFields(editor, tags, busy, h, {
+                  attachments: Attachments.section(
+                    task.id,
+                    model.attachments,
+                    toAttachmentsMessage,
+                    h,
+                  ),
+                }),
                 h.div(
                   [h.Class("task-actions")],
                   [

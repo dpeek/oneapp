@@ -193,6 +193,71 @@
   gap: 1rem;
 }
 
+.task-attachments {
+  display: grid;
+  gap: 0.5rem;
+  min-inline-size: 0;
+}
+
+.task-attachments h2 {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.task-attachment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.task-attachment-actions p,
+.task-attachment-size {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.task-attachment-list {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.task-attachment-list li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.375rem;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+}
+
+.task-attachment-preview {
+  display: grid;
+  place-items: center;
+  inline-size: 4.5rem;
+  block-size: 3rem;
+  overflow: hidden;
+  border-radius: var(--control-radius);
+  background: var(--canvas);
+}
+
+.task-attachment-preview img {
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: contain;
+}
+
+.task-attachment-caption {
+  display: grid;
+  overflow-wrap: anywhere;
+}
+
 .task-fields {
   align-items: end;
 }

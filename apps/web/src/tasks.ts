@@ -11,6 +11,7 @@ import { focus } from "foldkit/dom";
 import { defineMessageUnion } from "foldkit/message";
 import { ItemId, Tag, TagCreate, tagsApi } from "./items-contract.ts";
 import { createTagPrefix, searchTags } from "./tag-picker.ts";
+import * as Attachments from "./task-attachments.ts";
 import {
   Task,
   taskApi,
@@ -84,6 +85,7 @@ export const Model = Schema.Struct({
   folderSheet: Sheet.Model,
   selectedId: Schema.NullOr(ItemId),
   editor: Schema.NullOr(Editor),
+  attachments: Attachments.Model,
   creation: Schema.NullOr(Creation),
   filterPopover: Popover.Model,
   filterCategory: Schema.NullOr(FilterCategory),
@@ -108,6 +110,7 @@ export const initial: Model = {
   folderSheet: Sheet.init({ id: "task-views" }),
   selectedId: null,
   editor: null,
+  attachments: Attachments.initial,
   creation: null,
   ...closedTaskMenus,
   filters: emptyFilters,
@@ -119,6 +122,7 @@ export const initial: Model = {
 export const Message = defineMessageUnion({
   Opened: { ...TaskRoute.fields, refresh: Schema.Boolean },
   GotFolderSheetMessage: { message: Sheet.Message },
+  GotAttachmentsMessage: { message: Attachments.Message },
   FocusUpdated: {},
   Retried: {},
   OpenedCreate: { preserveView: Schema.Boolean },
@@ -153,6 +157,21 @@ export const OutMessage = defineMessageUnion({
   SessionExpired: {},
 });
 export type OutMessage = typeof OutMessage.Type;
+
+export const toAttachmentsMessage = (
+  message: typeof Attachments.Message.Type,
+) => Message.GotAttachmentsMessage({ message });
+
+const foldAttachments = Update.foldChild({
+  update: Attachments.update,
+  read: (model: Model) => Option.some(model.attachments),
+  write: (model, attachments) => ({ ...model, attachments }),
+  toParentMessage: toAttachmentsMessage,
+  foldOutMessage: () => (model) => ({
+    model,
+    outMessage: OutMessage.SessionExpired(),
+  }),
+});
 
 export const toFolderSheetMessage = (message: typeof Sheet.Message.Type) =>
   Message.GotFolderSheetMessage({ message });
@@ -517,6 +536,10 @@ export const update = (
                 view,
                 selectedId: id,
                 editor: null,
+                attachments:
+                  id === model.selectedId
+                    ? model.attachments
+                    : Attachments.initial,
                 creation: null,
                 error: null,
               }
@@ -550,6 +573,11 @@ export const update = (
           : result;
       },
       GotFolderSheetMessage: ({ message }) => foldFolderSheet(model, message),
+      GotAttachmentsMessage: ({ message }) =>
+        (message._tag === "Opened" || message._tag === "Picked") &&
+        message.taskId !== model.selectedId
+          ? { model }
+          : foldAttachments(model, message),
       FocusUpdated: () => ({ model }),
       Retried: () => {
         const result = start(model, { _tag: "Load" });

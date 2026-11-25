@@ -28,7 +28,7 @@ it("escapes consent metadata and preserves the approval form", () => {
   expect(html).toContain("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;");
   expect(html).toContain("Read your saved links");
   expect(html).toContain("Save and delete your links");
-  expect(html).toContain("Read your tasks and tags");
+  expect(html).toContain("Read your tasks, screenshots, and tags");
   expect(html).toContain("Create and edit your tasks and create reusable tags");
   expect(html).toContain("&lt;custom&gt;");
   expect(html).toContain('method="post" action="/oauth/mcp/authorize"');

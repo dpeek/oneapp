@@ -3,6 +3,7 @@ import { chmod, lstat, mkdir, mkdtemp, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Effect, Schema } from "effect";
+import { taskAttachmentObjectKey } from "../../apps/web/src/task-attachment-contract.ts";
 import { bucketBindings, type BucketBinding } from "./cloudflare.ts";
 
 const Count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
@@ -239,19 +240,32 @@ export const restoreDatabase = async (
     );
     return { bucket, keys };
   });
-  const files = db
-    .query(
-      "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'files'",
-    )
-    .get();
-  if (files) {
+  const hasTable = (name: string) =>
+    db
+      .query("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?")
+      .get(name);
+  const hasFiles = hasTable("files");
+  const hasTaskAttachments = hasTable("task_attachments");
+  const fileKeys: string[] = [];
+  if (hasFiles) {
     const rows = db
       .query<{ key: string }, []>(
         "SELECT account_id || '/' || item_id AS key FROM files",
       )
       .all();
-    result.push({ bucket: "FILE_UPLOADS", keys: rows.map(({ key }) => key) });
+    for (const { key } of rows) fileKeys.push(key);
   }
+  if (hasTaskAttachments) {
+    const rows = db
+      .query<{ account: string; taskId: string; id: string }, []>(
+        "SELECT account_id AS account, task_id AS taskId, id FROM task_attachments WHERE state = 'ready'",
+      )
+      .all();
+    for (const { account, taskId, id } of rows)
+      fileKeys.push(taskAttachmentObjectKey(account, taskId, id));
+  }
+  if (hasFiles || hasTaskAttachments)
+    result.push({ bucket: "FILE_UPLOADS", keys: fileKeys });
   return result;
 };
 

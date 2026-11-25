@@ -1,5 +1,6 @@
 import { ensureDefaultMailbox, mailDatabase } from "./mailbox.ts";
 import { expect, it, vi } from "@effect/vitest";
+import type { CallToolResult } from "@modelcontextprotocol/server";
 import {
   cliLinkScopes,
   cliLoginPath,
@@ -34,6 +35,11 @@ import {
   StoredFile,
 } from "../files-contract.ts";
 import { Tag, tagsApi } from "../items-contract.ts";
+import {
+  TaskAttachment,
+  taskAttachmentApi,
+  taskAttachmentsApi,
+} from "../task-attachment-contract.ts";
 import { Task, taskApi, TaskIndex, tasksApi } from "../tasks-contract.ts";
 import {
   allMailApiPath,
@@ -2770,8 +2776,11 @@ const defaultMcpScopes = [
   tasksWriteScope,
 ];
 
-const setupMcp = async (sqlite: Database) => {
-  const { call, request, signIn, cookies } = await setup(sqlite);
+const setupMcp = async (
+  sqlite: Database,
+  bindings?: Parameters<typeof setup>[1],
+) => {
+  const { call, request, signIn, cookies } = await setup(sqlite, bindings);
   const session = cookies(await signIn(password));
   const origin = "https://oneapp.example";
   const resource = `${origin}/mcp`;
@@ -2869,7 +2878,7 @@ const setupMcp = async (sqlite: Database) => {
       result?: {
         tools?: { name: string }[];
         structuredContent?: unknown;
-        content?: { text: string }[];
+        content?: CallToolResult["content"];
         isError?: boolean;
       };
     };
@@ -2982,6 +2991,7 @@ it("issues MCP link scopes and exposes only the tools a grant authorises", async
 
 it("uses scoped MCP tools to read and edit the same tasks and tags as the web app", async () => {
   using sqlite = new Database(":memory:");
+  const objects = new Map<string, ArrayBuffer>();
   const {
     call,
     request,
@@ -2991,13 +3001,34 @@ it("uses scoped MCP tools to read and edit the same tasks and tags as the web ap
     names,
     useTool,
     listGrants,
-  } = await setupMcp(sqlite);
+  } = await setupMcp(sqlite, {
+    FILE_UPLOADS: {
+      put: async (key: string, bytes: ArrayBuffer) => {
+        objects.set(key, bytes);
+        return { size: bytes.byteLength };
+      },
+      get: async (key: string) => {
+        const bytes = objects.get(key);
+        return bytes
+          ? {
+              size: bytes.byteLength,
+              body: new Response(bytes).body,
+              arrayBuffer: async () => bytes,
+            }
+          : null;
+      },
+      delete: async (key: string) => {
+        objects.delete(key);
+      },
+    } as unknown as WorkerEnv["FILE_UPLOADS"],
+  });
   const defaults = (await connect()).access_token;
   expect(await names(defaults)).toEqual([
     "create_tag",
     "create_task",
     "delete_link",
     "get_task",
+    "get_task_attachment",
     "list_links",
     "list_tags",
     "list_tasks",
@@ -3006,7 +3037,12 @@ it("uses scoped MCP tools to read and edit the same tasks and tags as the web ap
   ]);
   const read = (await connect([tasksReadScope])).access_token;
   const write = (await connect([tasksWriteScope])).access_token;
-  expect(await names(read)).toEqual(["get_task", "list_tags", "list_tasks"]);
+  expect(await names(read)).toEqual([
+    "get_task",
+    "get_task_attachment",
+    "list_tags",
+    "list_tasks",
+  ]);
   expect(await names(write)).toEqual([
     "create_tag",
     "create_task",
@@ -3078,6 +3114,55 @@ it("uses scoped MCP tools to read and edit the same tasks and tags as the web ap
   });
   const completedId = (completed.result?.structuredContent as { id: string })
     .id;
+  const png = Uint8Array.fromBase64(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aAwsAAAAASUVORK5CYII=",
+  );
+  const headers = { cookie: session, origin, "x-effect-auth-csrf": "1" };
+  const upload = await request(taskAttachmentsApi(requestId), {
+    method: "POST",
+    headers: {
+      ...headers,
+      [fileNameHeader]: "receipt.png",
+      "content-type": "application/octet-stream",
+    },
+    body: png,
+  });
+  expect(upload.status).toBe(201);
+  const attachment = Schema.decodeUnknownSync(TaskAttachment)(
+    await upload.json(),
+  );
+  expect(attachment).toMatchObject({
+    name: "receipt.png",
+    mediaType: "image/png",
+    size: png.byteLength,
+  });
+  expect(
+    (await useTool(read, "get_task", { id: requestId })).result
+      ?.structuredContent,
+  ).toMatchObject({ task: { attachments: [attachment] } });
+  const screenshot = { taskId: requestId, attachmentId: attachment.id };
+  expect(
+    (await useTool(read, "get_task_attachment", screenshot)).result?.content,
+  ).toEqual([{ type: "image", mimeType: "image/png", data: png.toBase64() }]);
+  expect(
+    (await useTool(write, "get_task_attachment", screenshot)).error,
+  ).toBeDefined();
+  expect(
+    (
+      await useTool(read, "get_task_attachment", {
+        ...screenshot,
+        taskId: completedId,
+      })
+    ).result?.isError,
+  ).toBe(true);
+  const preview = taskAttachmentApi(requestId, attachment.id);
+  expect((await request(preview, { method: "DELETE", headers })).status).toBe(
+    204,
+  );
+  expect((await request(preview, { headers })).status).toBe(404);
+  expect(
+    (await useTool(read, "get_task_attachment", screenshot)).result?.isError,
+  ).toBe(true);
   const page = (
     await useTool(read, "list_tasks", {
       query: "CHECK",

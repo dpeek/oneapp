@@ -3,7 +3,6 @@ import { ByteSize, Clock, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import {
-  FileName,
   FileTagUpdate,
   fileContentApi,
   fileApi,
@@ -16,6 +15,7 @@ import {
   attachmentDisposition,
   jsonError,
   privateHeaders,
+  readFileName,
 } from "./api-response.ts";
 import { AppAuth, ownerId, type authHttp } from "./auth.ts";
 import { detectFilePreviewType } from "./file-preview-type.ts";
@@ -31,15 +31,6 @@ const json = (value: unknown, status = 200) =>
   HttpServerResponse.json(value, { status, headers: privateHeaders });
 const notFound = () => jsonError(404, "File not found.");
 const isId = Schema.is(ItemId);
-
-const decodeName = (header: string | undefined) => {
-  try {
-    const name = decodeURIComponent(header ?? "");
-    return Schema.is(FileName)(name) ? name : null;
-  } catch {
-    return null;
-  }
-};
 
 export const filesRoutes = (
   http: ReturnType<typeof authHttp>,
@@ -134,7 +125,7 @@ export const filesRoutes = (
     route("POST", filesApi, (account) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
-        const name = decodeName(request.headers[fileNameHeader]);
+        const name = readFileName(request.headers[fileNameHeader]);
         if (!name) return yield* jsonError(400, "The filename is invalid.");
         const uploadTooLarge = () =>
           jsonError(413, "Choose a file up to 16 MiB.");

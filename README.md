@@ -347,7 +347,7 @@ For read-only access to both features, request the read scopes.
 codex mcp login oneapp --scopes links:read,tasks:read
 ```
 
-`tasks:read` exposes `list_tasks`, `get_task`, and `list_tags`. The list defaults to active tasks and supports title, status, priority, tag ID, and due-date filters. `get_task` returns the Markdown description. Both list tools return `nextOffset` for paging.
+`tasks:read` exposes `list_tasks`, `get_task`, `get_task_attachment`, and `list_tags`. The task list defaults to active tasks and supports title, status, priority, tag ID, and due-date filters. `get_task` returns the Markdown description and screenshot metadata. Pass the task ID and attachment ID to `get_task_attachment` to view the screenshot as a native MCP image. Both list tools return `nextOffset` for paging.
 
 `tasks:write` exposes `create_task`, `update_task`, and `create_tag`. Use the task's latest `revision` when updating, and use `addTagIds` or `removeTagIds` to change its tags. Omitted fields keep their values. A UUID `requestId` lets a client safely retry task creation.
 

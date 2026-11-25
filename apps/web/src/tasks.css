@@ -99,10 +99,6 @@
   overflow-wrap: anywhere;
 }
 
-.task-row-link:hover {
-  text-decoration: underline;
-}
-
 .task-row-link::after {
   position: absolute;
   inset: 0;

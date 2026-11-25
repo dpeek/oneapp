@@ -15,7 +15,8 @@ It uses OneApp control tokens and renders selections owned by the task draft.
 `src/command-menu.ts` adapts the StyleX Command from the same CreaseUI revision.
 
 `src/dialog.ts` adapts the StyleX Dialog layout from the same CreaseUI revision
-using OneApp tokens and the installed Foldkit Dialog primitive.
+and its AlertDialog variation using OneApp tokens and the installed Foldkit
+Dialog primitive.
 
 `src/alert.ts` adapts the StyleX Alert layout and announcement options from
 the same CreaseUI revision using OneApp tokens and a persistent message region.

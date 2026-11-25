@@ -1,6 +1,11 @@
 import { Button as ButtonPrimitive } from "@foldkit/ui";
 import * as stylex from "@stylexjs/stylex";
-import type { Attribute, Html, HtmlBuilder } from "foldkit/html";
+import type {
+  Attribute,
+  ChildAttribute,
+  Html,
+  HtmlBuilder,
+} from "foldkit/html";
 import { controls } from "./tokens.stylex.ts";
 
 const styles = stylex.create({
@@ -38,6 +43,18 @@ const styles = stylex.create({
       },
     },
     color: controls.onPrimary,
+    opacity: { default: 1, ':is(:disabled, [aria-disabled="true"])': 0.55 },
+  },
+  destructive: {
+    borderColor: "transparent",
+    backgroundColor: {
+      default: controls.destructive,
+      "@media (hover: hover)": {
+        ':hover:not(:disabled, [aria-disabled="true"])':
+          controls.destructiveHover,
+      },
+    },
+    color: controls.onDestructive,
     opacity: { default: 1, ':is(:disabled, [aria-disabled="true"])': 0.55 },
   },
   outline: {
@@ -91,7 +108,7 @@ type ButtonProps<Message> = Readonly<{
   children: ReadonlyArray<Html | string>;
   ariaLabel?: string;
   dialogId?: string;
-  variant?: "primary" | "outline" | "ghost";
+  variant?: "primary" | "destructive" | "outline" | "ghost";
   size?: "sm" | "icon" | "icon-sm";
   rounded?: boolean;
   type?: "button" | "submit";
@@ -99,7 +116,7 @@ type ButtonProps<Message> = Readonly<{
   /** Keeps a disabled action in the tab order while it reports progress. */
   focusableWhenDisabled?: boolean;
   onClick?: Message;
-  attributes?: ReadonlyArray<Attribute<Message>>;
+  attributes?: ReadonlyArray<Attribute<Message> | ChildAttribute>;
 }>;
 
 export const buttonClassName = (

@@ -1,5 +1,6 @@
 import { Dialog } from "@foldkit/ui";
 import * as stylex from "@stylexjs/stylex";
+import { Predicate } from "effect";
 import type {
   Attribute,
   ChildAttribute,
@@ -58,6 +59,18 @@ const styles = stylex.create({
     justifyContent: "space-between",
     gap: "0.5rem",
   },
+  alertHeader: {
+    display: "grid",
+    gap: "0.375rem",
+    textAlign: { default: "center", "@media (min-width: 40rem)": "start" },
+  },
+  description: {
+    margin: 0,
+    color: controls.mutedForeground,
+    fontSize: "0.875rem",
+    lineHeight: 1.5,
+    overflowWrap: "anywhere",
+  },
   title: {
     minInlineSize: 0,
     margin: 0,
@@ -100,6 +113,7 @@ export const view = <ParentMessage>(
   props: Readonly<{
     model: typeof Model.Type;
     title: string;
+    alertDescription?: string;
     content: (initialFocus: ReadonlyArray<ChildAttribute>) => Html;
     size?: "wide" | "extra-wide";
     padded?: boolean;
@@ -109,17 +123,20 @@ export const view = <ParentMessage>(
     toParentMessage: (message: typeof Message.Type) => ParentMessage;
   }>,
   h: HtmlBuilder<ParentMessage>,
-): Html =>
-  h.submodel({
+): Html => {
+  const isAlert = props.alertDescription !== undefined;
+  return h.submodel({
     slotId: props.model.id,
     model: props.model,
     view: Dialog.view,
     viewInputs: {
+      hasDescription: isAlert,
       toView: ({
         dialog,
         backdrop,
         panel,
         title,
+        description,
         closeButton,
         initialFocus,
         isVisible,
@@ -127,6 +144,7 @@ export const view = <ParentMessage>(
         const actions = [...(props.headerActions ?? [])];
         if (
           isVisible &&
+          !isAlert &&
           props.showHeader !== false &&
           props.showCloseButton !== false
         )
@@ -148,12 +166,21 @@ export const view = <ParentMessage>(
             ),
           );
         return h.dialog(
-          [...dialog, h.Class(stylex.props(styles.root).className ?? "")],
+          [
+            ...dialog,
+            ...(isAlert
+              ? [h.Role("alertdialog"), h.DataAttribute("slot", "alert-dialog")]
+              : []),
+            h.Class(stylex.props(styles.root).className ?? ""),
+          ],
           isVisible
             ? [
                 h.div(
                   [
-                    ...backdrop,
+                    ...backdrop.filter(
+                      ({ attribute }) =>
+                        !isAlert || !Predicate.isTagged(attribute, "OnClick"),
+                    ),
                     h.DataAttribute("slot", "dialog-overlay"),
                     h.Class(stylex.props(styles.overlay).className ?? ""),
                   ],
@@ -174,13 +201,15 @@ export const view = <ParentMessage>(
                     ),
                   ],
                   [
-                    props.showHeader === false
+                    props.showHeader === false && !isAlert
                       ? h.span([...title, h.Hidden(true)], [props.title])
                       : h.header(
                           [
                             h.DataAttribute("slot", "dialog-header"),
                             h.Class(
-                              stylex.props(styles.header).className ?? "",
+                              stylex.props(
+                                isAlert ? styles.alertHeader : styles.header,
+                              ).className ?? "",
                             ),
                           ],
                           [
@@ -194,6 +223,24 @@ export const view = <ParentMessage>(
                               ],
                               [props.title],
                             ),
+                            ...(props.alertDescription === undefined
+                              ? []
+                              : [
+                                  h.p(
+                                    [
+                                      ...description,
+                                      h.DataAttribute(
+                                        "slot",
+                                        "alert-dialog-description",
+                                      ),
+                                      h.Class(
+                                        stylex.props(styles.description)
+                                          .className ?? "",
+                                      ),
+                                    ],
+                                    [props.alertDescription],
+                                  ),
+                                ]),
                             ...(actions.length
                               ? [
                                   h.div(
@@ -223,6 +270,7 @@ export const view = <ParentMessage>(
     },
     toParentMessage: props.toParentMessage,
   });
+};
 
 export const dialog = <Message>(
   props: Readonly<{

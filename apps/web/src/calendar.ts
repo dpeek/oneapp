@@ -1,5 +1,6 @@
 import { Temporal } from "@js-temporal/polyfill";
 import {
+  alert,
   button,
   calendarIconPaths,
   CalendarPicker,
@@ -99,6 +100,7 @@ const RequestState = Schema.Struct({
     "load",
     "save",
     "delete",
+    "delete-succeeded",
     "preview",
     "import",
     "calendar",
@@ -130,7 +132,8 @@ export const Model = Schema.Struct({
   request: Schema.NullOr(RequestState),
   selected: Schema.NullOr(SelectedEvent),
   editor: Schema.NullOr(Editor),
-  confirmDelete: Schema.Boolean,
+  deleteDialog: Dialog.Model,
+  deleteError: Schema.NullOr(Schema.String),
   importing: Schema.NullOr(CalendarId),
   preview: Schema.NullOr(ImportState),
   error: Schema.NullOr(Schema.String),
@@ -141,6 +144,8 @@ export const hasGlobalEventEditor = (model: Model) =>
   model.editor?.fromCreateMenu === true;
 export const creationTitleId = "event-create-title-input";
 const creationSubmitId = "event-create-submit";
+const deleteDialogId = "calendar-delete-event";
+const calendarTodayId = "calendar-today";
 
 const today = () => Temporal.Now.plainDateISO();
 const pickerDate = ({
@@ -174,7 +179,8 @@ export const initial = (): Model => {
     request: null,
     selected: null,
     editor: null,
-    confirmDelete: false,
+    deleteDialog: Dialog.init({ id: deleteDialogId }),
+    deleteError: null,
     importing: null,
     preview: null,
     error: null,
@@ -221,6 +227,7 @@ export const Message = defineMessageUnion({
   SavedEvent: {},
   ClosedEventEditor: {},
   RequestedDelete: {},
+  GotDeleteDialogMessage: { message: Dialog.Message },
   ConfirmedDelete: {},
   ChangedImportFile: {},
   PreviewedFile: {},
@@ -234,6 +241,7 @@ export const Message = defineMessageUnion({
     notice: Schema.String,
     calendarId: Schema.NullOr(CalendarId),
   },
+  Deleted: { request: Schema.String },
   CalendarSaved: { request: Schema.String, calendar: CalendarSummary },
   Failed: { request: Schema.String, error: Schema.String },
   SessionExpired: { request: Schema.String },
@@ -355,18 +363,14 @@ const SaveEvent = Command.define("SaveCalendarEvent", {
 
 const DeleteEvent = Command.define("DeleteCalendarEvent", {
   args: { id: Schema.String, eventId: Schema.String, revision: Schema.String },
-  messages: [Message.Changed, Message.SessionExpired, Message.Failed],
+  messages: [Message.Deleted, Message.SessionExpired, Message.Failed],
   execute: ({ id, eventId, revision }) =>
     run(id, async (signal) => {
       await request(signal, `${calendarApi}/events/${eventId}`, {
         method: "DELETE",
         headers: { "if-match": revision, "x-effect-auth-csrf": "1" },
       });
-      return Message.Changed({
-        request: id,
-        notice: "Event deleted.",
-        calendarId: null,
-      });
+      return Message.Deleted({ request: id });
     }),
 });
 
@@ -478,6 +482,14 @@ const FocusCreateSubmit = Command.define("FocusEventCreateSubmit", {
   ),
 });
 
+const FocusAfterDelete = Command.define("FocusCalendarAfterDelete", {
+  messages: [Message.Focused],
+  execute: focus(`#${calendarTodayId}`, { preventScroll: true }).pipe(
+    Effect.ignore,
+    Effect.as(Message.Focused()),
+  ),
+});
+
 const MountEventDetails = Mount.defineStream("MountCalendarEventDetails", {
   args: { anchorId: Schema.String },
   messages: [Message.ClosedEventDetails],
@@ -548,7 +560,7 @@ const closedPanel = {
   importing: null,
   preview: null,
   calendarEditor: null,
-  confirmDelete: false,
+  deleteError: null,
 } as const;
 
 const load = (
@@ -637,6 +649,39 @@ const afterMutation = (
     ? { ...result, outMessage: OutMessage.OpenCalendar({ id: destination }) }
     : result;
 };
+
+const finishDelete = (model: Model) => {
+  const deletedId = model.selected?.event.id;
+  const result = afterMutation(
+    {
+      ...model,
+      week: model.week && {
+        ...model.week,
+        events: model.week.events.filter((event) => event.id !== deletedId),
+      },
+    },
+    "Event deleted.",
+    null,
+  );
+  return {
+    ...result,
+    commands: [...(result.commands ?? []), FocusAfterDelete()],
+  };
+};
+
+const canDeleteEvent = (event: CalendarOccurrence) =>
+  event.draft !== null && !event.recurring;
+
+const toDeleteDialogMessage = (message: typeof Dialog.Message.Type) =>
+  Message.GotDeleteDialogMessage({ message });
+
+const foldDeleteDialog = Update.foldChild({
+  update: Dialog.update,
+  read: (model: Model) => Option.some(model.deleteDialog),
+  write: (model, deleteDialog) => ({ ...model, deleteDialog }),
+  toParentMessage: toDeleteDialogMessage,
+  foldOutMessage: () => (model) => ({ model }),
+});
 
 const toFolderSheet = (message: typeof Sheet.Message.Type) =>
   Message.GotFolderSheetMessage({ message });
@@ -776,10 +821,14 @@ export const update = (
     {
       Opened: ({ id, refresh }) => {
         if (busy(model)) return { model: { ...model, visible: id } };
-        const next = { ...model, ...closedPanel, visible: id };
-        return refresh || (!next.week && !next.request)
-          ? load(next)
-          : { model: next };
+        const next: Model = { ...model, ...closedPanel, visible: id };
+        return Update.combine(next, [
+          (next) => foldDeleteDialog(next, Dialog.Message.RequestedClose()),
+          (next) =>
+            refresh || (!next.week && !next.request)
+              ? load(next)
+              : { model: next },
+        ]);
       },
       ShiftedPeriod: ({ direction }) =>
         busy(model)
@@ -800,7 +849,7 @@ export const update = (
                 view,
                 slotFocus: null,
                 selected: null,
-                confirmDelete: false,
+                deleteError: null,
               },
             },
       SelectedDate: ({ date }) =>
@@ -849,20 +898,24 @@ export const update = (
         };
       },
       OpenedEvent: ({ anchorId, event }) =>
-        busy(model) || model.selected?.anchorId === anchorId
+        busy(model) ||
+        model.deleteDialog.isOpen ||
+        model.selected?.anchorId === anchorId
           ? { model }
           : {
               model: {
                 ...model,
                 selected: { anchorId, event },
-                confirmDelete: false,
+                deleteError: null,
               },
             },
       ClosedEventDetails: ({ anchorId }) =>
-        model.selected?.anchorId !== anchorId || model.editor
+        model.selected?.anchorId !== anchorId ||
+        model.editor ||
+        model.deleteDialog.isOpen
           ? { model }
           : {
-              model: { ...model, selected: null, confirmDelete: false },
+              model: { ...model, selected: null },
               commands: [FocusEvent({ anchorId })],
             },
       NewEvent: ({ day, minute }) =>
@@ -990,14 +1043,46 @@ export const update = (
         busy(model)
           ? { model }
           : { model: { ...model, editor: null, error: null } },
-      RequestedDelete: () =>
-        busy(model) ? { model } : { model: { ...model, confirmDelete: true } },
+      RequestedDelete: () => {
+        const event = model.selected?.event;
+        if (
+          !event ||
+          !canDeleteEvent(event) ||
+          busy(model) ||
+          model.deleteDialog.isOpen
+        )
+          return { model };
+        return foldDeleteDialog(
+          { ...model, deleteError: null },
+          Dialog.Message.RequestedOpen(),
+        );
+      },
+      GotDeleteDialogMessage: ({ message }) => {
+        if (message._tag === "RequestedClose" && busy(model)) return { model };
+        // Wait for the modal to release background isolation before moving focus.
+        if (
+          message._tag === "CompletedCloseDialog" &&
+          model.request?.kind === "delete-succeeded"
+        )
+          return finishDelete(model);
+        return foldDeleteDialog(model, message);
+      },
       ConfirmedDelete: () => {
         const event = model.selected?.event;
-        if (!event?.draft || event.recurring || busy(model)) return { model };
+        if (
+          !model.deleteDialog.isOpen ||
+          !event ||
+          !canDeleteEvent(event) ||
+          busy(model)
+        )
+          return { model };
         const id = crypto.randomUUID();
         return {
-          model: { ...model, error: null, request: { id, kind: "delete" } },
+          model: {
+            ...model,
+            deleteError: null,
+            request: { id, kind: "delete" },
+          },
           commands: [
             DeleteEvent({
               id,
@@ -1050,6 +1135,16 @@ export const update = (
               notice,
               model.visible && !hasGlobalEventEditor(model) ? calendarId : null,
             ),
+      Deleted: ({ request }) => {
+        if (request !== model.request?.id || model.request.kind !== "delete")
+          return { model };
+        return model.deleteDialog.isOpen
+          ? foldDeleteDialog(
+              { ...model, request: { id: request, kind: "delete-succeeded" } },
+              Dialog.Message.RequestedClose(),
+            )
+          : finishDelete(model);
+      },
       CalendarSaved: ({ request, calendar }) => {
         if (request !== model.request?.id) return { model };
         const created = model.calendarEditor?.create === true;
@@ -1064,10 +1159,12 @@ export const update = (
           created ? calendar.id : null,
         );
       },
-      Failed: ({ request, error }) =>
-        request !== model.request?.id
-          ? { model }
-          : { model: { ...model, request: null, error } },
+      Failed: ({ request, error }) => {
+        if (request !== model.request?.id) return { model };
+        return model.request.kind === "delete" && model.deleteDialog.isOpen
+          ? { model: { ...model, request: null, deleteError: error } }
+          : { model: { ...model, request: null, error } };
+      },
       SessionExpired: ({ request }) =>
         request !== model.request?.id
           ? { model }
@@ -1567,6 +1664,16 @@ const eventEditorView = (model: Model, h: H) => {
 const eventDetailsId = "calendar-event-details";
 const eventDetailsTitleId = `${eventDetailsId}-title`;
 
+const refreshCalendarButton = (h: H) =>
+  button(
+    {
+      variant: "outline",
+      onClick: Message.Retried(),
+      children: ["Refresh calendar"],
+    },
+    h,
+  );
+
 const detailsView = (
   { anchorId, event }: typeof SelectedEvent.Type,
   model: Model,
@@ -1585,6 +1692,7 @@ const detailsView = (
       ? time(event.start)
       : `${time(event.start)} – ${time(event.end)}`;
   const disabled = busy(model);
+  const deleteError = model.deleteDialog.isOpen ? null : model.deleteError;
   return h.section(
     [
       h.Key(anchorId),
@@ -1609,11 +1717,11 @@ const detailsView = (
       ...(event.draft?.reminder
         ? [h.p([], [`Reminder ${calendarReminderMinutes} minutes before`])]
         : []),
-      ...(model.confirmDelete ? [h.p([], ["Delete this event?"])] : []),
+      ...(deleteError ? [h.p([], [deleteError])] : []),
       h.div(
         [h.Class("calendar-actions")],
         [
-          ...(event.draft && !model.confirmDelete
+          ...(event.draft
             ? [
                 button(
                   {
@@ -1639,12 +1747,13 @@ const detailsView = (
                 ),
               ]
             : []),
-          ...(event.draft && !event.recurring && !model.confirmDelete
+          ...(canDeleteEvent(event)
             ? [
                 button(
                   {
                     variant: "ghost",
                     disabled,
+                    dialogId: deleteDialogId,
                     onClick: Message.RequestedDelete(),
                     children: ["Delete"],
                   },
@@ -1652,30 +1761,74 @@ const detailsView = (
                 ),
               ]
             : []),
-          ...(model.confirmDelete
-            ? [
-                button(
-                  {
-                    disabled,
-                    onClick: Message.ConfirmedDelete(),
-                    children: ["Delete event"],
-                  },
-                  h,
-                ),
-              ]
-            : []),
+          ...(deleteError ? [refreshCalendarButton(h)] : []),
           button(
             {
               variant: "ghost",
               disabled,
               onClick: Message.ClosedEventDetails({ anchorId }),
-              children: [model.confirmDelete ? "Cancel" : "Close"],
+              children: ["Close"],
             },
             h,
           ),
         ],
       ),
     ],
+  );
+};
+
+const deleteDialogView = (model: Model, h: H) => {
+  const pending = model.request?.kind === "delete";
+  return Dialog.view(
+    {
+      model: model.deleteDialog,
+      title: "Delete event?",
+      alertDescription: `“${model.selected?.event.title ?? ""}” will be removed from your calendar. This action cannot be undone.`,
+      toParentMessage: toDeleteDialogMessage,
+      content: (initialFocus) =>
+        h.div(
+          [h.Class("calendar-delete-content")],
+          [
+            alert(
+              {
+                message: model.deleteError,
+                severity: "error",
+                announcement: "alert",
+              },
+              h,
+            ),
+            Dialog.footer(
+              [
+                button(
+                  {
+                    variant: "outline",
+                    disabled: pending,
+                    attributes: initialFocus,
+                    onClick: toDeleteDialogMessage(
+                      Dialog.Message.RequestedClose(),
+                    ),
+                    children: ["Cancel"],
+                  },
+                  h,
+                ),
+                button(
+                  {
+                    variant: "destructive",
+                    disabled: pending,
+                    focusableWhenDisabled: true,
+                    attributes: [h.AriaBusy(pending)],
+                    onClick: Message.ConfirmedDelete(),
+                    children: [pending ? "Deleting…" : "Delete event"],
+                  },
+                  h,
+                ),
+              ],
+              h,
+            ),
+          ],
+        ),
+    },
+    h,
   );
 };
 
@@ -1846,6 +1999,7 @@ const scheduleControls = (view: Model["view"], disabled: boolean, h: H) => {
                 variant: "ghost",
                 size: "sm",
                 disabled,
+                attributes: [h.Id(calendarTodayId)],
                 onClick: Message.JumpedToToday(),
                 children: ["Today"],
               },
@@ -2169,26 +2323,17 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
     ) ?? [];
   const missing =
     model.week !== null && model.visible !== null && !selectedCalendar;
+  const error = model.error ?? (model.selected ? null : model.deleteError);
   const list = h.div(
     [h.Class("workspace-list calendar")],
     [
-      ...(model.error &&
-      !model.importing &&
-      !model.calendarEditor &&
-      !model.editor
+      ...(error && !model.importing && !model.calendarEditor && !model.editor
         ? [
             h.div(
               [h.Class("calendar-error")],
               [
-                h.p([h.Role("alert")], [model.error]),
-                button(
-                  {
-                    variant: "outline",
-                    onClick: Message.Retried(),
-                    children: ["Refresh calendar"],
-                  },
-                  h,
-                ),
+                h.p(model.error ? [h.Role("alert")] : [], [error]),
+                refreshCalendarButton(h),
               ],
             ),
           ]
@@ -2217,6 +2362,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
       ...(model.selected && !model.editor
         ? [detailsView(model.selected, model, h)]
         : []),
+      deleteDialogView(model, h),
     ],
   );
   return workspace(

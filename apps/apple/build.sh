@@ -22,19 +22,7 @@ resources=$contents/Resources
 mkdir -p "$contents/MacOS" "$resources"
 install -m 755 "$bin_dir/OneApp" "$contents/MacOS/OneApp"
 install -m 644 Info.plist "$contents/Info.plist"
-
-sdk_version=$(xcrun --sdk macosx --show-sdk-version)
-if [ "${sdk_version%%.*}" -ge 26 ] && xcrun --sdk macosx --find actool >/dev/null 2>&1; then
-    deployment_target=$(plutil -extract LSMinimumSystemVersion raw Info.plist)
-    xcrun --sdk macosx actool --compile "$resources" \
-        --platform macosx --target-device mac --minimum-deployment-target "$deployment_target" \
-        --app-icon OneApp --standalone-icon-behavior all --output-format human-readable-text \
-        --output-partial-info-plist "$build_dir/icon-info.plist" "$app_dir/OneApp.icon"
-    /usr/libexec/PlistBuddy -c "Merge \"$build_dir/icon-info.plist\"" "$contents/Info.plist"
-else
-    install -m 644 OneApp.icns "$resources/OneApp.icns"
-    plutil -insert CFBundleIconFile -string OneApp "$contents/Info.plist"
-fi
+install -m 644 OneApp.icns "$resources/OneApp.icns"
 
 codesign --force --sign - "$staged_bundle"
 rm -rf "$bundle"

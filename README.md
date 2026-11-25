@@ -194,7 +194,7 @@ The personal mailbox retains its original R2 keys, including legacy timestamp ke
 
 Install the standalone Command Line Tools with `xcode-select --install` or use an existing Xcode installation. On macOS 14 or later, run `bun run apple:dev` to open OneApp. Quit a running copy before rebuilding to pick up native changes. `bun run apple:build` writes a locally signed app to `apps/apple/dist/OneApp.app`.
 
-Xcode 26 or later compiles `apps/apple/OneApp.icon` into the layered app icon. Builds with the standalone Command Line Tools use the bundled `apps/apple/OneApp.icns`. After editing the icon in Icon Composer, build with Xcode 26 or later selected and copy `apps/apple/dist/OneApp.app/Contents/Resources/OneApp.icns` to `apps/apple/OneApp.icns` to refresh the fallback.
+The macOS build bundles the static [OneApp icon](apps/apple/OneApp.icns). Open the [spiral explorer](doc/brand/spiral-explorer.html) in a browser to revisit the settings used for the mark.
 
 The app loads `https://app.dpeek.com` and keeps its own OneApp sign-in session. Links to other sites open in your default browser.
 

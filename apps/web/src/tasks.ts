@@ -249,6 +249,13 @@ const FocusFilterOptions = Command.define("FocusTaskFilterOptions", {
   ),
 });
 
+const FocusFilterTrigger = Command.define("FocusTaskFilterTrigger", {
+  messages: [Message.FocusUpdated],
+  execute: focus(`#${Popover.buttonId(filterPopover.id)}`, {
+    preventScroll: true,
+  }).pipe(Effect.ignore, Effect.as(Message.FocusUpdated())),
+});
+
 const FocusList = Command.define("FocusTaskList", {
   args: { id: ItemId },
   messages: [Message.FocusUpdated],
@@ -693,11 +700,12 @@ export const update = (
         },
       }),
       GotFilterTagsMessage: ({ message }) => foldFilterTags(model, message),
-      ClearedFilters: () =>
-        foldFilterPopover(
-          { ...model, filters: emptyFilters },
-          Popover.Message.RequestedClose(),
-        ),
+      ClearedFilters: () => {
+        const cleared = { ...model, filters: emptyFilters };
+        return model.filterPopover.isOpen
+          ? foldFilterPopover(cleared, Popover.Message.RequestedClose())
+          : { model: cleared, commands: [FocusFilterTrigger()] };
+      },
       GotSortMenuMessage: ({ message }) => foldSortMenu(model, message),
       GotTagPickerMessage: ({ id, message }) => {
         const editor =

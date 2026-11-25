@@ -1,5 +1,6 @@
 import {
   calendarIconPaths,
+  filesIconPaths,
   taskIconPaths,
   Tooltip,
   unreadBadge,
@@ -63,9 +64,7 @@ const destinations = [
     page: "files",
     href: filesPath,
     label: "Files",
-    paths: [
-      "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z",
-    ],
+    paths: filesIconPaths,
   },
   {
     page: "vault",

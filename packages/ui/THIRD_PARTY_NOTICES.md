@@ -24,6 +24,9 @@ the same CreaseUI revision using OneApp tokens and a persistent message region.
 `src/checkbox.ts` adapts the StyleX Checkbox from the same CreaseUI revision
 using OneApp tokens and the installed Foldkit Checkbox primitive.
 
+`src/empty.ts` and `src/skeleton.ts` adapt the StyleX Empty and Skeleton
+components from the same CreaseUI revision using OneApp tokens.
+
 MIT License
 
 Copyright (c) 2026 Potti1234

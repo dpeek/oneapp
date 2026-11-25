@@ -3,19 +3,24 @@ import {
   backIcon,
   button,
   buttonClassName,
+  empty,
+  filesIconPaths,
   input,
   nativeSelect,
   outlineIcon,
+  skeleton,
   Tokenizer,
+  visuallyHiddenStatus,
 } from "@oneapp/ui";
 import { Effect } from "effect";
 import { Mount, Submodel } from "foldkit";
-import type { HtmlBuilder } from "foldkit/html";
+import type { Html, HtmlBuilder } from "foldkit/html";
 import { fileSize, renderPdf } from "./file-display.ts";
 import {
   fileContentApi,
   filePath,
   filesPath,
+  fileUploadLimit,
   type StoredFile,
 } from "./files-contract.ts";
 import { Message, selectedFile, uploadInputId, type Model } from "./files.ts";
@@ -65,7 +70,7 @@ const fileDetail = (
   const id = model.selectedId;
   const detail = () => {
     if (!file)
-      return h.p(model.error ? [] : [h.Role("status")], [
+      return h.p(model.error || model.request ? [] : [h.Role("status")], [
         model.request
           ? "Loading file…"
           : model.index
@@ -173,15 +178,34 @@ const fileDetail = (
   );
 };
 
+const filePlaceholders = (h: HtmlBuilder<Message>) =>
+  h.ul(
+    [h.Class("file-list-skeleton"), h.AriaHidden(true)],
+    Array.from({ length: 4 }, (_, index) =>
+      h.li(
+        [h.Key(String(index))],
+        [skeleton(index % 2 ? "md" : "lg", h), skeleton("sm", h)],
+      ),
+    ),
+  );
+
 const fileList = (
   model: Model,
   tags: readonly Tag[],
+  upload: Html | undefined,
   h: HtmlBuilder<Message>,
 ) => {
   const files = (model.index?.files ?? []).filter(
     ({ tagIds }) => !model.tagFilter || tagIds.includes(model.tagFilter),
   );
   const tagMap = new Map(tags.map((tag) => [tag.id, tag.name]));
+  const hasFiles = !!model.index?.files.length;
+  const emptyTitle =
+    !model.index || files.length
+      ? null
+      : hasFiles
+        ? "No files match this tag"
+        : "No files uploaded";
   return h.section(
     [h.Class("workspace-list task-list"), h.AriaLabel("File list")],
     [
@@ -205,6 +229,7 @@ const fileList = (
           ),
         ],
       ),
+      visuallyHiddenStatus(emptyTitle, h),
       h.div(
         [h.Class("workspace-results")],
         files.length
@@ -255,66 +280,92 @@ const fileList = (
                 }),
               ),
             ]
-          : [
-              h.p(
-                [h.Class("task-empty"), h.Role("status")],
-                [
-                  model.index
-                    ? model.index.files.length
-                      ? "No files match this tag."
-                      : "No files uploaded."
-                    : model.request
-                      ? "Loading files…"
-                      : "",
-                ],
-              ),
-            ],
+          : emptyTitle
+            ? [
+                empty(
+                  {
+                    title: emptyTitle,
+                    icon: outlineIcon(h, filesIconPaths),
+                    ...(!hasFiles
+                      ? {
+                          description: `Files can be up to ${fileUploadLimit / 1024 ** 2} MiB each.`,
+                        }
+                      : {}),
+                    action: hasFiles
+                      ? button(
+                          {
+                            variant: "outline",
+                            size: "sm",
+                            onClick: Message.ClearedTagFilter(),
+                            children: ["Clear filter"],
+                          },
+                          h,
+                        )
+                      : upload,
+                  },
+                  h,
+                ),
+              ]
+            : !model.index && model.request?.operation._tag === "Load"
+              ? [filePlaceholders(h)]
+              : [],
       ),
     ],
   );
 };
 
+const uploadControl = (model: Model, h: HtmlBuilder<Message>) =>
+  h.label(
+    [h.Class("file-upload")],
+    [
+      h.span(
+        [
+          h.Class(buttonClassName({ size: "sm" })),
+          h.DataAttribute("slot", "button"),
+        ],
+        [
+          model.request?.operation._tag === "Upload"
+            ? "Uploading…"
+            : "Upload file",
+        ],
+      ),
+      input(
+        [
+          h.Type("file"),
+          h.Id(uploadInputId),
+          h.AriaLabel("Upload file"),
+          h.Disabled(model.request !== null || model.index === null),
+          h.OnChange(() => Message.PickedFile()),
+        ],
+        h,
+      ),
+    ],
+  );
+
 export const view = Submodel.defineView<Model, Message>((model, h) => {
   const tags = [...(model.index?.tags ?? [])].sort((left, right) =>
     left.name.localeCompare(right.name),
   );
-  const uploading = model.request?.operation._tag === "Upload";
+  const upload = uploadControl(model, h);
+  const uploadInEmpty =
+    model.selectedId === null && model.index?.files.length === 0;
+  const operation = model.request?.operation._tag;
+  const loadStatus =
+    operation === "Load"
+      ? model.index
+        ? "Refreshing files…"
+        : "Loading files…"
+      : operation === "Upload"
+        ? "Uploading file…"
+        : null;
   return workspace(
     {
       className: "tasks-workspace files-workspace",
       title: "Files",
       headerAttributes: [h.Tabindex(-1)],
       headerActions: [
-        h.label(
-          [h.Class("file-upload")],
-          [
-            h.span(
-              [
-                h.Class(buttonClassName({ size: "sm" })),
-                h.DataAttribute("slot", "button"),
-              ],
-              [uploading ? "Uploading…" : "Upload file"],
-            ),
-            input(
-              [
-                h.Type("file"),
-                h.Id(uploadInputId),
-                h.AriaLabel("Upload file"),
-                h.Disabled(model.request !== null || model.index === null),
-                h.OnChange(() => Message.PickedFile()),
-              ],
-              h,
-            ),
-          ],
-        ),
-        ...(uploading
-          ? [
-              h.span(
-                [h.Role("status"), h.Class("file-upload-status")],
-                ["Uploading file…"],
-              ),
-            ]
-          : []),
+        ...(!uploadInEmpty ? [upload] : []),
+        visuallyHiddenStatus(loadStatus, h),
         alert(
           {
             message: model.error,
@@ -337,7 +388,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
         ),
       ],
       hasSelection: model.selectedId !== null,
-      list: fileList(model, tags, h),
+      list: fileList(model, tags, uploadInEmpty ? upload : undefined, h),
       ...(model.selectedId ? { detail: fileDetail(model, tags, h) } : {}),
     },
     h,

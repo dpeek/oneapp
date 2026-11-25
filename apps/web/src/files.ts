@@ -60,6 +60,7 @@ export const Message = defineMessageUnion({
   FocusUpdated: {},
   PickedFile: {},
   SetTagFilter: { value: Schema.String },
+  ClearedTagFilter: {},
   GotTagPickerMessage: { id: ItemId, message: Tokenizer.Message },
   RemovedTag: { id: ItemId },
   PreviewReady: { id: ItemId },
@@ -92,6 +93,15 @@ const FocusRetryTarget = Command.define("FocusFileRetryTarget", {
   execute: focus(".files-workspace > .workspace-header", {
     preventScroll: true,
   }).pipe(Effect.ignore, Effect.as(Message.FocusUpdated())),
+});
+const FocusTagFilter = Command.define("FocusFileTagFilter", {
+  messages: [Message.FocusUpdated],
+  execute: focus(
+    '.files-workspace .task-list-filters [data-slot="native-select"]',
+    {
+      preventScroll: true,
+    },
+  ).pipe(Effect.ignore, Effect.as(Message.FocusUpdated())),
 });
 const Request = Command.define("RequestFiles", {
   args: { request: ItemId, operation: Operation },
@@ -244,6 +254,10 @@ export const update = (
       PickedFile: () => start(model, { _tag: "Upload" }),
       SetTagFilter: ({ value }) => ({
         model: { ...model, tagFilter: Schema.is(ItemId)(value) ? value : null },
+      }),
+      ClearedTagFilter: () => ({
+        model: { ...model, tagFilter: null },
+        commands: [FocusTagFilter()],
       }),
       GotTagPickerMessage: ({ id, message }) => {
         const file = selectedFile(model);

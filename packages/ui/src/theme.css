@@ -1,6 +1,7 @@
 :root {
   --canvas: light-dark(#f7f7f7, #181818);
   --surface: light-dark(#fff, #222);
+  --muted-surface: light-dark(#e7e7e7, #424242);
   --popover: light-dark(#fff, #2d2d2d);
   --text: light-dark(#202020, #f0f0f0);
   --muted: light-dark(#5c5c5c, #b5b5b5);

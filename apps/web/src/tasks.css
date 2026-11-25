@@ -17,12 +17,6 @@
   margin-inline-start: auto;
 }
 
-.task-empty {
-  margin: 1rem 0;
-  padding-inline: clamp(0.75rem, 1.5vw, 1.25rem);
-  color: var(--muted);
-}
-
 .task-fields,
 .task-actions {
   display: flex;
@@ -295,6 +289,21 @@
   grid-template-columns: minmax(0, 1fr);
 }
 
+.file-list-skeleton {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.file-list-skeleton li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem clamp(0.75rem, 1.5vw, 1.25rem);
+  border-block-end: 1px solid var(--border);
+}
+
 .file-detail-content {
   display: grid;
   gap: 1rem;
@@ -360,12 +369,4 @@
 
 .file-upload input:disabled {
   cursor: default;
-}
-
-.file-upload-status {
-  position: absolute;
-  inline-size: 1px;
-  block-size: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
 }

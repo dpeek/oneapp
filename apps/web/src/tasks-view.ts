@@ -4,6 +4,7 @@ import {
   button,
   buttonClassName,
   Dialog,
+  empty,
   field,
   input,
   MultiCombobox,
@@ -11,8 +12,11 @@ import {
   nativeSelect,
   outlineIcon,
   Sheet,
+  skeleton,
+  taskIconPaths,
   textarea,
   Tokenizer,
+  visuallyHiddenStatus,
 } from "@oneapp/ui";
 import { Effect, Option } from "effect";
 import { Mount, Submodel } from "foldkit";
@@ -259,16 +263,108 @@ const taskSort = (model: Model, h: HtmlBuilder<Message>) =>
     h,
   );
 
+const taskTable = (
+  view: TaskView,
+  rows: readonly Html[],
+  loading: boolean,
+  h: HtmlBuilder<Message>,
+) =>
+  h.table(
+    [
+      h.Class("task-table"),
+      ...(loading
+        ? [h.AriaHidden(true)]
+        : [h.AriaLabel(`${viewLabels[view]} tasks`)]),
+    ],
+    [
+      h.thead(
+        [],
+        [
+          h.tr(
+            [],
+            ["Task", "Status", "Priority", "Updated"].map((label) =>
+              h.th([h.Key(label), h.Scope("col")], [label]),
+            ),
+          ),
+        ],
+      ),
+      h.tbody([], [...rows]),
+    ],
+  );
+
+const taskPlaceholders = (h: HtmlBuilder<Message>) =>
+  Array.from({ length: 4 }, (_, index) =>
+    h.tr(
+      [h.Key(String(index))],
+      [
+        h.td([], [skeleton(index % 2 ? "md" : "lg", h)]),
+        h.td([], [skeleton("md", h)]),
+        h.td([], [skeleton("sm", h)]),
+        h.td([], [skeleton("md", h)]),
+      ],
+    ),
+  );
+
 const taskList = (
   model: Model,
   tags: ReadonlyArray<Tag>,
+  viewTasks: readonly Task[],
+  addTask: Html | undefined,
   h: HtmlBuilder<Message>,
 ) => {
   const { view } = model;
-  const viewTasks = tasksInView(model);
   const tasks = sortedTasks(viewTasks, model);
-  const busy = model.request !== null;
+  const loading = !model.index && model.request?.operation._tag === "Load";
   const tagMap = new Map(tags.map((tag) => [tag.id, tag]));
+  const emptyTitle =
+    !model.index || tasks.length
+      ? null
+      : viewTasks.length
+        ? "No tasks match these filters"
+        : view === "completed"
+          ? "No completed tasks yet"
+          : model.index.tasks.length
+            ? "No active tasks"
+            : "No tasks yet";
+  let results: Html = h.empty;
+  if (tasks.length)
+    results = taskTable(
+      view,
+      tasks.map((task) => taskRow(task, tagMap, view, h)),
+      false,
+      h,
+    );
+  else if (loading) results = taskTable(view, taskPlaceholders(h), true, h);
+  else if (emptyTitle) {
+    const action = viewTasks.length
+      ? button(
+          {
+            variant: "outline",
+            size: "sm",
+            onClick: Message.ClearedFilters(),
+            children: ["Clear filters"],
+          },
+          h,
+        )
+      : view === "completed"
+        ? h.a(
+            [
+              h.Href(taskListPath("active")),
+              h.Class(buttonClassName({ variant: "outline", size: "sm" })),
+              h.DataAttribute("slot", "button"),
+            ],
+            ["View active tasks"],
+          )
+        : addTask;
+    results = empty(
+      {
+        title: emptyTitle,
+        icon: outlineIcon(h, taskIconPaths),
+        ...(action ? { action } : {}),
+      },
+      h,
+    );
+  }
   return h.section(
     [
       h.Class("workspace-list task-list"),
@@ -277,6 +373,7 @@ const taskList = (
       h.Tabindex(-1),
     ],
     [
+      visuallyHiddenStatus(emptyTitle, h),
       h.div(
         [
           h.Key(view),
@@ -289,50 +386,7 @@ const taskList = (
               ]
             : []),
         ],
-        [
-          !model.index
-            ? busy
-              ? h.p(
-                  [h.Class("task-empty"), h.Role("status")],
-                  ["Loading tasks…"],
-                )
-              : h.empty
-            : tasks.length
-              ? h.table(
-                  [
-                    h.Class("task-table"),
-                    h.AriaLabel(`${viewLabels[view]} tasks`),
-                  ],
-                  [
-                    h.thead(
-                      [],
-                      [
-                        h.tr(
-                          [],
-                          [
-                            h.th([h.Scope("col")], ["Task"]),
-                            h.th([h.Scope("col")], ["Status"]),
-                            h.th([h.Scope("col")], ["Priority"]),
-                            h.th([h.Scope("col")], ["Updated"]),
-                          ],
-                        ),
-                      ],
-                    ),
-                    h.tbody(
-                      [],
-                      tasks.map((task) => taskRow(task, tagMap, view, h)),
-                    ),
-                  ],
-                )
-              : h.p(
-                  [h.Class("task-empty"), h.Role("status")],
-                  [
-                    viewTasks.length
-                      ? "No tasks match these filters."
-                      : `No ${view} tasks yet.`,
-                  ],
-                ),
-        ],
+        [results],
       ),
     ],
   );
@@ -575,13 +629,16 @@ const taskDetail = (
     [
       ...(!task || !editor
         ? [
-            h.p(model.error ? [] : [h.Role("status")], [
-              !model.index
-                ? busy
-                  ? "Loading task…"
-                  : "Task details are unavailable."
-                : "Task not found.",
-            ]),
+            h.p(
+              model.error || (busy && !model.index) ? [] : [h.Role("status")],
+              [
+                !model.index
+                  ? busy
+                    ? "Loading task…"
+                    : "Task details are unavailable."
+                  : "Task not found.",
+              ],
+            ),
           ]
         : [
             h.div(
@@ -681,6 +738,28 @@ const taskNavigation = (view: TaskView, h: HtmlBuilder<Message>) =>
 export const view = Submodel.defineView<Model, Message>((model, h) => {
   const tags = sortedTags(model);
   const { selectedId, folderSheet } = model;
+  const viewTasks = tasksInView(model);
+  const addTaskInEmpty =
+    !selectedId &&
+    model.view === "active" &&
+    !!model.index &&
+    !viewTasks.length;
+  const addTask = button(
+    {
+      size: "sm",
+      disabled: model.request !== null || !model.index,
+      dialogId: creationDialogId,
+      onClick: Message.OpenedCreate({ preserveView: false }),
+      children: ["Add task"],
+    },
+    h,
+  );
+  const loadStatus =
+    model.request?.operation._tag === "Load" && !model.creation
+      ? model.index
+        ? "Refreshing tasks…"
+        : "Loading tasks…"
+      : null;
   const backLabel = `Back to ${viewLabels[model.view]}`;
   // The load error stays visible after Add task closes, without announcing again.
   const loadErrorInDialog =
@@ -734,16 +813,8 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
             ),
           ],
         ),
-        button(
-          {
-            size: "sm",
-            disabled: model.request !== null || !model.index,
-            dialogId: creationDialogId,
-            onClick: Message.OpenedCreate({ preserveView: false }),
-            children: ["Add task"],
-          },
-          h,
-        ),
+        ...(!addTaskInEmpty ? [addTask] : []),
+        visuallyHiddenStatus(loadStatus, h),
         alert(
           {
             message: model.error?.message ?? null,
@@ -756,7 +827,13 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
         ),
       ],
       sidebar: taskNavigation(model.view, h),
-      list: taskList(model, tags, h),
+      list: taskList(
+        model,
+        tags,
+        viewTasks,
+        addTaskInEmpty ? addTask : undefined,
+        h,
+      ),
       hasSelection: selectedId !== null,
       ...(selectedId ? { detail: taskDetail(selectedId, model, tags, h) } : {}),
       sheet: Sheet.sheet(

@@ -16,6 +16,7 @@ export * as ColorPicker from "./color-picker.ts";
 export * as CommandMenu from "./command-menu.ts";
 export * as Dialog from "./dialog.ts";
 export * as DropdownMenu from "./dropdown-menu.ts";
+export { empty } from "./empty.ts";
 export {
   createField,
   createFieldGroup,
@@ -31,6 +32,7 @@ export {
   backIcon,
   calendarIconPaths,
   ellipsisIcon,
+  filesIconPaths,
   noiseIconPath,
   outlineIcon,
   plusIcon,
@@ -56,7 +58,9 @@ export {
 } from "./navigation.ts";
 export * as Popover from "./popover.ts";
 export * as Sheet from "./sheet.ts";
+export { skeleton } from "./skeleton.ts";
 export { spinner } from "./spinner.ts";
+export { visuallyHiddenStatus } from "./status.ts";
 export { toolbar, toggleGroup } from "./toolbar.ts";
 export * as Tooltip from "./tooltip.ts";
 export * as Toast from "./toast.ts";

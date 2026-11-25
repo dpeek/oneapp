@@ -16,6 +16,7 @@ import {
   CommandMenu,
   Dialog,
   field,
+  filesIconPaths,
   input,
   item,
   itemGroup,
@@ -502,6 +503,7 @@ const foldLinks = (model: Model, message: Links.Message) =>
 
 const toFilesMessage = (message: Files.Message) =>
   Message.GotFilesMessage({ message });
+const fileUploadNotificationKey = "files-upload";
 const foldFiles = Update.foldChild({
   update: Files.update,
   read: (model: Model) =>
@@ -513,12 +515,29 @@ const foldFiles = Update.foldChild({
     (model) => {
       if (out._tag === "SessionExpired")
         return update(model, Message.LoadedAccount({ account: null }));
-      return model.page === "files"
-        ? {
-            model,
-            commands: [Navigate({ href: filePath(out.id), mode: "push" })],
-          }
-        : { model };
+      if (out._tag === "UploadFailed")
+        return model.page !== "files"
+          ? applyNotification(model, {
+              _tag: "Notify",
+              notification: {
+                key: fileUploadNotificationKey,
+                variant: "Error",
+                title: out.error,
+              },
+            })
+          : { model };
+      if (out.source === "header" && model.page !== "files") return { model };
+      return Update.combine(model, [
+        (current) =>
+          applyNotification(current, {
+            _tag: "DismissNotification",
+            key: fileUploadNotificationKey,
+          }),
+        (current) => ({
+          model: current,
+          commands: [Navigate({ href: filePath(out.id), mode: "push" })],
+        }),
+      ]);
     },
 });
 
@@ -543,9 +562,18 @@ const creationItems = [
   { value: "event", label: "Event", iconPaths: calendarIconPaths },
   { value: "email", label: "New email", iconPaths: mailIconPaths },
   { value: "link", label: "Save link", iconPaths: linkIconPaths },
+  {
+    value: "upload",
+    label: "Upload file",
+    iconPaths: filesIconPaths,
+  },
 ] as const;
-const creationMenu =
-  CommandMenu.create<(typeof creationItems)[number]["value"]>();
+const creationMenu = CommandMenu.create<
+  (typeof creationItems)[number]["value"]
+>({
+  value: "upload",
+  run: Files.openUploadPicker,
+});
 const toCreationMenu = (message: typeof CommandMenu.Message.Type) =>
   Message.GotCreationMenuMessage({ message });
 const foldCreationMenu = Update.foldChild({
@@ -576,6 +604,8 @@ const foldCreationMenu = Update.foldChild({
             : { model };
         case "link":
           return foldLinks(model, Links.Message.OpenedCreate());
+        case "upload":
+          return closeCreationMenu(model);
       }
     },
 });
@@ -1938,6 +1968,21 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
           model: model.inbox,
           toParentMessage: toInboxMessage,
         }),
+        // The native picker can finish after the Create menu closes.
+        h.input([
+          h.Type("file"),
+          h.Id(Files.createUploadInputId),
+          h.Hidden(true),
+          h.Disabled(model.pending || model.files.request !== null),
+          h.OnChange((value) =>
+            toFilesMessage(
+              Files.Message.PickedFile({
+                source: "create",
+                selected: value !== "",
+              }),
+            ),
+          ),
+        ]),
         Dialog.view(
           {
             model: model.creationDialog,
@@ -1952,7 +1997,10 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
                     model: menu,
                     items: creationItems.filter(
                       ({ value }) =>
-                        value !== "email" || Inbox.composeSender(model.inbox),
+                        (value !== "email" ||
+                          Inbox.composeSender(model.inbox)) &&
+                        (value !== "upload" ||
+                          (!model.pending && model.files.request === null)),
                     ),
                     searchLabel: "Search create options",
                     initialFocus,

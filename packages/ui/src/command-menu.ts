@@ -1,8 +1,9 @@
 // Adapted from CreaseUI's StyleX Command (MIT), revision b11a974af28917ae6fea67cbf9ade89d8a3c464c.
 import { Combobox } from "@foldkit/ui";
 import * as stylex from "@stylexjs/stylex";
-import { Option } from "effect";
+import { Effect, Option, Queue, Schema, Stream } from "effect";
 import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html";
+import * as Mount from "foldkit/mount";
 import { outlineIcon } from "./icons.ts";
 import { controls } from "./tokens.stylex.ts";
 
@@ -73,8 +74,34 @@ type Item<Value extends string> = Readonly<{
 }>;
 
 // Crease's inline combobox keeps the list visible and highlights the first match.
-export const create = <Value extends string>() => {
+export const create = <Value extends string>(
+  activation?: Readonly<{ value: Value; run: () => void }>,
+) => {
   const { update } = Combobox.create<Value>();
+  // Native pickers must run in the browser's original activation event.
+  const ActivateOnClick = Mount.defineStream("ActivateCommandOnClick", {
+    args: { label: Schema.String },
+    messages: [Message.SelectedItem],
+    execute: ({ element, label }) =>
+      Stream.callback<typeof Message.SelectedItem.Type>((queue) => {
+        const click = () => {
+          if (!activation) return;
+          activation.run();
+          Queue.offerUnsafe(
+            queue,
+            Message.SelectedItem({
+              item: activation.value,
+              displayText: label,
+              wasSelected: false,
+            }),
+          );
+        };
+        return Effect.acquireRelease(
+          Effect.sync(() => element.addEventListener("click", click)),
+          () => Effect.sync(() => element.removeEventListener("click", click)),
+        );
+      }),
+  });
   return {
     update,
     view: <ParentMessage>(
@@ -145,7 +172,10 @@ export const create = <Value extends string>() => {
                   toParentMessage(Message.UpdatedInputValue({ value })),
                 ),
                 h.OnKeyDownPreventDefault((key) => {
-                  if (key === "Enter" && item) return Option.some(select(item));
+                  if (key === "Enter" && item) {
+                    if (item.value === activation?.value) activation.run();
+                    return Option.some(select(item));
+                  }
                   const next = Math.min(
                     visible.length - 1,
                     key === "ArrowDown" ? index + 1 : index - 1,
@@ -185,7 +215,14 @@ export const create = <Value extends string>() => {
                     ? [h.DataAttribute("active", "")]
                     : []),
                   h.Class(stylex.props(styles.item).className ?? ""),
-                  h.OnClick(select(option)),
+                  option.value === activation?.value
+                    ? h.OnMount(
+                        Mount.mapMessage(
+                          ActivateOnClick({ label: option.label }),
+                          toParentMessage,
+                        ),
+                      )
+                    : h.OnClick(select(option)),
                 ],
                 [
                   ...(option.iconPaths

@@ -23,6 +23,16 @@ import {
 import { createTagPrefix, searchTags } from "./tag-picker.ts";
 
 export const uploadInputId = "files-upload";
+export const createUploadInputId = "create-file-upload";
+const UploadSource = Schema.Literals(["header", "create"]);
+
+export const openUploadPicker = () => {
+  const input = document.getElementById(createUploadInputId);
+  if (!(input instanceof HTMLInputElement) || input.disabled) return;
+  if (typeof input.showPicker === "function") input.showPicker();
+  else input.click();
+};
+
 export const filterOptionsId = "file-filter-options";
 const closedFilterMenu = {
   filterPopover: Popover.init({ id: "file-filters" }),
@@ -30,7 +40,7 @@ const closedFilterMenu = {
 };
 const Operation = Schema.Union([
   Schema.TaggedStruct("Load", {}),
-  Schema.TaggedStruct("Upload", {}),
+  Schema.TaggedStruct("Upload", { source: UploadSource }),
   Schema.TaggedStruct("Tags", {
     id: ItemId,
     revision: ItemId,
@@ -66,7 +76,7 @@ export const Message = defineMessageUnion({
   Opened: { id: Schema.NullOr(ItemId), refresh: Schema.Boolean },
   Retried: {},
   FocusUpdated: {},
-  PickedFile: {},
+  PickedFile: { source: UploadSource, selected: Schema.Boolean },
   GotFilterPopoverMessage: { message: Popover.Message },
   OpenedTagFilterOptions: { focusOptions: Schema.Boolean },
   ClosedTagFilterOptions: {},
@@ -89,7 +99,8 @@ export const Message = defineMessageUnion({
 });
 export type Message = typeof Message.Type;
 export const OutMessage = defineMessageUnion({
-  OpenFile: { id: ItemId },
+  OpenFile: { id: ItemId, source: UploadSource },
+  UploadFailed: { error: Schema.String },
   SessionExpired: {},
 });
 export type OutMessage = typeof OutMessage.Type;
@@ -142,7 +153,9 @@ const Request = Command.define("RequestFiles", {
           return Message.Loaded({ request, index });
         }
         case "Upload": {
-          const input = document.getElementById(uploadInputId);
+          const input = document.getElementById(
+            operation.source === "create" ? createUploadInputId : uploadInputId,
+          );
           const file =
             input instanceof HTMLInputElement ? input.files?.[0] : undefined;
           if (input instanceof HTMLInputElement) input.value = "";
@@ -281,7 +294,8 @@ export const update = (
           : result;
       },
       FocusUpdated: () => ({ model }),
-      PickedFile: () => start(model, { _tag: "Upload" }),
+      PickedFile: ({ source, selected }) =>
+        selected ? start(model, { _tag: "Upload", source }) : { model },
       GotFilterPopoverMessage: ({ message }) =>
         foldFilterPopover(model, message),
       OpenedTagFilterOptions: ({ focusOptions }) => {
@@ -390,18 +404,25 @@ export const update = (
             : null,
         },
       }),
-      Uploaded: ({ file }) => ({
-        model: {
-          ...model,
-          index: model.index && {
-            ...model.index,
-            files: [file, ...model.index.files],
+      Uploaded: ({ file }) => {
+        const operation = model.request?.operation;
+        if (operation?._tag !== "Upload") return { model };
+        return {
+          model: {
+            ...model,
+            index: model.index && {
+              ...model.index,
+              files: [file, ...model.index.files],
+            },
+            request: null,
+            tagFilter: null,
           },
-          request: null,
-          tagFilter: null,
-        },
-        outMessage: OutMessage.OpenFile({ id: file.id }),
-      }),
+          outMessage: OutMessage.OpenFile({
+            id: file.id,
+            source: operation.source,
+          }),
+        };
+      },
       SavedTags: ({ file, tag, conflict }) => ({
         model: {
           ...model,
@@ -420,7 +441,15 @@ export const update = (
             : null,
         },
       }),
-      Failed: ({ error }) => ({ model: { ...model, request: null, error } }),
+      Failed: ({ error }) => {
+        const operation = model.request?.operation;
+        return {
+          model: { ...model, request: null, error },
+          ...(operation?._tag === "Upload" && operation.source === "create"
+            ? { outMessage: OutMessage.UploadFailed({ error }) }
+            : {}),
+        };
+      },
       SessionExpired: () => ({
         model,
         outMessage: OutMessage.SessionExpired(),

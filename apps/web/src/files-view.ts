@@ -337,7 +337,9 @@ const uploadControl = (model: Model, h: HtmlBuilder<Message>) =>
           h.Id(uploadInputId),
           h.AriaLabel("Upload file"),
           h.Disabled(model.request !== null || model.index === null),
-          h.OnChange(() => Message.PickedFile()),
+          h.OnChange((value) =>
+            Message.PickedFile({ source: "header", selected: value !== "" }),
+          ),
         ],
         h,
       ),

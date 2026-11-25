@@ -93,7 +93,7 @@ import {
   type PersonSummary,
 } from "./people-contract.ts";
 import { mailAvatar } from "./mail-avatar.ts";
-import { workspace, workspaceDrawerMedia } from "./workspace.ts";
+import { screenHeader, workspace, workspaceDrawerMedia } from "./workspace.ts";
 
 const MessageLocation = Schema.Struct({
   folder: MailFolder,
@@ -3022,89 +3022,86 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
   workspace(
     {
       className: "workspace-stacked inbox",
-      ...(model.selected === null
-        ? {
-            title: mailboxLabels[model.folder],
-            ...(supportsMailFilters(model.folder)
-              ? {
-                  titleAccessory: h.div(
-                    [h.Class("inbox-heading-controls")],
-                    [
-                      ...(isInboxView(model.folder)
-                        ? [inboxPrioritySwitch(model.folder, h)]
-                        : []),
-                      h.submodel({
-                        slotId: "inbox-filters",
-                        model: model.filters,
-                        view: Filters.view,
-                        toParentMessage: toFiltersMessage,
-                      }),
-                    ],
+      header: screenHeader(
+        {
+          title: mailboxLabels[model.folder],
+          navigation: [
+            ...(model.selected
+              ? [
+                  button(
+                    {
+                      variant: "ghost",
+                      size: "icon-sm",
+                      rounded: true,
+                      ariaLabel: "Back",
+                      onClick: Message.RequestedBack(),
+                      children: [backIcon(h)],
+                    },
+                    h,
                   ),
-                }
-              : {}),
-          }
-        : {}),
-      headerActions: [
-        ...(model.selected
-          ? [
-              button(
-                {
-                  variant: "ghost",
-                  size: "icon-sm",
-                  rounded: true,
-                  ariaLabel: "Back",
-                  onClick: Message.RequestedBack(),
-                  children: [backIcon(h)],
-                },
-                h,
-              ),
-            ]
-          : [
-              h.span(
-                [h.Class("inbox-refresh-indicator")],
-                model.list !== null && model.listRequest?.cursor === null
-                  ? [spinner("Refreshing messages…", h)]
-                  : [],
-              ),
-            ]),
-        h.div(
-          [h.Class("workspace-drawer-trigger")],
-          [
-            button(
-              {
-                variant: "ghost",
-                size: "icon",
-                rounded: true,
-                ariaLabel: "Mail folders",
-                dialogId: model.folderSheet.id,
-                onClick: Message.GotFolderSheetMessage({
-                  message: Sheet.Message.RequestedOpen(),
-                }),
-                children: [mailIcon(h, "M4 6h16M4 12h16M4 18h16")],
-              },
-              h,
+                ]
+              : []),
+            h.div(
+              [h.Class("workspace-drawer-trigger")],
+              [
+                button(
+                  {
+                    variant: "ghost",
+                    size: "icon-sm",
+                    rounded: true,
+                    ariaLabel: "Mail folders",
+                    dialogId: model.folderSheet.id,
+                    onClick: Message.GotFolderSheetMessage({
+                      message: Sheet.Message.RequestedOpen(),
+                    }),
+                    children: [mailIcon(h, "M4 6h16M4 12h16M4 18h16")],
+                  },
+                  h,
+                ),
+              ],
             ),
           ],
-        ),
-        h.div(
-          [h.Class("inbox-compose")],
-          [
-            button(
-              {
-                size: "sm",
-                rounded: true,
-                ariaLabel: "New email",
-                dialogId: Compose.dialogId,
-                disabled: !composeSender(model),
-                onClick: Message.OpenedCompose(),
-                children: [plusIcon(h, "16"), "New"],
-              },
-              h,
-            ),
-          ],
-        ),
-      ],
+          controls:
+            model.selected === null && supportsMailFilters(model.folder)
+              ? [
+                  h.submodel({
+                    slotId: "inbox-filters",
+                    model: model.filters,
+                    view: Filters.view,
+                    toParentMessage: toFiltersMessage,
+                  }),
+                ]
+              : undefined,
+          viewControls:
+            model.selected === null && isInboxView(model.folder)
+              ? [inboxPrioritySwitch(model.folder, h)]
+              : undefined,
+          primaryAction: button(
+            {
+              size: "sm",
+              rounded: true,
+              ariaLabel: "New email",
+              dialogId: Compose.dialogId,
+              disabled: !composeSender(model),
+              onClick: Message.OpenedCompose(),
+              children: [plusIcon(h, "16"), "Email"],
+            },
+            h,
+          ),
+          feedback:
+            model.selected === null &&
+            model.list !== null &&
+            model.listRequest?.cursor === null
+              ? [
+                  h.span(
+                    [h.Class("inbox-refresh-indicator")],
+                    [spinner("Refreshing messages…", h)],
+                  ),
+                ]
+              : undefined,
+        },
+        h,
+      ),
       sidebar: folderNavigation(model, h),
       list: listView(model, h),
       ...(model.selected

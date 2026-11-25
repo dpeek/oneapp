@@ -4,23 +4,37 @@ import type { Attribute, Html, HtmlBuilder } from "foldkit/html";
 export const screenHeader = <Message>(
   props: {
     title: string;
+    titleDetail?: Html;
+    attributes?: readonly Attribute<Message>[];
     navigation?: readonly Html[];
     controls?: readonly Html[];
+    viewControls?: readonly Html[];
     primaryAction?: Html;
     feedback?: readonly Html[];
   },
   h: HtmlBuilder<Message>,
-) =>
-  h.header(
-    [h.Class("workspace-header workspace-screen-header"), h.Tabindex(-1)],
+) => {
+  const title = h.h1([h.Title(props.title)], [props.title]);
+  return h.header(
+    [
+      h.Class("workspace-header workspace-screen-header"),
+      h.Tabindex(-1),
+      ...(props.attributes ?? []),
+    ],
     [
       toolbar(
         {
           start: [
             ...(props.navigation ?? []),
-            h.h1([h.Title(props.title)], [props.title]),
+            props.titleDetail
+              ? h.div(
+                  [h.Class("workspace-screen-heading")],
+                  [title, props.titleDetail],
+                )
+              : title,
             ...(props.controls ?? []),
           ],
+          controls: props.viewControls,
           end: props.primaryAction ? [props.primaryAction] : [],
         },
         h,
@@ -28,6 +42,7 @@ export const screenHeader = <Message>(
       ...(props.feedback ?? []),
     ],
   );
+};
 
 export const screenHeaderBack = <Message>(
   props: { href: string; label: string },
@@ -50,9 +65,7 @@ export const workspace = <Message>(
   props: {
     className: string;
     title?: string;
-    titleAccessory?: Html;
     header?: Html;
-    headerAttributes?: ReadonlyArray<Attribute<Message>>;
     headerActions?: ReadonlyArray<Html>;
     sidebar?: Html;
     list: Html;
@@ -71,20 +84,8 @@ export const workspace = <Message>(
     [
       props.header ??
         h.header(
-          [h.Class("workspace-header"), ...(props.headerAttributes ?? [])],
-          [
-            ...(title
-              ? [
-                  props.titleAccessory
-                    ? h.div(
-                        [h.Class("workspace-heading")],
-                        [title, props.titleAccessory],
-                      )
-                    : title,
-                ]
-              : []),
-            ...(props.headerActions ?? []),
-          ],
+          [h.Class("workspace-header")],
+          [...(title ? [title] : []), ...(props.headerActions ?? [])],
         ),
       ...(props.sidebar
         ? [h.div([h.Class("workspace-sidebar")], [props.sidebar])]

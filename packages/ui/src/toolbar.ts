@@ -15,14 +15,16 @@ const styles = stylex.create({
     minInlineSize: 0,
     gap: "0.25rem",
   },
-  end: { flexShrink: 0, justifyContent: "flex-end" },
+  controls: { flexShrink: 0, flexWrap: "wrap" },
+  end: { flexShrink: 0, marginInlineStart: "auto", justifyContent: "flex-end" },
 });
 
-// The two-slot Crease UI Toolbar layout. Omit the label for layout-only use.
+// Crease UI Toolbar layout. Omit the label for layout-only use.
 export const toolbar = <Message>(
   props: {
     label?: string;
     start: readonly Html[];
+    controls?: readonly Html[];
     end: readonly Html[];
   },
   h: HtmlBuilder<Message>,
@@ -43,6 +45,19 @@ export const toolbar = <Message>(
         ],
         [...props.start],
       ),
+      ...(props.controls
+        ? [
+            h.div(
+              [
+                h.DataAttribute("slot", "toolbar-controls"),
+                h.Class(
+                  stylex.props(styles.slot, styles.controls).className ?? "",
+                ),
+              ],
+              [...props.controls],
+            ),
+          ]
+        : []),
       h.div(
         [
           h.DataAttribute("slot", "toolbar-end"),

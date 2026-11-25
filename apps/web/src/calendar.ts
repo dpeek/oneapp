@@ -19,7 +19,6 @@ import {
   sidebarClassNames,
   sidebarItemClassName,
   textarea,
-  toolbar,
   viewToggleGroup,
 } from "@oneapp/ui";
 import { Clock, Effect, Option, Queue, Schema, Stream } from "effect";
@@ -61,7 +60,7 @@ import {
   slotMinutes,
 } from "./calendar-timeline.ts";
 import { settingsSectionPath } from "./settings-navigation.ts";
-import { workspace, workspaceDrawerMedia } from "./workspace.ts";
+import { screenHeader, workspace, workspaceDrawerMedia } from "./workspace.ts";
 
 const Surface = Schema.Literals(["sidebar", "sheet"]);
 const MenuTarget = Schema.Struct({
@@ -2175,12 +2174,13 @@ const scheduleTitle = (view: Model["view"], days: readonly string[]) => {
     : `${period(first)} – ${period(last)}${crossYear ? "" : ` · ${calendarDate(last).year}`}`;
 };
 
-const scheduleControls = (view: Model["view"], disabled: boolean, h: H) => {
+const dateNavigation = (view: Model["view"], disabled: boolean, h: H) => {
   const shift = (direction: -1 | 1) =>
     button(
       {
         variant: "ghost",
         size: "icon-sm",
+        rounded: true,
         disabled,
         ariaLabel: `${direction === -1 ? "Previous" : "Next"} ${view}`,
         onClick: Message.ShiftedPeriod({ direction }),
@@ -2192,43 +2192,28 @@ const scheduleControls = (view: Model["view"], disabled: boolean, h: H) => {
       },
       h,
     );
-  return toolbar(
-    {
-      label: "Schedule controls",
-      start: [
-        h.div(
-          [h.Class("calendar-period-controls")],
-          [
-            shift(-1),
-            button(
-              {
-                variant: "ghost",
-                size: "sm",
-                disabled,
-                attributes: [h.Id(calendarTodayId)],
-                onClick: Message.JumpedToToday(),
-                children: ["Today"],
-              },
-              h,
-            ),
-            shift(1),
-          ],
-        ),
-      ],
-      end: [
-        viewToggleGroup(
-          {
-            label: "Calendar view",
-            value: view,
-            items: viewChoices,
-            disabled,
-            onToggle: (view) => Message.ChangedView({ view }),
-          },
-          h,
-        ),
-      ],
-    },
-    h,
+  return h.div(
+    [
+      h.Class("calendar-period-controls"),
+      h.Role("group"),
+      h.AriaLabel("Calendar date navigation"),
+    ],
+    [
+      shift(-1),
+      button(
+        {
+          variant: "ghost",
+          size: "sm",
+          rounded: true,
+          disabled,
+          attributes: [h.Id(calendarTodayId)],
+          onClick: Message.JumpedToToday(),
+          children: ["Today"],
+        },
+        h,
+      ),
+      shift(1),
+    ],
   );
 };
 
@@ -2602,54 +2587,68 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
   return workspace(
     {
       className: "workspace-stacked calendar-workspace",
-      title:
-        model.visible === null
-          ? allCalendars
-          : (selectedCalendar?.name ?? "Calendar"),
-      titleAccessory: h.span(
-        [h.Class("calendar-date-range"), h.AriaLive("polite")],
-        [scheduleTitle(model.view, days)],
-      ),
-      headerAttributes: [h.OnMount(WatchCalendarTime())],
-      headerActions: [
-        h.div(
-          [h.Class("workspace-drawer-trigger")],
-          [
-            button(
+      header: screenHeader(
+        {
+          title:
+            model.visible === null
+              ? allCalendars
+              : (selectedCalendar?.name ?? "Calendar"),
+          titleDetail: h.span(
+            [h.Class("calendar-date-range"), h.AriaLive("polite")],
+            [scheduleTitle(model.view, days)],
+          ),
+          attributes: [h.OnMount(WatchCalendarTime())],
+          navigation: [
+            h.div(
+              [h.Class("workspace-drawer-trigger")],
+              [
+                button(
+                  {
+                    variant: "ghost",
+                    size: "icon-sm",
+                    rounded: true,
+                    ariaLabel: "Calendars",
+                    attributes: [h.Id(calendarDrawerId)],
+                    dialogId: model.folderSheet.id,
+                    disabled,
+                    onClick: toFolderSheet(Sheet.Message.RequestedOpen()),
+                    children: [outlineIcon(h, ["M4 6h16M4 12h16M4 18h16"])],
+                  },
+                  h,
+                ),
+              ],
+            ),
+          ],
+          viewControls: [
+            dateNavigation(model.view, disabled, h),
+            viewToggleGroup(
               {
-                variant: "ghost",
-                size: "icon",
-                rounded: true,
-                ariaLabel: "Calendars",
-                attributes: [h.Id(calendarDrawerId)],
-                dialogId: model.folderSheet.id,
+                label: "Calendar view",
+                value: model.view,
+                items: viewChoices,
                 disabled,
-                onClick: toFolderSheet(Sheet.Message.RequestedOpen()),
-                children: [outlineIcon(h, ["M4 6h16M4 12h16M4 18h16"])],
+                onToggle: (view) => Message.ChangedView({ view }),
               },
               h,
             ),
           ],
-        ),
-        h.div(
-          [h.Class("calendar-header-actions")],
-          [
-            scheduleControls(model.view, disabled, h),
-            button(
-              {
-                size: "sm",
-                dialogId: formDialogId,
-                attributes: [h.Id(newEventId)],
-                disabled:
-                  disabled || (model.visible !== null && !selectedCalendar),
-                onClick: Message.NewEvent({ day: model.date, minute: null }),
-                children: ["New event"],
-              },
-              h,
-            ),
-          ],
-        ),
-      ],
+          primaryAction: button(
+            {
+              size: "sm",
+              rounded: true,
+              ariaLabel: "New event",
+              dialogId: formDialogId,
+              attributes: [h.Id(newEventId)],
+              disabled:
+                disabled || (model.visible !== null && !selectedCalendar),
+              onClick: Message.NewEvent({ day: model.date, minute: null }),
+              children: [plusIcon(h, "16"), "Event"],
+            },
+            h,
+          ),
+        },
+        h,
+      ),
       sidebar: calendarNavigation(model, "sidebar", h),
       list,
       hasSelection: false,

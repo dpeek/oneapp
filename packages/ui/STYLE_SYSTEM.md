@@ -54,7 +54,9 @@ focus treatment as part of that migration.
   It uses the compact, transparent Crease Toolbar layout. Put the back link or
   navigation trigger, the `h1`, then view controls such as filters and sort in
   the start slot. The title truncates when space is tight, and the controls stay
-  visible. Keep DOM order aligned with visual order at every width.
+  visible. Use the view controls slot for groups such as date navigation and
+  view switches that can wrap below the heading. Keep DOM order aligned with
+  visual order at every width.
 - Put a single small rounded primary Button at the far end, including on the
   first-use empty screen. Use a plus icon and a noun as the visible label
   and a descriptive accessible name such as “Add task” or “Upload file”. Use

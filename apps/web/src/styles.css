@@ -4,13 +4,6 @@
 :root {
   color-scheme: light dark;
   font-family: Inter, system-ui, sans-serif;
-  --surface: light-dark(#fff, #1e2030);
-  --popover: light-dark(#fff, #2b2e43);
-  --canvas: light-dark(#f5f6fb, #151621);
-  --text: light-dark(#1c2030, #eef0f8);
-  --muted: light-dark(#53576b, #b8bbcf);
-  --border: light-dark(#dcdeea, #3c4055);
-  --selected: light-dark(#eeecfc, #2a2845);
   background-color: var(--surface);
   color: var(--text);
 }

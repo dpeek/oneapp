@@ -1,6 +1,7 @@
 import { appName, defaultServerUrl } from "@oneapp/core";
 import { currentExtensionPath } from "@oneapp/core/extension-auth";
 import { linksPath, SaveLink } from "@oneapp/core/links";
+import { alert, button } from "@oneapp/ui";
 import { Effect, Schema } from "effect";
 import { Command, Runtime, type Update } from "foldkit";
 import type { Document, HtmlBuilder } from "foldkit/html";
@@ -160,15 +161,17 @@ const update = (model: Model, message: Message) => {
 };
 
 const view = (model: Model, h: HtmlBuilder<Message>): Document => {
-  const button = (label: string, message: Message, secondary = false) =>
-    h.button(
-      [
-        h.Type("button"),
-        h.Class(secondary ? "secondary" : "primary"),
-        h.Disabled(model.busy),
-        h.OnClick(message),
-      ],
-      [label],
+  const action = (label: string, onClick: Message, secondary = false) =>
+    button(
+      {
+        variant: secondary ? "outline" : "primary",
+        ...(secondary ? { size: "sm" } : {}),
+        disabled: model.busy,
+        focusableWhenDisabled: true,
+        onClick,
+        children: [label],
+      },
+      h,
     );
 
   return {
@@ -179,7 +182,7 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
         h.h1([], [appName]),
         ...(model.status === "connected"
           ? [
-              button("Save this tab", Message.ClickedSave()),
+              action("Save this tab", Message.ClickedSave()),
               h.div(
                 [h.Class("actions")],
                 [
@@ -191,22 +194,36 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
                     ],
                     ["Open OneApp"],
                   ),
-                  button("Disconnect", Message.ClickedDisconnect(), true),
+                  action("Disconnect", Message.ClickedDisconnect(), true),
                 ],
               ),
             ]
           : model.status === "disconnected"
-            ? [button("Connect to OneApp", Message.ClickedConnect())]
+            ? [action("Connect to OneApp", Message.ClickedConnect())]
             : model.status === "pending"
               ? [
                   h.p([], ["Approve the connection in the OneApp tab."]),
-                  button("Check connection", Message.ClickedCheck()),
+                  action("Check connection", Message.ClickedCheck()),
                 ]
               : model.busy
                 ? [h.p([h.Role("status")], ["Checking connection…"])]
-                : [button("Retry", Message.ClickedCheck())]),
-        h.p([h.Role("status")], [model.notice]),
-        h.p([h.Role("alert")], [model.error]),
+                : [action("Retry", Message.ClickedCheck())]),
+        alert(
+          {
+            message: model.notice || null,
+            severity: "success",
+            announcement: "status",
+          },
+          h,
+        ),
+        alert(
+          {
+            message: model.error || null,
+            severity: "error",
+            announcement: "alert",
+          },
+          h,
+        ),
       ],
     ),
   };

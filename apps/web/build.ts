@@ -2,7 +2,7 @@ import { createStylexBunPlugin } from "@stylexjs/unplugin/bun";
 import { cp, rename, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { stylexOptions } from "./stylex-options.ts";
+import { stylexOptions } from "../../scripts/stylex-options.ts";
 
 const output = new URL("./dist/", import.meta.url);
 const stylexCss = new URL("stylex.css", output);

@@ -6,8 +6,12 @@
   "scripts": {
     "build": "bun ./build.ts"
   },
+  "devDependencies": {
+    "@stylexjs/unplugin": "0.19.2"
+  },
   "dependencies": {
     "@oneapp/core": "workspace:*",
+    "@oneapp/ui": "workspace:*",
     "effect": "~4.1.0",
     "foldkit": "0.170.0"
   }

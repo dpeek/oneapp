@@ -3,7 +3,7 @@ import stylex from "@stylexjs/unplugin/vite";
 import { createReadStream, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
-import { stylexOptions } from "./stylex-options.ts";
+import { stylexOptions } from "../../scripts/stylex-options.ts";
 
 const pdfPackage = JSON.parse(
   readFileSync(new URL(import.meta.resolve("pdfjs-dist/package.json")), "utf8"),

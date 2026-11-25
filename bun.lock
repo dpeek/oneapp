@@ -37,8 +37,12 @@
       "version": "0.0.0",
       "dependencies": {
         "@oneapp/core": "workspace:*",
+        "@oneapp/ui": "workspace:*",
         "effect": "~4.1.0",
         "foldkit": "0.170.0",
+      },
+      "devDependencies": {
+        "@stylexjs/unplugin": "0.19.2",
       },
     },
     "apps/web": {

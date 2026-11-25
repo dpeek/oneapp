@@ -1,4 +1,11 @@
 :root {
+  --surface: light-dark(#fff, #1e2030);
+  --popover: light-dark(#fff, #2b2e43);
+  --canvas: light-dark(#f5f6fb, #151621);
+  --text: light-dark(#1c2030, #eef0f8);
+  --muted: light-dark(#53576b, #b8bbcf);
+  --border: light-dark(#dcdeea, #3c4055);
+  --selected: light-dark(#eeecfc, #2a2845);
   --accent: light-dark(#4b43ad, #c5bfff);
   --accent-hover: light-dark(#3d3693, #d8d3ff);
   --on-accent: light-dark(#fff, #1d1844);

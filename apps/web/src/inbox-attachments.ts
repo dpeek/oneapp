@@ -1,7 +1,7 @@
-import { button, buttonClassName, outlineIcon } from "@oneapp/ui";
+import { button, buttonClassName, Dialog, outlineIcon } from "@oneapp/ui";
 import { fileSize, renderPdf } from "./file-display.ts";
-import { Effect, Schema } from "effect";
-import { Submodel } from "foldkit";
+import { Effect, Option, Schema } from "effect";
+import { Submodel, Update } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import * as Mount from "foldkit/mount";
@@ -19,51 +19,82 @@ const Location = {
   part: AttachmentPart,
 };
 
-export const State = Schema.NullOr(
-  Schema.Struct({
-    ...Location,
-    request: Schema.String,
-    status: Schema.Literals(["loading", "ready", "failed"]),
-  }),
-);
+const State = Schema.Struct({
+  ...Location,
+  request: Schema.String,
+  status: Schema.Literals(["loading", "ready", "failed"]),
+});
 type State = typeof State.Type;
+
+const dialogId = "mail-attachment-preview";
+export const Model = Schema.Struct({
+  dialog: Dialog.Model,
+  preview: Schema.NullOr(State),
+});
+type Model = typeof Model.Type;
+
+export const initial: Model = {
+  dialog: Dialog.init({
+    id: dialogId,
+    focusSelector: '[data-slot="dialog-close"]',
+  }),
+  preview: null,
+};
 
 export const Message = defineMessageUnion({
   Opened: Location,
-  Closed: {},
-  Mounted: {},
+  GotDialogMessage: { message: Dialog.Message },
   Ready: { request: Schema.String },
   Failed: { request: Schema.String },
   SessionExpired: { request: Schema.String },
 });
 type Message = typeof Message.Type;
 
-export const update = (model: State, message: Message) =>
-  Message.match<{ model: State }>(message, {
-    Opened: ({ id, part }) => ({
-      model: { id, part, request: crypto.randomUUID(), status: "loading" },
-    }),
-    Closed: () => ({ model: null }),
-    Mounted: () => ({ model }),
+const toDialogMessage = (message: typeof Dialog.Message.Type) =>
+  Message.GotDialogMessage({ message });
+const foldDialog = Update.foldChild({
+  update: Dialog.update,
+  read: (model: Model) => Option.some(model.dialog),
+  write: (model, dialog) => ({ ...model, dialog }),
+  toParentMessage: toDialogMessage,
+  foldOutMessage: () => (model) => ({ model }),
+});
+
+export const update = (model: Model, message: Message) =>
+  Message.match<Update.Return<Model, Message>>(message, {
+    Opened: ({ id, part }) =>
+      foldDialog(
+        {
+          ...model,
+          preview: {
+            id,
+            part,
+            request: crypto.randomUUID(),
+            status: "loading",
+          },
+        },
+        Dialog.Message.RequestedOpen(),
+      ),
+    GotDialogMessage: ({ message }) => {
+      const result = foldDialog(model, message);
+      return !result.model.dialog.isOpen && result.model.preview
+        ? { ...result, model: { ...result.model, preview: null } }
+        : result;
+    },
     Ready: ({ request }) => ({
-      model: request === model?.request ? { ...model, status: "ready" } : model,
+      model:
+        request === model.preview?.request
+          ? { ...model, preview: { ...model.preview, status: "ready" } }
+          : model,
     }),
     Failed: ({ request }) => ({
       model:
-        request === model?.request ? { ...model, status: "failed" } : model,
+        request === model.preview?.request
+          ? { ...model, preview: { ...model.preview, status: "failed" } }
+          : model,
     }),
     SessionExpired: () => ({ model }),
   });
-
-const ShowPreview = Mount.define("ShowInboxAttachmentPreview", {
-  messages: [Message.Mounted],
-  execute: ({ element }) =>
-    Effect.sync(() => {
-      if (element instanceof HTMLDialogElement && !element.open)
-        element.showModal();
-      return Message.Mounted();
-    }),
-});
 
 const RenderDocument = Mount.define("RenderInboxAttachmentDocument", {
   args: {
@@ -114,41 +145,16 @@ const downloadLink = (
     [outlineIcon(h, ["M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"])],
   );
 
-const previewDialog = (
+const previewContent = (
   h: HtmlBuilder<Message>,
   attachment: InboxAttachment,
-  preview: NonNullable<State>,
+  preview: State,
   trash: boolean,
 ) => {
   const { id, part, request, status } = preview;
-  return h.dialog(
+  return h.div(
+    [h.Key(request), h.Class("inbox-attachment-preview")],
     [
-      h.Key(request),
-      h.Class("inbox-attachment-dialog"),
-      h.AriaLabelledBy("inbox-attachment-title"),
-      h.OnMount(ShowPreview()),
-      h.OnCancel(Message.Closed()),
-    ],
-    [
-      h.header(
-        [h.Class("inbox-attachment-dialog-header")],
-        [
-          h.h3([h.Id("inbox-attachment-title")], [attachment.name]),
-          downloadLink(h, id, attachment, trash),
-          button(
-            {
-              variant: "ghost",
-              size: "icon-sm",
-              rounded: true,
-              ariaLabel: "Close preview",
-              attributes: [h.Title("Close preview")],
-              onClick: Message.Closed(),
-              children: [outlineIcon(h, ["M6 6l12 12M6 18 18 6"])],
-            },
-            h,
-          ),
-        ],
-      ),
       ...(status === "loading"
         ? [h.p([h.Role("status")], ["Loading preview…"])]
         : []),
@@ -233,32 +239,30 @@ export const listView = Submodel.defineView<
                   h.span([], [fileSize(attachment.size)]),
                 ],
               ),
-              h.button(
-                [
-                  h.Type("button"),
-                  h.DataAttribute("slot", "button"),
-                  h.Class(
-                    buttonClassName({
-                      variant: "ghost",
-                      size: "icon-sm",
-                      rounded: true,
-                    }),
-                  ),
-                  h.AriaLabel(`Preview ${attachment.name}`),
-                  h.Title(
-                    attachment.preview
-                      ? `Preview ${attachment.name}`
-                      : "Preview unavailable for this file type",
-                  ),
-                  h.Disabled(!attachment.preview),
-                  h.OnClick(Message.Opened({ id, part: attachment.part })),
-                ],
-                [
-                  outlineIcon(h, [
-                    "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z",
-                    "M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z",
-                  ]),
-                ],
+              button(
+                {
+                  variant: "ghost",
+                  size: "icon-sm",
+                  rounded: true,
+                  ariaLabel: `Preview ${attachment.name}`,
+                  dialogId,
+                  attributes: [
+                    h.Title(
+                      attachment.preview
+                        ? `Preview ${attachment.name}`
+                        : "Preview unavailable for this file type",
+                    ),
+                  ],
+                  disabled: !attachment.preview,
+                  onClick: Message.Opened({ id, part: attachment.part }),
+                  children: [
+                    outlineIcon(h, [
+                      "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z",
+                      "M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z",
+                    ]),
+                  ],
+                },
+                h,
               ),
               downloadLink(h, id, attachment, trash),
             ],
@@ -273,14 +277,25 @@ export const previewView = Submodel.defineView<
   {
     id: string;
     attachments: readonly InboxAttachment[];
-    preview: State;
+    state: Model;
     trash: boolean;
   },
   Message
->(({ id, attachments, preview, trash }, h) => {
+>(({ id, attachments, state: { dialog, preview }, trash }, h) => {
   const selected =
     preview?.id === id && attachments.find(({ part }) => part === preview.part);
-  return selected && preview
-    ? previewDialog(h, selected, preview, trash)
-    : h.empty;
+  return Dialog.view(
+    {
+      model: dialog,
+      size: "extra-wide",
+      title: selected ? selected.name : "",
+      headerActions: selected ? [downloadLink(h, id, selected, trash)] : [],
+      content: () =>
+        selected && preview
+          ? previewContent(h, selected, preview, trash)
+          : h.empty,
+      toParentMessage: toDialogMessage,
+    },
+    h,
+  );
 });

@@ -46,6 +46,7 @@ const styles = stylex.create({
     boxShadow: "0 10px 24px rgb(0 0 0 / 20%)",
   },
   wide: { inlineSize: "min(36rem, calc(100% - 2rem))" },
+  extraWide: { inlineSize: "min(50rem, calc(100% - 2rem))" },
   padding: { padding: "clamp(1rem, 4vw, 1.5rem)" },
   native: {
     "::backdrop": { backgroundColor: "rgb(10 11 18 / 65%)" },
@@ -57,7 +58,20 @@ const styles = stylex.create({
     justifyContent: "space-between",
     gap: "0.5rem",
   },
-  title: { margin: 0, fontSize: "1.125rem", fontWeight: 600, lineHeight: 1.25 },
+  title: {
+    minInlineSize: 0,
+    margin: 0,
+    overflowWrap: "anywhere",
+    fontSize: "1.125rem",
+    fontWeight: 600,
+    lineHeight: 1.25,
+  },
+  headerActions: {
+    display: "flex",
+    flexShrink: 0,
+    alignItems: "center",
+    gap: "0.25rem",
+  },
   footer: {
     display: "flex",
     flexDirection: {
@@ -87,10 +101,11 @@ export const view = <ParentMessage>(
     model: typeof Model.Type;
     title: string;
     content: (initialFocus: ReadonlyArray<ChildAttribute>) => Html;
-    size?: "wide";
+    size?: "wide" | "extra-wide";
     padded?: boolean;
     showHeader?: boolean;
     showCloseButton?: boolean;
+    headerActions?: ReadonlyArray<Html>;
     toParentMessage: (message: typeof Message.Type) => ParentMessage;
   }>,
   h: HtmlBuilder<ParentMessage>,
@@ -108,8 +123,31 @@ export const view = <ParentMessage>(
         closeButton,
         initialFocus,
         isVisible,
-      }) =>
-        h.dialog(
+      }) => {
+        const actions = [...(props.headerActions ?? [])];
+        if (
+          isVisible &&
+          props.showHeader !== false &&
+          props.showCloseButton !== false
+        )
+          actions.push(
+            h.button(
+              [
+                ...closeButton,
+                h.AriaLabel("Close"),
+                h.DataAttribute("slot", "dialog-close"),
+                h.Class(
+                  buttonClassName({
+                    variant: "ghost",
+                    size: "icon",
+                    rounded: true,
+                  }),
+                ),
+              ],
+              [outlineIcon(h, ["M6 6l12 12M6 18L18 6"])],
+            ),
+          );
+        return h.dialog(
           [...dialog, h.Class(stylex.props(styles.root).className ?? "")],
           isVisible
             ? [
@@ -130,6 +168,7 @@ export const view = <ParentMessage>(
                         styles.panel,
                         styles.surface,
                         props.size === "wide" && styles.wide,
+                        props.size === "extra-wide" && styles.extraWide,
                         props.padded !== false && styles.padding,
                       ).className ?? "",
                     ),
@@ -155,22 +194,20 @@ export const view = <ParentMessage>(
                               ],
                               [props.title],
                             ),
-                            ...((props.showCloseButton ?? true)
+                            ...(actions.length
                               ? [
-                                  h.button(
+                                  h.div(
                                     [
-                                      ...closeButton,
-                                      h.AriaLabel("Close"),
-                                      h.DataAttribute("slot", "dialog-close"),
+                                      h.DataAttribute(
+                                        "slot",
+                                        "dialog-header-actions",
+                                      ),
                                       h.Class(
-                                        buttonClassName({
-                                          variant: "ghost",
-                                          size: "icon",
-                                          rounded: true,
-                                        }),
+                                        stylex.props(styles.headerActions)
+                                          .className ?? "",
                                       ),
                                     ],
-                                    [outlineIcon(h, ["M6 6l12 12M6 18L18 6"])],
+                                    actions,
                                   ),
                                 ]
                               : []),
@@ -181,7 +218,8 @@ export const view = <ParentMessage>(
                 ),
               ]
             : [],
-        ),
+        );
+      },
     },
     toParentMessage: props.toParentMessage,
   });

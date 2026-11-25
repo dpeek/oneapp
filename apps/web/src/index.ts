@@ -1331,7 +1331,7 @@ const update = (
           message.request === model.inbox.compose.request ||
           message.request === model.inbox.quickReply.request ||
           message.request === model.inbox.senderRuleRequest?.request ||
-          message.request === model.inbox.attachmentPreview?.request ||
+          message.request === model.inbox.attachmentPreview.preview?.request ||
           message.request === deleting?.request ||
           message.request === moving?.request)
       ) {

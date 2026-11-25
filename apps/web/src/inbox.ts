@@ -187,7 +187,7 @@ export const Model = Schema.Struct({
   imageRequest: Schema.NullOr(Schema.String),
   imageError: Schema.Boolean,
   showPlainText: Schema.Boolean,
-  attachmentPreview: Attachments.State,
+  attachmentPreview: Attachments.Model,
   attachmentPopover: Popover.Model,
   deleteRequest: Schema.NullOr(
     Schema.Struct({
@@ -233,7 +233,7 @@ export const initial: Model = {
   imageRequest: null,
   imageError: false,
   showPlainText: false,
-  attachmentPreview: null,
+  attachmentPreview: Attachments.initial,
   attachmentPopover: Popover.init({ id: "mail-attachments" }),
   deleteRequest: null,
   archiveRequest: null,
@@ -952,7 +952,7 @@ const selectMessage = (model: Model, active: Model["active"]) =>
     imageRequest: null,
     imageError: false,
     showPlainText: false,
-    attachmentPreview: null,
+    attachmentPreview: Attachments.initial,
     attachmentPopover: Popover.init({ id: "mail-attachments" }),
   });
 
@@ -1249,7 +1249,7 @@ export const update = (model: Model, message: Message): Result =>
               imageRequest: null,
               imageError: false,
               showPlainText: false,
-              attachmentPreview: null,
+              attachmentPreview: Attachments.initial,
               attachmentPopover: Popover.init({ id: "mail-attachments" }),
             };
       const previous = id === null ? base.selected : null;
@@ -1277,13 +1277,26 @@ export const update = (model: Model, message: Message): Result =>
     GotAttachmentPopoverMessage: ({ message }) =>
       foldAttachmentPopover(model, message),
     GotAttachmentMessage: ({ message }) => {
+      if (
+        message._tag === "Opened" &&
+        (model.entry?.id !== message.id ||
+          !model.entry.attachments?.some(
+            ({ part, preview }) => part === message.part && preview !== null,
+          ))
+      )
+        return { model };
       const result = foldAttachments(
         message._tag === "Opened"
           ? { ...model, attachmentPopover: initial.attachmentPopover }
           : model,
         message,
       );
-      return message._tag === "Closed"
+      // The preview action is removed with the popover. Restore focus to its
+      // trigger after the dialog releases modal isolation.
+      return message._tag === "GotDialogMessage" &&
+        message.message._tag === "CompletedCloseDialog" &&
+        !result.model.attachmentPreview.dialog.isOpen &&
+        !result.model.attachmentPopover.isOpen
         ? {
             ...result,
             commands: [...(result.commands ?? []), FocusAttachmentButton()],
@@ -1334,7 +1347,7 @@ export const update = (model: Model, message: Message): Result =>
             entry: null,
             entryRequest: null,
             imageRequest: null,
-            attachmentPreview: null,
+            attachmentPreview: Attachments.initial,
             attachmentPopover: Popover.init({ id: "mail-attachments" }),
           }
         : result.model;
@@ -1675,7 +1688,7 @@ export const update = (model: Model, message: Message): Result =>
               imageRequest: null,
               imageError: false,
               showPlainText: false,
-              attachmentPreview: null,
+              attachmentPreview: Attachments.initial,
               attachmentPopover: Popover.init({ id: "mail-attachments" }),
             }
           : {}),
@@ -2317,7 +2330,7 @@ const entryContent = (model: Model, h: HtmlBuilder<Message>) => {
                   model: {
                     id: entry.id,
                     attachments: entry.attachments,
-                    preview: model.attachmentPreview,
+                    state: model.attachmentPreview,
                     trash: model.folder === "trash",
                   },
                   toParentMessage: toAttachmentMessage,

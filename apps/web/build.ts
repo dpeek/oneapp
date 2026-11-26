@@ -15,7 +15,7 @@ await Bun.build({
   publicPath: "/",
   // Bun resolves root-relative HTML links against the working directory.
   // Keep these links pointed at the files copied from public/ above.
-  external: [resolve("manifest.webmanifest"), resolve("app-icon-192.png")],
+  external: [resolve("manifest.webmanifest"), resolve("apple-touch-icon.png")],
   minify: true,
   splitting: true,
   plugins: [

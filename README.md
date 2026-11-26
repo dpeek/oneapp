@@ -42,6 +42,16 @@ export AGENT_BROWSER_NO_VERSION_CHECK=1
 
 Close the browser session with `"$ORUMAI_BROWSER" close` if you used it. Stop a foreground dev server with Ctrl+C. For automation, keep the supervisor that launched the dev server alive and have it send `SIGINT` to the dev process group even if the browser check fails. The sandbox can reject signals sent from a separate tool invocation. Wait for Alchemy to stop its children, then confirm `lsof -nP -iTCP:18373 -sTCP:LISTEN` reports no listener on the chosen port.
 
+## iPhone Home Screen icon
+
+Orumai supplies a single white spiral on a black tile for Safari's **Add to Home
+Screen**. To verify an icon update, install from Safari and check the tile in
+both Light and Dark Home Screen appearances without reinstalling. On an iPhone
+with the previous icon installed, reopen the web app after the update and check
+the tile again. If it still shows the old artwork, remove the Home Screen web
+app and add it again from Safari. Automatic refresh of existing installations
+still needs verification on the affected iOS version.
+
 ## Mobile mail notifications
 
 Orumai can be installed as a PWA and receive private new-mail alerts while closed.

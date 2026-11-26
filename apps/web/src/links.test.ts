@@ -89,6 +89,6 @@ it("deletes the open menu's link after reordering and focuses the surviving neig
   expect(deleted.records).toEqual([link]);
   expect(deleted.actions.row).toBeNull();
   expect(commands?.[0]?.args).toEqual({
-    id: "saved-link-actions-new-link-button",
+    neighborId: link.id,
   });
 });

@@ -25,13 +25,7 @@ export {
 
 const styles = stylex.create({
   trigger: {
-    opacity: {
-      default: 1,
-      "@media (hover: hover) and (pointer: fine)": {
-        default: 0,
-        ':is([data-slot="item"]:hover *, [data-slot="item"]:focus-within *, [data-open])': 1,
-      },
-    },
+    display: { "@media not (any-pointer: coarse)": "none" },
   },
   item: { minBlockSize: { "@media (pointer: coarse)": "2.75rem" } },
   contextAnchor: {
@@ -144,7 +138,7 @@ export const create = <Action extends string>() => {
       const { model, rowKey, label, items, toParentMessage } = props;
       const row =
         model.row?.key === rowKey ? model.row : initRow(model.id, rowKey);
-      const buttonId = Menu.buttonId(row.menu.id);
+      const linkId = rowLinkId(model.id, rowKey);
       const pointerId = `${row.menu.id}-pointer`;
       const toMenuMessage = (message: typeof Menu.Message.Type) =>
         toParentMessage(Message.GotMenu({ key: rowKey, message }));
@@ -185,10 +179,8 @@ export const create = <Action extends string>() => {
                       h.OnMount(
                         mapMessage(
                           PositionContextMenu({
-                            anchorId: row.point ? pointerId : buttonId,
-                            originId: row.returnToRow
-                              ? rowLinkId(model.id, rowKey)
-                              : buttonId,
+                            anchorId: row.point ? pointerId : linkId,
+                            originId: linkId,
                             atPointer: row.point !== null,
                           }),
                           toMenuMessage,

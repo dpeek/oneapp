@@ -89,7 +89,8 @@ export const createUpdate = <Action extends string>() => {
         !row.menu.isOpen && message._tag === "OpenedContext"
           ? message.point
           : row.point,
-      returnToRow: row.returnToRow || (!row.menu.isOpen && fromRow),
+      returnToRow:
+        row.returnToRow || (!row.menu.isOpen && message._tag !== "GotMenu"),
     };
     const commands = Command.mapMessages(
       result.commands?.filter(

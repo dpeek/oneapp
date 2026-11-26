@@ -79,14 +79,14 @@ focus treatment as part of that migration.
   model per list, pass each row's stable key to the ellipsis and context
   bindings, and resolve the selected key against the current records.
 - Keep the row's primary link and its labeled ellipsis separate. The
-  ellipsis stays visible on touch, and its space is reserved on desktop
-  where hover or focus reveals it. Right-click opens the same Foldkit menu
-  at the pointer. Shift+F10 or the Menu key on the row link opens it at the
-  ellipsis. [Crease Context Menu](https://github.com/Potti1234/creaseui/blob/b11a974af28917ae6fea67cbf9ade89d8a3c464c/src/stylex/context-menu.ts) ·
+  ellipsis is visible on devices with a coarse pointer. Right-click opens
+  the same Foldkit menu at the pointer. Shift+F10 or the Menu key opens it
+  at the row link. [Crease Context Menu](https://github.com/Potti1234/creaseui/blob/b11a974af28917ae6fea67cbf9ade89d8a3c464c/src/stylex/context-menu.ts) ·
   [Crease More Menu](https://creaseui.com/docs/components/more-menu)
 - Put destructive actions last. Use the menu's focus return when the row
-  survives. After deleting the row, move lost focus to the next row's
-  ellipsis, the previous row's ellipsis, or the list's primary entry control.
+  survives. After deleting the row, move lost focus to the next row, the
+  previous row, or the list's primary entry control. Focus the row's
+  ellipsis when visible and its primary link otherwise.
 
 ## Dialogs and feedback
 

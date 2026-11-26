@@ -36,7 +36,7 @@ const invalidUrl = "Enter a valid HTTP or HTTPS URL without credentials.";
 const actions = [
   {
     action: "open",
-    label: "Open link",
+    label: "Open",
     icon: (h: HtmlBuilder<Message>) =>
       outlineIcon(h, [
         "M13 5h6v6m0-6-9 9m7-1v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h5",
@@ -50,7 +50,7 @@ const actions = [
   },
   {
     action: "delete",
-    label: "Delete saved link",
+    label: "Delete",
     icon: (h: HtmlBuilder<Message>) => outlineIcon(h, trashIconPaths),
     destructive: true,
   },
@@ -202,15 +202,28 @@ const CopyUrl = Command.define("CopySavedLinkUrl", {
     ),
 });
 const RecoverDeletedLinkFocus = Command.define("RecoverDeletedLinkFocus", {
-  args: { id: Schema.String },
+  args: { neighborId: Schema.NullOr(Schema.String) },
   messages: [Message.RecoveredDeletedLinkFocus],
-  execute: ({ id }) =>
+  execute: ({ neighborId }) =>
     Render.afterCommit.pipe(
       Effect.andThen(
         Effect.sync(() => {
           // A pending delete may finish after the user has moved focus elsewhere.
-          if (document.activeElement === document.body)
-            document.getElementById(id)?.focus();
+          if (document.activeElement === document.body) {
+            if (neighborId === null) {
+              document.getElementById(linkInputId)?.focus();
+            } else {
+              const trigger = document.getElementById(
+                ItemActionMenu.triggerId(actionsId, neighborId),
+              );
+              const target = trigger?.getClientRects().length
+                ? trigger
+                : document.getElementById(
+                    ItemActionMenu.rowLinkId(actionsId, neighborId),
+                  );
+              target?.focus();
+            }
+          }
           return Message.RecoveredDeletedLinkFocus();
         }),
       ),
@@ -419,9 +432,7 @@ export const update = (
               ? []
               : [
                   RecoverDeletedLinkFocus({
-                    id: neighbor
-                      ? ItemActionMenu.triggerId(actionsId, neighbor.id)
-                      : linkInputId,
+                    neighborId: neighbor?.id ?? null,
                   }),
                 ],
           outMessage: OutMessage.DismissNotification({ key: "links-delete" }),

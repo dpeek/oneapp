@@ -50,7 +50,7 @@ const styles = stylex.create({
   check: { display: "inline-flex", inlineSize: "1rem", flexShrink: 0 },
   active: { backgroundColor: controls.hover },
   disabled: { opacity: 0.5, cursor: "default" },
-  destructive: { color: "light-dark(#a42020, #ff9797)" },
+  destructive: { color: controls.destructive },
   separator: {
     blockSize: 1,
     marginBlock: "0.25rem",

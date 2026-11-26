@@ -15,7 +15,7 @@ import { parseArgs } from "node:util";
 import { watchDeployments } from "./task-runner/deployments.ts";
 import { githubRepository, productionChecks } from "./task-runner/github.ts";
 import { TaskQueue } from "./task-runner/queue.ts";
-import { gitOrigin, runNext } from "./task-runner/run.ts";
+import { gitOrigin, resolveBunCache, runNext } from "./task-runner/run.ts";
 import { configureBrowser, resolveBrowser } from "./task-runner/settings.ts";
 
 const usage = `Usage: bun --no-env-file run tasks:runner [--server <origin>] [--once | --dry-run]
@@ -114,6 +114,7 @@ async function main() {
       "Install the GitHub CLI and sign in to read deployment checks.",
     );
   const browser = await resolveBrowser();
+  const bunCache = await resolveBunCache(source, signal);
   const directory = join(
     process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"),
     "orumai-task-runner",
@@ -154,6 +155,7 @@ async function main() {
                 directory,
                 signal,
                 browser,
+                bunCache,
               }),
             ),
           );

@@ -1,6 +1,6 @@
 import { Schema } from "effect";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
 import { taskPath } from "../../apps/web/src/tasks-contract.ts";
 import { withBrowserSession } from "./browser.ts";
 import { savePendingDeployment } from "./deployments.ts";
@@ -22,17 +22,19 @@ const commandEnv = {
 };
 
 const sandboxProfile = "orumai-runner";
-const sandboxArgs = [
-  `default_permissions="${sandboxProfile}"`,
-  `permissions.${sandboxProfile}.extends=":workspace"`,
-  `permissions.${sandboxProfile}.network.enabled=true`,
-  `permissions.${sandboxProfile}.network.allow_local_binding=true`,
-  `permissions.${sandboxProfile}.network.allow_upstream_proxy=false`,
-  `permissions.${sandboxProfile}.network.domains={localhost="allow","127.0.0.1"="allow","::1"="allow"}`,
-  "features.network_proxy=true",
-].flatMap((value) => ["-c", value]);
+const sandboxArgsFor = (bunCache: string) =>
+  [
+    `default_permissions="${sandboxProfile}"`,
+    `permissions.${sandboxProfile}.extends=":workspace"`,
+    `permissions.${sandboxProfile}.filesystem={${JSON.stringify(bunCache)}="write"}`,
+    `permissions.${sandboxProfile}.network.enabled=true`,
+    `permissions.${sandboxProfile}.network.allow_local_binding=true`,
+    `permissions.${sandboxProfile}.network.allow_upstream_proxy=false`,
+    `permissions.${sandboxProfile}.network.domains={localhost="allow","127.0.0.1"="allow","::1"="allow","registry.npmjs.org"="allow","nodejs.org"="allow"}`,
+    "features.network_proxy=true",
+  ].flatMap((value) => ["-c", value]);
 
-const sandboxCommand = (args = sandboxArgs) => [
+const sandboxCommand = (args: string[]) => [
   "codex",
   "sandbox",
   "-P",
@@ -91,6 +93,22 @@ export const gitOrigin = (source: string, signal: AbortSignal) =>
     env: gitEnv,
   });
 
+export async function resolveBunCache(source: string, signal: AbortSignal) {
+  const cache = await execute(
+    [process.execPath, "--no-env-file", "pm", "cache"],
+    source,
+    signal,
+    {
+      capture: true,
+      env: { BUN_INSTALL_CACHE_DIR: process.env.BUN_INSTALL_CACHE_DIR },
+    },
+  );
+  if (!isAbsolute(cache))
+    throw new Error("Bun did not return an absolute cache path.");
+  await mkdir(cache, { recursive: true });
+  return realpath(cache);
+}
+
 export async function runNext(
   queue: TaskQueue,
   settings: {
@@ -101,6 +119,7 @@ export async function runNext(
     directory: string;
     signal: AbortSignal;
     browser: string;
+    bunCache: string;
   },
 ) {
   const next = await queue.next();
@@ -109,7 +128,8 @@ export async function runNext(
   if (task.status !== "not-started" || !task.tagIds.includes(next.tagId))
     return;
 
-  const { origin, directory, source, remote, repository, signal } = settings;
+  const { origin, directory, source, remote, repository, signal, bunCache } =
+    settings;
   const run = await mkdtemp(join(directory, `${task.id}-`));
   const repo = join(run, "repo");
   const url = new URL(taskPath(task.id), origin).href;
@@ -120,6 +140,9 @@ export async function runNext(
       capture,
       env: gitEnv,
     });
+  const bunEnv = { BUN_INSTALL_CACHE_DIR: bunCache };
+  const bun = (args: string[]) =>
+    execute([process.execPath, ...args], repo, signal, { env: bunEnv });
 
   try {
     await record("claiming");
@@ -146,11 +169,7 @@ export async function runNext(
       { env: gitEnv },
     );
     const base = await git(["rev-parse", "HEAD"], true);
-    await execute(
-      [process.execPath, "install", "--frozen-lockfile"],
-      repo,
-      signal,
-    );
+    await bun(["install", "--frozen-lockfile"]);
 
     const images: string[] = [];
     for (const attachment of task.attachments) {
@@ -189,18 +208,20 @@ ${JSON.stringify({ id: task.id, title: task.title, description: task.description
     const devLog = join(run, "dev.log");
     await writeFile(codexLog, "", { mode: 0o600 });
     await record("starting", { devLog });
+    const sandboxArgs = sandboxArgsFor(bunCache);
+    const sandboxEnv = { ...bunEnv, CODEX_HOME: process.env.CODEX_HOME };
     await withDevServer(
       {
         repo,
         logPath: devLog,
-        commandPrefix: sandboxCommand(),
-        env: { ...commandEnv, CODEX_HOME: process.env.CODEX_HOME },
+        commandPrefix: sandboxCommand(sandboxArgs),
+        env: { ...commandEnv, ...sandboxEnv },
         signal,
       },
       (dev) =>
         withBrowserSession(source, settings.browser, async (browser) => {
           const sandbox = [...sandboxArgs, "-c", browser.permission];
-          const env = { ...browser.env, CODEX_HOME: process.env.CODEX_HOME };
+          const env = { ...browser.env, ...sandboxEnv };
           await execute(
             [...sandboxCommand(sandbox), browser.cli, "open", "about:blank"],
             repo,
@@ -263,14 +284,10 @@ ${JSON.stringify({ id: task.id, title: task.title, description: task.description
     const stagedTree = await git(["write-tree"], true);
 
     await record("checking");
-    await execute(
-      [process.execPath, "install", "--frozen-lockfile"],
-      repo,
-      signal,
-    );
-    await execute([process.execPath, "check"], repo, signal);
-    await execute([process.execPath, "run", "test"], repo, signal);
-    await execute([process.execPath, "run", "build"], repo, signal);
+    await bun(["install", "--frozen-lockfile"]);
+    await bun(["check"]);
+    await bun(["run", "test"]);
+    await bun(["run", "build"]);
     if (
       (await git(["write-tree"], true)) !== stagedTree ||
       (await git(["diff", "--name-only"], true)) ||

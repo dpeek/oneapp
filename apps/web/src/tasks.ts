@@ -1,4 +1,5 @@
 import {
+  CalendarPicker,
   Dialog,
   DropdownMenu,
   ItemActionMenu,
@@ -7,6 +8,7 @@ import {
   Sheet,
   Tokenizer,
 } from "@orumai/ui";
+import { Temporal } from "@js-temporal/polyfill";
 import { Effect, Option, Schema } from "effect";
 import { Command, Render, Update } from "foldkit";
 import { focus } from "foldkit/dom";
@@ -14,6 +16,19 @@ import { defineMessageUnion } from "foldkit/message";
 import { ItemId, Tag, TagCreate, tagsApi } from "./items-contract.ts";
 import { createTagPrefix, searchTags } from "./tag-picker.ts";
 import { checkIndex } from "./workspace-changes.ts";
+import * as Edits from "./task-edits.ts";
+import {
+  calendarChoice,
+  clearChoice,
+  dueChoices,
+  initPicker,
+  Picker,
+  pickerId,
+  PickerTarget,
+  Property,
+  tagChoices,
+  taskCalendar,
+} from "./task-properties.ts";
 import * as Attachments from "./task-attachments.ts";
 import {
   defaultTaskStatus,
@@ -21,6 +36,7 @@ import {
   taskApi,
   TaskAssignee,
   TaskCreate,
+  TaskDate,
   TaskDelete,
   TaskPriority,
   TaskRoute,
@@ -64,10 +80,13 @@ const Operation = Schema.Union([
   Schema.TaggedStruct("Save", {
     id: ItemId,
     input: TaskUpdate,
-    rowFocus: Schema.NullOr(Schema.Literals(["link", "trigger"])),
   }),
   Schema.TaggedStruct("Delete", { id: ItemId, input: TaskDelete }),
-  Schema.TaggedStruct("AddTag", { id: ItemId, input: TagCreate }),
+  Schema.TaggedStruct("AddTag", {
+    id: ItemId,
+    input: TagCreate,
+    skipAttachment: Schema.optionalKey(Schema.Boolean),
+  }),
 ]);
 type Operation = typeof Operation.Type;
 export const FilterCategory = Schema.Literals(["status", "priority", "tags"]);
@@ -85,10 +104,7 @@ const closedFilterOptions = { filterCategory: null, filterTags };
 const Sort = Schema.Literals(["updated", "priority", "due"]);
 const sortMenu = DropdownMenu.SingleSelect.init({ id: "task-sort" });
 const rowActions = ItemActionMenu.init("task-row-actions");
-type RowAction =
-  | "open"
-  | `status:${Task["status"]}`
-  | `priority:${NonNullable<Task["priority"]> | ""}`;
+type RowAction = "open" | "rename" | Property;
 export const taskActionMenu = ItemActionMenu.create<RowAction>();
 const closedTaskMenus = {
   filterPopover,
@@ -111,7 +127,17 @@ export const Model = Schema.Struct({
   index: Schema.NullOr(TaskSnapshot),
   folderSheet: Sheet.Model,
   selectedId: Schema.NullOr(ItemId),
-  editor: Schema.NullOr(Editor),
+  edits: Schema.Record(Schema.String, Edits.Draft),
+  picker: Schema.NullOr(Picker),
+  rename: Schema.NullOr(
+    Schema.Struct({
+      id: ItemId,
+      value: Schema.String,
+      invalid: Schema.Boolean,
+      revision: ItemId,
+    }),
+  ),
+  tagPickerError: Schema.NullOr(Schema.String),
   attachments: Attachments.Model,
   creation: Schema.NullOr(Creation),
   deleteDialog: Dialog.Model,
@@ -149,7 +175,10 @@ export const initial: Model = {
   index: null,
   folderSheet: Sheet.init({ id: "task-views" }),
   selectedId: null,
-  editor: null,
+  edits: {},
+  picker: null,
+  rename: null,
+  tagPickerError: null,
   attachments: Attachments.initial,
   creation: null,
   deleteDialog: Dialog.init({ id: deleteDialogId }),
@@ -198,8 +227,22 @@ export const Message = defineMessageUnion({
   GotRowActionMessage: { message: ItemActionMenu.Message },
   GotTagPickerMessage: { id: ItemId, message: Tokenizer.Message },
   RemovedTag: { id: ItemId },
-  Saved: {},
-  Discarded: {},
+  EditedText: { id: ItemId, field: Edits.TextField, value: Schema.String },
+  BlurredText: { id: ItemId, field: Edits.TextField },
+  TextDebounced: { id: ItemId, field: Edits.TextField, timer: Schema.String },
+  LeftTaskView: {},
+  EditedRename: { id: ItemId, value: Schema.String },
+  CommittedRename: { id: ItemId },
+  CanceledRename: { id: ItemId },
+  RetriedEdit: { id: ItemId },
+  DiscardedEdit: { id: ItemId },
+  GotPropertyPopover: { target: PickerTarget, message: Popover.Message },
+  GotPropertySearch: { target: PickerTarget, message: MultiCombobox.Message },
+  GotPropertyCalendar: {
+    target: PickerTarget,
+    message: CalendarPicker.Message,
+  },
+  FocusedPropertyCalendar: { target: PickerTarget },
   RequestedDelete: {},
   ConfirmedDelete: {},
   GotDeleteDialogMessage: { message: Dialog.Message },
@@ -395,6 +438,35 @@ const FocusRetryTarget = Command.define("FocusTaskRetryTarget", {
         : ".tasks-workspace.workspace-stacked > .workspace-header",
       { preventScroll: true },
     ).pipe(Effect.ignore, Effect.as(Message.FocusUpdated())),
+});
+
+const FocusEditor = Command.define("FocusTaskEditor", {
+  args: { selector: Schema.String },
+  messages: [Message.FocusUpdated],
+  execute: ({ selector }) =>
+    Render.afterCommit.pipe(
+      Effect.andThen(focus(selector, { preventScroll: true })),
+      Effect.ignore,
+      Effect.as(Message.FocusUpdated()),
+    ),
+});
+
+const FocusPropertyCalendar = Command.define("FocusTaskPropertyCalendar", {
+  args: { target: PickerTarget, selector: Schema.String },
+  messages: [Message.FocusedPropertyCalendar],
+  execute: ({ target, selector }) =>
+    Render.afterCommit.pipe(
+      Effect.andThen(focus(selector, { preventScroll: true })),
+      Effect.ignore,
+      Effect.as(Message.FocusedPropertyCalendar({ target })),
+    ),
+});
+
+const DebounceText = Command.define("DebounceTaskText", {
+  args: { id: ItemId, field: Edits.TextField, timer: Schema.String },
+  messages: [Message.TextDebounced],
+  execute: (args) =>
+    Effect.sleep(500).pipe(Effect.as(Message.TextDebounced(args))),
 });
 
 const requestJson = async <A>(
@@ -612,17 +684,7 @@ const makeEditor = (draft: Draft): Editor => ({
 const withEditor = (model: Model, editor: Editor): Model =>
   model.creation?.draft.id === editor.draft.id
     ? { ...model, creation: { ...model.creation, ...editor } }
-    : { ...model, editor };
-
-export const hasEdits = (draft: Draft, task: Task) =>
-  draft.title !== task.title ||
-  draft.description !== task.description ||
-  draft.status !== task.status ||
-  draft.priority !== task.priority ||
-  draft.dueOn !== task.dueOn ||
-  draft.assignee !== task.assignee ||
-  draft.tagIds.length !== task.tagIds.length ||
-  draft.tagIds.some((id) => !task.tagIds.includes(id));
+    : model;
 
 const editField = (
   draft: Draft,
@@ -651,38 +713,274 @@ export const toRowActionMessage = (
   message: typeof ItemActionMenu.Message.Type,
 ) => Message.GotRowActionMessage({ message });
 
+const findTask = (model: Model, id: string) =>
+  model.index?.tasks.find((task) => task.id === id);
+
+export const editedTask = (model: Model, task: Task) =>
+  Edits.overlay(task, model.edits[task.id]);
+
+const setDraft = (
+  model: Model,
+  id: string,
+  draft: Edits.Draft | undefined,
+): Model => {
+  const edits = { ...model.edits };
+  if (
+    draft &&
+    (draft.flight ||
+      draft.error ||
+      Edits.changed(draft.pending) ||
+      Object.keys(draft.text).length)
+  )
+    edits[id] = draft;
+  else delete edits[id];
+  return { ...model, edits };
+};
+
+const stageEdit = (
+  model: Model,
+  task: Task,
+  patch: Edits.Patch,
+  revision = task.revision,
+) =>
+  setDraft(
+    model,
+    task.id,
+    Edits.stage(
+      task,
+      model.edits[task.id] ?? {
+        ...Edits.init(task),
+        revision,
+      },
+      patch,
+    ),
+  );
+
+const flushText = (
+  model: Model,
+  id: string,
+  field: Edits.TextField,
+  blur: boolean,
+) => {
+  const task = findTask(model, id);
+  const draft = model.edits[id];
+  return task && draft
+    ? setDraft(model, id, Edits.commitText(task, draft, field, blur))
+    : model;
+};
+
+const finishRename = (model: Model, id: string, cancel: boolean) => {
+  const rename = model.rename;
+  if (rename?.id !== id) return { model };
+  const task = findTask(model, id);
+  const title = rename.value.trim();
+  if (!cancel && !title)
+    return { model: { ...model, rename: { ...rename, invalid: true } } };
+  const next = { ...model, rename: null };
+  return {
+    model:
+      !cancel && task
+        ? stageEdit(next, task, { title }, rename.revision)
+        : next,
+    commands: [RecoverTaskRowFocus({ rowId: id, preferLink: true })],
+  };
+};
+
+const updatePopover = (
+  model: Model,
+  target: PickerTarget,
+  message: typeof Popover.Message.Type,
+): Update.Return<Model, Message> => {
+  const id = pickerId(target);
+  const picker =
+    model.picker && pickerId(model.picker) === id ? model.picker : null;
+  if (
+    !picker &&
+    !["RequestedOpen", "PressedPointerOnButton", "ClickedButton"].includes(
+      message._tag,
+    )
+  )
+    return { model };
+  if (
+    !findTask(model, target.id) ||
+    (picker?.calendarFocusing && message._tag === "BlurredPanel")
+  )
+    return { model };
+  const base = picker?.popover ?? Popover.init({ id });
+  const result = Popover.update(base, message);
+  if (!picker && !result.model.isOpen) return { model };
+  const opening = result.model.isOpen && !base.isOpen;
+  const closingMenu =
+    target.surface === "menu" && base.isOpen && !result.model.isOpen;
+  return {
+    model: {
+      ...model,
+      tagPickerError: opening ? null : model.tagPickerError,
+      picker: {
+        ...(opening || !picker ? initPicker(target) : picker),
+        popover: result.model,
+      },
+    },
+    commands: closingMenu
+      ? [RecoverTaskRowFocus({ rowId: target.id, preferLink: false })]
+      : Command.mapMessages(result.commands ?? [], (message) =>
+          Message.GotPropertyPopover({ target, message }),
+        ),
+  };
+};
+
+const chooseProperty = (
+  model: Model,
+  picker: Picker,
+  value: string,
+  fromCalendar = false,
+): Update.Return<Model, Message> => {
+  const task = findTask(model, picker.id);
+  if (!task) return { model };
+  const { field } = picker;
+  const current = editedTask(model, task);
+  if (field === "tagIds") {
+    const { choices } = tagChoices(
+      picker.search.inputValue,
+      current.tagIds,
+      model.index?.tags ?? [],
+    );
+    if (
+      value !== clearChoice &&
+      !choices.some(({ id, disabled }) => id === value && !disabled)
+    )
+      return { model };
+    if (value.startsWith(createTagPrefix))
+      return start(
+        { ...model, tagPickerError: null },
+        {
+          _tag: "AddTag",
+          id: task.id,
+          input: { name: value.slice(createTagPrefix.length) },
+        },
+      );
+    const clearing = value === clearChoice;
+    const tagIds = clearing ? [] : toggleFilter(current.tagIds, value);
+    const request = model.request;
+    const cancelAttachment =
+      clearing &&
+      request?.operation._tag === "AddTag" &&
+      request.operation.id === task.id;
+    return {
+      model: stageEdit(
+        {
+          ...model,
+          ...(cancelAttachment
+            ? {
+                request: {
+                  ...request,
+                  operation: { ...request.operation, skipAttachment: true },
+                },
+              }
+            : {}),
+          picker: {
+            ...picker,
+            search: { ...picker.search, maybeActiveItemIndex: Option.none() },
+          },
+        },
+        task,
+        { tagIds },
+      ),
+    };
+  }
+  if (field === "dueOn" && value === calendarChoice) {
+    const calendar = taskCalendar(picker, current.dueOn);
+    return {
+      model: {
+        ...model,
+        picker: { ...picker, calendar, calendarFocusing: true },
+      },
+      commands: [
+        FocusPropertyCalendar({
+          target: {
+            id: picker.id,
+            field: picker.field,
+            surface: picker.surface,
+          },
+          selector: `#${calendar.id}-grid`,
+        }),
+      ],
+    };
+  }
+  let patch: Edits.Patch;
+  if (field === "dueOn") {
+    const date =
+      value === clearChoice
+        ? null
+        : fromCalendar
+          ? value
+          : dueChoices(picker.today).find(({ id }) => id === value)?.date;
+    if (date !== null && !Schema.is(TaskDate)(date)) return { model };
+    patch = { dueOn: date };
+  } else {
+    const fields = editField(toDraft(current), field, value);
+    patch = { [field]: fields[field] };
+  }
+  return updatePopover(
+    stageEdit(model, task, patch),
+    picker,
+    Popover.Message.RequestedClose(),
+  );
+};
+
+const updateSearch = (
+  model: Model,
+  target: PickerTarget,
+  message: typeof MultiCombobox.Message.Type,
+): Update.Return<Model, Message> => {
+  const picker = model.picker;
+  if (!picker?.popover.isOpen || pickerId(picker) !== pickerId(target))
+    return { model };
+  const result = MultiCombobox.update(picker.search, message);
+  const current = { ...picker, search: result.model };
+  const next = {
+    ...model,
+    picker: current,
+    tagPickerError:
+      message._tag === "UpdatedInputValue" ? null : model.tagPickerError,
+  };
+  if (result.outMessage?._tag === "Selected")
+    return chooseProperty(next, current, result.outMessage.value);
+  return {
+    model: next,
+    commands: Command.mapMessages(result.commands ?? [], (message) =>
+      Message.GotPropertySearch({ target, message }),
+    ),
+  };
+};
+
 const foldRowAction = Update.foldChild({
   update: taskActionMenu.update,
   read: (model: Model) => Option.some(model.rowActions),
   write: (model, rowActions) => ({ ...model, rowActions }),
   toParentMessage: toRowActionMessage,
   foldOutMessage:
-    ({
-      key,
-      action,
-      returnToRow,
-    }): Update.StepWithOutMessage<Model, Message, OutMessage> =>
+    ({ key, action }): Update.StepWithOutMessage<Model, Message, OutMessage> =>
     (model) => {
       const task = model.index?.tasks.find(({ id }) => id === key);
       if (!task || !matchesTaskFilters(task, model.filters)) return { model };
       if (action === "open")
         return { model, outMessage: OutMessage.OpenTask({ id: task.id }) };
-      if (model.request) return { model };
-
-      const value = action.slice(action.indexOf(":") + 1);
-      const { id, ...fields } = editField(
-        toDraft(task),
-        action.startsWith("status:") ? "status" : "priority",
-        value,
-      );
-      if (fields.status === task.status && fields.priority === task.priority)
-        return { model };
-      return start(model, {
-        _tag: "Save",
-        id,
-        input: { ...fields, revision: task.revision },
-        rowFocus: returnToRow ? "link" : "trigger",
-      });
+      if (action === "rename")
+        return {
+          model: {
+            ...model,
+            rename: {
+              id: task.id,
+              value: editedTask(model, task).title,
+              invalid: false,
+              revision: task.revision,
+            },
+          },
+          commands: [FocusEditor({ selector: `#task-rename-${task.id}` })],
+        };
+      const target = { id: task.id, field: action, surface: "menu" } as const;
+      return updatePopover(model, target, Popover.Message.RequestedOpen());
     },
 });
 
@@ -723,13 +1021,10 @@ const replaceTask = (model: Model, task: Task): Model => ({
     ...model.index,
     tasks: [task, ...model.index.tasks.filter(({ id }) => id !== task.id)],
   },
-  request: null,
 });
 
 const applyIndex = (model: Model, index: typeof TaskSnapshot.Type): Model => {
   const next = { ...model, index, runActivityTime: Date.now() };
-  const task = selectedTask(next);
-  const previous = selectedTask(model);
   const availableTags = new Set(index.tags.map(({ id }) => id));
   const availableTagIds = (ids: readonly string[]) =>
     ids.filter((id) => availableTags.has(id));
@@ -737,22 +1032,12 @@ const applyIndex = (model: Model, index: typeof TaskSnapshot.Type): Model => {
     ...editor,
     draft: { ...editor.draft, tagIds: availableTagIds(editor.draft.tagIds) },
   });
-  const editor = model.editor;
   return {
     ...next,
     filters: {
       ...model.filters,
       tagIds: availableTagIds(model.filters.tagIds),
     },
-    editor:
-      task &&
-      previous &&
-      editor &&
-      (task.revision === previous.revision ||
-        editor.draft.revision !== previous.revision ||
-        hasEdits(editor.draft, previous))
-        ? refreshEditorTags(editor)
-        : task && makeEditor(toDraft(task)),
     creation: model.creation && refreshEditorTags(model.creation),
   };
 };
@@ -771,7 +1056,13 @@ const transition = (
   model: Model,
   message: Message,
 ): Update.ReturnWithOutMessage<Model, Message, OutMessage> => {
-  if ("request" in message && message.request !== model.request?.id)
+  if (
+    "request" in message &&
+    message.request !== model.request?.id &&
+    !Object.values(model.edits).some(
+      (draft) => draft.flight?.request === message.request,
+    )
+  )
     return { model };
   return Message.match<Update.ReturnWithOutMessage<Model, Message, OutMessage>>(
     message,
@@ -783,7 +1074,8 @@ const transition = (
                 ...model,
                 ...closedTaskMenus,
                 selectedId: id,
-                editor: null,
+                picker: null,
+                rename: null,
                 attachments: Attachments.initial,
                 creation: null,
                 deletion: null,
@@ -796,20 +1088,15 @@ const transition = (
                   ...(model.creation ? { creation: null, error: null } : {}),
                 }
               : model;
-        const task = selectedTask(next);
-        const opened =
-          task && next.editor === null
-            ? { ...next, editor: makeEditor(toDraft(task)) }
-            : next;
-        return Update.combine(opened, [
+        return Update.combine(next, [
           (next) =>
             id !== model.selectedId && next.deleteDialog.isOpen
               ? foldDeleteDialog(next, Dialog.Message.RequestedClose())
               : { model: next },
           (next) =>
-            refresh || !next.index
+            !next.index
               ? start(next, { _tag: "Load" })
-              : { model: next },
+              : { model: refresh ? { ...next, refreshPending: true } : next },
           (next) => ({
             model: next,
             commands:
@@ -919,7 +1206,7 @@ const transition = (
         };
       },
       EditedField: ({ field, value }) => {
-        const editor = model.creation ?? model.editor;
+        const editor = model.creation;
         const loadingCreation =
           model.creation && model.request?.operation._tag === "Load";
         return {
@@ -978,8 +1265,7 @@ const transition = (
           ? foldRowAction(model, message)
           : { model },
       GotTagPickerMessage: ({ id, message }) => {
-        const editor =
-          model.creation?.draft.id === id ? model.creation : model.editor;
+        const editor = model.creation;
         if (
           editor?.draft.id !== id ||
           editor.draft.tagIds.length >= taskTagLimit
@@ -1021,7 +1307,7 @@ const transition = (
         };
       },
       RemovedTag: ({ id }) => {
-        const editor = model.creation ?? model.editor;
+        const editor = model.creation;
         if (!editor || model.request) return { model };
         return {
           model: withEditor(model, {
@@ -1037,33 +1323,113 @@ const transition = (
           ),
         };
       },
-      Saved: () => {
-        const draft = model.editor?.draft;
-        if (!draft || model.creation) return { model };
-        const task = selectedTask(model);
-        if (!task || draft.revision !== task.revision) return { model };
-        const { id, ...fields } = draft;
-        const input = { ...fields, title: fields.title.trim() };
-        if (!Schema.is(TaskUpdate)(input))
-          return {
-            model: {
-              ...model,
-              error: {
-                message: "Check the task title, due date and other fields.",
-                announcedInCreation: false,
-              },
-            },
-          };
-        return start(model, { _tag: "Save", id, input, rowFocus: null });
-      },
-      Discarded: () => {
-        const task = selectedTask(model);
+      EditedText: ({ id, field, value }) => {
+        const task = findTask(model, id);
+        if (!task) return { model };
+        const draft = model.edits[id] ?? Edits.init(task);
+        const timer =
+          field === "title" && !value.trim() ? null : crypto.randomUUID();
+        const pending = { ...draft.pending };
+        delete pending[field];
         return {
-          model: {
-            ...model,
-            editor: task && makeEditor(toDraft(task)),
-            error: null,
-          },
+          model: setDraft(model, id, {
+            ...draft,
+            pending,
+            text: { ...draft.text, [field]: { value, timer } },
+          }),
+          commands: timer ? [DebounceText({ id, field, timer })] : [],
+        };
+      },
+      BlurredText: ({ id, field }) => ({
+        model: flushText(model, id, field, true),
+      }),
+      TextDebounced: ({ id, field, timer }) => ({
+        model:
+          model.edits[id]?.text[field]?.timer === timer
+            ? flushText(model, id, field, false)
+            : model,
+      }),
+      LeftTaskView: () => {
+        let next: Model = { ...model, picker: null };
+        for (const id of Object.keys(model.edits)) {
+          next = flushText(
+            flushText(next, id, "title", true),
+            id,
+            "description",
+            true,
+          );
+        }
+        if (next.rename) next = finishRename(next, next.rename.id, false).model;
+        return { model: { ...next, rename: null } };
+      },
+      EditedRename: ({ id, value }) => ({
+        model:
+          model.rename?.id === id
+            ? { ...model, rename: { ...model.rename, value, invalid: false } }
+            : model,
+      }),
+      CommittedRename: ({ id }) => finishRename(model, id, false),
+      CanceledRename: ({ id }) => finishRename(model, id, true),
+      RetriedEdit: ({ id }) => {
+        const task = findTask(model, id);
+        const next = flushText(
+          flushText(model, id, "title", true),
+          id,
+          "description",
+          true,
+        );
+        const draft = next.edits[id];
+        if (!task || !draft?.error) return { model };
+        return {
+          model: setDraft(
+            next,
+            id,
+            Edits.stage(
+              task,
+              {
+                ...draft,
+                error: null,
+                revision:
+                  draft.error === "conflict" ? task.revision : draft.revision,
+              },
+              {},
+            ),
+          ),
+        };
+      },
+      DiscardedEdit: ({ id }) => ({ model: setDraft(model, id, undefined) }),
+      GotPropertyPopover: ({ target, message }) =>
+        updatePopover(model, target, message),
+      GotPropertySearch: ({ target, message }) =>
+        updateSearch(model, target, message),
+      FocusedPropertyCalendar: ({ target }) => ({
+        model:
+          model.picker && pickerId(model.picker) === pickerId(target)
+            ? { ...model, picker: { ...model.picker, calendarFocusing: false } }
+            : model,
+      }),
+      GotPropertyCalendar: ({ target, message }) => {
+        const picker = model.picker;
+        if (
+          !picker?.calendar ||
+          !picker.popover.isOpen ||
+          pickerId(picker) !== pickerId(target)
+        )
+          return { model };
+        const result = CalendarPicker.update(picker.calendar, message);
+        if (result.outMessage?._tag === "SelectedDate") {
+          return chooseProperty(
+            model,
+            picker,
+            Temporal.PlainDate.from(result.outMessage.date).toString(),
+            true,
+          );
+        }
+        return {
+          model: { ...model, picker: { ...picker, calendar: result.model } },
+          commands: Command.mapMessages(result.commands ?? [], (message) =>
+            Message.GotPropertyCalendar({ target, message }),
+          ),
         };
       },
       RequestedDelete: () => {
@@ -1085,6 +1451,7 @@ const transition = (
           !deletion?.revision ||
           !model.deleteDialog.isOpen ||
           model.request ||
+          Edits.saving(model.edits[deletion.id]) ||
           selectedTask(model)?.revision !== deletion.revision
         )
           return { model };
@@ -1122,7 +1489,7 @@ const transition = (
       },
       TaskDeleted: ({ id }) => {
         const next = {
-          ...model,
+          ...setDraft(model, id, undefined),
           index: model.index && {
             ...model.index,
             tasks: model.index.tasks.filter((task) => task.id !== id),
@@ -1134,7 +1501,6 @@ const transition = (
           ? foldDeleteDialog(
               {
                 ...next,
-                editor: null,
                 attachments: Attachments.initial,
                 deletion: { ...model.deletion, completed: true },
               },
@@ -1158,7 +1524,7 @@ const transition = (
         model: applyIndex({ ...model, request: null }, index),
       }),
       TaskCreated: ({ task }) => {
-        const next = replaceTask(model, task);
+        const next = replaceTask({ ...model, request: null }, task);
         if (model.creation?.draft.id !== task.id) return { model: next };
         return {
           model: { ...next, creation: null },
@@ -1168,41 +1534,21 @@ const transition = (
         };
       },
       TaskSaved: ({ task, conflict }) => {
-        const operation = model.request?.operation;
-        const rowFocus = operation?._tag === "Save" ? operation.rowFocus : null;
-        const isSelected = task.id === model.selectedId;
-        const next: Model = {
-          ...replaceTask(model, task),
-          editor:
-            isSelected && model.editor && (!conflict || rowFocus)
-              ? { ...model.editor, draft: toDraft(task) }
-              : model.editor,
-          error: conflict
-            ? {
-                message:
-                  isSelected && !rowFocus
-                    ? "This task changed elsewhere. Reload the saved task before editing again."
-                    : "The task changed. Try again.",
-                announcedInCreation: false,
-              }
-            : null,
-        };
-        if (!rowFocus || model.selectedId !== null) return { model: next };
-        const index = visibleTasks(model).findIndex(({ id }) => id === task.id);
-        if (index < 0) return { model: next };
-
-        const stillVisible = matchesTaskFilters(task, model.filters);
-        const remaining = stillVisible ? [] : visibleTasks(next);
+        const draft = model.edits[task.id];
+        if (!draft) return { model };
+        const next = replaceTask(model, task);
+        const deletion =
+          model.deletion?.id === task.id &&
+          model.deletion.revision === draft.revision &&
+          !conflict
+            ? { ...model.deletion, revision: task.revision, title: task.title }
+            : model.deletion;
         return {
-          model: next,
-          commands: [
-            RecoverTaskRowFocus({
-              rowId: stillVisible
-                ? task.id
-                : ((remaining[index] ?? remaining.at(-1))?.id ?? null),
-              preferLink: stillVisible && rowFocus === "link",
-            }),
-          ],
+          model: setDraft(
+            { ...next, deletion },
+            task.id,
+            Edits.settled(task, draft, conflict ? "conflict" : null),
+          ),
         };
       },
       TagCreated: ({ tag }) => {
@@ -1211,29 +1557,48 @@ const transition = (
           ? tags
           : [...(tags ?? []), tag];
         const operation = model.request?.operation;
-        const editor =
-          operation?._tag === "AddTag" &&
-          model.creation?.draft.id === operation.id
-            ? model.creation
-            : model.editor;
         const next = {
           ...model,
           index: model.index && { ...model.index, tags: newTags },
           request: null,
         };
+        if (operation?._tag !== "AddTag" || operation.skipAttachment)
+          return { model: next };
+        const editor = model.creation;
+        if (editor?.draft.id === operation.id)
+          return {
+            model: withEditor(
+              next,
+              afterTagSelection(editor, attach(editor.draft, tag.id)),
+            ),
+          };
+        const task = findTask(next, operation.id);
+        if (!task) return { model: next };
+        const ids = editedTask(next, task).tagIds;
         return {
           model:
-            editor &&
-            operation?._tag === "AddTag" &&
-            editor.draft.id === operation.id
-              ? withEditor(
-                  next,
-                  afterTagSelection(editor, attach(editor.draft, tag.id)),
-                )
-              : next,
+            ids.includes(tag.id) || ids.length >= taskTagLimit
+              ? next
+              : stageEdit(next, task, { tagIds: [...ids, tag.id] }),
         };
       },
-      Failed: ({ error }) => {
+      Failed: ({ request, error }) => {
+        const edit = Object.entries(model.edits).find(
+          ([, draft]) => draft.flight?.request === request,
+        );
+        if (edit) {
+          const [id, draft] = edit;
+          const task = findTask(model, id);
+          return {
+            model: task
+              ? setDraft(
+                  { ...model, refreshPending: true },
+                  id,
+                  Edits.settled(task, draft, "failed"),
+                )
+              : model,
+          };
+        }
         const operation = model.request?.operation;
         const next = { ...model, request: null };
         if (operation?._tag === "Delete" && model.deletion)
@@ -1257,11 +1622,14 @@ const transition = (
               },
             },
           };
-        const editor =
-          model.creation?.draft.id === operation.id
-            ? model.creation
-            : model.editor;
-        if (editor?.draft.id !== operation.id) return { model: next };
+        const editor = model.creation;
+        if (editor?.draft.id !== operation.id)
+          return {
+            model:
+              model.picker?.id === operation.id
+                ? { ...next, tagPickerError: error }
+                : next,
+          };
         return {
           model: withEditor(next, {
             ...editor,
@@ -1281,35 +1649,99 @@ const transition = (
   );
 };
 
+const drainEdits = (model: Model): Update.Return<Model, Message> => {
+  let next = model;
+  const commands: Command.Command<Message>[] = [];
+  // A full load replaces the index. Let it settle before basing a write on it.
+  if (model.request?.operation._tag === "Load") return { model };
+  for (const [id, draft] of Object.entries(model.edits)) {
+    if (draft.flight || draft.error || !Edits.changed(draft.pending)) continue;
+    const task = findTask(next, id);
+    if (!task || task.revision !== draft.revision) {
+      next = setDraft(next, id, { ...draft, error: "conflict" });
+      continue;
+    }
+    const request = crypto.randomUUID();
+    const { id: _, ...fields } = toDraft({ ...task, ...draft.pending });
+    next = setDraft(next, id, {
+      ...draft,
+      pending: {},
+      flight: { request, patch: draft.pending },
+    });
+    commands.push(
+      Request({ request, operation: { _tag: "Save", id, input: fields } }),
+    );
+  }
+  if (commands.length)
+    next = {
+      ...next,
+      refreshRequest: null,
+      refreshPending: next.refreshPending || next.refreshRequest !== null,
+    };
+  return { model: next, commands };
+};
+
 export const update = (model: Model, message: Message) => {
   let result = transition(model, message);
-  const { row } = result.model.rowActions;
-  if (
-    row &&
-    (result.model.index !== model.index ||
-      result.model.filters !== model.filters) &&
-    !result.model.index?.tasks.some(
-      (task) =>
-        task.id === row.key && matchesTaskFilters(task, result.model.filters),
-    )
-  )
-    result = { ...result, model: { ...result.model, rowActions } };
-  const next = result.model;
+  const before = result.model;
+  if (before.index !== model.index || before.filters !== model.filters) {
+    const visible = visibleTasks(before);
+    const isVisible = (id: string) => visible.some((task) => task.id === id);
+    const row = before.rowActions.row;
+    const picker = before.picker;
+    result = {
+      ...result,
+      model: {
+        ...before,
+        ...(row && !isVisible(row.key) ? { rowActions } : {}),
+        ...(picker && picker.surface !== "detail" && !isVisible(picker.id)
+          ? { picker: null }
+          : {}),
+        ...(before.rename && !isVisible(before.rename.id)
+          ? { rename: null }
+          : {}),
+      },
+    };
+    if (
+      !before.selectedId &&
+      message._tag === "TaskSaved" &&
+      !isVisible(message.task.id)
+    ) {
+      const position = visibleTasks(model).findIndex(
+        ({ id }) => id === message.task.id,
+      );
+      if (position >= 0)
+        result = {
+          ...result,
+          commands: [
+            ...(result.commands ?? []),
+            RecoverTaskRowFocus({
+              rowId: (visible[position] ?? visible.at(-1))?.id ?? null,
+              preferLink: true,
+            }),
+          ],
+        };
+    }
+  }
+  if (result.outMessage?._tag === "SessionExpired") return result;
+  const drained = drainEdits(result.model);
+  const next = drained.model;
+  const commands = [...(result.commands ?? []), ...(drained.commands ?? [])];
   if (
     !next.refreshPending ||
     !next.index ||
     next.request ||
     next.refreshRequest ||
-    result.outMessage?._tag === "SessionExpired"
+    Object.values(next.edits).some((draft) => draft.flight)
   )
-    return result;
+    return { ...result, model: next, commands };
 
   const check = crypto.randomUUID();
   return {
     ...result,
     model: { ...next, refreshRequest: check, refreshPending: false },
     commands: [
-      ...(result.commands ?? []),
+      ...commands,
       CheckVersion({ check, version: next.index.version }),
     ],
   };

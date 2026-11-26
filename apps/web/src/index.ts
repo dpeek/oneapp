@@ -1091,6 +1091,10 @@ const update = (
       const result = sameRoute
         ? { model }
         : Update.combine(model, [
+            (next) =>
+              next.page === "tasks"
+                ? foldTasks(next, Tasks.Message.LeftTaskView())
+                : { model: next },
             closeNavigationOverflow,
             closeFolderSheet,
             (next) =>

@@ -131,6 +131,7 @@ export const create = <Action extends string>() => {
         rowKey: string;
         label: string;
         items: readonly DropdownMenu.Item<Action>[];
+        alwaysShowTrigger?: boolean;
         toParentMessage: (message: Message) => ParentMessage;
       },
       h: HtmlBuilder<ParentMessage>,
@@ -167,7 +168,9 @@ export const create = <Action extends string>() => {
               label,
               trigger: ellipsisIcon(h),
               triggerSize: "icon",
-              triggerClassName: stylex.props(styles.trigger).className,
+              triggerClassName: props.alwaysShowTrigger
+                ? undefined
+                : stylex.props(styles.trigger).className,
               placement: "bottom-end",
               items,
               itemClassName: stylex.props(styles.item).className,

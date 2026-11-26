@@ -25,7 +25,7 @@ const dayKeys = new Set([
 export const view = <Message>(
   props: {
     model: typeof Model.Type;
-    selectedDate: CalendarDate;
+    selectedDate: CalendarDate | null;
     weekStart: CalendarDate | null;
     toParentMessage: (message: typeof Calendar.Message.Type) => Message;
   },
@@ -37,7 +37,7 @@ export const view = <Message>(
     view: Calendar.view,
     toParentMessage: props.toParentMessage,
     viewInputs: {
-      maybeSelectedDate: Option.some(props.selectedDate),
+      maybeSelectedDate: Option.fromNullishOr(props.selectedDate),
       toView: (attributes) => {
         const jump = (
           direction: "previous" | "next",

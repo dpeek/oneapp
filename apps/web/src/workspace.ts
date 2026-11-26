@@ -3,7 +3,7 @@ import type { Attribute, Html, HtmlBuilder } from "foldkit/html";
 
 export const screenHeader = <Message>(
   props: {
-    title: string;
+    title?: string;
     titleDetail?: Html;
     attributes?: readonly Attribute<Message>[];
     navigation?: readonly Html[];
@@ -14,7 +14,9 @@ export const screenHeader = <Message>(
   },
   h: HtmlBuilder<Message>,
 ) => {
-  const title = h.h1([h.Title(props.title)], [props.title]);
+  const title = props.title
+    ? h.h1([h.Title(props.title)], [props.title])
+    : h.empty;
   return h.header(
     [
       h.Class("workspace-header workspace-screen-header"),

@@ -81,6 +81,15 @@ const styles = stylex.create({
     color: controls.mutedForeground,
     opacity: { default: 1, ':is(:disabled, [aria-disabled="true"])': 0.55 },
   },
+  subtle: {
+    borderColor: "transparent",
+    backgroundColor: {
+      default: controls.hover,
+      ":hover:not(:disabled)": controls.selected,
+    },
+    color: controls.foreground,
+    fontWeight: 500,
+  },
   quiet: {
     borderColor: "transparent",
     textDecoration: "none",
@@ -132,7 +141,8 @@ type ButtonProps<Message> = Readonly<{
   children: ReadonlyArray<Html | string>;
   ariaLabel?: string;
   dialogId?: string;
-  variant?: "primary" | "destructive" | "outline" | "ghost" | "quiet";
+  variant?:
+    "primary" | "destructive" | "outline" | "ghost" | "quiet" | "subtle";
   size?: "sm" | "icon" | "icon-sm";
   type?: "button" | "submit";
   disabled?: boolean;
@@ -149,7 +159,9 @@ export const buttonClassName = (
     styles.base,
     styles[props.variant ?? "primary"],
     props.size && styles[props.size],
-    props.variant === "quiet" && props.size === "sm" && styles.smallTouchTarget,
+    (props.variant === "quiet" || props.variant === "subtle") &&
+      props.size === "sm" &&
+      styles.smallTouchTarget,
   ).className ?? "";
 
 export const button = <Message>(

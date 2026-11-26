@@ -1,6 +1,6 @@
 import { Popover } from "@foldkit/ui";
 import * as stylex from "@stylexjs/stylex";
-import type { Html, HtmlBuilder } from "foldkit/html";
+import type { Attribute, Html, HtmlBuilder } from "foldkit/html";
 import { buttonClassName } from "./button.ts";
 import { controls } from "./tokens.stylex.ts";
 
@@ -34,6 +34,7 @@ export const view = <ParentMessage>(
     trigger: Html;
     triggerButton?: Parameters<typeof buttonClassName>[0];
     triggerClassName?: string;
+    triggerAttributes?: readonly Attribute<ParentMessage>[];
     content: Html;
     placement?: "bottom-start" | "bottom-end" | "top-end";
     portal?: boolean;
@@ -69,6 +70,7 @@ export const view = <ParentMessage>(
                   ? [h.Style({ position: "relative", zIndex: "49" })]
                   : []),
                 h.Title(props.label),
+                ...(props.triggerAttributes ?? []),
                 h.Disabled(props.disabled ?? false),
                 h.Class(
                   [

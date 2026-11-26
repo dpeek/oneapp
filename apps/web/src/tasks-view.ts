@@ -1,18 +1,13 @@
 import {
   alert,
-  avatar,
   button,
-  circleCheckIconPaths,
-  circleDashedIconPaths,
-  circleDotDashedIconPaths,
+  calendarIconPaths,
   circleXIconPaths,
-  clockIconPaths,
   cloudIconPaths,
   Dialog,
   DropdownMenu,
   empty,
   field,
-  flameIconPaths,
   input,
   ItemActionMenu,
   MultiCombobox,
@@ -21,16 +16,13 @@ import {
   outlineIcon,
   plusIcon,
   Sheet,
-  signalHighIconPaths,
-  signalLowIconPaths,
-  signalMediumIconPaths,
   skeleton,
   spinnerIcon,
   taskIconPaths,
   textarea,
   timestamp,
+  trashIconPaths,
   Tokenizer,
-  userCheckIconPaths,
   visuallyHiddenStatus,
 } from "@orumai/ui";
 import { Effect, Option } from "effect";
@@ -38,16 +30,12 @@ import { Mount, Submodel } from "foldkit";
 import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html";
 import * as Attachments from "./task-attachments.ts";
 import { tagNameKey, tagNameLimit, type Tag } from "./items-contract.ts";
-import { profileAvatar } from "./people.ts";
-import type { PersonSummary } from "./people-contract.ts";
 import { isTaskRunInterrupted, type TaskRun } from "./task-run-contract.ts";
 import {
   type Task,
   taskDescriptionLimit,
   taskPath,
   tasksPath,
-  taskPriorities,
-  taskStatuses,
   taskTagLimit,
   taskTitleLimit,
 } from "./tasks-contract.ts";
@@ -61,7 +49,7 @@ import {
   deleteConflictMessage,
   deleteDialogId,
   filterOptionsId,
-  hasEdits,
+  editedTask,
   Message,
   selectedTask,
   tagSearch,
@@ -82,23 +70,17 @@ import {
 import { filterChoice, filterMenu } from "./filter-menu.ts";
 import { screenHeader, screenHeaderBack, workspace } from "./workspace.ts";
 
-type TaskRowValue = { label: string; icon: readonly string[] };
-type ViewInputs = { owner: PersonSummary | null; ownerEmail: string };
+import { type TextField, saving } from "./task-edits.ts";
+import { type Property } from "./task-properties.ts";
+import {
+  assigneeOptions,
+  priorityOptions,
+  statusOptions,
+  taskProperty,
+  type TaskRowValue,
+  type ViewInputs,
+} from "./task-properties-view.ts";
 
-const taskStatusDisplay = {
-  "not-started": { label: "Not started", icon: circleDotDashedIconPaths },
-  "in-progress": { label: "In progress", icon: clockIconPaths },
-  "in-review": { label: "In review", icon: userCheckIconPaths },
-  completed: { label: "Complete", icon: circleCheckIconPaths },
-  canceled: { label: "Cancelled", icon: circleXIconPaths },
-} satisfies Record<Task["status"], TaskRowValue>;
-const taskPriorityDisplay = {
-  "": { label: "No priority", icon: circleDashedIconPaths },
-  low: { label: "Low", icon: signalLowIconPaths },
-  medium: { label: "Medium", icon: signalMediumIconPaths },
-  high: { label: "High", icon: signalHighIconPaths },
-  urgent: { label: "Urgent", icon: flameIconPaths },
-} satisfies Record<NonNullable<Task["priority"]> | "", TaskRowValue>;
 const runPhaseDisplay = {
   setup: {
     label: "Setting up",
@@ -194,22 +176,8 @@ const latestRunDetails = (
     ],
   );
 };
-const statusOptions = taskStatuses.map((value) => ({
-  value,
-  label: taskStatusDisplay[value].label,
-}));
 const filterLabels = { status: "Status", priority: "Priority", tags: "Tags" };
 const taskListLabel = "All tasks";
-const priorityOptions = Object.entries(taskPriorityDisplay).map(
-  ([value, { label }]) => ({ value, label }),
-);
-const assigneeLabels = { owner: "Me", oru: "Oru", "": "Unassigned" };
-const assigneeOptions = Object.entries(assigneeLabels).map(
-  ([value, label]) => ({
-    value,
-    label,
-  }),
-);
 const taskDateTimeFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeStyle: "short",
@@ -220,87 +188,51 @@ const taskTimestamp = (value: number, h: HtmlBuilder<Message>) =>
     [taskDateTimeFormat.format(value)],
   );
 
-const taskRowValue = (
-  label: string,
-  media: Html,
-  kind: "status" | "priority" | "assignee",
-  value: string,
-  h: HtmlBuilder<Message>,
-) =>
-  h.td(
-    [],
-    [
-      h.span(
-        [h.Class("task-row-value"), h.DataAttribute(kind, value)],
-        [media, h.span([h.Class("task-row-value-label")], [label])],
-      ),
-    ],
-  );
+const rowPropertyFields = [
+  ["status", "Status"],
+  ["priority", "Priority"],
+  ["assignee", "Assignee"],
+  ["dueOn", "Due date"],
+] as const satisfies readonly (readonly [Property, string])[];
 
 const taskRow = (
-  task: Task,
+  saved: Task,
   model: Model,
-  tags: ReadonlyMap<string, Tag>,
-  { owner, ownerEmail }: ViewInputs,
+  tags: readonly Tag[],
+  viewInputs: ViewInputs,
   now: number,
   runActivityTime: number,
   h: HtmlBuilder<Message>,
 ) => {
-  const { status, priority, assignee } = task;
-  const statusDisplay = taskStatusDisplay[status];
-  const priorityDisplay = taskPriorityDisplay[priority ?? ""];
-  const choice = <Action extends string>(
-    action: Action,
-    group: string,
-    display: TaskRowValue,
-    current: boolean,
-  ): DropdownMenu.Item<Action> => ({
-    action,
-    group,
-    label: current ? `${display.label} (current)` : display.label,
-    icon: outlineIcon(h, display.icon),
-    disabled: current || model.request !== null,
-  });
-  const items = [
+  const task = editedTask(model, saved);
+  const items: readonly DropdownMenu.Item<"open" | "rename" | Property>[] = [
+    { action: "open", label: "Open", icon: outlineIcon(h, taskIconPaths) },
     {
-      action: "open",
-      label: "Open",
-      icon: outlineIcon(h, taskIconPaths),
-      disabled: false,
-    } as const,
-    ...taskStatuses.map((value) =>
-      choice(
-        `status:${value}` as const,
-        "Status",
-        taskStatusDisplay[value],
-        status === value,
-      ),
-    ),
-    ...[null, ...taskPriorities].map((value) =>
-      choice(
-        `priority:${value ?? ""}` as const,
-        "Priority",
-        taskPriorityDisplay[value ?? ""],
-        priority === value,
-      ),
-    ),
+      action: "rename",
+      label: "Rename",
+      icon: outlineIcon(h, ["m4 20 4-.8L20 7l-3-3L5 16zM14 7l3 3"]),
+    },
+    {
+      action: "assignee",
+      label: "Assignee",
+      icon: outlineIcon(h, [
+        "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M13 7a4 4 0 1 0-8 0 4 4 0 0 0 8 0Z",
+      ]),
+    },
+    {
+      action: "dueOn",
+      label: "Due date",
+      icon: outlineIcon(h, calendarIconPaths),
+    },
   ];
-  const imageMounted = Message.CompletedAssigneeAvatarImageMount();
-  const assigneeAvatar =
-    assignee === "owner"
-      ? profileAvatar(h, owner, ownerEmail, { imageMounted, size: "sm" })
-      : avatar(
-          {
-            size: "sm",
-            fallback:
-              assignee === "oru"
-                ? h.span([h.Class("task-assignee-mark")], [])
-                : "",
-            src: null,
-            imageMounted,
-          },
-          h,
-        );
+  const rename = model.rename?.id === task.id ? model.rename : null;
+  const menuPicker =
+    model.picker?.id === task.id &&
+    model.picker.surface === "menu" &&
+    model.picker.popover.isOpen
+      ? model.picker
+      : null;
+  const problem = `task-rename-error-${task.id}`;
   return h.tr(
     [
       h.Key(task.id),
@@ -320,58 +252,78 @@ const taskRow = (
           h.div(
             [h.Class("task-row-main")],
             [
-              h.a(
-                [
-                  h.Class("task-row-link"),
-                  h.Href(taskPath(task.id)),
-                  h.DataAttribute("task-id", task.id),
-                  ...ItemActionMenu.rowLinkAttributes(
-                    model.rowActions.id,
-                    task.id,
-                    items,
-                    toRowActionMessage,
-                    h,
+              rename
+                ? h.div(
+                    [h.Class("task-rename")],
+                    [
+                      input<Message>(
+                        [
+                          h.Id(`task-rename-${task.id}`),
+                          h.Type("text"),
+                          h.AriaLabel("Task title"),
+                          h.Value(rename.value),
+                          h.Maxlength(taskTitleLimit),
+                          ...(rename.invalid
+                            ? [h.AriaInvalid(true), h.AriaDescribedBy(problem)]
+                            : []),
+                          h.OnInput((value) =>
+                            Message.EditedRename({ id: task.id, value }),
+                          ),
+                          h.OnBlur(Message.CommittedRename({ id: task.id })),
+                          h.OnKeyDownPreventDefault((key) =>
+                            key === "Enter"
+                              ? Option.some(
+                                  Message.CommittedRename({ id: task.id }),
+                                )
+                              : key === "Escape"
+                                ? Option.some(
+                                    Message.CanceledRename({ id: task.id }),
+                                  )
+                                : Option.none(),
+                          ),
+                        ],
+                        h,
+                      ),
+                      ...(rename.invalid
+                        ? [
+                            h.p(
+                              [
+                                h.Id(problem),
+                                h.Role("alert"),
+                                h.Class("task-title-error"),
+                              ],
+                              ["Enter a task title."],
+                            ),
+                          ]
+                        : []),
+                    ],
+                  )
+                : h.a(
+                    [
+                      h.Class("task-row-link"),
+                      h.Href(taskPath(task.id)),
+                      h.DataAttribute("task-id", task.id),
+                      ...ItemActionMenu.rowLinkAttributes(
+                        model.rowActions.id,
+                        task.id,
+                        items,
+                        toRowActionMessage,
+                        h,
+                      ),
+                      h.Title(task.title),
+                    ],
+                    [task.title],
                   ),
-                  ...(Number.isFinite(new Date(task.updatedAt).getTime())
-                    ? [
-                        h.Title(
-                          `Updated ${taskDateTimeFormat.format(task.updatedAt)}`,
-                        ),
-                      ]
-                    : []),
-                ],
-                [task.title],
-              ),
-              ...task.tagIds.flatMap((id) => {
-                const tag = tags.get(id);
-                return tag
-                  ? [h.span([h.Key(id), h.Class("task-tag")], [tag.name])]
-                  : [];
-              }),
+              taskProperty(model, task, "tagIds", "row", tags, viewInputs, h),
             ],
           ),
         ],
       ),
-      taskRowValue(
-        statusDisplay.label,
-        outlineIcon(h, statusDisplay.icon),
-        "status",
-        status,
-        h,
-      ),
-      taskRowValue(
-        priorityDisplay.label,
-        outlineIcon(h, priorityDisplay.icon),
-        "priority",
-        priority ?? "",
-        h,
-      ),
-      taskRowValue(
-        assigneeLabels[assignee ?? ""],
-        assigneeAvatar,
-        "assignee",
-        assignee ?? "",
-        h,
+      ...rowPropertyFields.map(([field]) =>
+        h.td(
+          [h.Key(field), h.Class(`task-property-cell task-cell-${field}`)],
+          [taskProperty(model, task, field, "row", tags, viewInputs, h)],
+        ),
       ),
       h.td([h.Class("task-updated-cell")], [timestamp(task.updatedAt, now, h)]),
       h.td(
@@ -383,10 +335,29 @@ const taskRow = (
               rowKey: task.id,
               label: `Actions for ${task.title}`,
               items,
+              alwaysShowTrigger: true,
               toParentMessage: toRowActionMessage,
             },
             h,
           ),
+          ...(menuPicker
+            ? [
+                h.div(
+                  [h.Class("task-menu-picker")],
+                  [
+                    taskProperty(
+                      model,
+                      task,
+                      menuPicker.field,
+                      "menu",
+                      tags,
+                      viewInputs,
+                      h,
+                    ),
+                  ],
+                ),
+              ]
+            : []),
         ],
       ),
     ],
@@ -413,16 +384,17 @@ const taskFilterOptions = (
         ),
       ),
     priority: () =>
-      [null, ...taskPriorities].map((value) =>
-        filterChoice(
+      priorityOptions.map(({ value, label }) => {
+        const priority = value || null;
+        return filterChoice(
           {
-            label: taskPriorityDisplay[value ?? ""].label,
-            checked: filters.priorities.includes(value),
-            message: Message.ToggledPriorityFilter({ value }),
+            label,
+            checked: filters.priorities.includes(priority),
+            message: Message.ToggledPriorityFilter({ value: priority }),
           },
           h,
-        ),
-      ),
+        );
+      }),
     tags: () => [
       MultiCombobox.view(
         {
@@ -504,8 +476,16 @@ const taskTable = (
                 [h.Key("Activity"), h.Scope("col"), h.AriaLabel("Activity")],
                 [],
               ),
-              ...["Task", "Status", "Priority", "Assignee"].map((label) =>
-                h.th([h.Key(label), h.Scope("col")], [h.span([], [label])]),
+              h.th([h.Key("Task"), h.Scope("col")], ["Task"]),
+              ...rowPropertyFields.map(([field, label]) =>
+                h.th(
+                  [
+                    h.Key(field),
+                    h.Scope("col"),
+                    h.Class(`task-property-cell task-cell-${field}`),
+                  ],
+                  [h.span([], [label])],
+                ),
               ),
               h.th(
                 [
@@ -539,11 +519,14 @@ const taskPlaceholders = (h: HtmlBuilder<Message>) =>
       [
         h.td([], []),
         h.td([], [skeleton(index % 2 ? "md" : "lg", h)]),
+        ...rowPropertyFields.map(([field]) =>
+          h.td(
+            [h.Key(field), h.Class(`task-property-cell task-cell-${field}`)],
+            [skeleton("sm", h)],
+          ),
+        ),
         h.td([h.Class("task-updated-cell")], [skeleton("md", h)]),
         h.td([h.Class("task-actions-cell")], []),
-        h.td([], [skeleton("sm", h)]),
-        h.td([], [skeleton("sm", h)]),
-        h.td([], [skeleton("md", h)]),
       ],
     ),
   );
@@ -557,7 +540,6 @@ const taskList = (
   const allTasks = model.index?.tasks ?? [];
   const tasks = visibleTasks(model);
   const loading = !model.index && model.request?.operation._tag === "Load";
-  const tagMap = new Map(tags.map((tag) => [tag.id, tag]));
   const emptyTitle =
     !model.index || tasks.length
       ? null
@@ -569,7 +551,7 @@ const taskList = (
     const now = Date.now();
     results = taskTable(
       tasks.map((task) =>
-        taskRow(task, model, tagMap, viewInputs, now, model.runActivityTime, h),
+        taskRow(task, model, tags, viewInputs, now, model.runActivityTime, h),
       ),
       false,
       h,
@@ -629,14 +611,12 @@ const taskFields = (
   h: HtmlBuilder<Message>,
   {
     creation,
-    attachments,
   }: {
-    creation?: {
+    creation: {
       initialFocus: ReadonlyArray<ChildAttribute>;
       tagsUnavailable: boolean;
     };
-    attachments?: Html;
-  } = {},
+  },
 ) => {
   const { draft } = editor;
   const tagsFull = draft.tagIds.length >= taskTagLimit;
@@ -649,13 +629,9 @@ const taskFields = (
           h.Type("text"),
           h.Value(draft.title),
           h.Maxlength(taskTitleLimit),
-          ...(creation
-            ? [
-                h.Id(creationTitleId),
-                h.Required(true),
-                ...creation.initialFocus,
-              ]
-            : []),
+          h.Id(creationTitleId),
+          h.Required(true),
+          ...creation.initialFocus,
           h.Disabled(busy),
           h.OnInput((value) => Message.EditedField({ field: "title", value })),
         ],
@@ -731,7 +707,6 @@ const taskFields = (
       ),
       h,
     ),
-    ...(attachments ? [attachments] : []),
     Tokenizer.view(
       {
         model: editor.tagPicker,
@@ -742,7 +717,7 @@ const taskFields = (
         items: search.items,
         selected: tags.filter(({ id }) => draft.tagIds.includes(id)),
         maxLength: tagNameLimit,
-        busy: busy || creation?.tagsUnavailable === true,
+        busy: busy || creation.tagsUnavailable,
         full: tagsFull,
         description: tagsFull
           ? `A task can have up to ${taskTagLimit} tags.`
@@ -851,6 +826,7 @@ const FocusDetail = Mount.define("FocusTaskDetail", {
 const deleteTaskDialog = (model: Model, h: HtmlBuilder<Message>) => {
   const { deletion, deleteDialog } = model;
   const pending = model.request?.operation._tag === "Delete";
+  const savingTask = !!deletion && saving(model.edits[deletion.id]);
   const task = selectedTask(model);
   const changed = !!deletion && task?.revision !== deletion.revision;
   return Dialog.view(
@@ -895,7 +871,7 @@ const deleteTaskDialog = (model: Model, h: HtmlBuilder<Message>) => {
                 button(
                   {
                     variant: "destructive",
-                    disabled: pending || changed,
+                    disabled: pending || changed || savingTask,
                     focusableWhenDisabled: pending,
                     attributes: [h.AriaBusy(pending)],
                     onClick: Message.ConfirmedDelete(),
@@ -913,17 +889,136 @@ const deleteTaskDialog = (model: Model, h: HtmlBuilder<Message>) => {
   );
 };
 
+const taskDocumentField = (
+  model: Model,
+  task: Task,
+  field: TextField,
+  h: HtmlBuilder<Message>,
+) => {
+  const title = field === "title";
+  const draft = model.edits[task.id]?.text[field];
+  const value = draft?.value ?? task[field];
+  const invalid = title && draft !== undefined && !value.trim();
+  const errorId = "task-title-error";
+  const editor = h.span(
+    [h.Class("task-document-input"), h.DataAttribute("value", value)],
+    [
+      h.textarea([
+        h.Rows(1),
+        h.AriaLabel(title ? "Task title" : "Description (Markdown)"),
+        h.Value(value),
+        h.Maxlength(title ? taskTitleLimit : taskDescriptionLimit),
+        h.Placeholder(title ? "Task title" : "Add a description…"),
+        ...(invalid ? [h.AriaInvalid(true), h.AriaDescribedBy(errorId)] : []),
+        h.OnInput((value) =>
+          Message.EditedText({
+            id: task.id,
+            field,
+            value: title ? value.replace(/[\r\n]+/gu, " ") : value,
+          }),
+        ),
+        h.OnBlur(Message.BlurredText({ id: task.id, field })),
+        ...(title
+          ? [
+              h.OnKeyDownPreventDefault((key) =>
+                key === "Enter"
+                  ? Option.some(Message.BlurredText({ id: task.id, field }))
+                  : Option.none(),
+              ),
+            ]
+          : []),
+      ]),
+    ],
+  );
+  if (!title) return editor;
+  return h.div(
+    [h.Class("task-document-title")],
+    [
+      h.h1([], [editor]),
+      ...(invalid
+        ? [
+            h.p(
+              [h.Id(errorId), h.Role("status"), h.Class("task-title-error")],
+              ["Enter a task title."],
+            ),
+          ]
+        : []),
+    ],
+  );
+};
+
+const editFeedback = (model: Model, h: HtmlBuilder<Message>) =>
+  Object.entries(model.edits).flatMap(([id, draft]) => {
+    if (!draft.error) return [];
+    const task = model.index?.tasks.find((task) => task.id === id);
+    const conflict = draft.error === "conflict";
+    const name =
+      !model.selectedId || model.selectedId !== id
+        ? ` for “${task?.title ?? "a task"}”`
+        : "";
+    const action = h.div(
+      [h.Class("task-edit-recovery")],
+      [
+        ...(task
+          ? [
+              button(
+                {
+                  variant: "outline",
+                  size: "sm",
+                  onClick: Message.RetriedEdit({ id }),
+                  children: [conflict ? "Apply my edits" : "Retry save"],
+                },
+                h,
+              ),
+            ]
+          : []),
+        ...(conflict || !task
+          ? [
+              button(
+                {
+                  variant: "ghost",
+                  size: "sm",
+                  onClick: Message.DiscardedEdit({ id }),
+                  children: [task ? "Use saved values" : "Discard draft"],
+                },
+                h,
+              ),
+            ]
+          : []),
+      ],
+    );
+    return [
+      h.div(
+        [h.Key(id)],
+        [
+          alert(
+            {
+              message: !task
+                ? "The task is no longer available. Your draft is still in this session."
+                : conflict
+                  ? `The saved task changed${name}. Apply your edits to the latest version or use the saved values.`
+                  : `Could not save changes${name}.`,
+              severity: "error",
+              announcement: "status",
+              action,
+            },
+            h,
+          ),
+        ],
+      ),
+    ];
+  });
+
 const taskDetail = (
   id: string,
   model: Model,
-  tags: ReadonlyArray<Tag>,
+  tags: readonly Tag[],
+  viewInputs: ViewInputs,
   h: HtmlBuilder<Message>,
 ) => {
-  const task = selectedTask(model);
-  const editor = model.editor;
-  const busy = model.request !== null;
-  const changed = !!(task && editor && hasEdits(editor.draft, task));
-  const stale = !!(task && editor && task.revision !== editor.draft.revision);
+  const saved = selectedTask(model);
+  const task = saved && editedTask(model, saved);
+  const busy = model.request?.operation._tag === "Load";
   return h.section(
     [
       h.Key(id),
@@ -933,7 +1028,7 @@ const taskDetail = (
       h.OnMount(FocusDetail()),
     ],
     [
-      ...(!task || !editor
+      ...(!task
         ? [
             h.p(
               model.error || (busy && !model.index) ? [] : [h.Role("status")],
@@ -959,62 +1054,46 @@ const taskDetail = (
                 ),
               ],
               [
-                ...taskFields(editor, tags, busy, h, {
-                  attachments: Attachments.section(
-                    task.id,
-                    model.attachments,
-                    toAttachmentsMessage,
-                    h,
-                  ),
-                }),
-                ...(task.latestRun
-                  ? [latestRunDetails(task.latestRun, model.runActivityTime, h)]
-                  : []),
                 h.div(
-                  [h.Class("task-actions")],
+                  [h.Class("task-document-header")],
                   [
-                    button(
-                      {
-                        size: "sm",
-                        disabled:
-                          busy ||
-                          stale ||
-                          !changed ||
-                          !editor.draft.title.trim(),
-                        onClick: Message.Saved(),
-                        children: ["Save changes"],
-                      },
-                      h,
-                    ),
-                    ...(changed || stale
-                      ? [
-                          button(
-                            {
-                              variant: "outline",
-                              size: "sm",
-                              disabled: busy,
-                              onClick: Message.Discarded(),
-                              children: [
-                                stale ? "Reload saved task" : "Discard changes",
-                              ],
-                            },
+                    taskDocumentField(model, task, "title", h),
+                    h.div(
+                      [h.Class("task-property-strip")],
+                      [
+                        ...(
+                          [
+                            "tagIds",
+                            "status",
+                            "priority",
+                            "assignee",
+                            "dueOn",
+                          ] as const
+                        ).map((field) =>
+                          taskProperty(
+                            model,
+                            task,
+                            field,
+                            "detail",
+                            tags,
+                            viewInputs,
                             h,
                           ),
-                        ]
-                      : []),
-                    button(
-                      {
-                        variant: "ghost",
-                        size: "sm",
-                        disabled: busy,
-                        dialogId: deleteDialogId,
-                        onClick: Message.RequestedDelete(),
-                        children: ["Delete task"],
-                      },
-                      h,
+                        ),
+                      ],
                     ),
                   ],
                 ),
+                taskDocumentField(model, task, "description", h),
+                Attachments.section(
+                  task.id,
+                  model.attachments,
+                  toAttachmentsMessage,
+                  h,
+                ),
+                ...(task.latestRun
+                  ? [latestRunDetails(task.latestRun, model.runActivityTime, h)]
+                  : []),
                 h.dl(
                   [h.Class("task-timestamps")],
                   [
@@ -1085,7 +1164,7 @@ export const view = Submodel.defineView(function tasksView(
       className: "workspace-stacked tasks-workspace",
       header: screenHeader(
         {
-          title: selectedTask(model)?.title ?? taskListLabel,
+          title: selectedId ? undefined : taskListLabel,
           navigation: [
             ...(selectedId
               ? [
@@ -1117,8 +1196,27 @@ export const view = Submodel.defineView(function tasksView(
           controls: selectedId
             ? []
             : [taskFilters(model, tags, h), taskSort(model, h)],
-          primaryAction: addTask,
+          primaryAction: selectedId
+            ? button(
+                {
+                  variant: "ghost",
+                  size: "icon-sm",
+                  ariaLabel: "Delete task",
+                  dialogId: deleteDialogId,
+                  attributes: [h.Title("Delete task")],
+                  disabled: !selectedTask(model) || model.request !== null,
+                  onClick: Message.RequestedDelete(),
+                  children: [outlineIcon(h, trashIconPaths)],
+                },
+                h,
+              )
+            : addTask,
           feedback: [
+            h.div(
+              [h.Class("task-save-state"), h.Role("status")],
+              [Object.values(model.edits).some(saving) ? "Saving…" : ""],
+            ),
+            ...editFeedback(model, h),
             visuallyHiddenStatus(loadStatus, h),
             alert(
               {
@@ -1137,7 +1235,9 @@ export const view = Submodel.defineView(function tasksView(
       sidebar: taskNavigation(h),
       list: taskList(model, tags, viewInputs, h),
       hasSelection: selectedId !== null,
-      ...(selectedId ? { detail: taskDetail(selectedId, model, tags, h) } : {}),
+      ...(selectedId
+        ? { detail: taskDetail(selectedId, model, tags, viewInputs, h) }
+        : {}),
       sheet: Sheet.sheet(
         {
           model: folderSheet,

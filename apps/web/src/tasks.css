@@ -57,8 +57,7 @@
 }
 
 .task-table th.task-cell-priority,
-.task-table th.task-cell-assignee,
-.task-table th.task-cell-dueOn {
+.task-table th.task-cell-assignee {
   inline-size: 8.5rem;
 }
 
@@ -72,21 +71,6 @@
 
 .task-table .task-updated-cell {
   text-align: end;
-}
-
-.task-table .task-actions-cell {
-  position: relative;
-  inline-size: 2.75rem;
-  padding: 0;
-}
-
-.task-menu-picker {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  pointer-events: none;
-  opacity: 0;
 }
 
 .task-row > td:first-child {
@@ -133,11 +117,6 @@
 .task-row-link:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
-}
-
-.task-rename {
-  flex: 1 0 100%;
-  min-inline-size: 0;
 }
 
 .task-tag,
@@ -328,6 +307,11 @@
   .task-table .task-updated-cell {
     display: none;
   }
+
+  .task-row > .task-cell-assignee {
+    border-start-end-radius: var(--control-radius);
+    border-end-end-radius: var(--control-radius);
+  }
 }
 
 @container task-list (width <= 49rem) {
@@ -351,15 +335,14 @@
   }
 }
 
-@container task-list (width <= 32rem) {
-  .task-table .task-cell-dueOn {
-    display: none;
-  }
-}
-
 @container task-list (width <= 23rem) {
   .task-table .task-cell-assignee {
     display: none;
+  }
+
+  .task-row > .task-cell-priority {
+    border-start-end-radius: var(--control-radius);
+    border-end-end-radius: var(--control-radius);
   }
 }
 

@@ -1,7 +1,6 @@
 import {
   alert,
   button,
-  calendarIconPaths,
   circleXIconPaths,
   cloudIconPaths,
   Dialog,
@@ -9,7 +8,6 @@ import {
   empty,
   field,
   input,
-  ItemActionMenu,
   MultiCombobox,
   navigationLinks,
   nativeSelect,
@@ -53,14 +51,12 @@ import {
   Message,
   selectedTask,
   tagSearch,
-  taskActionMenu,
   taskSortMenu,
   toFilterPopoverMessage,
   toFilterTagsMessage,
   toAttachmentsMessage,
   toDeleteDialogMessage,
   toFolderSheetMessage,
-  toRowActionMessage,
   toSortMenuMessage,
   writingCreation,
   visibleTasks,
@@ -197,7 +193,6 @@ const rowPropertyFields = [
   ["status", "Status"],
   ["priority", "Priority"],
   ["assignee", "Assignee"],
-  ["dueOn", "Due date"],
 ] as const satisfies readonly (readonly [Property, string])[];
 
 const taskRow = (
@@ -210,40 +205,8 @@ const taskRow = (
   h: HtmlBuilder<Message>,
 ) => {
   const task = editedTask(model, saved);
-  const items: readonly DropdownMenu.Item<"open" | "rename" | Property>[] = [
-    { action: "open", label: "Open", icon: outlineIcon(h, taskIconPaths) },
-    {
-      action: "rename",
-      label: "Rename",
-      icon: outlineIcon(h, ["m4 20 4-.8L20 7l-3-3L5 16zM14 7l3 3"]),
-    },
-    {
-      action: "assignee",
-      label: "Assignee",
-      icon: outlineIcon(h, [
-        "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M13 7a4 4 0 1 0-8 0 4 4 0 0 0 8 0Z",
-      ]),
-    },
-    {
-      action: "dueOn",
-      label: "Due date",
-      icon: outlineIcon(h, calendarIconPaths),
-    },
-  ];
-  const rename = model.rename?.id === task.id ? model.rename : null;
-  const menuPicker =
-    model.picker?.id === task.id &&
-    model.picker.surface === "menu" &&
-    model.picker.popover.isOpen
-      ? model.picker
-      : null;
-  const problem = `task-rename-error-${task.id}`;
   return h.tr(
-    [
-      h.Key(task.id),
-      h.Class("task-row"),
-      ...ItemActionMenu.rowAttributes(task.id, toRowActionMessage, h),
-    ],
+    [h.Key(task.id), h.Class("task-row")],
     [
       h.td(
         [h.Class("task-activity-cell")],
@@ -257,68 +220,15 @@ const taskRow = (
           h.div(
             [h.Class("task-row-main")],
             [
-              rename
-                ? h.div(
-                    [h.Class("task-rename")],
-                    [
-                      input<Message>(
-                        [
-                          h.Id(`task-rename-${task.id}`),
-                          h.Type("text"),
-                          h.AriaLabel("Task title"),
-                          h.Value(rename.value),
-                          h.Maxlength(taskTitleLimit),
-                          ...(rename.invalid
-                            ? [h.AriaInvalid(true), h.AriaDescribedBy(problem)]
-                            : []),
-                          h.OnInput((value) =>
-                            Message.EditedRename({ id: task.id, value }),
-                          ),
-                          h.OnBlur(Message.CommittedRename({ id: task.id })),
-                          h.OnKeyDownPreventDefault((key) =>
-                            key === "Enter"
-                              ? Option.some(
-                                  Message.CommittedRename({ id: task.id }),
-                                )
-                              : key === "Escape"
-                                ? Option.some(
-                                    Message.CanceledRename({ id: task.id }),
-                                  )
-                                : Option.none(),
-                          ),
-                        ],
-                        h,
-                      ),
-                      ...(rename.invalid
-                        ? [
-                            h.p(
-                              [
-                                h.Id(problem),
-                                h.Role("alert"),
-                                h.Class("task-title-error"),
-                              ],
-                              ["Enter a task title."],
-                            ),
-                          ]
-                        : []),
-                    ],
-                  )
-                : h.a(
-                    [
-                      h.Class("task-row-link"),
-                      h.Href(taskPath(task.id)),
-                      h.DataAttribute("task-id", task.id),
-                      ...ItemActionMenu.rowLinkAttributes(
-                        model.rowActions.id,
-                        task.id,
-                        items,
-                        toRowActionMessage,
-                        h,
-                      ),
-                      h.Title(task.title),
-                    ],
-                    [task.title],
-                  ),
+              h.a(
+                [
+                  h.Class("task-row-link"),
+                  h.Href(taskPath(task.id)),
+                  h.DataAttribute("task-id", task.id),
+                  h.Title(task.title),
+                ],
+                [task.title],
+              ),
               taskProperty(model, task, "tagIds", "row", tags, viewInputs, h),
             ],
           ),
@@ -331,40 +241,6 @@ const taskRow = (
         ),
       ),
       h.td([h.Class("task-updated-cell")], [timestamp(task.updatedAt, now, h)]),
-      h.td(
-        [h.Class("task-actions-cell")],
-        [
-          taskActionMenu.view(
-            {
-              model: model.rowActions,
-              rowKey: task.id,
-              label: `Actions for ${task.title}`,
-              items,
-              alwaysShowTrigger: true,
-              toParentMessage: toRowActionMessage,
-            },
-            h,
-          ),
-          ...(menuPicker
-            ? [
-                h.div(
-                  [h.Class("task-menu-picker")],
-                  [
-                    taskProperty(
-                      model,
-                      task,
-                      menuPicker.field,
-                      "menu",
-                      tags,
-                      viewInputs,
-                      h,
-                    ),
-                  ],
-                ),
-              ]
-            : []),
-        ],
-      ),
     ],
   );
 };
@@ -512,15 +388,6 @@ const taskTable = (
                 ],
                 ["Updated"],
               ),
-              h.th(
-                [
-                  h.Key("Actions"),
-                  h.Scope("col"),
-                  h.AriaLabel("Actions"),
-                  h.Class("task-actions-cell"),
-                ],
-                [],
-              ),
             ],
           ),
         ],
@@ -543,7 +410,6 @@ const taskPlaceholders = (h: HtmlBuilder<Message>) =>
           ),
         ),
         h.td([h.Class("task-updated-cell")], [skeleton("md", h)]),
-        h.td([h.Class("task-actions-cell")], []),
       ],
     ),
   );

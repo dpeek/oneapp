@@ -151,8 +151,7 @@ const tagLabel = (
   h: HtmlBuilder<Message>,
 ) => {
   if (!names.length) return "Add tags";
-  if (names.length === 1 || surface === "menu")
-    return names.length === 1 ? names[0]! : `${names.length} tags`;
+  if (names.length === 1) return names[0]!;
   if (surface === "detail") {
     const summary = `${names.length} tags`;
     return names.length === 2 && names.every((name) => name.length <= 10)
@@ -346,10 +345,7 @@ export const taskProperty = (
         size: "sm",
       },
       triggerClassName: `task-property-trigger task-property-${field}`,
-      triggerAttributes: [
-        h.Title(`${label}: ${displayed}`),
-        ...(surface === "menu" ? [h.Tabindex(-1), h.AriaHidden(true)] : []),
-      ],
+      triggerAttributes: [h.Title(`${label}: ${displayed}`)],
       trigger: h.span(
         [h.Class("task-property-content")],
         [
@@ -357,7 +353,7 @@ export const taskProperty = (
           h.span([h.Class("task-property-chevron")], [outlineIcon(h, chevron)]),
         ],
       ),
-      placement: surface === "menu" ? "bottom-end" : "bottom-start",
+      placement: "bottom-start",
       portal: true,
       panelClassName: "task-property-panel",
       focusSelector: `#${id}-panel ${field === "dueOn" ? '[role="listbox"]' : 'input[role="combobox"]'}`,

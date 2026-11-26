@@ -2,7 +2,6 @@ import {
   CalendarPicker,
   Dialog,
   DropdownMenu,
-  ItemActionMenu,
   MultiCombobox,
   Popover,
   Sheet,
@@ -25,7 +24,6 @@ import {
   Picker,
   pickerId,
   PickerTarget,
-  Property,
   tagChoices,
   taskCalendar,
 } from "./task-properties.ts";
@@ -108,14 +106,10 @@ const filterTags = MultiCombobox.init("task-filter-tags");
 const closedFilterOptions = { filterCategory: null, filterTags };
 const Sort = Schema.Literals(["updated", "priority", "due"]);
 const sortMenu = DropdownMenu.SingleSelect.init({ id: "task-sort" });
-const rowActions = ItemActionMenu.init("task-row-actions");
-type RowAction = "open" | "rename" | Property;
-export const taskActionMenu = ItemActionMenu.create<RowAction>();
 const closedTaskMenus = {
   filterPopover,
   ...closedFilterOptions,
   sortMenu,
-  rowActions,
 };
 export const taskSortMenu =
   DropdownMenu.SingleSelect.create<typeof Sort.Type>();
@@ -134,14 +128,6 @@ export const Model = Schema.Struct({
   selectedId: Schema.NullOr(ItemId),
   edits: Schema.Record(Schema.String, Edits.Draft),
   picker: Schema.NullOr(Picker),
-  rename: Schema.NullOr(
-    Schema.Struct({
-      id: ItemId,
-      value: Schema.String,
-      invalid: Schema.Boolean,
-      revision: ItemId,
-    }),
-  ),
   tagPickerError: Schema.NullOr(Schema.String),
   attachments: Attachments.Model,
   creation: Schema.NullOr(Creation),
@@ -161,7 +147,6 @@ export const Model = Schema.Struct({
   filters: Filters,
   sort: Sort,
   sortMenu: DropdownMenu.SingleSelect.Model,
-  rowActions: ItemActionMenu.Model,
   request: Schema.NullOr(
     Schema.Struct({ id: Schema.String, operation: Operation }),
   ),
@@ -182,7 +167,6 @@ export const initial: Model = {
   selectedId: null,
   edits: {},
   picker: null,
-  rename: null,
   tagPickerError: null,
   attachments: Attachments.initial,
   creation: null,
@@ -230,16 +214,12 @@ export const Message = defineMessageUnion({
   GotFilterTagsMessage: { message: MultiCombobox.Message },
   ClearedFilters: {},
   GotSortMenuMessage: { message: DropdownMenu.SingleSelect.Message },
-  GotRowActionMessage: { message: ItemActionMenu.Message },
   GotTagPickerMessage: { id: ItemId, message: Tokenizer.Message },
   RemovedTag: { id: ItemId },
   EditedText: { id: ItemId, field: Edits.TextField, value: Schema.String },
   BlurredText: { id: ItemId, field: Edits.TextField },
   TextDebounced: { id: ItemId, field: Edits.TextField, timer: Schema.String },
   LeftTaskView: {},
-  EditedRename: { id: ItemId, value: Schema.String },
-  CommittedRename: { id: ItemId },
-  CanceledRename: { id: ItemId },
   RetriedEdit: { id: ItemId },
   DiscardedEdit: { id: ItemId },
   GotPropertyPopover: { target: PickerTarget, message: Popover.Message },
@@ -394,31 +374,25 @@ const FocusList = Command.define("FocusTaskList", {
 });
 
 const RecoverTaskRowFocus = Command.define("RecoverTaskRowFocus", {
-  args: { rowId: Schema.NullOr(ItemId), preferLink: Schema.Boolean },
+  args: { rowId: Schema.NullOr(ItemId) },
   messages: [Message.FocusUpdated],
-  execute: ({ rowId, preferLink }) =>
+  execute: ({ rowId }) =>
     Render.afterCommit.pipe(
       Effect.andThen(
         Effect.sync(() => {
           if (document.activeElement === document.body) {
-            const trigger =
-              rowId && !preferLink
-                ? document.getElementById(
-                    ItemActionMenu.triggerId(rowActions.id, rowId),
-                  )
-                : null;
+            const workspace = document.querySelector(
+              ".tasks-workspace:not([data-panel])",
+            );
             const link = rowId
-              ? document.getElementById(
-                  ItemActionMenu.rowLinkId(rowActions.id, rowId),
+              ? workspace?.querySelector<HTMLAnchorElement>(
+                  `.task-list [data-task-id="${rowId}"]`,
                 )
               : null;
-            const addButton = document.querySelector<HTMLButtonElement>(
-              `.tasks-workspace:not([data-panel]) #${addTaskButtonId}`,
+            const addButton = workspace?.querySelector<HTMLButtonElement>(
+              `#${addTaskButtonId}`,
             );
-            (trigger?.getClientRects().length
-              ? trigger
-              : (link ?? addButton)
-            )?.focus();
+            (link ?? addButton)?.focus();
           }
           return Message.FocusUpdated();
         }),
@@ -444,17 +418,6 @@ const FocusRetryTarget = Command.define("FocusTaskRetryTarget", {
         : ".tasks-workspace.workspace-stacked > .workspace-header",
       { preventScroll: true },
     ).pipe(Effect.ignore, Effect.as(Message.FocusUpdated())),
-});
-
-const FocusEditor = Command.define("FocusTaskEditor", {
-  args: { selector: Schema.String },
-  messages: [Message.FocusUpdated],
-  execute: ({ selector }) =>
-    Render.afterCommit.pipe(
-      Effect.andThen(focus(selector, { preventScroll: true })),
-      Effect.ignore,
-      Effect.as(Message.FocusUpdated()),
-    ),
 });
 
 const FocusPropertyCalendar = Command.define("FocusTaskPropertyCalendar", {
@@ -715,10 +678,6 @@ const editField = (
   }
 };
 
-export const toRowActionMessage = (
-  message: typeof ItemActionMenu.Message.Type,
-) => Message.GotRowActionMessage({ message });
-
 const findTask = (model: Model, id: string) =>
   model.index?.tasks.find((task) => task.id === id);
 
@@ -743,23 +702,11 @@ const setDraft = (
   return { ...model, edits };
 };
 
-const stageEdit = (
-  model: Model,
-  task: Task,
-  patch: Edits.Patch,
-  revision = task.revision,
-) =>
+const stageEdit = (model: Model, task: Task, patch: Edits.Patch) =>
   setDraft(
     model,
     task.id,
-    Edits.stage(
-      task,
-      model.edits[task.id] ?? {
-        ...Edits.init(task),
-        revision,
-      },
-      patch,
-    ),
+    Edits.stage(task, model.edits[task.id] ?? Edits.init(task), patch),
   );
 
 const flushText = (
@@ -773,23 +720,6 @@ const flushText = (
   return task && draft
     ? setDraft(model, id, Edits.commitText(task, draft, field, blur))
     : model;
-};
-
-const finishRename = (model: Model, id: string, cancel: boolean) => {
-  const rename = model.rename;
-  if (rename?.id !== id) return { model };
-  const task = findTask(model, id);
-  const title = rename.value.trim();
-  if (!cancel && !title)
-    return { model: { ...model, rename: { ...rename, invalid: true } } };
-  const next = { ...model, rename: null };
-  return {
-    model:
-      !cancel && task
-        ? stageEdit(next, task, { title }, rename.revision)
-        : next,
-    commands: [RecoverTaskRowFocus({ rowId: id, preferLink: true })],
-  };
 };
 
 const updatePopover = (
@@ -816,8 +746,6 @@ const updatePopover = (
   const result = Popover.update(base, message);
   if (!picker && !result.model.isOpen) return { model };
   const opening = result.model.isOpen && !base.isOpen;
-  const closingMenu =
-    target.surface === "menu" && base.isOpen && !result.model.isOpen;
   return {
     model: {
       ...model,
@@ -827,11 +755,9 @@ const updatePopover = (
         popover: result.model,
       },
     },
-    commands: closingMenu
-      ? [RecoverTaskRowFocus({ rowId: target.id, preferLink: false })]
-      : Command.mapMessages(result.commands ?? [], (message) =>
-          Message.GotPropertyPopover({ target, message }),
-        ),
+    commands: Command.mapMessages(result.commands ?? [], (message) =>
+      Message.GotPropertyPopover({ target, message }),
+    ),
   };
 };
 
@@ -960,36 +886,6 @@ const updateSearch = (
   };
 };
 
-const foldRowAction = Update.foldChild({
-  update: taskActionMenu.update,
-  read: (model: Model) => Option.some(model.rowActions),
-  write: (model, rowActions) => ({ ...model, rowActions }),
-  toParentMessage: toRowActionMessage,
-  foldOutMessage:
-    ({ key, action }): Update.StepWithOutMessage<Model, Message, OutMessage> =>
-    (model) => {
-      const task = model.index?.tasks.find(({ id }) => id === key);
-      if (!task || !matchesTaskFilters(task, model.filters)) return { model };
-      if (action === "open")
-        return { model, outMessage: OutMessage.OpenTask({ id: task.id }) };
-      if (action === "rename")
-        return {
-          model: {
-            ...model,
-            rename: {
-              id: task.id,
-              value: editedTask(model, task).title,
-              invalid: false,
-              revision: task.revision,
-            },
-          },
-          commands: [FocusEditor({ selector: `#task-rename-${task.id}` })],
-        };
-      const target = { id: task.id, field: action, surface: "menu" } as const;
-      return updatePopover(model, target, Popover.Message.RequestedOpen());
-    },
-});
-
 const attach = (draft: Draft, id: string): Draft =>
   draft.tagIds.includes(id) || draft.tagIds.length >= taskTagLimit
     ? draft
@@ -1081,7 +977,6 @@ const transition = (
                 ...closedTaskMenus,
                 selectedId: id,
                 picker: null,
-                rename: null,
                 attachments: Attachments.initial,
                 creation: null,
                 deletion: null,
@@ -1275,10 +1170,6 @@ const transition = (
           : { model: cleared, commands: [FocusFilterTrigger()] };
       },
       GotSortMenuMessage: ({ message }) => foldSortMenu(model, message),
-      GotRowActionMessage: ({ message }) =>
-        model.selectedId === null && model.creation === null
-          ? foldRowAction(model, message)
-          : { model },
       GotTagPickerMessage: ({ id, message }) => {
         const editor = model.creation;
         if (
@@ -1374,17 +1265,8 @@ const transition = (
             true,
           );
         }
-        if (next.rename) next = finishRename(next, next.rename.id, false).model;
-        return { model: { ...next, rename: null } };
+        return { model: next };
       },
-      EditedRename: ({ id, value }) => ({
-        model:
-          model.rename?.id === id
-            ? { ...model, rename: { ...model.rename, value, invalid: false } }
-            : model,
-      }),
-      CommittedRename: ({ id }) => finishRename(model, id, false),
-      CanceledRename: ({ id }) => finishRename(model, id, true),
       RetriedEdit: ({ id }) => {
         const task = findTask(model, id);
         const next = flushText(
@@ -1702,21 +1584,9 @@ export const update = (model: Model, message: Message) => {
   if (before.index !== model.index || before.filters !== model.filters) {
     const visible = visibleTasks(before);
     const isVisible = (id: string) => visible.some((task) => task.id === id);
-    const row = before.rowActions.row;
     const picker = before.picker;
-    result = {
-      ...result,
-      model: {
-        ...before,
-        ...(row && !isVisible(row.key) ? { rowActions } : {}),
-        ...(picker && picker.surface !== "detail" && !isVisible(picker.id)
-          ? { picker: null }
-          : {}),
-        ...(before.rename && !isVisible(before.rename.id)
-          ? { rename: null }
-          : {}),
-      },
-    };
+    if (picker?.surface === "row" && !isVisible(picker.id))
+      result = { ...result, model: { ...before, picker: null } };
     if (
       !before.selectedId &&
       message._tag === "TaskSaved" &&
@@ -1732,7 +1602,6 @@ export const update = (model: Model, message: Message) => {
             ...(result.commands ?? []),
             RecoverTaskRowFocus({
               rowId: (visible[position] ?? visible.at(-1))?.id ?? null,
-              preferLink: true,
             }),
           ],
         };

@@ -25,7 +25,7 @@ export const propertyLabels: Record<Property, string> = {
 export const PickerTarget = Schema.Struct({
   id: ItemId,
   field: Property,
-  surface: Schema.Literals(["detail", "row", "menu"]),
+  surface: Schema.Literals(["detail", "row"]),
 });
 export type PickerTarget = typeof PickerTarget.Type;
 export const pickerId = ({ id, field, surface }: PickerTarget) =>

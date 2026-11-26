@@ -352,3 +352,20 @@ codex mcp login orumai --scopes links:read,tasks:read
 `tasks:write` exposes `create_task`, `update_task`, and `create_tag`. Use the task's latest `revision` when updating, and use `addTagIds` or `removeTagIds` to change its tags. Omitted fields keep their values. A UUID `requestId` lets a client safely retry task creation.
 
 Access tokens refresh automatically within the 30-day grant. Open **Settings → Clients** in the web app to revoke a grant.
+
+### Run tagged tasks with Codex
+
+After deploying the runner's MCP endpoint, set up Bun, Git, and the Codex CLI on an always-on machine. The runner needs Git credentials and a commit identity for `origin`, and Codex needs its own login or `CODEX_API_KEY`. From an Orumai checkout, run:
+
+```sh
+bun install --frozen-lockfile
+bun --no-env-file run tasks:runner --login
+bun --no-env-file run tasks:runner --dry-run
+bun --no-env-file run tasks:runner --once
+```
+
+Approve the runner in your browser. `--login --no-browser` prints the approval URL for a machine without a browser. The runner stores its task credential in the OS credential store, separately from `one auth login`. A service can also supply an approved credential as `ORUMAI_RUNNER_TOKEN` through its secret store. Revoke the credential under **Settings → Clients**. Use `--server <origin>` on each command to work against a different Orumai server.
+
+Add the `ready` tag to a **Not started** task to opt it in. **Dry run** prints the next eligible task without claiming it. **Once** attempts one task. Omit `--once` to run the script in the foreground and keep polling every minute. Each claimed task gets a fresh clone of `origin/main`. The runner runs type checks, tests, and builds before pushing to `origin/main`, which triggers the configured Cloudflare deployment.
+
+Run logs live under `$XDG_STATE_HOME/orumai-task-runner` or `~/.local/state/orumai-task-runner`. `run.jsonl` records the push SHA or the reason the run stopped. Failed runs retain their checkout for inspection. Tasks stay **In progress** after a claim so failures and pushes awaiting deployment do not get picked up again. To retry a failed run, review the log and move the task back to **Not started**. Verify production before marking a pushed task complete.

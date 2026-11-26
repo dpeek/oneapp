@@ -1,15 +1,22 @@
 import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { appName } from "@orumai/core";
+import { taskRunnerMcpPath, taskRunnerScope } from "@orumai/core/cli-auth";
 import { Link, LinkId, LinkList, SaveLink } from "@orumai/core/links";
 import { Context, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { SqlClient } from "effect/sql";
 import { jsonError, privateHeaders } from "./api-response.ts";
+import {
+  insufficientCliScopeResponse,
+  invalidTokenResponse,
+  requireCliScope,
+} from "./cli-tokens.ts";
 import { deleteSavedLink, insertSavedLink, listSavedLinks } from "./links.ts";
 import {
   type McpScope,
   ReadLinks,
+  ReadTasks,
   WriteLinks,
   WriteTasks,
   mcpScopes,
@@ -139,10 +146,14 @@ export const mcpRoutes = (
   db: D1Database,
   bucket: R2Bucket,
   onTaskChange: (account: string) => void,
-) =>
-  HttpRouter.add(
-    "*",
-    "/mcp",
+) => {
+  const handle = <E, R>(
+    authorize: Effect.Effect<
+      { subjectId: string; scopes: readonly McpScope[] } | undefined,
+      E,
+      R
+    >,
+  ) =>
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       if (
@@ -151,7 +162,7 @@ export const mcpRoutes = (
       )
         return yield* jsonError(403, "Origin is not allowed");
 
-      const access = yield* mcpOAuth.CurrentAccess;
+      const access = yield* authorize;
       if (!access) return yield* jsonError(401, "MCP authorization required");
       const sql = yield* SqlClient.SqlClient;
       const [account] = yield* sql`
@@ -191,5 +202,28 @@ export const mcpRoutes = (
       return HttpServerResponse.fromWeb(response).pipe(
         HttpServerResponse.setHeaders(privateHeaders),
       );
-    }),
-  ).pipe(Layer.provide(mcpOAuth.middleware([]).combine(advertiseScopes).layer));
+    });
+
+  return Layer.mergeAll(
+    HttpRouter.add("*", "/mcp", handle(mcpOAuth.CurrentAccess)).pipe(
+      Layer.provide(mcpOAuth.middleware([]).combine(advertiseScopes).layer),
+    ),
+    HttpRouter.add(
+      "*",
+      taskRunnerMcpPath,
+      handle(
+        requireCliScope(taskRunnerScope).pipe(
+          Effect.map(({ ownerId }) => ({
+            subjectId: ownerId,
+            scopes: [ReadTasks, WriteTasks],
+          })),
+        ),
+      ).pipe(
+        Effect.catchTags({
+          InvalidCliToken: invalidTokenResponse,
+          InsufficientCliScope: insufficientCliScopeResponse,
+        }),
+      ),
+    ),
+  );
+};

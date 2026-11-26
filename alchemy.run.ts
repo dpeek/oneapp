@@ -1,4 +1,5 @@
 import * as Cloudflare from "@alchemy.run/cloudflare";
+import { taskRunnerMcpPath } from "./packages/core/src/cli-auth.ts";
 import * as Alchemy from "alchemy";
 import * as Output from "alchemy/Output";
 import { Config, Effect, Layer, Option, Redacted } from "effect";
@@ -77,6 +78,7 @@ export const Web = Cloudflare.Worker(
         "/notifications/*",
         "/sso-connector.html",
         "/mcp",
+        taskRunnerMcpPath,
         "/oauth/mcp/*",
         "/.well-known/*",
         "/connect/mcp",

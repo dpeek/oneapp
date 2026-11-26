@@ -5,6 +5,8 @@ import {
   cliLinkScopes,
   cliLoginPath,
   cliTokensPath,
+  taskRunnerMcpPath,
+  taskRunnerScopes,
 } from "@orumai/core/cli-auth";
 import { extensionAccessPath, digestSecret } from "@orumai/core/extension-auth";
 import {
@@ -18,6 +20,7 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { ConfigProvider, Effect, Redacted, Schema } from "effect";
 import { Base64Url } from "effect/encoding";
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
+import { TaskQueue } from "../../../../scripts/task-runner/queue.ts";
 import {
   emailChangePath,
   emailVerificationPath,
@@ -2888,6 +2891,125 @@ const defaultMcpScopes = [
   tasksReadScope,
   tasksWriteScope,
 ];
+
+it("lets a dedicated runner claim only opted-in tasks over MCP and revokes its access", async () => {
+  using sqlite = new Database(":memory:");
+  const { call, request, signIn, cookies } = await setup(sqlite);
+  const cookie = cookies(await signIn(password));
+  const issue = async (
+    scopes: typeof cliLinkScopes | typeof taskRunnerScopes,
+  ) => {
+    const secret = `one_${Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url")}`;
+    const headers = {
+      authorization: `Bearer ${secret}`,
+      "content-type": "application/json",
+    };
+    const start = await request(cliLoginPath, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ label: "Runner test", scopes }),
+    });
+    expect(start.status).toBe(201);
+    const { id } = (await start.json()) as { id: string };
+    expect(
+      (await call(`${cliLoginPath}/${id}`, { approve: true, scopes }, cookie))
+        .status,
+    ).toBe(204);
+    expect(
+      (await request(`${cliLoginPath}/${id}/poll`, { method: "POST", headers }))
+        .status,
+    ).toBe(204);
+    return { id, secret, headers };
+  };
+  const runner = await issue(taskRunnerScopes);
+  const links = await issue(cliLinkScopes);
+  expect(
+    (await request(taskRunnerMcpPath, { headers: links.headers })).status,
+  ).toBe(403);
+  expect((await request(linksPath, { headers: runner.headers })).status).toBe(
+    403,
+  );
+
+  using listener = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (incoming) =>
+      request(new URL(incoming.url).pathname, {
+        method: incoming.method,
+        headers: incoming.headers,
+        body: incoming.body ? await incoming.arrayBuffer() : undefined,
+      }),
+  });
+  const queue = new TaskQueue(
+    listener.url.origin,
+    runner.secret,
+    AbortSignal.timeout(10_000),
+  );
+  try {
+    await queue.connect();
+    const createTag = async (name: string) =>
+      Schema.decodeUnknownSync(Tag)(
+        await (await call(tagsApi, { name }, cookie)).json(),
+      );
+    const tag = await createTag("ready");
+    const otherTag = await createTag("not-ready");
+    const readyId = crypto.randomUUID();
+    expect(
+      (
+        await call(
+          tasksApi,
+          { id: readyId, title: "Fix a typo", tagIds: [tag.id] },
+          cookie,
+        )
+      ).status,
+    ).toBe(201);
+    expect(
+      (
+        await call(
+          tasksApi,
+          { id: crypto.randomUUID(), title: "Manual backlog" },
+          cookie,
+        )
+      ).status,
+    ).toBe(201);
+    expect(
+      (
+        await call(
+          tasksApi,
+          { id: crypto.randomUUID(), title: "Draft", tagIds: [otherTag.id] },
+          cookie,
+        )
+      ).status,
+    ).toBe(201);
+    expect(await queue.next()).toEqual({ id: readyId, tagId: tag.id });
+    const task = await queue.get(readyId);
+    const revision = await queue.claim(task.id, task.revision);
+    expect(revision).toBeDefined();
+    expect(await queue.get(task.id)).toMatchObject({
+      status: "in-progress",
+      revision,
+    });
+    expect(await queue.claim(task.id, task.revision)).toBeUndefined();
+    expect(await queue.next()).toBeUndefined();
+  } finally {
+    await queue.close();
+  }
+  expect(
+    (
+      await request(`${cliTokensPath}/${runner.id}`, {
+        method: "DELETE",
+        headers: {
+          cookie,
+          origin: "https://oneapp.example",
+          "x-effect-auth-csrf": "1",
+        },
+      })
+    ).status,
+  ).toBe(204);
+  expect(
+    (await request(taskRunnerMcpPath, { headers: runner.headers })).status,
+  ).toBe(401);
+});
 
 const setupMcp = async (
   sqlite: Database,

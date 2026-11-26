@@ -5,6 +5,7 @@ import {
   cliLinkScopes,
   cliLoginQuery,
   cliLoginPath,
+  taskRunnerScope,
 } from "@orumai/core/cli-auth";
 import { Effect, Schema } from "effect";
 import { Command, Submodel, type Update } from "foldkit";
@@ -156,7 +157,9 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
                     (scope) => scope === "mail:import",
                   )
                     ? `Allow ${model.approval.label} to import mail into your mailboxes and mark eligible imported conversations complete for 24 hours. This also allows reading import receipts.`
-                    : `Allow ${model.approval.label} to read, save, and delete links until you revoke access.`,
+                    : model.approval.scopes?.[0] === taskRunnerScope
+                      ? `Allow ${model.approval.label} to read tasks, tags, and screenshots, and to create and edit tasks and create tags until you revoke access.`
+                      : `Allow ${model.approval.label} to read, save, and delete links until you revoke access.`,
                 ],
               ),
               h.p(

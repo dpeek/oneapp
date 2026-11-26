@@ -20,14 +20,19 @@ const CliLinkScopes = Schema.Tuple([
   Schema.Literal(linksWriteScope),
 ]);
 export const cliMailImportScopes = [mailImportScope] as const;
+export const taskRunnerScope = "tasks:run";
+export const taskRunnerScopes = [taskRunnerScope] as const;
+export const taskRunnerMcpPath = "/mcp/runner";
 export const CliScope = Schema.Literals([
   linksReadScope,
   linksWriteScope,
   mailImportScope,
+  taskRunnerScope,
 ]);
 export const CliRequestedScopes = Schema.Union([
   CliLinkScopes,
   Schema.Tuple([Schema.Literal(mailImportScope)]),
+  Schema.Tuple([Schema.Literal(taskRunnerScope)]),
 ]);
 export const CliLoginRequest = Schema.Struct({
   label: Schema.Trim.pipe(Schema.decodeTo(CliTokenLabel)),

@@ -1416,6 +1416,11 @@ button {
   margin-block: 0 0.5rem;
 }
 
+.inbox-list {
+  /* Keep raised row controls below the floating navigation. */
+  isolation: isolate;
+}
+
 .inbox-list-loading {
   display: grid;
   place-items: center;

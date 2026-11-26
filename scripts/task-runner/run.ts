@@ -131,8 +131,11 @@ export async function runNext(
   const next = await queue.next();
   if (!next) return;
   const task = await queue.get(next.id);
-  if (task.status !== "not-started" || !task.tagIds.includes(next.tagId))
-    return;
+  const matchesClaimSource = ({ assignee, tagIds }: typeof task) =>
+    next.source === "assignment"
+      ? assignee === "oru"
+      : tagIds.includes(next.tagId);
+  if (task.status !== "not-started" || !matchesClaimSource(task)) return;
 
   const { origin, directory, source, remote, repository, signal, bunCache } =
     settings;
@@ -173,7 +176,12 @@ export async function runNext(
 
   try {
     await record("claiming");
-    const revision = await queue.claim(task.id, task.revision, runId);
+    const revision = await queue.claim(
+      task.id,
+      task.revision,
+      runId,
+      next.source,
+    );
     if (!revision) {
       await record("claim-lost");
       return;
@@ -354,7 +362,7 @@ ${JSON.stringify({ id: task.id, title: task.title, description: task.description
     if (
       current.revision !== revision ||
       current.status !== "in-progress" ||
-      !current.tagIds.includes(next.tagId)
+      !matchesClaimSource(current)
     )
       throw new Error(
         "The task changed after it was claimed. Inspect the checkout before retrying.",

@@ -10,7 +10,10 @@ import {
   taskAttachmentLimit,
 } from "../../apps/web/src/task-attachment-contract.ts";
 import { Task } from "../../apps/web/src/tasks-contract.ts";
-import type { TaskRunUpdate } from "../../apps/web/src/task-run-contract.ts";
+import type {
+  TaskRunClaim,
+  TaskRunUpdate,
+} from "../../apps/web/src/task-run-contract.ts";
 
 const TaskPage = Schema.Struct({
   tasks: Schema.Array(Schema.Struct({ id: ItemId })),
@@ -84,7 +87,7 @@ export class TaskQueue {
     return Schema.decodeUnknownSync(schema)(result.structuredContent);
   }
 
-  async next() {
+  private async findReadyTag() {
     let offset: number | null = 0;
     while (offset !== null) {
       const page: typeof TagPage.Type = await this.read(TagPage, "list_tags", {
@@ -93,20 +96,33 @@ export class TaskQueue {
         offset,
       });
       const tag = page.tags.find(({ name }) => tagNameKey(name) === readyTag);
-      if (tag) {
-        const { tasks } = await this.read(TaskPage, "list_tasks", {
-          status: "not-started",
-          tagId: tag.id,
-          limit: 1,
-        });
-        const first = tasks[0];
-        if (first) return { id: first.id, tagId: tag.id };
-        return;
-      }
+      if (tag) return tag;
       if (page.nextOffset !== null && page.nextOffset <= offset)
         throw new Error("MCP returned an invalid tag page offset.");
       offset = page.nextOffset;
     }
+  }
+
+  async next() {
+    const tag = await this.findReadyTag();
+    if (tag) {
+      const { tasks } = await this.read(TaskPage, "list_tasks", {
+        status: "not-started",
+        tagId: tag.id,
+        limit: 1,
+      });
+      const first = tasks[0];
+      if (first)
+        return { id: first.id, source: "ready-tag" as const, tagId: tag.id };
+    }
+
+    const { tasks } = await this.read(TaskPage, "list_tasks", {
+      status: "not-started",
+      assignee: "oru",
+      limit: 1,
+    });
+    const first = tasks[0];
+    if (first) return { id: first.id, source: "assignment" as const };
   }
 
   async get(id: string) {
@@ -115,11 +131,17 @@ export class TaskQueue {
     return task;
   }
 
-  async claim(taskId: string, revision: string, runId: string) {
+  async claim(
+    taskId: string,
+    revision: string,
+    runId: string,
+    source: typeof TaskRunClaim.Type.source = "ready-tag",
+  ) {
     const claim = await this.read(Claim, "claim_task_run", {
       taskId,
       revision,
       runId,
+      source,
     });
     return claim.revision ?? undefined;
   }

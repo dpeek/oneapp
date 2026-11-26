@@ -22,9 +22,10 @@ const usage = `Usage: bun --no-env-file run tasks:runner [--server <origin>] [--
        bun --no-env-file run tasks:runner --login [--no-browser] [--server <origin>]
        bun --no-env-file run tasks:runner --configure-browser <executable>
 
-Picks up one not-started task tagged ready at a time. A successful run pushes
-to origin/main and tracks production deployment. --once attempts one task
-and follows pending deployments. --dry-run lists the next eligible task.`;
+Picks up one not-started task at a time. Tasks tagged ready take priority,
+followed by tasks assigned to Oru. A successful run pushes to origin/main
+and tracks production deployment. --once attempts one task and follows
+pending deployments. --dry-run lists the next eligible task.`;
 const credentialService = "orumai-task-runner";
 
 async function main() {

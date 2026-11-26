@@ -3047,6 +3047,32 @@ it("lets a dedicated runner claim opted-in tasks and report only the latest run 
   );
   try {
     await queue.connect();
+    const createAssigned = async (status = "not-started") => {
+      const id = crypto.randomUUID();
+      const reply = await mcpRequest(
+        request,
+        taskRunnerMcpPath,
+        runner.secret,
+        "tools/call",
+        {
+          name: "create_task",
+          arguments: { requestId: id, title: "Oru task", status },
+        },
+      );
+      expect(reply.error).toBeUndefined();
+      expect(reply.result?.isError).toBeFalsy();
+      expect(reply.result?.structuredContent).toMatchObject({
+        id,
+        assignee: "oru",
+      });
+      const task = await queue.get(id);
+      expect(task).toMatchObject({ assignee: "oru", author: "oru" });
+      return task;
+    };
+    const assigned = await createAssigned();
+    const assignmentCandidate = { id: assigned.id, source: "assignment" };
+    expect(await queue.next()).toEqual(assignmentCandidate);
+
     const createTag = async (name: string) =>
       Schema.decodeUnknownSync(Tag)(
         await (await call(tagsApi, { name }, cookie)).json(),
@@ -3081,7 +3107,11 @@ it("lets a dedicated runner claim opted-in tasks and report only the latest run 
         )
       ).status,
     ).toBe(201);
-    expect(await queue.next()).toEqual({ id: readyId, tagId: tag.id });
+    expect(await queue.next()).toEqual({
+      id: readyId,
+      source: "ready-tag",
+      tagId: tag.id,
+    });
     const task = await queue.get(readyId);
     expect(task.latestRun).toBeNull();
     const runId = crypto.randomUUID();
@@ -3096,7 +3126,7 @@ it("lets a dedicated runner claim opted-in tasks and report only the latest run 
     expect(
       await queue.claim(task.id, task.revision, crypto.randomUUID()),
     ).toBeUndefined();
-    expect(await queue.next()).toBeUndefined();
+    expect(await queue.next()).toEqual(assignmentCandidate);
 
     const read = async () =>
       Schema.decodeUnknownSync(TaskSnapshot)(
@@ -3214,68 +3244,31 @@ it("lets a dedicated runner claim opted-in tasks and report only the latest run 
       },
     });
 
-    const runnerTool = async (name: string, args: object) => {
-      const reply = await mcpRequest(
-        request,
-        taskRunnerMcpPath,
-        runner.secret,
-        "tools/call",
-        { name, arguments: args },
-      );
-      expect(reply.error).toBeUndefined();
-      expect(reply.result?.isError).toBeFalsy();
-      return reply.result?.structuredContent;
-    };
-    const createAssigned = async (status = "not-started") => {
-      const id = crypto.randomUUID();
-      const result = await runnerTool("create_task", {
-        requestId: id,
-        title: "Oru task",
-        status,
-      });
-      expect(result).toMatchObject({ id, assignee: "oru" });
-      const task = await queue.get(id);
-      expect(task).toMatchObject({ assignee: "oru", author: "oru" });
-      return task;
-    };
     const claimAssigned = (
       task: Pick<Task, "id" | "revision">,
       runId: string,
-    ) =>
-      runnerTool("claim_task_run", {
-        taskId: task.id,
-        revision: task.revision,
-        runId,
-        source: "assignment",
-      });
+    ) => queue.claim(task.id, task.revision, runId, "assignment");
     expect(
       await claimAssigned(
         await createAssigned("in-review"),
         crypto.randomUUID(),
       ),
-    ).toEqual({ revision: null });
+    ).toBeUndefined();
 
-    const assigned = await createAssigned();
     const attempt = crypto.randomUUID();
-    expect(await queue.next()).toBeUndefined();
+    expect(await queue.next()).toEqual(assignmentCandidate);
     expect(
       await claimAssigned(
         { ...assigned, revision: crypto.randomUUID() },
         attempt,
       ),
-    ).toEqual({ revision: null });
+    ).toBeUndefined();
     const accepted = await claimAssigned(assigned, attempt);
-    expect(accepted).toEqual({
-      revision: expect.any(String),
-    });
-    expect(await claimAssigned(assigned, attempt)).toEqual(accepted);
-    expect(await claimAssigned(assigned, crypto.randomUUID())).toEqual({
-      revision: null,
-    });
+    expect(accepted).toEqual(expect.any(String));
+    expect(await claimAssigned(assigned, attempt)).toBe(accepted);
+    expect(await claimAssigned(assigned, crypto.randomUUID())).toBeUndefined();
     const claimedTask = await queue.get(assigned.id);
-    expect(await claimAssigned(claimedTask, attempt)).toEqual({
-      revision: null,
-    });
+    expect(await claimAssigned(claimedTask, attempt)).toBeUndefined();
     expect(claimedTask).toMatchObject({
       status: "in-progress",
       assignee: "oru",
@@ -3293,15 +3286,14 @@ it("lets a dedicated runner claim opted-in tasks and report only the latest run 
       latestRun: { id: attempt, outcome: "setup-failed" },
     });
     expect(handedOff.revision).not.toBe(claimedTask.revision);
-    expect(await claimAssigned(handedOff, crypto.randomUUID())).toEqual({
-      revision: null,
-    });
+    expect(await claimAssigned(handedOff, crypto.randomUUID())).toBeUndefined();
+    expect(await queue.next()).toBeUndefined();
 
     const reassigned = await createAssigned();
     const superseded = crypto.randomUUID();
-    expect(await claimAssigned(reassigned, superseded)).toEqual({
-      revision: expect.any(String),
-    });
+    expect(await claimAssigned(reassigned, superseded)).toEqual(
+      expect.any(String),
+    );
     const current = await queue.get(reassigned.id);
     const edited = await request(taskApi(current.id), {
       method: "PUT",
@@ -3331,9 +3323,9 @@ it("lets a dedicated runner claim opted-in tasks and report only the latest run 
 
     const success = await createAssigned();
     const successfulRun = crypto.randomUUID();
-    expect(await claimAssigned(success, successfulRun)).toEqual({
-      revision: expect.any(String),
-    });
+    expect(await claimAssigned(success, successfulRun)).toEqual(
+      expect.any(String),
+    );
     expect(
       await queue.report(success.id, successfulRun, {
         phase: "implementation",

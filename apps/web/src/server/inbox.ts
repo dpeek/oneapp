@@ -1178,8 +1178,9 @@ export const inboxRoutes = (
             ...(env.INBOX_SEND && env.INBOX_EMAIL_FROM
               ? { sender: env.INBOX_EMAIL_FROM }
               : {}),
-            messages: page.messages.map((mail) => ({
+            messages: page.messages.map(({ trashBatch, ...mail }) => ({
               ...mail,
+              ...(trashBatch ? { trashBatch } : {}),
               latestIncomingId: mail.folder === "inbox" ? mail.id : null,
               lastMessageAt: mail.deletedAt,
               archived: false,

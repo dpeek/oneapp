@@ -6,6 +6,8 @@ vi.mock("@orumai/ui", async () => {
     import.meta.resolve("@foldkit/ui", import.meta.resolve("@orumai/ui"))
   );
   const picker = Combobox.Multi.create();
+  const rowMenu =
+    await import("../../../packages/ui/src/item-action-menu-state.ts");
   return {
     MultiCombobox: {
       Model: Combobox.Multi.Model,
@@ -15,6 +17,10 @@ vi.mock("@orumai/ui", async () => {
     },
     Dialog,
     DropdownMenu: Menu,
+    ItemActionMenu: {
+      ...rowMenu,
+      create: () => ({ update: rowMenu.createUpdate() }),
+    },
     Sheet: Dialog,
     Popover,
     Toast: await import("../../../packages/ui/src/toast-state.ts"),

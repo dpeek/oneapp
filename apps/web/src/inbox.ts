@@ -6,6 +6,7 @@ import {
   DropdownMenu,
   ellipsisIcon,
   item,
+  ItemActionMenu,
   itemDisclosure,
   itemGroup,
   marker,
@@ -20,7 +21,7 @@ import {
   trashIconPaths,
 } from "@orumai/ui";
 import { Effect, Option, Queue, Schema, Stream } from "effect";
-import { Command, Submodel, Update } from "foldkit";
+import { Command, Render, Submodel, Update } from "foldkit";
 import { focus } from "foldkit/dom";
 import type { HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
@@ -139,6 +140,7 @@ const messageFolder = (id: string): MailFolder =>
   isSentMessageId(id) ? "sent" : "inbox";
 
 type ConversationAction = "archive" | typeof SenderPriority.Type;
+type RowAction = ConversationAction | "toggleUnread" | "delete" | "restore";
 type MessageAction =
   | "toggleUnread"
   | "download"
@@ -148,6 +150,9 @@ type MessageAction =
   | "togglePlainText";
 const conversationMenu = DropdownMenu.create<ConversationAction>();
 const messageMenu = DropdownMenu.create<MessageAction>();
+const rowMenu = ItemActionMenu.create<RowAction>();
+const rowActions = ItemActionMenu.init("mail-row-actions");
+const newEmailButtonId = "mail-new-email";
 
 export const Model = Schema.Struct({
   folder: MailboxView,
@@ -155,6 +160,7 @@ export const Model = Schema.Struct({
   folderSheet: Sheet.Model,
   conversationMenu: DropdownMenu.Model,
   messageMenu: DropdownMenu.Model,
+  rowActions: ItemActionMenu.Model,
   list: Schema.NullOr(MailPage),
   listRequest: Schema.NullOr(
     Schema.Struct({ id: Schema.String, cursor: Schema.NullOr(Schema.String) }),
@@ -218,6 +224,7 @@ export const initial: Model = {
   folderSheet: Sheet.init({ id: "mail-folders" }),
   conversationMenu: DropdownMenu.init({ id: "mail-conversation-actions" }),
   messageMenu: DropdownMenu.init({ id: "mail-message-actions" }),
+  rowActions,
   list: null,
   listRequest: null,
   listRefreshQueued: false,
@@ -282,7 +289,6 @@ export const Message = defineMessageUnion({
   RequestedForward: {},
   DownloadStarted: {},
   RequestedMessageDelete: { id: MailMessageId },
-  RequestedConversationDelete: { id: MailMessageId },
   DeletedEntry: {
     id: MailMessageId,
     request: Schema.String,
@@ -291,6 +297,8 @@ export const Message = defineMessageUnion({
   DeleteFailed: { request: Schema.String },
   GotConversationMenuMessage: { message: DropdownMenu.Message },
   GotMessageMenuMessage: { message: DropdownMenu.Message },
+  GotRowMenuMessage: { message: ItemActionMenu.Message },
+  UnmountedList: {},
   ActivatedNotification: { action: Action },
   ArchiveChanged: { request: Schema.String },
   ArchiveFailed: { request: Schema.String, error: Schema.String },
@@ -364,6 +372,8 @@ const dismissNotification = (
 const archiveKey = (id: string) => `mail-archive:${id}`;
 const deleteKey = (id: string, conversation = false) =>
   conversation ? `mail-conversation-delete:${id}` : `mail-delete:${id}`;
+const restoreKey = (id: string, batchId?: string) =>
+  batchId ? `mail-trash-batch:${batchId}` : deleteKey(id);
 const readKey = (id: string) => `mail-read:${id}`;
 const priorityKey = (address: string) => `mail-sender-priority:${address}`;
 const sent = (
@@ -492,6 +502,39 @@ const FocusList = Command.define("FocusInboxConversationList", {
       Effect.as(Message.FocusUpdated()),
     );
   },
+});
+
+const RecoverRowFocus = Command.define("RecoverMailRowFocus", {
+  args: { folder: MailboxView, neighborId: Schema.NullOr(MailMessageId) },
+  messages: [Message.FocusUpdated],
+  execute: ({ folder, neighborId }) =>
+    Render.afterCommit.pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          const list = document.querySelector<HTMLElement>(
+            `.inbox-list[data-folder="${folder}"]:not([inert])`,
+          );
+          if (list && document.activeElement === document.body) {
+            const trigger = neighborId
+              ? document.getElementById(
+                  ItemActionMenu.triggerId(rowActions.id, neighborId),
+                )
+              : null;
+            const link = neighborId
+              ? document.getElementById(
+                  ItemActionMenu.rowLinkId(rowActions.id, neighborId),
+                )
+              : null;
+            const compose = document.getElementById(newEmailButtonId);
+            const target = trigger?.getClientRects().length
+              ? trigger
+              : (link ?? (compose?.matches(":enabled") ? compose : list));
+            target.focus({ preventScroll: true });
+          }
+          return Message.FocusUpdated();
+        }),
+      ),
+    ),
 });
 
 const FocusMessageSummary = Command.define("FocusInboxMessageSummary", {
@@ -1022,30 +1065,31 @@ const entryUnread = (model: Model) => {
 
 const setUnread = (
   model: Model,
-  id: string,
+  ids: readonly string[],
   unread: boolean,
   userInitiated = false,
+  rowSubject?: string,
 ): Update.Return<Model, Message> => {
-  if (model.readRequests[id]) return { model };
-  const request = crypto.randomUUID();
+  const readRequests = { ...model.readRequests };
+  const commands = ids.flatMap((id) => {
+    if (readRequests[id]) return [];
+    const request = crypto.randomUUID();
+    readRequests[id] = {
+      request,
+      userInitiated,
+      unread,
+      subject:
+        rowSubject ??
+        (model.entry?.id === id
+          ? model.entry.subject || "(no subject)"
+          : undefined),
+    };
+    return [SetUnread({ id, unread, request })];
+  });
+  if (!commands.length) return { model };
   return {
-    model: {
-      ...model,
-      readFailed: null,
-      readRequests: {
-        ...model.readRequests,
-        [id]: {
-          request,
-          userInitiated,
-          unread,
-          subject:
-            model.entry?.id === id
-              ? model.entry.subject || "(no subject)"
-              : undefined,
-        },
-      },
-    },
-    commands: [SetUnread({ id, unread, request })],
+    model: { ...model, readFailed: null, readRequests },
+    commands,
   };
 };
 
@@ -1097,6 +1141,9 @@ const toConversationMenuMessage = (message: typeof DropdownMenu.Message.Type) =>
 const toMessageMenuMessage = (message: typeof DropdownMenu.Message.Type) =>
   Message.GotMessageMenuMessage({ message });
 
+const toRowMenuMessage = (message: ItemActionMenu.Message) =>
+  Message.GotRowMenuMessage({ message });
+
 const selectedMessage = (model: Model): Model["active"] =>
   model.active ??
   (model.selected
@@ -1105,9 +1152,9 @@ const selectedMessage = (model: Model): Model["active"] =>
 
 const changeSenderPriority = (
   model: Model,
+  rule: typeof SenderRule.Type | undefined,
   priority: typeof SenderPriority.Type,
 ): Update.Return<Model, Message> => {
-  const rule = model.thread?.senderRule;
   if (!rule || model.senderRuleRequest || rule.priority === priority)
     return { model };
   const change = {
@@ -1144,7 +1191,7 @@ const foldConversationMenu = Update.foldChild({
             )
           : { model };
       }
-      return changeSenderPriority(model, value);
+      return changeSenderPriority(model, model.thread?.senderRule, value);
     },
 });
 
@@ -1193,19 +1240,97 @@ const foldMessageMenu = Update.foldChild({
       return value === "toggleUnread" &&
         entry?.id === active.id &&
         "receivedAt" in entry
-        ? setUnread(model, entry.id, !entryUnread(model), true)
+        ? setUnread(model, [entry.id], !entryUnread(model), true)
         : { model };
     },
 });
 
-export const update = (model: Model, message: Message): Result =>
+const rowReadTargets = (row: typeof ConversationSummary.Type) =>
+  row.unreadCount > 0
+    ? (row.unreadIncomingIds ?? [])
+    : row.latestIncomingId
+      ? [row.latestIncomingId]
+      : [];
+
+const requestConversationDelete = (
+  model: Model,
+  row: typeof ConversationSummary.Type,
+): Update.Return<Model, Message> => {
+  const deletion = {
+    id: row.id,
+    folder: messageFolder(row.id),
+    conversationView: model.folder,
+    subject: conversationSubject([row]),
+    request: crypto.randomUUID(),
+  };
+  return {
+    model: { ...model, deleteRequest: deletion },
+    commands: [DeleteEntry(deletion)],
+  };
+};
+
+const foldRowMenu = Update.foldChild({
+  update: rowMenu.update,
+  read: (model: Model) =>
+    model.selected === null ? Option.some(model.rowActions) : Option.none(),
+  write: (model, rowActions) => ({ ...model, rowActions }),
+  toParentMessage: toRowMenuMessage,
+  foldOutMessage:
+    ({ key, action }): Update.Step<Model, Message> =>
+    (model) => {
+      const row = model.list?.messages.find(({ id }) => id === key);
+      if (
+        !row ||
+        "sentAt" in row ||
+        !rowActionItems(model, row).some(
+          (item) => item.action === action && !item.disabled,
+        )
+      )
+        return { model };
+      const subject = conversationSubject([row]);
+      switch (action) {
+        case "delete":
+          return requestConversationDelete(model, row);
+        case "restore":
+          return foldRecovery(
+            model,
+            Recovery.Message.Restore({
+              id: row.id,
+              subject,
+              ...(row.trashBatch ? { batchId: row.trashBatch } : {}),
+            }),
+          );
+        case "archive":
+          return row.latestIncomingId
+            ? changeArchive(
+                model,
+                { id: row.latestIncomingId, archived: !row.archived },
+                null,
+                subject,
+              )
+            : { model };
+        case "toggleUnread":
+          return setUnread(
+            model,
+            rowReadTargets(row),
+            row.unreadCount === 0,
+            true,
+            subject,
+          );
+        default:
+          return changeSenderPriority(model, row.senderRule, action);
+      }
+    },
+});
+
+const transition = (model: Model, message: Message): Result =>
   Message.match<Result>(message, {
     GotFiltersMessage: ({ message }) => {
       const result = foldFilters(model, message);
       if (model.filters.selection === result.model.filters.selection)
         return result;
       const restarted = loadList(
-        { ...result.model, list: null, listRequest: null },
+        { ...result.model, rowActions, list: null, listRequest: null },
         null,
       );
       return {
@@ -1221,6 +1346,14 @@ export const update = (model: Model, message: Message): Result =>
     GotConversationMenuMessage: ({ message }) =>
       foldConversationMenu(model, message),
     GotMessageMenuMessage: ({ message }) => foldMessageMenu(model, message),
+    GotRowMenuMessage: ({ message }) => {
+      const result = foldRowMenu(model, message);
+      const deletion = result.model.deleteRequest;
+      return deletion && !model.deleteRequest
+        ? dismissNotification(result, deleteKey(deletion.id, true))
+        : result;
+    },
+    UnmountedList: () => ({ model: { ...model, rowActions } }),
     Opened: ({ id, folder }) => {
       const base =
         folder === model.folder
@@ -1251,6 +1384,7 @@ export const update = (model: Model, message: Message): Result =>
               filters: Filters.resetMenu(base.filters),
               conversationMenu: initial.conversationMenu,
               messageMenu: initial.messageMenu,
+              rowActions,
               middleRevealed: false,
               active: id ? { id, folder: messageFolder(id) } : null,
               thread: null,
@@ -1326,10 +1460,7 @@ export const update = (model: Model, message: Message): Result =>
         model.recovery.restoring
       )
         return notify(result, {
-          key: deleteKey(
-            model.recovery.restoring,
-            Boolean(model.recovery.batchId),
-          ),
+          key: restoreKey(model.recovery.restoring, model.recovery.batchId),
           variant: "Error",
           title: model.recovery.batchId
             ? "Could not restore this conversation. Try Undo again."
@@ -1349,13 +1480,27 @@ export const update = (model: Model, message: Message): Result =>
         model.recovery.restoring !== message.id
       )
         return result;
+      const restored = new Set(message.members?.ids ?? [message.id]);
       const restoredSelection =
         model.folder === "trash" &&
         model.active &&
-        (message.members?.ids ?? [message.id]).includes(model.active.id);
+        restored.has(model.active.id);
+      const updated =
+        model.folder === "trash" && result.model.list
+          ? {
+              ...result.model,
+              list: {
+                ...result.model.list,
+                messages: result.model.list.messages.filter(
+                  ({ id }) => !restored.has(id),
+                ),
+              },
+              listRequest: null,
+            }
+          : result.model;
       const next = restoredSelection
         ? {
-            ...result.model,
+            ...updated,
             selected: null,
             active: null,
             entry: null,
@@ -1364,14 +1509,14 @@ export const update = (model: Model, message: Message): Result =>
             attachmentPreview: Attachments.initial,
             attachmentPopover: Popover.init({ id: "mail-attachments" }),
           }
-        : result.model;
+        : updated;
       const refreshed = withUnread(withThread(refreshList(next)));
       return dismissNotification(
         {
           model: refreshed.model,
           commands: [...(result.commands ?? []), ...(refreshed.commands ?? [])],
         },
-        deleteKey(message.id, Boolean(model.recovery.batchId)),
+        restoreKey(message.id, model.recovery.batchId),
       );
     },
     OpenedCompose: () => {
@@ -1451,7 +1596,7 @@ export const update = (model: Model, message: Message): Result =>
         return notify(
           { model },
           {
-            key: deleteKey(action.id, Boolean(action.batchId)),
+            key: restoreKey(action.id, action.batchId),
             variant: "Info",
             title:
               "Another restore is still running. Try Undo again when it finishes.",
@@ -1539,8 +1684,7 @@ export const update = (model: Model, message: Message): Result =>
         {
           key: priorityKey(change.address),
           variant: "Error",
-          title:
-            "Could not update sender priority. Try again from Conversation actions.",
+          title: "Could not update sender priority. Try again.",
           description: change.address,
         },
       );
@@ -1638,28 +1782,6 @@ export const update = (model: Model, message: Message): Result =>
         commands: [DeleteEntry(deletion)],
       };
     },
-    RequestedConversationDelete: ({ id }) => {
-      if (
-        model.deleteRequest ||
-        model.selected ||
-        model.folder === "sent" ||
-        model.folder === "trash"
-      )
-        return { model };
-      const row = model.list?.messages.find((message) => message.id === id);
-      if (!row || "sentAt" in row) return { model };
-      const deletion = {
-        id,
-        folder: messageFolder(id),
-        conversationView: model.folder,
-        subject: conversationSubject([row]),
-        request: crypto.randomUUID(),
-      };
-      return {
-        model: { ...model, deleteRequest: deletion },
-        commands: [DeleteEntry(deletion)],
-      };
-    },
     DeletedEntry: ({ id, request, conversation }) => {
       const deletion = model.deleteRequest;
       if (
@@ -1715,29 +1837,15 @@ export const update = (model: Model, message: Message): Result =>
       };
       const entry = next.entry ? { model: next } : loadEntry(next);
       const updatedList = loadList(entry.model, null);
-      const deletedIndex =
-        conversation &&
-        model.selected === null &&
-        model.folder === deletion.conversationView
-          ? (model.list?.messages.findIndex((message) => message.id === id) ??
-            -1)
-          : -1;
-      const focusTarget = list?.messages[deletedIndex] ?? list?.messages.at(-1);
       const command = {
         model: updatedList.model,
-        commands: [
-          ...(entry.commands ?? []),
-          ...(updatedList.commands ?? []),
-          ...(deletedIndex === -1
-            ? []
-            : [FocusList({ id: focusTarget?.id ?? id })]),
-        ],
+        commands: [...(entry.commands ?? []), ...(updatedList.commands ?? [])],
       };
       // Overlapping reads may have received a snapshot from before the deletion.
       return notify(
         withUnread(selectedRemoved ? command : withThread(command)),
         {
-          key: deleteKey(id, Boolean(conversation)),
+          key: restoreKey(id, conversation?.batchId),
           variant: "Success",
           title: conversation ? "Conversation deleted." : "Email deleted.",
           description: deletion.subject,
@@ -1838,7 +1946,7 @@ export const update = (model: Model, message: Message): Result =>
         {
           key: readKey(id),
           variant: "Error",
-          title: `Could not mark email ${change.unread ? "unread" : "read"}. Try again from Message actions.`,
+          title: `Could not mark email ${change.unread ? "unread" : "read"}. Try again.`,
           description: change.subject,
         },
       );
@@ -1884,7 +1992,7 @@ export const update = (model: Model, message: Message): Result =>
       };
       const read =
         model.folder !== "trash" && "receivedAt" in entry && entry.unread
-          ? setUnread(next, entry.id, false)
+          ? setUnread(next, [entry.id], false)
           : { model: next };
       const images = entry.remoteImages?.available
         ? loadImages(read.model)
@@ -1924,6 +2032,33 @@ export const update = (model: Model, message: Message): Result =>
     SessionExpired: () => ({ model }),
     FocusUpdated: () => ({ model }),
   });
+
+export const update = (model: Model, message: Message): Result => {
+  const result = transition(model, message);
+  const next = result.model;
+  const row = next.rowActions.row;
+  if (!row || !model.list || !next.list || model.list === next.list)
+    return result;
+  const remaining = new Set(next.list.messages.map(({ id }) => id));
+  if (remaining.has(row.key)) return result;
+  const previous = model.list.messages;
+  const index = previous.findIndex(({ id }) => id === row.key);
+  if (index === -1) return result;
+  const neighbor =
+    previous.slice(index + 1).find(({ id }) => remaining.has(id)) ??
+    previous.slice(0, index).findLast(({ id }) => remaining.has(id));
+  return {
+    ...result,
+    model: { ...next, rowActions },
+    commands: [
+      ...(result.commands ?? []),
+      RecoverRowFocus({
+        folder: next.folder,
+        neighborId: neighbor?.id ?? null,
+      }),
+    ],
+  };
+};
 
 const messageDateFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -1998,12 +2133,18 @@ const messageItem = (
     (model.folder !== "sent" &&
       model.thread?.messages.some(({ id }) => id === message.id));
   const date = timestamp(sent ? message.sentAt : message.lastMessageAt, now, h);
+  const actions = sent
+    ? []
+    : withActionIcons(rowActionItems(model, message), h);
   return item(
     {
       key: message.id,
       href: mailMessagePage(model.folder, message.id),
       linkTitleOnly: true,
       title: subject,
+      attributes: actions.length
+        ? ItemActionMenu.rowAttributes(message.id, toRowMenuMessage, h)
+        : [],
       media: h.span(
         [h.Class("inbox-list-avatar")],
         [
@@ -2025,29 +2166,34 @@ const messageItem = (
       ),
       linkAttributes: [
         h.DataAttribute("message-id", message.id),
+        ...(actions.length
+          ? ItemActionMenu.rowLinkAttributes(
+              rowActions.id,
+              message.id,
+              actions,
+              toRowMenuMessage,
+              h,
+            )
+          : []),
         ...(current ? [h.AriaCurrent("page")] : []),
         ...(unread
           ? [h.DataAttribute("unread", ""), h.AriaLabel(`Unread: ${subject}`)]
           : []),
       ],
       action:
-        sent || model.folder === "trash"
+        actions.length === 0
           ? date
           : h.div(
               [h.Class("inbox-row-actions")],
               [
                 date,
-                button(
+                rowMenu.view(
                   {
-                    variant: "ghost",
-                    size: "icon-sm",
-                    ariaLabel: `Delete conversation: ${subject}`,
-                    attributes: [h.Title("Delete conversation")],
-                    disabled: model.deleteRequest !== null,
-                    onClick: Message.RequestedConversationDelete({
-                      id: message.id,
-                    }),
-                    children: [outlineIcon(h, trashIconPaths)],
+                    model: model.rowActions,
+                    rowKey: message.id,
+                    label: `Actions for ${subject}`,
+                    items: actions,
+                    toParentMessage: toRowMenuMessage,
                   },
                   h,
                 ),
@@ -2171,9 +2317,11 @@ const listView = (model: Model, h: HtmlBuilder<Message>) => {
   return h.section(
     [
       h.Class("workspace-list inbox-list"),
+      h.DataAttribute("folder", folder),
       h.AriaLabel("Messages"),
       h.Inert(selected !== null),
       h.Tabindex(-1),
+      h.OnUnmount(Message.UnmountedList()),
     ],
     [
       h.div(
@@ -2485,49 +2633,116 @@ const mailIcon = (h: HtmlBuilder<Message>, path: string) =>
     [h.path([h.D(path)], [])],
   );
 
+const restoreIconPath = "M9 14 4 9l5-5M4 9h10a5 5 0 0 1 0 10";
+const readIconPath = "M3 5h18v14H3zM3 6l9 7 9-7";
+
+type ActionItem<Action extends string> = Omit<
+  DropdownMenu.Item<Action>,
+  "icon"
+> & {
+  path: string;
+};
+
+const withActionIcons = <Action extends string>(
+  items: readonly ActionItem<Action>[],
+  h: HtmlBuilder<Message>,
+): DropdownMenu.Item<Action>[] =>
+  items.map(({ path, ...item }) => ({ ...item, icon: mailIcon(h, path) }));
+
+const archiveItem = (
+  archived: boolean,
+  disabled: boolean,
+): ActionItem<"archive"> => ({
+  action: "archive",
+  label: archived ? "Move to Inbox" : "Mark done",
+  path: archived ? restoreIconPath : "m5 12 4 4L19 6",
+  disabled,
+});
+
+const senderPriorityItems = (
+  rule: typeof SenderRule.Type | undefined,
+  pending: boolean,
+): ActionItem<typeof SenderPriority.Type>[] => {
+  if (!rule) return [];
+  const items: ActionItem<typeof SenderPriority.Type>[] = [
+    {
+      action: "signal",
+      label: "Sender → Signal",
+      disabled: pending || rule.priority === "signal",
+      path: "M2 12c2-6 4-6 6 0s4 6 6 0 4-6 6 0",
+    },
+    {
+      action: "noise",
+      label: "Sender → Noise",
+      disabled: pending || rule.priority === "noise",
+      path: noiseIconPath,
+    },
+  ];
+  if (rule.priority !== "automatic")
+    items.push({
+      action: "automatic",
+      label: "Sender → Automatic",
+      disabled: pending,
+      path: "M3 12a9 9 0 1 1 2.7 6.4M3 12V5m0 7h7",
+    });
+  return items;
+};
+
+const rowActionItems = (
+  model: Model,
+  row: typeof ConversationSummary.Type,
+): ActionItem<RowAction>[] => {
+  if (model.folder === "sent") return [];
+  if (model.folder === "trash")
+    return [
+      {
+        action: "restore",
+        label: row.trashBatch ? "Restore conversation" : "Restore message",
+        path: restoreIconPath,
+        disabled: model.recovery.request !== null,
+      },
+    ];
+  const items: ActionItem<RowAction>[] = [];
+  const readTargets = rowReadTargets(row);
+  if (readTargets.length)
+    items.push({
+      action: "toggleUnread",
+      label: row.unreadCount ? "Mark read" : "Mark unread",
+      path: readIconPath,
+      disabled: readTargets.some((id) => Boolean(model.readRequests[id])),
+    });
+  if (row.latestIncomingId)
+    items.push(archiveItem(row.archived, model.archiveRequest !== null));
+  items.push(
+    ...senderPriorityItems(row.senderRule, model.senderRuleRequest !== null),
+    {
+      action: "delete",
+      label: "Delete conversation",
+      path: trashIconPaths.join(" "),
+      disabled: model.deleteRequest !== null,
+      destructive: true,
+    },
+  );
+  return items;
+};
+
 const conversationActions = (model: Model, h: HtmlBuilder<Message>) => {
   if (model.folder === "trash") return h.empty;
-  const items: DropdownMenu.Item<ConversationAction>[] = [];
   const canArchive =
     model.folder !== "sent" &&
     model.thread?.messages.some(({ folder }) => folder === "inbox");
-  if (canArchive) {
-    const archived = model.thread?.archived;
-    items.push({
-      action: "archive",
-      label: archived ? "Move to Inbox" : "Mark done",
-      icon: mailIcon(
-        h,
-        archived ? "M9 14 4 9l5-5M4 9h10a5 5 0 0 1 0 10" : "m5 12 4 4L19 6",
+  const items = withActionIcons<ConversationAction>(
+    [
+      ...(canArchive
+        ? [archiveItem(Boolean(model.thread?.archived), false)]
+        : []),
+      ...senderPriorityItems(
+        model.thread?.senderRule,
+        model.senderRuleRequest !== null,
       ),
-    });
-  }
-  const rule = model.thread?.senderRule;
-  if (rule) {
-    const pending = model.senderRuleRequest !== null;
-    items.push(
-      {
-        action: "signal",
-        label: "Sender → Signal",
-        disabled: pending || rule.priority === "signal",
-        icon: mailIcon(h, "M2 12c2-6 4-6 6 0s4 6 6 0 4-6 6 0"),
-      },
-      {
-        action: "noise",
-        label: "Sender → Noise",
-        disabled: pending || rule.priority === "noise",
-        icon: mailIcon(h, noiseIconPath),
-      },
-    );
-    if (rule.priority !== "automatic") {
-      items.push({
-        action: "automatic",
-        label: "Sender → Automatic",
-        disabled: pending,
-        icon: mailIcon(h, "M3 12a9 9 0 1 1 2.7 6.4M3 12V5m0 7h7"),
-      });
-    }
-  }
+    ],
+    h,
+  );
   if (items.length === 0) return h.empty;
   return conversationMenu.view(
     {
@@ -2607,7 +2822,7 @@ const messageOverflow = (model: Model, h: HtmlBuilder<Message>) => {
         action: "toggleUnread",
         label: entryUnread(model) ? "Mark read" : "Mark unread",
         disabled: Boolean(model.readRequests[entry.id]),
-        icon: mailIcon(h, "M3 5h18v14H3zM3 6l9 7 9-7"),
+        icon: mailIcon(h, readIconPath),
       });
     }
     items.push({
@@ -2627,7 +2842,7 @@ const messageOverflow = (model: Model, h: HtmlBuilder<Message>) => {
           ? "Restoring…"
           : "Restore message",
       disabled: model.recovery.request !== null,
-      icon: mailIcon(h, "M9 14 4 9l5-5M4 9h10a5 5 0 0 1 0 10"),
+      icon: mailIcon(h, restoreIconPath),
     });
   if (!items.length) return h.empty;
   return messageMenu.view(
@@ -3022,6 +3237,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
           primaryAction: button(
             {
               size: "sm",
+              attributes: [h.Id(newEmailButtonId)],
               ariaLabel: "New email",
               dialogId: Compose.dialogId,
               disabled: !composeSender(model),

@@ -45,10 +45,18 @@ export type IndexedMail = ConversationMessage & {
 export const isMailingList = (listId: string | null | undefined) =>
   listId?.match(/<([^<>\s]+)>/u)?.[1]?.includes(".") ?? false;
 
-const indexedSender =
-  "lower(trim(coalesce(json_extract(m.people, '$.sender.address'), m.sender)))";
-const senderPriority = `SELECT priority FROM mail_sender_rules WHERE mailbox_id = m.mailbox_id AND address = ${indexedSender}`;
+const indexedSender = (alias: "m" | "incoming") =>
+  `lower(trim(coalesce(json_extract(${alias}.people, '$.sender.address'), ${alias}.sender)))`;
+const senderPriority = (alias: "m" | "incoming") =>
+  `SELECT priority FROM mail_sender_rules WHERE mailbox_id = ${alias}.mailbox_id AND address = ${indexedSender(alias)}`;
 const isPersonEmail = Schema.is(PersonEmail);
+const senderRule = (
+  address: string | null | undefined,
+  priority: "signal" | "noise" | null | undefined,
+): typeof SenderRule.Type | undefined =>
+  isPersonEmail(address)
+    ? { address, priority: priority ?? "automatic" }
+    : undefined;
 
 const localIdentity = (id: string) => `mail:${id}`;
 const hashMessageId = async (id: string) => {
@@ -347,6 +355,7 @@ export const listConversations = async (
   mailboxAddresses: readonly string[] = [],
 ) => {
   const all = view === "all";
+  const incoming = all ? "incoming" : "m";
   const contacts = filters
     ? await resolveContactFilters(db, filters, mailboxAddresses)
     : {};
@@ -361,6 +370,8 @@ export const listConversations = async (
     SELECT m.id, m.sender AS "from", m.timestamp AS sortAt,
            ${all ? "incoming.id" : "m.id"} AS latestIncomingId,
            ${all ? "coalesce(incoming.archived, 0)" : "m.archived"} AS archived,
+           ${indexedSender(incoming)} AS senderAddress,
+           (${senderPriority(incoming)}) AS senderPriority,
            (SELECT json_group_array(json_object(
               'id', member.id, 'from', member.sender, 'to', member.recipient, 'subject', member.subject,
               'timestamp', member.timestamp, 'people', member.people, 'folder', member.folder, 'unread', member.unread
@@ -379,7 +390,7 @@ export const listConversations = async (
         : ""
     }
     WHERE m.mailbox_id = ${mailboxSql(db)} AND m.deleted = 0 ${all ? "" : "AND m.folder = 'inbox' AND m.archived = ?4"}
-      ${isInboxView(view) ? `AND coalesce((${senderPriority}), CASE WHEN m.list_mail = 1 THEN 'noise' ELSE 'signal' END) = ?5` : ""}
+      ${isInboxView(view) ? `AND coalesce((${senderPriority("m")}), CASE WHEN m.list_mail = 1 THEN 'noise' ELSE 'signal' END) = ?5` : ""}
       AND (?1 IS NULL OR (m.timestamp, m.id) < (?1, ?2))
       AND NOT EXISTS (
         SELECT 1 FROM mail_index_messages newer
@@ -408,6 +419,8 @@ export const listConversations = async (
         sortAt: number;
         latestIncomingId: string | null;
         archived: number;
+        senderAddress: string | null;
+        senderPriority: "signal" | "noise" | null;
         metadata: string;
         unreadCount: number;
       }>();
@@ -447,7 +460,11 @@ export const listConversations = async (
     ),
   );
   const messages = page.map(
-    ({ row: { sortAt, archived, ...row }, members: rawMembers }) => {
+    ({
+      row: { sortAt, archived, senderAddress, senderPriority, ...row },
+      members: rawMembers,
+    }) => {
+      const rule = senderRule(senderAddress, senderPriority);
       const members = rawMembers.map((member) => ({
         ...member,
         people: applySenderAppearance(member.people, rules),
@@ -475,6 +492,10 @@ export const listConversations = async (
       return {
         ...row,
         archived: archived === 1,
+        unreadIncomingIds: members
+          .filter(({ folder, unread }) => folder === "inbox" && unread === 1)
+          .map(({ id }) => id),
+        ...(rule ? { senderRule: rule } : {}),
         ...(all ? {} : { receivedAt: sortAt }),
         subject: conversationSubject(members),
         lastMessageAt: lastMessage?.timestamp ?? sortAt,
@@ -499,8 +520,8 @@ export const readThread = async (db: MailDatabase, id: string) => {
     .prepare(
       `
     SELECT id, folder, sender AS "from", recipient AS "to", subject, timestamp, unread, people, archived,
-           CASE WHEN m.folder = 'inbox' THEN ${indexedSender} END AS senderAddress,
-           CASE WHEN m.folder = 'inbox' THEN (${senderPriority}) END AS senderPriority
+           CASE WHEN m.folder = 'inbox' THEN ${indexedSender("m")} END AS senderAddress,
+           CASE WHEN m.folder = 'inbox' THEN (${senderPriority("m")}) END AS senderPriority
     FROM mail_index_messages m
     WHERE mailbox_id = ${mailboxSql(db)} AND thread_id = (SELECT thread_id FROM mail_index_keys WHERE mailbox_id = ${mailboxSql(db)} AND identity = ?)
       AND deleted = 0
@@ -518,17 +539,10 @@ export const readThread = async (db: MailDatabase, id: string) => {
       }
     >();
   const incoming = results.findLast(({ folder }) => folder === "inbox");
-  const address = incoming?.senderAddress;
+  const rule = senderRule(incoming?.senderAddress, incoming?.senderPriority);
   return {
     archived: results.some(({ archived }) => archived === 1),
-    ...(isPersonEmail(address)
-      ? {
-          senderRule: {
-            address,
-            priority: incoming?.senderPriority ?? "automatic",
-          } satisfies typeof SenderRule.Type,
-        }
-      : {}),
+    ...(rule ? { senderRule: rule } : {}),
     messages: await withSenderAppearances(
       db,
       results.map(

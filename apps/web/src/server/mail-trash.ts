@@ -100,7 +100,7 @@ export const listTrash = async (
 ) => {
   const { results } = await db
     .prepare(
-      `SELECT id, folder, sender AS "from", subject, deleted_at AS deletedAt FROM mail_index_messages
+      `SELECT id, folder, sender AS "from", subject, deleted_at AS deletedAt, trash_batch AS trashBatch FROM mail_index_messages
     WHERE mailbox_id = ${mailboxSql(db)} AND deleted = 1 AND deleted_at > ? AND (deleted_at, id) < (?, ?)
     ORDER BY deleted_at DESC, id DESC LIMIT 101`,
     )
@@ -115,6 +115,7 @@ export const listTrash = async (
       from: string;
       subject: string;
       deletedAt: number;
+      trashBatch: string | null;
     }>();
   const messages = results.slice(0, 100);
   const last = messages.at(-1);

@@ -1503,48 +1503,6 @@ button {
   gap: 0.25rem;
 }
 
-.inbox-row-actions > button:is(:hover, :focus-visible) {
-  color: light-dark(#a42020, #ff9797);
-}
-
-@media (hover: hover) {
-  .inbox-row-actions {
-    display: grid;
-    justify-items: end;
-  }
-
-  .inbox-row-actions > * {
-    grid-area: 1 / 1;
-  }
-
-  .inbox-row-actions > button {
-    opacity: 0;
-    pointer-events: none;
-  }
-
-  .inbox-list
-    [data-slot="item"]:is(:hover, :focus-within)
-    .inbox-row-actions
-    > button {
-    opacity: 1;
-    pointer-events: auto;
-  }
-
-  .inbox-list
-    [data-slot="item"]:is(:hover, :focus-within)
-    .inbox-row-actions
-    [data-slot="timestamp"] {
-    visibility: hidden;
-  }
-}
-
-@media (hover: none) {
-  .inbox-row-actions > button {
-    min-inline-size: 2.75rem;
-    min-block-size: 2.75rem;
-  }
-}
-
 .inbox-list-avatar {
   display: flex;
   align-items: flex-start;

@@ -6,7 +6,13 @@ vi.mock("@orumai/ui", async () => {
     import.meta.resolve("@foldkit/ui", import.meta.resolve("@orumai/ui"))
   );
   const picker = Combobox.Multi.create();
+  const rowMenu =
+    await import("../../../packages/ui/src/item-action-menu-state.ts");
+  const { trashIconPaths, noiseIconPath } =
+    await import("../../../packages/ui/src/icons.ts");
   return {
+    trashIconPaths,
+    noiseIconPath,
     MultiCombobox: {
       Model: Combobox.Multi.Model,
       Message: Combobox.Message,
@@ -15,21 +21,93 @@ vi.mock("@orumai/ui", async () => {
     },
     Dialog,
     DropdownMenu: Menu,
+    ItemActionMenu: {
+      ...rowMenu,
+      create: () => ({ update: rowMenu.createUpdate() }),
+    },
     Sheet: Dialog,
     Popover,
     Toast: await import("../../../packages/ui/src/toast-state.ts"),
   };
 });
-import { DropdownMenu } from "@orumai/ui";
+import { DropdownMenu, ItemActionMenu } from "@orumai/ui";
 import * as Toast from "../../../packages/ui/src/toast-state.ts";
 import * as Inbox from "./inbox.ts";
 import * as Compose from "./inbox-compose.ts";
 import * as Reply from "./inbox-inline-reply.ts";
 import * as Recovery from "./inbox-recovery.ts";
 import * as Notifications from "./notifications.ts";
+import type { ConversationSummary } from "./inbox-contract.ts";
 
 const first = "0-8199999999990-00000000-0000-4000-8000-000000000000.eml";
 const second = first.replace("9990", "9991");
+
+it("uses the current row's incoming messages for consecutive read actions", () => {
+  const third = first.replace("9990", "9992");
+  const summary = (
+    id: string,
+    unreadIncomingIds: readonly string[],
+  ): typeof ConversationSummary.Type => ({
+    id,
+    latestIncomingId: id,
+    unreadIncomingIds,
+    unreadCount: unreadIncomingIds.length,
+    archived: false,
+    from: "sender@example.test",
+    subject: id,
+    lastMessageAt: 1,
+    messageCount: unreadIncomingIds.length || 1,
+    participants: [],
+    profiles: [],
+  });
+  const firstRow = summary(first, [first, third]);
+  const secondRow = summary(second, []);
+  const act = (model: typeof Inbox.initial, key: string) => {
+    const opened = Inbox.update(
+      model,
+      Inbox.Message.GotRowMenuMessage({
+        message: ItemActionMenu.Message.OpenedFromRow({
+          key,
+          firstEnabledIndex: 0,
+        }),
+      }),
+    );
+    return Inbox.update(
+      opened.model,
+      Inbox.Message.GotRowMenuMessage({
+        message: ItemActionMenu.Message.GotMenu({
+          key,
+          message: DropdownMenu.Message.SelectedItem({
+            item: "toggleUnread",
+            index: 0,
+          }),
+        }),
+      }),
+    );
+  };
+  const read = act(
+    {
+      ...Inbox.initial,
+      list: { messages: [firstRow, secondRow], cursor: null, address: null },
+    },
+    first,
+  );
+  expect(read.model.readRequests[first]?.unread).toBe(false);
+  expect(read.model.readRequests[third]?.unread).toBe(false);
+  expect(read.model.readRequests[second]).toBeUndefined();
+
+  const unread = act(
+    {
+      ...read.model,
+      list: { ...read.model.list!, messages: [secondRow, firstRow] },
+    },
+    second,
+  );
+  expect(unread.model.readRequests[second]?.unread).toBe(true);
+  expect(unread.model.readRequests[first]).toBe(read.model.readRequests[first]);
+  expect(unread.model.selected).toBeNull();
+});
+
 const applyOutcome = (
   out: Inbox.OutMessage | undefined,
   model = Notifications.init(),
@@ -60,6 +138,43 @@ const deletion = (id: string, request: string) =>
     },
     Inbox.Message.DeletedEntry({ id, request }),
   );
+
+it("clears the conversation Undo when another member restores the batch", () => {
+  const batchId = "00000000-0000-4000-8000-000000000001";
+  const deleted = Inbox.update(
+    {
+      ...Inbox.initial,
+      deleteRequest: {
+        id: first,
+        request: "delete",
+        folder: "inbox",
+        conversationView: "inbox",
+      },
+    },
+    Inbox.Message.DeletedEntry({
+      id: first,
+      request: "delete",
+      conversation: { batchId, ids: [first, second] },
+    }),
+  );
+  const restored = Inbox.update(
+    {
+      ...deleted.model,
+      folder: "trash",
+      recovery: { request: "restore", restoring: second, batchId },
+    },
+    Inbox.Message.GotRecoveryMessage({
+      message: Recovery.Message.Restored({
+        request: "restore",
+        id: second,
+        members: { ids: [first, second] },
+      }),
+    }),
+  );
+  const queued = applyOutcome(deleted.outMessage);
+  expect(Object.values(queued.actions)).toHaveLength(1);
+  expect(applyOutcome(restored.outMessage, queued).actions).toEqual({});
+});
 const compose = (): typeof Inbox.Model.Type => ({
   ...Inbox.initial,
   compose: {

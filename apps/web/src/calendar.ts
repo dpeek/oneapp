@@ -2,6 +2,7 @@ import { Temporal } from "@js-temporal/polyfill";
 import {
   alert,
   button,
+  buttonGroup,
   calendarIconPaths,
   CalendarPicker,
   checkbox,
@@ -19,7 +20,6 @@ import {
   sidebarClassNames,
   sidebarItemClassName,
   textarea,
-  viewToggleGroup,
 } from "@orumai/ui";
 import { Clock, Effect, Option, Queue, Schema, Stream } from "effect";
 import { Command, Mount, Submodel, Update } from "foldkit";
@@ -107,6 +107,8 @@ const RequestState = Schema.Struct({
 });
 
 const ScheduleView = Schema.Literals(["day", "week"]);
+const isScheduleView = Schema.is(ScheduleView);
+const stackedToolbarMedia = "(max-width: 52rem)";
 const Slot = Schema.Struct({ day: Schema.String, minute: Schema.Number });
 const SelectedEvent = Schema.Struct({
   anchorId: Schema.String,
@@ -117,6 +119,7 @@ export const Model = Schema.Struct({
   date: Schema.String,
   now: Schema.Int,
   view: ScheduleView,
+  stackedToolbar: Schema.Boolean,
   datePickers: Schema.Struct({
     sidebar: CalendarPicker.Model,
     sheet: CalendarPicker.Model,
@@ -182,6 +185,8 @@ export const initial = (): Model => {
     view: globalThis.matchMedia?.(workspaceDrawerMedia).matches
       ? "day"
       : "week",
+    stackedToolbar:
+      globalThis.matchMedia?.(stackedToolbarMedia).matches ?? false,
     datePickers: { sidebar: picker("sidebar"), sheet: picker("sheet") },
     slotFocus: null,
     zone,
@@ -209,6 +214,7 @@ export const Message = defineMessageUnion({
   Opened: { id: Schema.NullOr(CalendarId), refresh: Schema.Boolean },
   ShiftedPeriod: { direction: Schema.Literals([-1, 1]) },
   ChangedView: { view: ScheduleView },
+  ChangedToolbarLayout: { stacked: Schema.Boolean },
   SelectedDate: { date: Schema.String },
   GotDatePicker: { surface: Surface, message: CalendarPicker.Message },
   JumpedToToday: {},
@@ -478,13 +484,24 @@ const nextCalendarMinute = Effect.gen(function* () {
   return yield* Clock.currentTimeMillis;
 });
 
-const WatchCalendarTime = Mount.defineStream("WatchCalendarTime", {
-  messages: [Message.UpdatedCurrentTime],
-  execute: () =>
-    Stream.fromEffect(Clock.currentTimeMillis).pipe(
+const WatchCalendar = Mount.defineStream("WatchCalendar", {
+  messages: [Message.UpdatedCurrentTime, Message.ChangedToolbarLayout],
+  execute: () => {
+    const clock = Stream.fromEffect(Clock.currentTimeMillis).pipe(
       Stream.concat(Stream.fromEffectRepeat(nextCalendarMinute)),
       Stream.map((now) => Message.UpdatedCurrentTime({ now })),
-    ),
+    );
+    const media = matchMedia(stackedToolbarMedia);
+    const layout = Stream.fromEventListener<MediaQueryListEvent>(
+      media,
+      "change",
+    ).pipe(
+      Stream.map((event) => event.matches),
+      Stream.prepend([media.matches]),
+      Stream.map((stacked) => Message.ChangedToolbarLayout({ stacked })),
+    );
+    return Stream.merge(clock, layout);
+  },
 });
 
 const FocusEvent = Command.define("FocusCalendarEvent", {
@@ -969,6 +986,9 @@ export const update = (
                 deleteError: null,
               },
             },
+      ChangedToolbarLayout: ({ stacked }) => ({
+        model: { ...model, stackedToolbar: stacked },
+      }),
       SelectedDate: ({ date }) =>
         busy(model) ? { model } : navigateDate(model, date),
       GotDatePicker: ({ surface, message }) =>
@@ -2153,31 +2173,18 @@ const viewChoices = [
   { value: "week", label: "Week" },
 ] as const;
 
-const scheduleTitle = (view: Model["view"], days: readonly string[]) => {
-  const first = days[0]!;
-  const last = days.at(-1)!;
-  const crossYear = calendarDate(first).year !== calendarDate(last).year;
-  const period = (day: string) =>
-    plain(day, {
-      month: "short",
-      day: "numeric",
-      ...(crossYear ? { year: "numeric" } : {}),
-    });
-  return view === "day"
-    ? plain(first, {
-        weekday: "long",
-        month: "long",
-        day: "numeric",
-        year: "numeric",
-      })
-    : `${period(first)} – ${period(last)}${crossYear ? "" : ` · ${calendarDate(last).year}`}`;
-};
+const scheduleTitle = (view: Model["view"], start: string) =>
+  plain(start, {
+    month: "long",
+    year: "numeric",
+    ...(view === "day" ? { weekday: "long", day: "numeric" } : {}),
+  });
 
 const dateNavigation = (view: Model["view"], disabled: boolean, h: H) => {
   const shift = (direction: -1 | 1) =>
     button(
       {
-        variant: "ghost",
+        variant: "outline",
         size: "icon-sm",
         disabled,
         ariaLabel: `${direction === -1 ? "Previous" : "Next"} ${view}`,
@@ -2190,17 +2197,12 @@ const dateNavigation = (view: Model["view"], disabled: boolean, h: H) => {
       },
       h,
     );
-  return h.div(
-    [
-      h.Class("calendar-period-controls"),
-      h.Role("group"),
-      h.AriaLabel("Calendar date navigation"),
-    ],
+  return buttonGroup(
     [
       shift(-1),
       button(
         {
-          variant: "ghost",
+          variant: "outline",
           size: "sm",
           disabled,
           attributes: [h.Id(calendarTodayId)],
@@ -2211,6 +2213,8 @@ const dateNavigation = (view: Model["view"], disabled: boolean, h: H) => {
       ),
       shift(1),
     ],
+    h,
+    "Calendar date navigation",
   );
 };
 
@@ -2512,12 +2516,11 @@ const schedule = (
 
 export const view = Submodel.defineView<Model, Message>((model, h) => {
   const current = calendarTimelinePoint(model.now, model.zone);
+  const start = model.view === "day" ? model.date : weekStart(model.date);
   const days =
     model.view === "day"
-      ? [model.date]
-      : Array.from({ length: 7 }, (_, offset) =>
-          calendarDays(weekStart(model.date), offset),
-        );
+      ? [start]
+      : Array.from({ length: 7 }, (_, offset) => calendarDays(start, offset));
   const disabled = workspaceBusy(model);
   const calendars = calendarChoices(model);
   const selectedCalendar = calendars.find(
@@ -2532,6 +2535,28 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
   const hasForm = model.importing || model.calendarEditor || model.editor;
   const error = hasForm ? null : model.error;
   const deleteError = !hasForm && !model.selected ? model.deleteError : null;
+  const period = h.span(
+    [h.Class("calendar-date-range"), h.AriaLive("polite")],
+    [scheduleTitle(model.view, start)],
+  );
+  const viewControls = [
+    dateNavigation(model.view, disabled, h),
+    nativeSelect(
+      {
+        label: "Calendar view",
+        showLabel: false,
+        variant: "ghost",
+        options: viewChoices,
+        value: model.view,
+        disabled,
+        onChange: (view) =>
+          Message.ChangedView({
+            view: isScheduleView(view) ? view : model.view,
+          }),
+      },
+      h,
+    ),
+  ];
   const list = h.div(
     [h.Class("workspace-list calendar")],
     [
@@ -2590,11 +2615,13 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
             model.visible === null
               ? allCalendars
               : (selectedCalendar?.name ?? "Calendar"),
-          titleDetail: h.span(
-            [h.Class("calendar-date-range"), h.AriaLive("polite")],
-            [scheduleTitle(model.view, days)],
-          ),
-          attributes: [h.OnMount(WatchCalendarTime())],
+          attributes: [
+            h.DataAttribute(
+              "calendar-toolbar",
+              model.stackedToolbar ? "stacked" : "inline",
+            ),
+            h.OnMount(WatchCalendar()),
+          ],
           navigation: [
             h.div(
               [h.Class("workspace-drawer-trigger")],
@@ -2615,19 +2642,11 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
               ],
             ),
           ],
-          viewControls: [
-            dateNavigation(model.view, disabled, h),
-            viewToggleGroup(
-              {
-                label: "Calendar view",
-                value: model.view,
-                items: viewChoices,
-                disabled,
-                onToggle: (view) => Message.ChangedView({ view }),
-              },
-              h,
-            ),
-          ],
+          viewControls: model.stackedToolbar
+            ? [period, ...viewControls]
+            : [period],
+          endControls: model.stackedToolbar ? [] : viewControls,
+          viewControlsBelow: model.stackedToolbar,
           primaryAction: button(
             {
               size: "sm",

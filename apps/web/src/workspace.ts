@@ -4,11 +4,12 @@ import type { Attribute, Html, HtmlBuilder } from "foldkit/html";
 export const screenHeader = <Message>(
   props: {
     title?: string;
-    titleDetail?: Html;
     attributes?: readonly Attribute<Message>[];
     navigation?: readonly Html[];
     controls?: readonly Html[];
     viewControls?: readonly Html[];
+    endControls?: readonly Html[];
+    viewControlsBelow?: boolean;
     primaryAction?: Html;
     feedback?: readonly Html[];
   },
@@ -28,16 +29,15 @@ export const screenHeader = <Message>(
         {
           start: [
             ...(props.navigation ?? []),
-            props.titleDetail
-              ? h.div(
-                  [h.Class("workspace-screen-heading")],
-                  [title, props.titleDetail],
-                )
-              : title,
+            title,
             ...(props.controls ?? []),
           ],
           controls: props.viewControls,
-          end: props.primaryAction ? [props.primaryAction] : [],
+          controlsAfterEnd: props.viewControlsBelow,
+          end: [
+            ...(props.endControls ?? []),
+            ...(props.primaryAction ? [props.primaryAction] : []),
+          ],
         },
         h,
       ),

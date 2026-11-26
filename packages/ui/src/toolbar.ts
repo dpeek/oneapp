@@ -26,10 +26,31 @@ export const toolbar = <Message>(
     start: readonly Html[];
     controls?: readonly Html[];
     end: readonly Html[];
+    controlsAfterEnd?: boolean;
   },
   h: HtmlBuilder<Message>,
-) =>
-  h.div(
+) => {
+  const controls = props.controls
+    ? [
+        h.div(
+          [
+            h.Key("toolbar-controls"),
+            h.DataAttribute("slot", "toolbar-controls"),
+            h.Class(stylex.props(styles.slot, styles.controls).className ?? ""),
+          ],
+          [...props.controls],
+        ),
+      ]
+    : [];
+  const end = h.div(
+    [
+      h.Key("toolbar-end"),
+      h.DataAttribute("slot", "toolbar-end"),
+      h.Class(stylex.props(styles.slot, styles.end).className ?? ""),
+    ],
+    [...props.end],
+  );
+  return h.div(
     [
       ...(props.label === undefined
         ? []
@@ -45,25 +66,7 @@ export const toolbar = <Message>(
         ],
         [...props.start],
       ),
-      ...(props.controls
-        ? [
-            h.div(
-              [
-                h.DataAttribute("slot", "toolbar-controls"),
-                h.Class(
-                  stylex.props(styles.slot, styles.controls).className ?? "",
-                ),
-              ],
-              [...props.controls],
-            ),
-          ]
-        : []),
-      h.div(
-        [
-          h.DataAttribute("slot", "toolbar-end"),
-          h.Class(stylex.props(styles.slot, styles.end).className ?? ""),
-        ],
-        [...props.end],
-      ),
+      ...(props.controlsAfterEnd ? [end, ...controls] : [...controls, end]),
     ],
   );
+};

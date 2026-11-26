@@ -35,6 +35,26 @@ const styles = stylex.create({
       ":focus-visible": `0 0 0 1px color-mix(in srgb, ${controls.focus} 35%, transparent)`,
     },
   },
+  ghost: {
+    display: "block",
+    minBlockSize: { default: "2rem", "@media (pointer: coarse)": "2.75rem" },
+    paddingBlock: "0.25rem",
+    borderColor: "transparent",
+    backgroundColor: {
+      default: "transparent",
+      "@media (hover: hover)": { ":hover:not(:disabled)": controls.hover },
+    },
+    color: controls.mutedForeground,
+    fontSize: "0.875rem",
+    fontWeight: 600,
+    lineHeight: "1.25rem",
+    cursor: { default: "pointer", ":disabled": "default" },
+    boxShadow: "none",
+    outlineStyle: { default: "none", ":focus-visible": "solid" },
+    outlineWidth: 2,
+    outlineColor: controls.focus,
+    outlineOffset: { ":focus-visible": 3 },
+  },
   icon: {
     position: "absolute",
     insetBlockStart: "50%",
@@ -67,66 +87,73 @@ export const nativeSelect = <Message>(
     options,
     value,
     disabled = false,
+    variant = "outline",
+    showLabel = true,
     onChange,
   }: NativeSelectProps & {
     disabled?: boolean;
+    variant?: "outline" | "ghost";
+    showLabel?: boolean;
     onChange: (value: string) => Message;
   },
   h: HtmlBuilder<Message>,
-): Html =>
-  field(
-    label,
-    h.span(
-      [
-        h.DataAttribute("slot", "native-select-wrapper"),
-        h.Class(wrapperClassName),
-      ],
-      [
-        h.select(
-          [
-            h.DataAttribute("slot", "native-select"),
-            h.Class(controlClassName),
-            h.Value(value),
-            h.Disabled(disabled),
-            h.OnChange(onChange),
-          ],
-          options.map((option) =>
-            h.option(
-              [
-                h.Key(option.value),
-                h.DataAttribute("slot", "native-select-option"),
-                h.Class(optionClassName),
-                h.Value(option.value),
-              ],
-              [option.label],
-            ),
+): Html => {
+  const control = h.span(
+    [
+      h.DataAttribute("slot", "native-select-wrapper"),
+      h.Class(wrapperClassName),
+    ],
+    [
+      h.select(
+        [
+          h.DataAttribute("slot", "native-select"),
+          h.Class(
+            variant === "ghost"
+              ? (stylex.props(styles.control, styles.ghost).className ?? "")
+              : controlClassName,
+          ),
+          ...(showLabel ? [] : [h.AriaLabel(label)]),
+          h.Value(value),
+          h.Disabled(disabled),
+          h.OnChange(onChange),
+        ],
+        options.map((option) =>
+          h.option(
+            [
+              h.Key(option.value),
+              h.DataAttribute("slot", "native-select-option"),
+              h.Class(optionClassName),
+              h.Value(option.value),
+            ],
+            [option.label],
           ),
         ),
-        h.svg(
-          [
-            h.DataAttribute("slot", "native-select-icon"),
-            h.Class(iconClassName),
-            h.ViewBox("0 0 24 24"),
-            h.AriaHidden(true),
-          ],
-          [
-            h.path(
-              [
-                h.D(chevronPath),
-                h.Fill("none"),
-                h.Stroke("currentColor"),
-                h.StrokeWidth("2"),
-                h.StrokeLinecap("round"),
-                h.StrokeLinejoin("round"),
-              ],
-              [],
-            ),
-          ],
-        ),
-      ],
-    ),
-    h,
+      ),
+      h.svg(
+        [
+          h.DataAttribute("slot", "native-select-icon"),
+          h.Class(iconClassName),
+          h.ViewBox("0 0 24 24"),
+          h.AriaHidden(true),
+        ],
+        [
+          h.path(
+            [
+              h.D(chevronPath),
+              h.Fill("none"),
+              h.Stroke("currentColor"),
+              h.StrokeWidth("2"),
+              h.StrokeLinecap("round"),
+              h.StrokeLinejoin("round"),
+            ],
+            [],
+          ),
+        ],
+      ),
+    ],
   );
+  return showLabel ? field(label, control, h) : control;
+};
 
 export const createNativeSelect = ({
   label,

@@ -583,14 +583,8 @@ orumai-vault-reader {
   padding: 0.5rem 1rem;
 }
 
-.workspace-screen-header
-  [data-slot="toolbar-start"]
-  > :not(h1, .workspace-screen-heading) {
+.workspace-screen-header [data-slot="toolbar-start"] > :not(h1) {
   flex: none;
-}
-
-.workspace-screen-heading {
-  min-inline-size: 0;
 }
 
 .workspace-screen-header h1 {
@@ -636,14 +630,14 @@ orumai-vault-reader {
 }
 
 @media (max-width: 32rem) {
-  .workspace-screen-header
+  .workspace-screen-header:not([data-calendar-toolbar])
     [data-slot="toolbar"]:has(> [data-slot="toolbar-controls"]) {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: end;
   }
 
-  .workspace-screen-header
+  .workspace-screen-header:not([data-calendar-toolbar])
     [data-slot="toolbar"]:has(> [data-slot="toolbar-controls"])
     > [data-slot="toolbar-start"] {
     grid-column: 1 / -1;
@@ -2221,19 +2215,34 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
   margin-block-end: 1rem;
 }
 
-.calendar-date-range {
-  display: block;
-  color: var(--muted);
-  font-size: 0.875rem;
+[data-calendar-toolbar] > [data-slot="toolbar"] {
+  display: grid;
+  column-gap: 0.375rem;
 }
 
-.calendar-period-controls {
-  display: flex;
-  align-items: center;
-  padding: 0.125rem;
-  border: 1px solid var(--border);
-  border-radius: var(--control-radius);
-  background: var(--canvas);
+[data-calendar-toolbar="inline"] > [data-slot="toolbar"] {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 28%) minmax(0, 1fr);
+}
+
+[data-calendar-toolbar="stacked"] > [data-slot="toolbar"] {
+  grid-template-columns: minmax(0, 1fr) auto;
+  row-gap: 0.5rem;
+}
+
+[data-calendar-toolbar] [data-slot="toolbar-controls"] {
+  justify-content: center;
+}
+
+[data-calendar-toolbar="stacked"] [data-slot="toolbar-controls"] {
+  grid-column: 1 / -1;
+}
+
+.calendar-date-range {
+  flex-basis: 100%;
+  color: var(--text);
+  text-align: center;
+  font-size: 0.9375rem;
+  font-weight: 600;
 }
 
 .calendar-timeline-scroll {

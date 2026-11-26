@@ -22,10 +22,12 @@ export const createButtonGroup = (children: readonly HTMLElement[]) => {
 export const buttonGroup = <Message>(
   children: ReadonlyArray<Html>,
   h: HtmlBuilder<Message>,
+  label?: string,
 ): Html =>
   h.div(
     [
       h.Role("group"),
+      ...(label ? [h.AriaLabel(label)] : []),
       h.DataAttribute("slot", "button-group"),
       h.Class(groupClassName),
     ],

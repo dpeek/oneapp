@@ -2,6 +2,7 @@ import { expect, it } from "@effect/vitest";
 import { linksReadScope, linksWriteScope } from "@orumai/core/links";
 import { Schema } from "@yielded/auth";
 import {
+  calendarReadScope,
   contactsReadScope,
   filesReadScope,
   mailReadScope,
@@ -26,6 +27,7 @@ it("escapes consent metadata and preserves the approval form", () => {
       tasksWriteScope,
       filesReadScope,
       contactsReadScope,
+      calendarReadScope,
       mailReadScope,
       mailSendScope,
       mailTriageScope,
@@ -44,6 +46,7 @@ it("escapes consent metadata and preserves the approval form", () => {
   expect(html).toContain("Read your tasks, screenshots, and tags");
   expect(html).toContain("Search and read your uploaded files and their tags");
   expect(html).toContain("Search and read your contacts and company details");
+  expect(html).toContain("Read your calendars and event details");
   expect(html).toContain(
     "Create, edit, and delete your tasks and create reusable tags",
   );

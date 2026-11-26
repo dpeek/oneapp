@@ -9,7 +9,7 @@ import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import type { WorkspaceActor } from "../tasks-contract.ts";
 import type { NotifyItemChange } from "../workspace-change-contract.ts";
 import { jsonError, privateHeaders } from "./api-response.ts";
-import { ownerId as directoryOwnerId } from "./auth.ts";
+import { ownerId as appOwnerId } from "./auth.ts";
 import {
   insufficientCliScopeResponse,
   invalidTokenResponse,
@@ -17,6 +17,7 @@ import {
 } from "./cli-tokens.ts";
 import { deleteSavedLink, insertSavedLink, listSavedLinks } from "./links.ts";
 import { defaultMailboxId, requireMailbox, scopeMailStore } from "./mailbox.ts";
+import { registerCalendarTools } from "./mcp-calendar.ts";
 import { registerContactTools } from "./mcp-contacts.ts";
 import { registerFileTools } from "./mcp-files.ts";
 import type { MailSenderBindings } from "./mail-delivery.ts";
@@ -26,6 +27,7 @@ import { registerMailTools } from "./mcp-mail.ts";
 import {
   defaultMcpScopes,
   type McpScope,
+  ReadCalendar,
   ReadContacts,
   ReadFiles,
   ReadLinks,
@@ -72,7 +74,7 @@ const createServer = (
   const ownerId = actor.accountId;
   const canReadContacts =
     actor.kind === "owner" &&
-    ownerId === directoryOwnerId &&
+    ownerId === appOwnerId &&
     scopes.includes(ReadContacts);
   const run = Effect.runPromiseWith(Context.make(SqlClient.SqlClient, sql));
   const server = new McpServer({ name: appName, version: "1.0.0" });
@@ -168,6 +170,12 @@ const createServer = (
     registerFileTools(server, origin, ownerId, db, bucket);
   if (canReadContacts)
     registerContactTools(server, origin, db, env.INBOX_EMAIL_ADDRESS);
+  if (
+    actor.kind === "owner" &&
+    ownerId === appOwnerId &&
+    scopes.includes(ReadCalendar)
+  )
+    registerCalendarTools(server, origin, db, ownerId);
   if (actor.kind === "owner") {
     const ownedMailStore = async () => {
       const { id } = await requireMailbox(db, defaultMailboxId, ownerId);

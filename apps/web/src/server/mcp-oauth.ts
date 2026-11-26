@@ -11,6 +11,7 @@ import {
 } from "effect/http";
 import { SqlClient } from "effect/sql";
 import {
+  calendarReadScope,
   codexClientId,
   codexMetadataOrigin,
   contactsReadScope,
@@ -46,6 +47,7 @@ export const SendMail = OAuthScope.make(mailSendScope);
 export const TriageMail = OAuthScope.make(mailTriageScope);
 export const ReadFiles = OAuthScope.make(filesReadScope);
 export const ReadContacts = OAuthScope.make(contactsReadScope);
+export const ReadCalendar = OAuthScope.make(calendarReadScope);
 export const defaultMcpScopes = [
   ReadLinks,
   WriteLinks,
@@ -59,6 +61,7 @@ const supportedMcpScopes = [
   ReadContacts,
   SendMail,
   TriageMail,
+  ReadCalendar,
 ] as const;
 export type McpScope = (typeof supportedMcpScopes)[number];
 export const mcpOAuth = OAuthServer.make("mcp", {

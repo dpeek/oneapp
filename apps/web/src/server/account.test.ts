@@ -28,7 +28,11 @@ import {
   themePreferencePath,
 } from "../account-contract.ts";
 import { bitwardenDevicesPath } from "../bitwarden-device-contract.ts";
-import { calendarApi, calendarImportLimit } from "../calendar-contract.ts";
+import {
+  calendarApi,
+  calendarImportLimit,
+  defaultCalendarId,
+} from "../calendar-contract.ts";
 import {
   fileApi,
   fileContentApi,
@@ -84,6 +88,7 @@ import {
 } from "../inbox-contract.ts";
 import { workspaceEventsPath } from "../workspace-change-contract.ts";
 import {
+  calendarReadScope,
   codexClientId,
   contactsReadScope,
   filesReadScope,
@@ -3568,6 +3573,7 @@ it("issues MCP link scopes and exposes only the tools a grant authorises", async
         contactsReadScope,
         mailSendScope,
         mailTriageScope,
+        calendarReadScope,
       ],
     });
   }
@@ -3634,6 +3640,233 @@ it("issues MCP link scopes and exposes only the tools a grant authorises", async
   });
   expect(await refresh.json()).toMatchObject({ error: "invalid_grant" });
   expect(await listGrants()).toHaveLength(2);
+});
+
+it("lists only the owner's calendar occurrences with an explicit read grant", async () => {
+  using sqlite = new Database(":memory:");
+  const { call, request, session, origin, connect, names, useTool } =
+    await setupMcp(sqlite);
+  const tool = "list_calendar_events";
+  const range = {
+    start: "2026-09-28",
+    end: "2026-10-13",
+    timeZone: "Australia/Sydney",
+  };
+
+  const defaultGrant = (await connect()).access_token;
+  expect(await names(defaultGrant)).not.toContain(tool);
+  expect((await useTool(defaultGrant, tool, range)).error).toBeDefined();
+  const token = (await connect([calendarReadScope])).access_token;
+  expect(await names(token)).toEqual([tool]);
+  const list = (filters = {}) => useTool(token, tool, { ...range, ...filters });
+  const empty = await list({ calendarId: defaultCalendarId });
+  expect(empty.result?.structuredContent).toMatchObject({
+    calendars: [{ id: defaultCalendarId, name: "Personal" }],
+    events: [],
+  });
+  expect(sqlite.query("SELECT id FROM calendars").all()).toEqual([]);
+
+  const team = crypto.randomUUID();
+  const created = await call(
+    `${calendarApi}/calendars/${team}`,
+    { name: "Team" },
+    session,
+  );
+  expect(created.status).toBe(200);
+  const importEvents = async (calendarId: string, entries: string[][]) => {
+    const ics = [
+      "BEGIN:VCALENDAR",
+      "VERSION:2.0",
+      ...entries.flatMap((lines) => [
+        "BEGIN:VEVENT",
+        "DTSTAMP:20260101T000000Z",
+        ...lines,
+        "END:VEVENT",
+      ]),
+      "END:VCALENDAR",
+      "",
+    ].join("\r\n");
+    const response = await call(
+      `${calendarApi}/import`,
+      { calendarId, ics },
+      session,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ warnings: [] });
+  };
+  await importEvents(defaultCalendarId, [
+    [
+      "UID:overlap",
+      "SUMMARY:Overnight maintenance",
+      "DTSTART:20260927T130000Z",
+      "DTEND:20260927T150000Z",
+    ],
+    [
+      "UID:holiday",
+      "SUMMARY:Holiday",
+      "DTSTART;VALUE=DATE:20260929",
+      "DTEND;VALUE=DATE:20260930",
+    ],
+    [
+      "UID:floating",
+      "SUMMARY:Floating appointment",
+      "DTSTART:20261008T090000",
+      "DTEND:20261008T100000",
+    ],
+    [
+      "UID:outside",
+      "SUMMARY:At the exclusive end",
+      "DTSTART;TZID=Australia/Sydney:20261013T000000",
+    ],
+  ]);
+  await importEvents(team, [
+    [
+      "UID:standup",
+      "DTSTART;TZID=Australia/Sydney:20260928T090000",
+      "DTEND;TZID=Australia/Sydney:20260928T100000",
+      "RRULE:FREQ=WEEKLY;COUNT=3",
+      "SUMMARY:Stand-up",
+      "LOCATION:Meeting room",
+      "DESCRIPTION:Bring updates",
+    ],
+    [
+      "UID:standup",
+      "RECURRENCE-ID;TZID=Australia/Sydney:20261005T090000",
+      "DTSTART;TZID=Australia/Sydney:20261006T110000",
+      "DTEND;TZID=Australia/Sydney:20261006T120000",
+      "SUMMARY:Rescheduled stand-up",
+    ],
+    [
+      "UID:standup",
+      "RECURRENCE-ID;TZID=Australia/Sydney:20261012T090000",
+      "STATUS:CANCELLED",
+    ],
+  ]);
+
+  const privateCalendar = crypto.randomUUID();
+  sqlite.run(
+    "INSERT INTO accounts (id, active, security_revision) VALUES ('other', 1, 'other')",
+  );
+  sqlite.run(
+    "INSERT INTO calendars (account_id, id, name, name_key) VALUES ('other', 'default', 'Private personal', 'private personal'), ('other', ?, 'Private', 'private')",
+    [privateCalendar],
+  );
+  sqlite.run(`
+    INSERT INTO calendar_events (id, account_id, calendar_id, uid, ics, revision, first_day, last_day)
+    SELECT 'other-event', 'other', calendar_id, uid, REPLACE(ics, 'Holiday', 'Other account holiday'), revision, first_day, last_day
+    FROM calendar_events WHERE account_id = 'owner' AND uid = 'holiday'
+  `);
+  expect((await request(calendarApi, {})).status).toBe(401);
+  const missing = await list({ calendarId: privateCalendar });
+  expect(missing.result).toMatchObject({
+    isError: true,
+    content: [{ type: "text", text: "Calendar not found." }],
+  });
+  expect(missing.result?.structuredContent).toBeUndefined();
+
+  const { result: all } = await list();
+  const events = [
+    {
+      title: "Overnight maintenance",
+      start: "2026-09-27T13:00:00Z",
+      end: "2026-09-27T15:00:00Z",
+      allDay: false,
+    },
+    {
+      title: "Stand-up",
+      calendarId: team,
+      start: "2026-09-27T23:00:00Z",
+      occurrence: "2026-09-27T23:00:00Z",
+    },
+    {
+      title: "Holiday",
+      calendarId: defaultCalendarId,
+      start: "2026-09-29",
+      end: "2026-09-30",
+      allDay: true,
+    },
+    {
+      title: "Rescheduled stand-up",
+      calendarId: team,
+      start: "2026-10-06T00:00:00Z",
+      end: "2026-10-06T01:00:00Z",
+      occurrence: "2026-10-04T22:00:00Z",
+      location: "Meeting room",
+      description: "Bring updates",
+    },
+    {
+      title: "Floating appointment",
+      start: "2026-10-07T22:00:00Z",
+      end: "2026-10-07T23:00:00Z",
+    },
+  ];
+  expect(all?.structuredContent).toMatchObject({
+    calendars: [
+      { id: defaultCalendarId, name: "Personal" },
+      { id: team, name: "Team" },
+    ],
+    events,
+    url: `${origin}/calendar`,
+    nextOffset: null,
+    incomplete: false,
+  });
+  const occurrences = (all?.structuredContent as { events: { id: string }[] })
+    .events;
+  expect(occurrences[1]?.id).toBeTruthy();
+  expect(occurrences[3]?.id).toBe(occurrences[1]?.id);
+  expect(
+    (await list({ calendarId: team })).result?.structuredContent,
+  ).toMatchObject({
+    events: [events[1], events[3]],
+    url: `${origin}/calendar/${team}`,
+    incomplete: false,
+  });
+  expect((await list({ limit: 2 })).result?.structuredContent).toMatchObject({
+    events: events.slice(0, 2),
+    nextOffset: 2,
+  });
+  expect(
+    (await list({ limit: 3, offset: 2 })).result?.structuredContent,
+  ).toMatchObject({
+    events: events.slice(2),
+    nextOffset: null,
+  });
+  for (const filters of [
+    { start: "2026-02-30" },
+    { end: "2026-09-28" },
+    { end: "2026-09-27" },
+    { end: "2026-10-30" },
+    { timeZone: "+10:00" },
+    { timeZone: "Nonexistent/Zone" },
+  ]) {
+    expect((await list(filters)).result?.isError, JSON.stringify(filters)).toBe(
+      true,
+    );
+  }
+  expect(
+    (await useTool(token, tool, { start: range.start, end: range.end })).result
+      ?.isError,
+  ).toBe(true);
+
+  await importEvents(defaultCalendarId, [
+    [
+      "UID:long-running",
+      "DTSTART;VALUE=DATE:19000101",
+      "RRULE:FREQ=DAILY",
+      "SUMMARY:Long-running series",
+    ],
+  ]);
+  expect((await list()).result?.structuredContent).toMatchObject({
+    events,
+    nextOffset: null,
+    incomplete: true,
+  });
+  expect(
+    (await list({ calendarId: team })).result?.structuredContent,
+  ).toMatchObject({
+    events: [events[1], events[3]],
+    incomplete: false,
+  });
 });
 
 it("applies scoped MCP mail triage and publishes only changed mailbox states", async () => {

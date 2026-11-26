@@ -695,16 +695,17 @@ export type CalendarEventRow = {
   remind_at: number | null;
 };
 
-export const calendarRange = (start: string, timeZone: string) => {
-  const end = calendarDays(start, 7);
-  return {
-    start,
-    end,
-    timeZone,
-    from: calendarDate(start).toZonedDateTime(timeZone).toInstant().toString(),
-    to: calendarDate(end).toZonedDateTime(timeZone).toInstant().toString(),
-  };
-};
+export const calendarRange = (
+  start: string,
+  timeZone: string,
+  end = calendarDays(start, 7),
+) => ({
+  start,
+  end,
+  timeZone,
+  from: calendarDate(start).toZonedDateTime(timeZone).toInstant().toString(),
+  to: calendarDate(end).toZonedDateTime(timeZone).toInstant().toString(),
+});
 
 type CalendarRange = ReturnType<typeof calendarRange>;
 

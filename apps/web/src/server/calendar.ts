@@ -105,34 +105,35 @@ const loadRows = (db: D1Database, account: string, calendarId: string) =>
     .bind(account, calendarId)
     .all<CalendarEventRow>();
 
-export const listCalendarWeek = async (
-  env: PushEnv,
+export const loadCalendarOccurrences = async (
+  db: D1Database,
   account: string,
   range: ReturnType<typeof calendarRange>,
+  calendarId: string | null = null,
 ) => {
-  await ensureDefaultCalendar(env.DB, account);
-  const [rows, subscription, calendars] = await Promise.all([
+  const [rows, { results: calendars }] = await Promise.all([
     // Bounds are UTC dates (or calendar dates for floating and all-day
     // events). Allow an extra day for viewing from a different time zone.
-    env.DB.prepare(
-      `SELECT id, calendar_id, revision, ics, remind_at FROM calendar_events
+    db
+      .prepare(
+        `SELECT id, calendar_id, revision, ics, remind_at FROM calendar_events
        WHERE account_id = ? AND deleted = 0
+         AND (? IS NULL OR calendar_id = ?)
          AND (first_day IS NULL OR first_day <= ?)
          AND (last_day IS NULL OR last_day >= ?)`,
-    )
-      .bind(account, calendarDays(range.end, 1), calendarDays(range.start, -1))
+      )
+      .bind(
+        account,
+        calendarId,
+        calendarId,
+        calendarDays(range.end, 1),
+        calendarDays(range.start, -1),
+      )
       .all<CalendarEventRow>(),
-    pushConfiguration(env)
-      ? env.DB.prepare(
-          `SELECT 1 FROM push_subscriptions p WHERE p.account_id = ?
-             AND ${activePushSubscription} LIMIT 1`,
-        )
-          .bind(account, Date.now(), Date.now())
-          .first()
-      : null,
-    env.DB.prepare(
-      "SELECT id, name, color FROM calendars WHERE account_id = ? ORDER BY id <> ?, name_key, id",
-    )
+    db
+      .prepare(
+        "SELECT id, name, color FROM calendars WHERE account_id = ? ORDER BY id <> ?, name_key, id",
+      )
       .bind(account, defaultCalendarId)
       .all<CalendarSummary>(),
   ]);
@@ -147,16 +148,42 @@ export const listCalendarWeek = async (
       incomplete = true;
     }
   }
-  events.sort(
+  // The web view creates this calendar on first use. Reads can expose it
+  // before initialization without making any changes to the account.
+  if (!calendars.some(({ id }) => id === defaultCalendarId))
+    calendars.unshift({
+      id: defaultCalendarId,
+      name: defaultCalendarName,
+      color: defaultCalendarColor,
+    });
+  return { calendars, events, incomplete };
+};
+
+export const listCalendarWeek = async (
+  env: PushEnv,
+  account: string,
+  range: ReturnType<typeof calendarRange>,
+) => {
+  await ensureDefaultCalendar(env.DB, account);
+  const [data, subscription] = await Promise.all([
+    loadCalendarOccurrences(env.DB, account, range),
+    pushConfiguration(env)
+      ? env.DB.prepare(
+          `SELECT 1 FROM push_subscriptions p WHERE p.account_id = ?
+             AND ${activePushSubscription} LIMIT 1`,
+        )
+          .bind(account, Date.now(), Date.now())
+          .first()
+      : null,
+  ]);
+  data.events.sort(
     (a, b) =>
       Number(b.allDay) - Number(a.allDay) ||
       a.start.localeCompare(b.start) ||
       a.title.localeCompare(b.title),
   );
   return {
-    calendars: calendars.results,
-    events,
-    incomplete,
+    ...data,
     remindersAvailable: Boolean(subscription),
   };
 };

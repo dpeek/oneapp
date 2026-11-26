@@ -11,6 +11,7 @@ export const mailTriageScope = "mail:triage";
 export const mailSendScope = "mail:send";
 export const filesReadScope = "files:read";
 export const contactsReadScope = "contacts:read";
+export const calendarReadScope = "calendar:read";
 export const codexClientId = "oneapp-codex";
 export const codexMetadataOrigin = "https://chatgpt.com";
 export const isCodexMetadataId = (id: string) =>

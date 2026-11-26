@@ -393,6 +393,10 @@ Files requires an explicit `files:read` grant. Request it with `codex mcp login 
 - `search_files` filters by filename substring (`query`) and exact tag name (`tag`, case-insensitive). Results include tags and a browser URL. Results default to 50 per page, up to 100. Pass `nextOffset` back as `offset` with the same filters.
 - `get_file` returns metadata by file ID. Set `includeContent` to read PNG, JPEG, GIF, and WebP as native MCP images, or UTF-8 plain text, Markdown, CSV, TSV, and JSON as text. Inline content is available for files up to 1 MiB. Text previews are limited to 32 KiB and report `truncated` when more text is available. Use the file URL to open larger files, PDFs, and other unsupported formats in Orumai.
 
+Calendar requires an explicit `calendar:read` grant. Request it with `codex mcp login orumai --scopes calendar:read` and include any other scopes you want on the connection. After approval, start a new Codex session.
+
+- `list_calendar_events` takes local `start` and `end` dates (YYYY-MM-DD, end exclusive, up to 31 days), an IANA `timeZone`, and an optional `calendarId`. It returns calendar IDs and names, overlapping event occurrences in chronological order, and a Calendar URL. All-day times are dates and timed values are UTC timestamps. Pass `nextOffset` as `offset` with the same filters to continue. `incomplete` indicates that some occurrences could not be expanded.
+
 Mail requires an explicit `mail:read` grant and uses the same personal mailbox as the web app. To search Mail and create or review tasks from the same connection, request these scopes and approve the new grant in your browser. Start a new Codex session after approval.
 
 ```sh

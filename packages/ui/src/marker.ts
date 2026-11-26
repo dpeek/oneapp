@@ -24,7 +24,7 @@ const styles = stylex.create({
     minBlockSize: "2rem",
     minInlineSize: 0,
     borderStyle: "none",
-    borderRadius: controls.radius,
+    borderRadius: controls.pillRadius,
     padding: 0,
     backgroundColor: "transparent",
     color: {

@@ -1757,7 +1757,6 @@ const settingsView = (model: Model, h: HtmlBuilder<Message>) => {
                   {
                     variant: "ghost",
                     size: "icon-sm",
-                    rounded: true,
                     ariaLabel: "Settings sections",
                     dialogId: model.settingsSheet.id,
                     onClick: toSettingsSheetMessage(

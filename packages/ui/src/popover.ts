@@ -76,7 +76,6 @@ export const view = <ParentMessage>(
                       props.triggerButton ?? {
                         variant: "ghost",
                         size: "icon-sm",
-                        rounded: true,
                       },
                     ),
                     stylex.props(styles.button).className,

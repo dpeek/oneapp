@@ -302,7 +302,6 @@ export const navigationView = <ParentMessage>(
             {
               variant: "ghost",
               size: "icon",
-              rounded: true,
               ariaLabel: "Create",
               dialogId: create.dialogId,
               onClick: create.onClick,

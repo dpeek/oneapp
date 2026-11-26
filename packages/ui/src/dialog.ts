@@ -149,7 +149,6 @@ export const view = <ParentMessage>(
                   buttonClassName({
                     variant: "ghost",
                     size: "icon",
-                    rounded: true,
                   }),
                 ),
               ],

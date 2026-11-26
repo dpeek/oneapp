@@ -224,7 +224,6 @@ const detailView = (
                         {
                           variant: "ghost",
                           size: "icon-sm",
-                          rounded: true,
                           ariaLabel: "Delete contact",
                           attributes: [h.Title("Delete contact")],
                           disabled:
@@ -306,7 +305,6 @@ export const view = Submodel.defineView<
                   {
                     variant: "ghost",
                     size: "icon-sm",
-                    rounded: true,
                     ariaLabel: "Contact folders",
                     dialogId: folderSheet.id,
                     onClick: toFolderSheetMessage(
@@ -324,7 +322,6 @@ export const view = Submodel.defineView<
             : button(
                 {
                   size: "sm",
-                  rounded: true,
                   ariaLabel: `Add ${contactLabel.toLowerCase()}`,
                   dialogId,
                   onClick: Message.Created({ kind: section }),

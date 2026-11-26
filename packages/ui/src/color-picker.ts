@@ -57,7 +57,7 @@ const styles = stylex.create({
   },
   format: {
     border: `1px solid ${controls.border}`,
-    borderRadius: controls.radius,
+    borderRadius: controls.pillRadius,
     color: controls.foreground,
     backgroundColor: controls.surface,
     paddingInline: "0.375rem",

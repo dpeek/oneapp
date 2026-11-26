@@ -325,7 +325,7 @@ const uploadControl = (model: Model, h: HtmlBuilder<Message>) =>
     [
       h.span(
         [
-          h.Class(buttonClassName({ size: "sm", rounded: true })),
+          h.Class(buttonClassName({ size: "sm" })),
           h.DataAttribute("slot", "button"),
           h.AriaHidden(true),
         ],

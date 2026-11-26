@@ -50,7 +50,6 @@ const iconButton = (path: string) => {
   button.className = buttonClassName({
     variant: "ghost",
     size: "icon-sm",
-    rounded: true,
   });
   const ns = "http://www.w3.org/2000/svg";
   const icon = document.createElementNS(ns, "svg");

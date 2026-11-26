@@ -72,6 +72,7 @@ export const view = <ParentMessage>(
     [
       h.input([
         h.Id(Combobox.inputId(model.id)),
+        h.DataAttribute("slot", "input"),
         h.Class(inputClassName),
         h.Role("combobox"),
         h.AriaLabel(props.label),

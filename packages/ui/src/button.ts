@@ -19,7 +19,7 @@ const styles = stylex.create({
     paddingInline: "0.875rem",
     borderStyle: "solid",
     borderWidth: 1,
-    borderRadius: controls.radius,
+    borderRadius: controls.pillRadius,
     fontFamily: "inherit",
     fontSize: "0.9375rem",
     fontWeight: 600,
@@ -126,7 +126,6 @@ const styles = stylex.create({
     paddingBlock: 0,
     paddingInline: 0,
   },
-  rounded: { borderRadius: "9999px" },
 });
 
 type ButtonProps<Message> = Readonly<{
@@ -135,7 +134,6 @@ type ButtonProps<Message> = Readonly<{
   dialogId?: string;
   variant?: "primary" | "destructive" | "outline" | "ghost" | "quiet";
   size?: "sm" | "icon" | "icon-sm";
-  rounded?: boolean;
   type?: "button" | "submit";
   disabled?: boolean;
   /** Keeps a disabled action in the tab order while it reports progress. */
@@ -145,14 +143,13 @@ type ButtonProps<Message> = Readonly<{
 }>;
 
 export const buttonClassName = (
-  props: Pick<ButtonProps<never>, "variant" | "size" | "rounded">,
+  props: Pick<ButtonProps<never>, "variant" | "size">,
 ) =>
   stylex.props(
     styles.base,
     styles[props.variant ?? "primary"],
     props.size && styles[props.size],
     props.variant === "quiet" && props.size === "sm" && styles.smallTouchTarget,
-    props.rounded === true && styles.rounded,
   ).className ?? "";
 
 export const button = <Message>(

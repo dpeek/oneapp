@@ -16,6 +16,7 @@
   --destructive-hover: light-dark(#922b1a, #ffbbaa);
   --on-destructive: light-dark(#fff, #36150e);
   --control-radius: 0.5rem;
+  --control-pill-radius: 9999px;
   --alert-info: light-dark(#205f93, #96c5f0);
   --alert-success: light-dark(#247047, #8ddbb1);
   --alert-warning: light-dark(#7d4e0c, #f3cb85);
@@ -36,6 +37,17 @@
 [data-slot="button-group"] > :focus-visible {
   position: relative;
   z-index: 1;
+}
+
+[data-slot="button-group"]:has(> [data-slot="input"]:focus-visible) {
+  border-radius: var(--control-pill-radius);
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+[data-slot="button-group"] > [data-slot="input"]:focus-visible {
+  border-color: var(--border);
+  box-shadow: none;
 }
 
 .calendar-picker-caption,
@@ -90,7 +102,7 @@
   min-block-size: 1.75rem;
   padding: 0;
   border: 1px solid transparent;
-  border-radius: var(--control-radius);
+  border-radius: var(--control-pill-radius);
   background: transparent;
   color: var(--text);
   font: inherit;

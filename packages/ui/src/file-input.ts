@@ -17,7 +17,7 @@ const styles = stylex.create({
     borderStyle: "solid",
     borderWidth: 1,
     borderColor: { default: controls.border, ":focus-within": controls.focus },
-    borderRadius: controls.radius,
+    borderRadius: controls.pillRadius,
     backgroundColor: {
       default: controls.surface,
       "@media (hover: hover)": {

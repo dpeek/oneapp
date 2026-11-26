@@ -142,7 +142,6 @@ export const mountVaultWorkspaceHeader = (
                       {
                         variant: "ghost",
                         size: "icon-sm",
-                        rounded: true,
                         ariaLabel: "Back",
                         disabled: state.busy,
                         onClick: Message.Back(),
@@ -161,7 +160,6 @@ export const mountVaultWorkspaceHeader = (
                           {
                             variant: "ghost",
                             size: "icon-sm",
-                            rounded: true,
                             ariaLabel: "Filters",
                             dialogId: filters.id,
                             disabled: state.busy,

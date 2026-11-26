@@ -16,7 +16,6 @@ export const viewSwitchGroupClassName =
 export const viewSwitchButton = {
   variant: "quiet",
   size: "sm",
-  rounded: true,
 } as const;
 
 export const viewToggleGroup = <Value extends string, Message>(

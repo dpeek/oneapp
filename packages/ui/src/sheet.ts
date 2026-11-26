@@ -107,7 +107,6 @@ export const sheet = <ParentMessage>(
                               buttonClassName({
                                 variant: "ghost",
                                 size: "icon",
-                                rounded: true,
                               }),
                             ),
                           ],

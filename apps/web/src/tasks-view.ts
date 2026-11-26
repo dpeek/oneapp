@@ -739,7 +739,6 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
   const addTask = button(
     {
       size: "sm",
-      rounded: true,
       ariaLabel: "Add task",
       disabled: model.request !== null || !model.index,
       dialogId: creationDialogId,
@@ -779,7 +778,6 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
                   {
                     variant: "ghost",
                     size: "icon-sm",
-                    rounded: true,
                     ariaLabel: "Task navigation",
                     dialogId: folderSheet.id,
                     onClick: toFolderSheetMessage(

@@ -104,10 +104,10 @@ export const create = <Action extends string>() => {
           buttonClassName: [
             buttonClassName(
               props.triggerVariant === "primary"
-                ? { variant: "primary", size: "sm", rounded: true }
+                ? { variant: "primary", size: "sm" }
                 : props.triggerVariant === "ghost"
                   ? { variant: "ghost", size: "sm" }
-                  : { variant: "ghost", size: "icon-sm", rounded: true },
+                  : { variant: "ghost", size: "icon-sm" },
             ),
             props.triggerVariant === "primary"
               ? ""
@@ -176,7 +176,6 @@ const createSingleSelect = <Value extends string>() => {
             buttonClassName({
               variant: "ghost",
               size: "icon-sm",
-              rounded: true,
             }),
             stylex.props(styles.openGhostTrigger).className,
           ].join(" "),

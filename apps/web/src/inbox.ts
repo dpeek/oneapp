@@ -2092,7 +2092,6 @@ const messageItem = (
                   {
                     variant: "ghost",
                     size: "icon-sm",
-                    rounded: true,
                     ariaLabel: `Delete conversation: ${subject}`,
                     attributes: [h.Title("Delete conversation")],
                     disabled: model.deleteRequest !== null,
@@ -2379,7 +2378,6 @@ const entryContent = (model: Model, h: HtmlBuilder<Message>) => {
                                       buttonClassName({
                                         variant: "ghost",
                                         size: "icon-sm",
-                                        rounded: true,
                                       }),
                                     ),
                                   ],
@@ -2710,7 +2708,6 @@ const messageHeaderActions = (model: Model, h: HtmlBuilder<Message>) => {
       {
         variant: "ghost",
         size: "icon-sm",
-        rounded: true,
         ariaLabel: label,
         dialogId: Compose.dialogId,
         attributes: [h.Title(label)],
@@ -2754,7 +2751,6 @@ const messageHeaderActions = (model: Model, h: HtmlBuilder<Message>) => {
               {
                 variant: "ghost",
                 size: "icon-sm",
-                rounded: true,
                 ariaLabel: "Delete message",
                 attributes: [
                   h.Title("Delete message"),
@@ -3032,7 +3028,6 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
                     {
                       variant: "ghost",
                       size: "icon-sm",
-                      rounded: true,
                       ariaLabel: "Back",
                       onClick: Message.RequestedBack(),
                       children: [backIcon(h)],
@@ -3048,7 +3043,6 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
                   {
                     variant: "ghost",
                     size: "icon-sm",
-                    rounded: true,
                     ariaLabel: "Mail folders",
                     dialogId: model.folderSheet.id,
                     onClick: Message.GotFolderSheetMessage({
@@ -3079,7 +3073,6 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
           primaryAction: button(
             {
               size: "sm",
-              rounded: true,
               ariaLabel: "New email",
               dialogId: Compose.dialogId,
               disabled: !composeSender(model),

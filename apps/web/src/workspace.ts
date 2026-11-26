@@ -51,9 +51,7 @@ export const screenHeaderBack = <Message>(
   h.a(
     [
       h.Href(props.href),
-      h.Class(
-        buttonClassName({ variant: "ghost", size: "icon-sm", rounded: true }),
-      ),
+      h.Class(buttonClassName({ variant: "ghost", size: "icon-sm" })),
       h.DataAttribute("slot", "button"),
       h.AriaLabel(props.label),
       h.Title(props.label),

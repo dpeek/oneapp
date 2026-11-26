@@ -28,7 +28,7 @@ const styles = stylex.create({
     borderColor: { default: controls.border, ":focus-visible": controls.focus },
     borderStyle: "solid",
     borderWidth: 1,
-    borderRadius: controls.radius,
+    borderRadius: controls.pillRadius,
     backgroundColor: "transparent",
     color: controls.foreground,
     fontFamily: "inherit",
@@ -40,7 +40,11 @@ const styles = stylex.create({
     },
     "::placeholder": { color: controls.mutedForeground },
   },
-  textarea: { minBlockSize: "4rem", resize: "vertical" },
+  textarea: {
+    minBlockSize: "4rem",
+    borderRadius: controls.radius,
+    resize: "vertical",
+  },
   grouped: {
     borderStyle: "none",
     borderRadius: 0,

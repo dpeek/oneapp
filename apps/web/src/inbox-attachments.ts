@@ -138,9 +138,7 @@ const downloadLink = (
       h.DataAttribute("slot", "button"),
       h.AriaLabel(`Download ${attachment.name}`),
       h.Title(`Download ${attachment.name}`),
-      h.Class(
-        buttonClassName({ variant: "ghost", size: "icon-sm", rounded: true }),
-      ),
+      h.Class(buttonClassName({ variant: "ghost", size: "icon-sm" })),
     ],
     [outlineIcon(h, ["M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"])],
   );
@@ -243,7 +241,6 @@ export const listView = Submodel.defineView<
                 {
                   variant: "ghost",
                   size: "icon-sm",
-                  rounded: true,
                   ariaLabel: `Preview ${attachment.name}`,
                   dialogId,
                   attributes: [

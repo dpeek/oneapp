@@ -21,7 +21,7 @@ const styles = stylex.create({
     paddingInlineEnd: "2rem",
     borderStyle: "solid",
     borderWidth: 1,
-    borderRadius: controls.radius,
+    borderRadius: controls.pillRadius,
     borderColor: { default: controls.border, ":focus-visible": controls.focus },
     backgroundColor: "transparent",
     color: controls.foreground,

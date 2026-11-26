@@ -17,6 +17,7 @@ export const controls = stylex.defineVars({
   selected: "var(--selected)",
   focus: "var(--focus)",
   radius: "var(--control-radius)",
+  pillRadius: "var(--control-pill-radius)",
 });
 
 export const alertColors = stylex.defineVars({

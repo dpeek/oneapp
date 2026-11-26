@@ -451,7 +451,6 @@ export const view = Submodel.defineView<Model, Message, ViewInputs>(
             primaryAction: button(
               {
                 size: "sm",
-                rounded: true,
                 ariaLabel: "Save link",
                 dialogId: creationDialogId,
                 disabled:
@@ -481,25 +480,28 @@ export const view = Submodel.defineView<Model, Message, ViewInputs>(
                 [
                   buttonGroup(
                     [
-                      h.input([
-                        h.Id("link-url"),
-                        h.Type("text"),
-                        h.InputMode("url"),
-                        h.Autocapitalize("off"),
-                        h.Spellcheck(false),
-                        h.AriaLabel("Link URL"),
-                        h.AriaInvalid(model.validationError !== null),
-                        ...(model.validationError
-                          ? [h.AriaDescribedBy("link-url-error")]
-                          : []),
-                        h.Placeholder("Paste a URL"),
-                        h.EnterKeyHint("done"),
-                        h.Required(true),
-                        h.Value(model.url),
-                        h.Readonly(disabled || model.request !== null),
-                        h.OnMount(FocusLinkInput()),
-                        h.OnInput((url) => Message.EditedUrl({ url })),
-                      ]),
+                      input(
+                        [
+                          h.Id("link-url"),
+                          h.Type("text"),
+                          h.InputMode("url"),
+                          h.Autocapitalize("off"),
+                          h.Spellcheck(false),
+                          h.AriaLabel("Link URL"),
+                          h.AriaInvalid(model.validationError !== null),
+                          ...(model.validationError
+                            ? [h.AriaDescribedBy("link-url-error")]
+                            : []),
+                          h.Placeholder("Paste a URL"),
+                          h.EnterKeyHint("done"),
+                          h.Required(true),
+                          h.Value(model.url),
+                          h.Readonly(disabled || model.request !== null),
+                          h.OnMount(FocusLinkInput()),
+                          h.OnInput((url) => Message.EditedUrl({ url })),
+                        ],
+                        h,
+                      ),
                       button(
                         {
                           type: "submit",
@@ -556,7 +558,6 @@ export const view = Submodel.defineView<Model, Message, ViewInputs>(
                             {
                               variant: "ghost",
                               size: "icon",
-                              rounded: true,
                               ariaLabel: `Delete ${link.url}`,
                               disabled: disabled || model.request !== null,
                               onClick: Message.RequestedDeletion({

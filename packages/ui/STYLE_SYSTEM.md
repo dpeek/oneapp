@@ -27,6 +27,10 @@ values in [shared theme CSS](src/theme.css). The web app, MCP consent page, and
 extension popup all load this theme. Use separate roles for primary actions,
 keyboard focus, hover, selection, and status.
 
+Use `controls.pillRadius` for buttons and single-line field borders. Use
+`controls.radius` for rows, overlays, and multiline field borders that use the
+shared corner radius.
+
 Aim for the restrained look of the Macro reference. Use neutral surfaces, subtle
 borders, readable text, and one prominent primary action. Start with Crease's
 component spacing and radius. Keep keyboard focus clearly visible. Tune color

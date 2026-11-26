@@ -1384,7 +1384,6 @@ const newCalendarButton = (model: Model, surface: typeof Surface.Type, h: H) =>
     {
       variant: "ghost",
       size: "icon-sm",
-      rounded: true,
       ariaLabel: "New calendar",
       dialogId: formDialogId,
       attributes: [
@@ -2180,7 +2179,6 @@ const dateNavigation = (view: Model["view"], disabled: boolean, h: H) => {
       {
         variant: "ghost",
         size: "icon-sm",
-        rounded: true,
         disabled,
         ariaLabel: `${direction === -1 ? "Previous" : "Next"} ${view}`,
         onClick: Message.ShiftedPeriod({ direction }),
@@ -2204,7 +2202,6 @@ const dateNavigation = (view: Model["view"], disabled: boolean, h: H) => {
         {
           variant: "ghost",
           size: "sm",
-          rounded: true,
           disabled,
           attributes: [h.Id(calendarTodayId)],
           onClick: Message.JumpedToToday(),
@@ -2606,7 +2603,6 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
                   {
                     variant: "ghost",
                     size: "icon-sm",
-                    rounded: true,
                     ariaLabel: "Calendars",
                     attributes: [h.Id(calendarDrawerId)],
                     dialogId: model.folderSheet.id,
@@ -2635,7 +2631,6 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
           primaryAction: button(
             {
               size: "sm",
-              rounded: true,
               ariaLabel: "New event",
               dialogId: formDialogId,
               attributes: [h.Id(newEventId)],

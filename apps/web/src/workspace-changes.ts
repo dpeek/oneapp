@@ -2,19 +2,21 @@ import { Effect, Queue, Schema, Stream } from "effect";
 import { filesChanged } from "./files-contract.ts";
 import {
   inboxChanged,
-  inboxEventsPath,
   InboxVersion,
   inboxVersionPath,
 } from "./inbox-contract.ts";
 import { tagsChanged } from "./items-contract.ts";
 import { tasksChanged } from "./tasks-contract.ts";
-import type { WorkspaceChange } from "./workspace-change-contract.ts";
+import {
+  workspaceEventsPath,
+  type WorkspaceChange,
+} from "./workspace-change-contract.ts";
 
 export const changes = Stream.callback<WorkspaceChange>(
   (queue) =>
     Effect.acquireRelease(
       Effect.sync(() => {
-        const url = new URL(inboxEventsPath, window.location.href);
+        const url = new URL(workspaceEventsPath, window.location.href);
         url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
         let stopped = false;
         let socket: WebSocket | undefined;

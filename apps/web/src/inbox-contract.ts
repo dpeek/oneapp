@@ -5,7 +5,6 @@ import { PersonEmail, PersonId, PersonMatch } from "./people-contract.ts";
 
 export const mailPath = "/mail";
 export const inboxApiPath = "/api/inbox";
-export const inboxEventsPath = `${inboxApiPath}/events`;
 export const inboxVersionPath = `${inboxApiPath}/version`;
 export const InboxVersion = Schema.Struct({ version: Schema.Int });
 export const conversationsApiPath = `${inboxApiPath}/conversations`;

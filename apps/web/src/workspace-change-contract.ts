@@ -3,6 +3,8 @@ import type { inboxChanged } from "./inbox-contract.ts";
 import type { tagsChanged } from "./items-contract.ts";
 import type { tasksChanged } from "./tasks-contract.ts";
 
+export const workspaceEventsPath = "/api/workspace/events";
+
 export type ItemChange =
   typeof filesChanged | typeof tagsChanged | typeof tasksChanged;
 export type WorkspaceChange = ItemChange | typeof inboxChanged;

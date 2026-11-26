@@ -61,7 +61,6 @@ import {
   inboxApiPath,
   inboxAttachmentApi,
   inboxAttachmentPreviewApi,
-  inboxEventsPath,
   inboxMessageApi,
   inboxOriginalApi,
   inboxReadApi,
@@ -82,6 +81,7 @@ import {
   trashBatchRestoreApi,
   TrashedConversation,
 } from "../inbox-contract.ts";
+import { workspaceEventsPath } from "../workspace-change-contract.ts";
 import {
   codexClientId,
   mailReadScope,
@@ -2200,7 +2200,7 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
   });
 });
 
-it("only upgrades Inbox sockets for a same-origin owner session", async () => {
+it("only upgrades workspace sockets for a same-origin owner session", async () => {
   using sqlite = new Database(":memory:");
   const accept = vi.fn(
     async (_url: string, _init: RequestInit) =>
@@ -2219,24 +2219,28 @@ it("only upgrades Inbox sockets for a same-origin owner session", async () => {
     "x-oneapp-inbox-security-revision": "forged",
     "x-oneapp-inbox-mailbox": "family",
   };
-  expect((await request(inboxEventsPath, { headers })).status).toBe(401);
+  expect((await request(workspaceEventsPath, { headers })).status).toBe(401);
   expect(
     (
-      await request(inboxEventsPath, {
+      await request(workspaceEventsPath, {
         headers: { ...headers, cookie, origin: "https://other.example" },
       })
     ).status,
   ).toBe(403);
   expect(
     (
-      await request(inboxEventsPath, {
+      await request(workspaceEventsPath, {
         headers: { origin: headers.origin, cookie },
       })
     ).status,
   ).toBe(426);
+  expect(
+    (await request("/api/inbox/events", { headers: { ...headers, cookie } }))
+      .status,
+  ).toBe(404);
   expect(accept).not.toHaveBeenCalled();
 
-  const allowed = await request(inboxEventsPath, {
+  const allowed = await request(workspaceEventsPath, {
     headers: { ...headers, cookie },
   });
   expect(allowed.status).toBe(204);

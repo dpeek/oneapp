@@ -27,8 +27,10 @@ import {
   HttpServerResponse,
 } from "effect/http";
 import { accountPath } from "../account-contract.ts";
-import { inboxEventsPath } from "../inbox-contract.ts";
-import type { NotifyItemChange } from "../workspace-change-contract.ts";
+import {
+  workspaceEventsPath,
+  type NotifyItemChange,
+} from "../workspace-change-contract.ts";
 import {
   forgotPasswordPage,
   passwordResetPath,
@@ -359,7 +361,7 @@ export default {
         ),
       );
     };
-    if (path === inboxEventsPath) {
+    if (path === workspaceEventsPath) {
       if (request.method !== "GET")
         return new Response(null, {
           status: 405,

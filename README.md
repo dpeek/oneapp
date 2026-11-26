@@ -384,6 +384,7 @@ After deploying the runner's MCP endpoint, set up Bun, Git, and the Codex CLI on
 
 ```sh
 bun install --frozen-lockfile
+bun --no-env-file run tasks:runner --configure-browser /path/to/chrome-headless-shell
 bun --no-env-file run tasks:runner --login
 bun --no-env-file run tasks:runner --dry-run
 bun --no-env-file run tasks:runner --once
@@ -393,6 +394,8 @@ Approve the runner in your browser. `--login --no-browser` prints the approval U
 
 Add the `ready` tag to a **Not started** task to opt it in. **Dry run** prints the next eligible task without claiming it. **Once** attempts one task. Omit `--once` to run the script in the foreground and keep polling every minute. Each claimed task gets a fresh clone of `origin/main` and runs Codex with GPT-6.2 Sol at high reasoning effort. The runner runs type checks, tests, and builds before pushing to `origin/main`, which triggers the configured Cloudflare deployment.
 
-For local browser checks, download Chrome Headless Shell for your platform from [Chrome for Testing](https://googlechromelabs.github.io/chrome-for-testing/). Set `ORUMAI_CHROME_HEADLESS_SHELL` to the absolute path of its executable when starting the runner. Codex can then use `"$ORUMAI_BROWSER"` for localhost verification. The runner opens a separate session per task and closes it when Codex exits.
+Install Chrome Headless Shell for your platform from [Chrome for Testing](https://googlechromelabs.github.io/chrome-for-testing/) and run `--configure-browser` once per runner account. The path is saved in `$XDG_CONFIG_HOME/orumai-task-runner/config.json` or `~/.config/orumai-task-runner/config.json`. The runner can also find `chrome-headless-shell` on `PATH`, and `ORUMAI_CHROME_HEADLESS_SHELL` overrides the saved path for one launch.
+
+For each task, the runner starts a fresh development server on a free localhost port and opens an isolated headless browser. Agents get the dev URL in `ORUMAI_DEV_URL`, the generated local sign-in file in `ORUMAI_DEV_ENV_FILE`, and the browser CLI in `ORUMAI_BROWSER`. The runner stops the browser and dev process group when the agent exits, including on failure. The server log is saved as `dev.log` alongside the run log.
 
 Run logs live under `$XDG_STATE_HOME/orumai-task-runner` or `~/.local/state/orumai-task-runner`. `run.jsonl` records the push SHA or the reason the run stopped. Failed runs retain their checkout for inspection. Tasks stay **In progress** after a claim so failures and pushes awaiting deployment do not get picked up again. To retry a failed run, review the log and move the task back to **Not started**. Verify production before marking a pushed task complete.

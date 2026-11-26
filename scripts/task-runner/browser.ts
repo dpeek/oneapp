@@ -1,27 +1,21 @@
 import { constants, existsSync } from "node:fs";
 import { access, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
 
 type BrowserSession = {
+  readonly cli: string;
   readonly env: Record<string, string | undefined>;
   readonly permission: string;
 };
 
 export async function withBrowserSession<T>(
   source: string,
-  runAgent: (browser?: BrowserSession) => Promise<T>,
+  executable: string,
+  runAgent: (browser: BrowserSession) => Promise<T>,
 ) {
-  const executable = process.env.ORUMAI_CHROME_HEADLESS_SHELL;
-  if (!executable) return runAgent();
-  if (!isAbsolute(executable))
-    throw new Error("ORUMAI_CHROME_HEADLESS_SHELL must be an absolute path.");
-
   const cli = join(source, "node_modules", ".bin", "agent-browser");
-  await Promise.all([
-    access(executable, constants.X_OK),
-    access(cli, constants.X_OK),
-  ]);
+  await access(cli, constants.X_OK);
   const directory = await mkdtemp(join(tmpdir(), "orumai-ab-"));
   const socketDirectory = await realpath(directory);
   const socket = join(socketDirectory, "run.sock");
@@ -42,7 +36,10 @@ export async function withBrowserSession<T>(
       JSON.stringify({
         allowedDomains: ["localhost", "127.0.0.1"],
         contentBoundaries: true,
-        idleTimeout: "2m",
+        // Startup and Codex have separate network proxies. Keep the browser
+        // on loopback inside the sandbox without changing its proxy per command.
+        proxy: "direct://",
+        idleTimeout: "35m",
         // Chromium's macOS child process rendezvous is unavailable in this sandbox.
         ...(process.platform === "darwin"
           ? {
@@ -57,6 +54,7 @@ export async function withBrowserSession<T>(
       .map((path) => `${JSON.stringify(path)}="allow"`)
       .join(",");
     return await runAgent({
+      cli,
       env,
       permission: `permissions.orumai-runner.network.unix_sockets={${sockets}}`,
     });

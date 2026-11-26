@@ -14,9 +14,11 @@ import { setTimeout } from "node:timers/promises";
 import { parseArgs } from "node:util";
 import { TaskQueue } from "./task-runner/queue.ts";
 import { gitOrigin, runNext } from "./task-runner/run.ts";
+import { configureBrowser, resolveBrowser } from "./task-runner/settings.ts";
 
 const usage = `Usage: bun --no-env-file run tasks:runner [--server <origin>] [--once | --dry-run]
        bun --no-env-file run tasks:runner --login [--no-browser] [--server <origin>]
+       bun --no-env-file run tasks:runner --configure-browser <executable>
 
 Picks up one not-started task tagged ready at a time. A successful run pushes
 to origin/main. --dry-run lists the next eligible task without claiming it.`;
@@ -30,11 +32,24 @@ async function main() {
       "no-browser": { type: "boolean" },
       "dry-run": { type: "boolean" },
       once: { type: "boolean" },
+      "configure-browser": { type: "string" },
       help: { type: "boolean", short: "h" },
     },
   });
   if (values.help) {
     console.log(usage);
+    return;
+  }
+  if (values["configure-browser"] !== undefined) {
+    if (
+      values.login ||
+      values["no-browser"] ||
+      values.once ||
+      values["dry-run"]
+    )
+      throw new Error(usage);
+    const executable = await configureBrowser(values["configure-browser"]);
+    console.log(`Saved Chrome Headless Shell at ${executable}.`);
     return;
   }
   const origin = serverOrigin(values.server);
@@ -90,6 +105,7 @@ async function main() {
   const remote = await gitOrigin(source, signal);
   if (!Bun.which("codex"))
     throw new Error("Install the Codex CLI on the runner.");
+  const browser = await resolveBrowser();
   const directory = join(
     process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"),
     "orumai-task-runner",
@@ -110,7 +126,14 @@ async function main() {
       const queue = new TaskQueue(origin, token, signal);
       try {
         await queue.connect();
-        await runNext(queue, { origin, source, remote, directory, signal });
+        await runNext(queue, {
+          origin,
+          source,
+          remote,
+          directory,
+          signal,
+          browser,
+        });
       } catch (error) {
         if (signal.aborted) break;
         if (values.once) throw error;

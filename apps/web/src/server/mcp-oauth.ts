@@ -14,6 +14,7 @@ import {
   codexClientId,
   codexMetadataOrigin,
   isCodexMetadataId,
+  mailReadScope,
   McpGrant,
   McpGrantId,
   McpGrantList,
@@ -36,15 +37,17 @@ export const ReadLinks = OAuthScope.make(linksReadScope);
 export const WriteLinks = OAuthScope.make(linksWriteScope);
 export const ReadTasks = OAuthScope.make(tasksReadScope);
 export const WriteTasks = OAuthScope.make(tasksWriteScope);
-export const mcpScopes = [
+export const ReadMail = OAuthScope.make(mailReadScope);
+export const defaultMcpScopes = [
   ReadLinks,
   WriteLinks,
   ReadTasks,
   WriteTasks,
 ] as const;
-export type McpScope = (typeof mcpScopes)[number];
+const supportedMcpScopes = [...defaultMcpScopes, ReadMail] as const;
+export type McpScope = (typeof supportedMcpScopes)[number];
 export const mcpOAuth = OAuthServer.make("mcp", {
-  scopes: mcpScopes,
+  scopes: supportedMcpScopes,
 });
 const codexClient = {
   clientId: codexClientId,
@@ -164,7 +167,7 @@ export const mcpGrantRoutes = (
           AND json_array_length(payload, '$.authorization.scopes') > 0
           AND NOT EXISTS (
             SELECT 1 FROM json_each(payload, '$.authorization.scopes')
-            WHERE value NOT IN (SELECT value FROM json_each(${JSON.stringify(mcpScopes)}))
+            WHERE value NOT IN (SELECT value FROM json_each(${JSON.stringify(supportedMcpScopes)}))
           )
         ORDER BY expires_at_millis DESC, grant_id
       `;

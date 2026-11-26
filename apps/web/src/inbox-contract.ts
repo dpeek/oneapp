@@ -94,6 +94,7 @@ export const folderApiPath = (folder: MailFolder) =>
   folder === "sent" ? sentApiPath : inboxApiPath;
 const inboxFileSuffix = ".eml";
 const receivedRoutePrefix = "received/";
+const mailMessageFragment = "message";
 export const mailMessagePage = (folder: MailboxView, id: string) => {
   const received = id.endsWith(inboxFileSuffix);
   const prefix =
@@ -103,6 +104,8 @@ export const mailMessagePage = (folder: MailboxView, id: string) => {
   const segment = received ? id.slice(0, -inboxFileSuffix.length) : id;
   return `${folderPath(folder)}/${prefix}${segment}`;
 };
+export const mailMessageLink = (id: string) =>
+  `${mailMessagePage("all", id)}#${mailMessageFragment}`;
 export const mailMessageApi = (folder: MailFolder, id: string) =>
   `${folderApiPath(folder)}/${id}`;
 export const inboxMessageApi = (id: string) => `${inboxApiPath}/${id}`;
@@ -158,10 +161,12 @@ const isSentMessageId = Schema.is(SentMessageId);
 export const MailRoute = Schema.Struct({
   folder: MailboxView,
   id: Schema.NullOr(MailMessageId),
+  focusMessage: Schema.optionalKey(Schema.Literal(true)),
 });
 
 export const mailRouteFor = (
   pathname: string,
+  fragment?: string,
 ): typeof MailRoute.Type | null => {
   for (const folder of MailboxView.literals) {
     const root = folderPath(folder);
@@ -169,11 +174,15 @@ export const mailRouteFor = (
       return { folder, id: null };
     if (!pathname.startsWith(`${root}/`)) continue;
     const segment = pathname.slice(root.length + 1);
+    const focus =
+      folder === "all" && fragment === mailMessageFragment
+        ? { focusMessage: true as const }
+        : {};
     if (
       (folder === "sent" || folder === "all" || folder === "trash") &&
       isSentMessageId(segment)
     )
-      return { folder, id: segment };
+      return { folder, id: segment, ...focus };
     if (folder === "sent") continue;
 
     let id = segment;
@@ -184,7 +193,7 @@ export const mailRouteFor = (
       else if (!segment.endsWith(inboxFileSuffix)) continue;
     }
     if (!id.endsWith(inboxFileSuffix)) id += inboxFileSuffix;
-    if (isInboxMessageId(id)) return { folder, id };
+    if (isInboxMessageId(id)) return { folder, id, ...focus };
   }
   return null;
 };

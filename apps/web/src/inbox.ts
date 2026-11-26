@@ -187,6 +187,7 @@ export const Model = Schema.Struct({
   ),
   readFailed: Schema.NullOr(InboxMessageId),
   selected: Schema.NullOr(MailMessageId),
+  focusMessage: Schema.Boolean,
   middleRevealed: Schema.Boolean,
   active: Schema.NullOr(MessageLocation),
   thread: Schema.NullOr(Conversation),
@@ -236,6 +237,7 @@ export const initial: Model = {
   readRequests: {},
   readFailed: null,
   selected: null,
+  focusMessage: false,
   middleRevealed: false,
   active: null,
   thread: null,
@@ -1354,7 +1356,7 @@ const transition = (model: Model, message: Message): Result =>
         : result;
     },
     UnmountedList: () => ({ model: { ...model, rowActions } }),
-    Opened: ({ id, folder }) => {
+    Opened: ({ id, folder, focusMessage = false }) => {
       const base =
         folder === model.folder
           ? model
@@ -1376,11 +1378,12 @@ const transition = (model: Model, message: Message): Result =>
               readRequests: model.readRequests,
             };
       const next =
-        base.selected === id
+        base.selected === id && base.focusMessage === focusMessage
           ? base
           : {
               ...base,
               selected: id,
+              focusMessage,
               filters: Filters.resetMenu(base.filters),
               conversationMenu: initial.conversationMenu,
               messageMenu: initial.messageMenu,
@@ -1957,6 +1960,7 @@ const transition = (model: Model, message: Message): Result =>
         !model.thread &&
         !model.entry &&
         !model.entryRequest &&
+        !model.focusMessage &&
         model.folder !== "sent" &&
         model.selected === newestIncoming?.id
           ? thread.messages.at(-1)

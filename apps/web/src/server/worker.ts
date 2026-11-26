@@ -64,7 +64,7 @@ import { linksRoutes } from "./links.ts";
 import { mcpRoutes } from "./mcp.ts";
 import {
   mcpGrantRoutes,
-  mcpScopes,
+  defaultMcpScopes,
   mcpLoginRoute,
   mcpOAuth,
   mcpOAuthLayer,
@@ -463,7 +463,7 @@ export default {
         health,
         mcpOAuth.routes,
         mcpLoginRoute,
-        mcpRoutes(env.APP_ORIGIN, env.DB, env.FILE_UPLOADS, notifyItemChange),
+        mcpRoutes(env, notifyItemChange),
         Layer.mergeAll(
           accountRoutes(http, {
             enabled: emailTransport !== disabledEmail,
@@ -525,7 +525,7 @@ export default {
         url.searchParams.get("response_type") === "code" &&
         !url.searchParams.has("scope")
       ) {
-        url.searchParams.set("scope", mcpScopes.join(" "));
+        url.searchParams.set("scope", defaultMcpScopes.join(" "));
         return await app.handler(new Request(url, request));
       }
       const signingOut =

@@ -1,5 +1,5 @@
 import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
-import type { CallToolResult, McpServer } from "@modelcontextprotocol/server";
+import type { McpServer } from "@modelcontextprotocol/server";
 import { Schema } from "effect";
 import { ItemId, Tag, TagCreate, tagsChanged } from "../items-contract.ts";
 import { TaskAttachment } from "../task-attachment-contract.ts";
@@ -19,7 +19,13 @@ import {
 import type { NotifyItemChange } from "../workspace-change-contract.ts";
 import { createTag, listTags } from "./items-store.ts";
 import { type McpScope, ReadTasks, WriteTasks } from "./mcp-oauth.ts";
-import { pageFields, result, standardSchema, toolFailure } from "./mcp-tool.ts";
+import {
+  pageFields,
+  result,
+  runTool,
+  standardSchema,
+  toolFailure,
+} from "./mcp-tool.ts";
 import {
   createTask,
   deleteTask,
@@ -99,13 +105,6 @@ const TagPage = Schema.Struct({
 const TagResult = Schema.Struct({ tag: Tag });
 
 const readOnly = { readOnlyHint: true, openWorldHint: false };
-const runTool = async (failure: string, run: () => Promise<CallToolResult>) => {
-  try {
-    return await run();
-  } catch {
-    return toolFailure(failure);
-  }
-};
 const stale = () =>
   toolFailure("The task changed. Read its latest revision and try again.");
 

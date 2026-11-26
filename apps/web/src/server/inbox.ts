@@ -8,7 +8,6 @@ import type {
 } from "@cloudflare/workers-types";
 import { ByteSize, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
-import { compile } from "html-to-text";
 import PostalMime, { decodeWords, type Email } from "postal-mime";
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import {
@@ -68,6 +67,11 @@ import {
   listTrash,
 } from "./mail-trash.ts";
 import { mailPreview } from "./mail-preview.ts";
+import {
+  readableMessage,
+  readMailMime,
+  readRawMailPreview,
+} from "./mail-content.ts";
 import { jsonError, privateHeaders } from "./api-response.ts";
 import { AppAuth, ownerId, type authHttp } from "./auth.ts";
 import {
@@ -88,7 +92,6 @@ import {
   attachmentResponse,
   describeAttachments,
   mailMimeOptions as mimeOptions,
-  receivedMessageLimit,
 } from "./mail-attachments.ts";
 import { mailHtmlPreview, type MailImageOptions } from "./mail-html-preview.ts";
 import { prepareMailBody } from "./mail-authoring.ts";
@@ -168,42 +171,13 @@ const isMailMessageId = Schema.is(MailMessageId);
 const headerLimit = 64 * 1024;
 const textLimit = 256 * 1024;
 const htmlLimit = 1024 * 1024;
-const bodyPreviewReadLimit = 128 * 1024;
-const htmlToText = compile({
-  wordwrap: false,
-  limits: { maxDepth: 48 },
-  selectors: [
-    { selector: ".gmail_quote", format: "blockquote" },
-    { selector: ".yahoo_quoted", format: "blockquote" },
-    { selector: "img", format: "skip" },
-    { selector: "a", options: { hideLinkHrefIfSameAsText: true } },
-    { selector: "script", format: "skip" },
-    { selector: "style", format: "skip" },
-    { selector: "svg", format: "skip" },
-  ],
-});
-
-const readableMessage = (email: Email) => {
-  const html = email.text?.trim() ? "" : (email.html ?? "");
-  return {
-    html,
-    text: html ? htmlToText(html.slice(0, htmlLimit)) : (email.text ?? ""),
-  };
-};
 
 const readBodyPreview = async (env: InboxEnv, id: string) => {
   if (isSentMessageId(id)) {
     const entry = await readSent(env.SENT_MESSAGES, id);
     return entry ? mailPreview(entry) : undefined;
   }
-  // The body usually precedes attachments. A ranged read bounds list work.
-  const object = await env.INBOX_MESSAGES.get(id, {
-    range: { offset: 0, length: bodyPreviewReadLimit },
-  });
-  if (!object) return;
-  const bytes = await object.arrayBuffer();
-  const email = await PostalMime.parse(bytes, mimeOptions).catch(() => null);
-  return email ? mailPreview(email) : "";
+  return readRawMailPreview(env.INBOX_MESSAGES, id);
 };
 
 const withBodyPreviews = async <
@@ -515,15 +489,11 @@ const readMessage = async (
       preview,
     };
   };
-  if (object.size > receivedMessageLimit) {
-    await object.body.cancel();
-    return fallback("tooLarge");
-  }
-
-  const bytes = await object.arrayBuffer();
+  const mime = await readMailMime(object);
+  if (mime.status !== "complete") return fallback(mime.status);
   try {
-    const email = await PostalMime.parse(bytes, mimeOptions);
-    const { text } = readableMessage(email);
+    const { email } = mime;
+    const { text } = readableMessage(email, htmlLimit);
     const html = email.html ?? "";
     const from = email.from?.address;
     const attachments = describeAttachments(email.attachments);

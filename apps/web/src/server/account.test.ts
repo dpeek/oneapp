@@ -70,6 +70,7 @@ import {
   inboxUnreadPath,
   inboxVersionPath,
   mailMessageApi,
+  mailMessageLink,
   noiseApiPath,
   noiseSendersApiPath,
   replyCompletionHeader,
@@ -83,6 +84,7 @@ import {
 } from "../inbox-contract.ts";
 import {
   codexClientId,
+  mailReadScope,
   McpGrantList,
   mcpGrantsPath,
   tasksReadScope,
@@ -126,6 +128,7 @@ import { deviceLifetimeMillis, randomSecret } from "./bitwarden/tokens.ts";
 import { digest } from "./digest.ts";
 import { ensureOwner } from "./provision-owner.ts";
 import { mcpOAuth } from "./mcp-oauth.ts";
+import { mailPeople } from "./mail-people.ts";
 import worker from "./worker.ts";
 import { collectMailTrash, mailRetentionMs } from "./mail-trash.ts";
 import { collectDeletedContacts } from "./people.ts";
@@ -3030,6 +3033,32 @@ it("lets a dedicated runner claim opted-in tasks and report only the latest run 
   };
   const runner = await issue(taskRunnerScopes);
   const links = await issue(cliLinkScopes);
+  const runnerTools = await mcpRequest(
+    request,
+    taskRunnerMcpPath,
+    runner.secret,
+    "tools/list",
+  );
+  expect(runnerTools.result?.tools?.map(({ name }) => name)).not.toContain(
+    "search_mail",
+  );
+  expect(
+    (
+      await mcpRequest(
+        request,
+        taskRunnerMcpPath,
+        runner.secret,
+        "tools/call",
+        {
+          name: "get_mail_message",
+          arguments: {
+            messageId: "0-8199999999990-00000000-0000-4000-8000-000000000000",
+          },
+        },
+      )
+    ).error,
+  ).toBeDefined();
+  expect((await request("/mcp", { headers: runner.headers })).status).toBe(401);
   expect(
     (await request(taskRunnerMcpPath, { headers: { cookie } })).status,
   ).toBe(401);
@@ -3404,7 +3433,7 @@ const setupMcp = async (
   sqlite: Database,
   bindings?: Parameters<typeof setup>[1],
 ) => {
-  const { call, request, signIn, cookies } = await setup(sqlite, bindings);
+  const { call, request, signIn, cookies, db } = await setup(sqlite, bindings);
   const session = cookies(await signIn(password));
   const origin = "https://oneapp.example";
   const resource = `${origin}/mcp`;
@@ -3495,6 +3524,7 @@ const setupMcp = async (
   return {
     call,
     request,
+    db,
     session,
     origin,
     resource,
@@ -3516,13 +3546,14 @@ it("issues MCP link scopes and exposes only the tools a grant authorises", async
   expect(challenge.headers.get("www-authenticate")).toContain(
     `scope="${defaultMcpScopes.join(" ")}"`,
   );
-  const metadata = await request(
+  for (const path of [
     "/.well-known/oauth-protected-resource/mcp",
-    {},
-  );
-  expect(await metadata.json()).toMatchObject({
-    scopes_supported: defaultMcpScopes,
-  });
+    mcpOAuth.paths.metadata,
+  ]) {
+    expect(await (await request(path, {})).json()).toMatchObject({
+      scopes_supported: [...defaultMcpScopes, mailReadScope],
+    });
+  }
 
   const connectedAfter = Date.now();
   const full = await connect([linksReadScope, linksWriteScope]);
@@ -3535,6 +3566,7 @@ it("issues MCP link scopes and exposes only the tools a grant authorises", async
     "save_link",
   ]);
   expect(await names(read)).toEqual(["list_links"]);
+  expect((await useTool(read, "search_mail")).error).toBeDefined();
   expect(await names(write)).toEqual(["delete_link", "save_link"]);
 
   const url = "https://example.com/";
@@ -3585,6 +3617,269 @@ it("issues MCP link scopes and exposes only the tools a grant authorises", async
   });
   expect(await refresh.json()).toMatchObject({ error: "invalid_grant" });
   expect(await listGrants()).toHaveLength(2);
+});
+
+it("finds older archived replies and cites scoped mail in a task without marking it read", async () => {
+  using sqlite = new Database(":memory:");
+  const key = (suffix: number) =>
+    `0-8199999999990-00000000-0000-4000-8000-${String(suffix).padStart(12, "0")}`;
+  const original = `${key(1)}.eml`;
+  const reply = key(2);
+  const closeout = `${key(3)}.eml`;
+  const other = key(4);
+  const trashed = key(5);
+  const foreign = key(6);
+  const raw = [
+    "From: lead@example.net",
+    "To: owner@example.net",
+    "Content-Type: text/html; charset=utf-8",
+    "",
+    `<img src="https://example.net/pixel"><p>${"x".repeat(40_000)}</p>`,
+  ].join("\r\n");
+  const sent = {
+    id: reply,
+    from: "owner@example.net",
+    to: "lead@example.net",
+    cc: "Unlisted <unlisted@example.net>",
+    text: "I approved the revised pricing.",
+    subject: "Re: Harbour pricing approval",
+    sentAt: Date.UTC(2021, 5, 2),
+    attachments: [
+      { filename: "note.txt", type: "text/plain", content: "bm90ZQ==" },
+    ],
+    providerMessageId: "fixture",
+  };
+  const getInbox = vi.fn(async (id: string) =>
+    id === original
+      ? {
+          size: raw.length,
+          arrayBuffer: async () => new TextEncoder().encode(raw).buffer,
+        }
+      : null,
+  );
+  const getSent = vi.fn(async (id: string) =>
+    id === reply ? { size: 300, json: async () => sent } : null,
+  );
+  const { call, connect, names, useTool, db, origin, session, listGrants } =
+    await setupMcp(sqlite, {
+      INBOX_MESSAGES: {
+        get: getInbox,
+      } as unknown as WorkerEnv["INBOX_MESSAGES"],
+      SENT_MESSAGES: {
+        head: async (id: string) => (id === reply ? { size: 300 } : null),
+        get: getSent,
+      } as unknown as WorkerEnv["SENT_MESSAGES"],
+    });
+  const threadMessageIds = ["<harbour@example.net>"];
+  const from = "lead@example.net";
+  const to = "owner@example.net";
+  await indexMail(db, {
+    id: original,
+    folder: "inbox",
+    from,
+    to,
+    subject: "Harbour proposal",
+    timestamp: Date.UTC(2021, 5, 1),
+    messageIds: threadMessageIds,
+    initialArchived: true,
+    unread: true,
+  });
+  await indexMail(db, {
+    id: reply,
+    folder: "sent",
+    from: sent.from,
+    to: sent.to,
+    subject: sent.subject,
+    timestamp: sent.sentAt,
+    messageIds: threadMessageIds,
+    people: mailPeople(
+      (name) => (name === "cc" ? sent.cc : undefined),
+      sent.from,
+      sent.to,
+    ),
+  });
+  await indexMail(db, {
+    id: closeout,
+    folder: "inbox",
+    from,
+    to,
+    subject: "Harbour closeout",
+    timestamp: sent.sentAt,
+    messageIds: threadMessageIds,
+    initialArchived: true,
+  });
+  for (const id of [other, trashed])
+    await indexMail(db, {
+      id,
+      folder: "sent",
+      from,
+      to,
+      subject: "Harbour pricing appendix",
+      timestamp: sent.sentAt,
+      messageIds: id === trashed ? threadMessageIds : [],
+    });
+  sqlite.run("UPDATE mail_index_messages SET deleted = 1 WHERE id = ?", [
+    trashed,
+  ]);
+  sqlite.exec(`
+    INSERT INTO accounts (id, active, security_revision) VALUES ('other-owner', 1, '1');
+    INSERT INTO mailboxes (id, owner_account_id, name) VALUES ('foreign', 'other-owner', 'Foreign');
+    INSERT INTO mail_index_messages (mailbox_id, id, thread_id, folder, sender, recipient, subject, timestamp)
+      VALUES ('foreign', '${foreign}', '${foreign}', 'sent', 'outsider@example.net', 'owner@example.net', 'Harbour pricing', ${sent.sentAt});
+  `);
+
+  const defaults = (await connect()).access_token;
+  expect(await names(defaults)).not.toContain("search_mail");
+  const token = (await connect([mailReadScope, tasksWriteScope])).access_token;
+  expect(await names(token)).toEqual([
+    "create_tag",
+    "create_task",
+    "delete_task",
+    "get_mail_message",
+    "get_mail_thread",
+    "search_mail",
+    "update_task",
+  ]);
+  expect(await listGrants()).toHaveLength(2);
+  const tool = async (name: string, args: object) => {
+    const { result, error } = await useTool(token, name, args);
+    expect(error).toBeUndefined();
+    expect(result?.isError, JSON.stringify(result?.content)).toBeFalsy();
+    return result?.structuredContent;
+  };
+  const search = (args: object) =>
+    tool("search_mail", args) as Promise<{
+      conversations: { matchingMessageId: string }[];
+      nextCursor: string | null;
+      indexCoverage: string;
+    }>;
+  const thread = (args: object) =>
+    tool("get_mail_thread", { messageId: reply, ...args }) as Promise<{
+      messages: { id: string }[];
+      nextCursor: string | null;
+    }>;
+  const filters = {
+    subject: "pricing HARBOUR",
+    onOrAfter: "2021-06-02",
+    onOrBefore: "2021-06-02",
+    limit: 1,
+  };
+  const page = await search(filters);
+  expect(page).toMatchObject({
+    conversations: [{ matchingMessageId: other, messageCount: 1 }],
+    nextCursor: expect.any(String),
+    indexCoverage: "incomplete",
+  });
+  expect(await search({ ...filters, cursor: page.nextCursor })).toMatchObject({
+    conversations: [
+      {
+        matchingMessageId: reply,
+        messageCount: 3,
+        archived: true,
+        unreadCount: 1,
+      },
+    ],
+    nextCursor: null,
+  });
+  const byParticipant = { participantEmail: "Unlisted@Example.NET" };
+  for (const view of ["all", "archive", "sent"])
+    expect(
+      (await search({ ...byParticipant, view, status: "unread" }))
+        .conversations,
+    ).toMatchObject([
+      {
+        matchingMessageId: reply,
+        subject: sent.subject,
+        participants: expect.arrayContaining([
+          { address: "unlisted@example.net", name: "Unlisted" },
+        ]),
+      },
+    ]);
+  expect(
+    (await search({ ...byParticipant, view: "inbox" })).conversations,
+  ).toEqual([]);
+  expect(
+    (await search({ ...byParticipant, status: "read" })).conversations,
+  ).toEqual([]);
+  expect(
+    (await search({ participantEmail: "listed@example.net" })).conversations,
+  ).toEqual([]);
+  expect(
+    (await search({ participantEmail: to, status: "read" })).conversations,
+  ).toMatchObject([{ matchingMessageId: other }]);
+  expect(
+    (await search({ onOrBefore: "2021-06-01" })).conversations,
+  ).toMatchObject([{ matchingMessageId: original }]);
+  expect(getInbox).not.toHaveBeenCalled();
+  expect(getSent).not.toHaveBeenCalled();
+  sqlite.exec(`
+    INSERT INTO mail_index_scans (mailbox_id, folder, scanned_at, ready)
+    VALUES ('personal', 'inbox:list-mail', 1, 1), ('personal', 'sent:people', 1, 1);
+  `);
+  expect((await search({})).indexCoverage).toBe("complete");
+
+  const first = await thread({ limit: 1 });
+  expect(first).toMatchObject({
+    messages: [{ id: original, folder: "inbox", unread: true }],
+    nextCursor: expect.any(String),
+  });
+  expect(await thread({ cursor: first.nextCursor })).toMatchObject({
+    messages: [
+      { id: reply, folder: "sent", preview: sent.text },
+      { id: closeout, folder: "inbox", preview: "" },
+    ],
+    nextCursor: null,
+  });
+  const message = await tool("get_mail_message", { messageId: reply });
+  const url = origin + mailMessageLink(reply);
+  expect(message).toMatchObject({
+    message: {
+      id: reply,
+      text: sent.text,
+      textStatus: "complete",
+      url,
+      attachments: [{ name: "note.txt", mediaType: "text/plain", size: 4 }],
+    },
+  });
+  expect(JSON.stringify(message)).not.toContain("bm90ZQ==");
+  expect(await tool("get_mail_message", { messageId: original })).toMatchObject(
+    {
+      message: {
+        unread: true,
+        text: "x".repeat(32 * 1024),
+        textStatus: "truncated",
+      },
+    },
+  );
+  expect(await tool("get_mail_message", { messageId: closeout })).toMatchObject(
+    {
+      message: { text: "", textStatus: "unavailable" },
+    },
+  );
+  expect(
+    sqlite
+      .query("SELECT unread FROM mail_index_messages WHERE id = ?")
+      .get(original),
+  ).toEqual({ unread: 1 });
+  getSent.mockClear();
+  for (const messageId of [trashed, foreign])
+    for (const name of ["get_mail_thread", "get_mail_message"])
+      expect((await useTool(token, name, { messageId })).result).toMatchObject({
+        isError: true,
+        content: [{ type: "text", text: "Mail message not found." }],
+      });
+  expect(getSent).not.toHaveBeenCalled();
+  const description = `[Pricing approval email](${url})`;
+  const task = (await tool("create_task", {
+    title: "Follow up on pricing",
+    description,
+  })) as { id: string };
+  const index = Schema.decodeUnknownSync(TaskIndex)(
+    await (await call(tasksApi, undefined, session)).json(),
+  );
+  expect(index.tasks.find(({ id }) => id === task.id)).toMatchObject({
+    description,
+  });
 });
 
 it("uses scoped MCP tools to read and edit the same tasks and tags as the web app", async () => {

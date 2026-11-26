@@ -434,6 +434,12 @@
   color: var(--muted);
 }
 
+.task-mail-sources {
+  margin: 0;
+  padding-inline-start: 1.25rem;
+  overflow-wrap: anywhere;
+}
+
 .task-title-error {
   margin: 0.25rem 0 0;
   color: var(--alert-error);

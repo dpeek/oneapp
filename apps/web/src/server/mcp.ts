@@ -1,4 +1,3 @@
-import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { appName } from "@orumai/core";
 import { taskRunnerMcpPath, taskRunnerScope } from "@orumai/core/cli-auth";
@@ -6,6 +5,7 @@ import { Link, LinkId, LinkList, SaveLink } from "@orumai/core/links";
 import { Context, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { SqlClient } from "effect/sql";
+import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import type { WorkspaceActor } from "../tasks-contract.ts";
 import type { NotifyItemChange } from "../workspace-change-contract.ts";
 import { jsonError, privateHeaders } from "./api-response.ts";
@@ -15,13 +15,16 @@ import {
   requireCliScope,
 } from "./cli-tokens.ts";
 import { deleteSavedLink, insertSavedLink, listSavedLinks } from "./links.ts";
+import { defaultMailboxId, requireMailbox, scopeMailStore } from "./mailbox.ts";
+import { registerMailTools } from "./mcp-mail.ts";
 import {
+  defaultMcpScopes,
   type McpScope,
   ReadLinks,
+  ReadMail,
   ReadTasks,
   WriteLinks,
   WriteTasks,
-  mcpScopes,
   mcpOAuth,
 } from "./mcp-oauth.ts";
 import { registerTaskRunnerTools, registerTaskTools } from "./mcp-tasks.ts";
@@ -36,15 +39,18 @@ const SavedLink = Schema.Struct({ link: Link });
 const DeleteLinkInput = Schema.Struct({ id: LinkId });
 const DeletedLink = Schema.Struct({ id: LinkId });
 
+type McpEnv = Pick<
+  WorkerEnv,
+  "APP_ORIGIN" | "DB" | "FILE_UPLOADS" | "INBOX_MESSAGES" | "SENT_MESSAGES"
+>;
 const createServer = (
-  origin: string,
+  env: McpEnv,
   actor: WorkspaceActor,
-  db: D1Database,
-  bucket: R2Bucket,
   sql: SqlClient.SqlClient,
   scopes: readonly McpScope[],
   notifyItemChange: NotifyItemChange,
 ) => {
+  const { APP_ORIGIN: origin, DB: db, FILE_UPLOADS: bucket } = env;
   const ownerId = actor.accountId;
   const run = Effect.runPromiseWith(Context.make(SqlClient.SqlClient, sql));
   const server = new McpServer({ name: appName, version: "1.0.0" });
@@ -136,6 +142,19 @@ const createServer = (
     scopes,
     notifyItemChange,
   );
+  if (actor.kind === "owner" && scopes.includes(ReadMail)) {
+    registerMailTools(server, origin, async () => {
+      const { id } = await requireMailbox(db, defaultMailboxId, ownerId);
+      return scopeMailStore(
+        {
+          DB: db,
+          INBOX_MESSAGES: env.INBOX_MESSAGES,
+          SENT_MESSAGES: env.SENT_MESSAGES,
+        },
+        id,
+      );
+    });
+  }
   if (actor.kind === "oru")
     registerTaskRunnerTools(server, actor, db, notifyItemChange);
   return server;
@@ -148,18 +167,16 @@ const advertiseScopes = HttpRouter.middleware((effect) =>
       ? HttpServerResponse.setHeader(
           response,
           "www-authenticate",
-          challenge.replace('scope=""', `scope="${mcpScopes.join(" ")}"`),
+          challenge.replace(
+            'scope=""',
+            `scope="${defaultMcpScopes.join(" ")}"`,
+          ),
         )
       : response;
   }),
 );
 
-export const mcpRoutes = (
-  origin: string,
-  db: D1Database,
-  bucket: R2Bucket,
-  notifyItemChange: NotifyItemChange,
-) => {
+export const mcpRoutes = (env: McpEnv, notifyItemChange: NotifyItemChange) => {
   const handle = <E, R>(
     authorize: Effect.Effect<
       { subjectId: string; scopes: readonly McpScope[] } | undefined,
@@ -172,7 +189,7 @@ export const mcpRoutes = (
       const request = yield* HttpServerRequest.HttpServerRequest;
       if (
         request.headers.origin !== undefined &&
-        request.headers.origin !== origin
+        request.headers.origin !== env.APP_ORIGIN
       )
         return yield* jsonError(403, "Origin is not allowed");
 
@@ -187,10 +204,8 @@ export const mcpRoutes = (
       const handler = createMcpHandler(
         () =>
           createServer(
-            origin,
+            env,
             { accountId: access.subjectId, kind },
-            db,
-            bucket,
             sql,
             access.scopes,
             notifyItemChange,

@@ -223,6 +223,8 @@ const isInboxId = Schema.is(InboxMessageId);
 const isMailId = Schema.is(MailMessageId);
 const pageSize = 20;
 const scanSize = 12;
+const inboxIndexScan = "inbox:list-mail";
+const sentIndexScan = "sent:people";
 
 export const inboxUnread = async (db: MailDatabase) => {
   const row = await db
@@ -345,6 +347,148 @@ const withPeople = <
         ? decoded.value
         : mailPeople(() => undefined, message.from, message.to),
   };
+};
+
+type MailCursor = NonNullable<ReturnType<typeof conversationCursor>>;
+type MailSearch = {
+  view: Exclude<MailboxView, "trash">;
+  status: MailFilters["status"];
+  subjectWords: string[];
+  participantEmail: string | null;
+  fromInclusive: number | null;
+  toExclusive: number | null;
+  cursor: MailCursor;
+  limit: number;
+};
+
+const indexedMessageFields = `m.id, m.folder, m.subject, m.timestamp,
+  m.sender AS "from", m.recipient AS "to", m.people, m.unread`;
+const presentMessage = <Message extends IndexedThreadMember>({
+  unread,
+  ...message
+}: Message) => ({ ...withPeople(message), unread: unread === 1 });
+
+export const mailIndexCoverage = async (db: MailDatabase) => {
+  const row = await db
+    .prepare(
+      `SELECT count(*) AS ready FROM mail_index_scans
+       WHERE mailbox_id = ${mailboxSql(db)} AND folder IN (?, ?) AND ready = 1`,
+    )
+    .bind(inboxIndexScan, sentIndexScan)
+    .first<{ ready: number }>();
+  return row?.ready === 2 ? "complete" : "incomplete";
+};
+
+export const searchIndexedMail = async (
+  db: MailDatabase,
+  query: MailSearch,
+) => {
+  const inThread = (alias: string) =>
+    `${alias}.mailbox_id = m.mailbox_id AND ${alias}.thread_id = m.thread_id AND ${alias}.deleted = 0`;
+  const matches = (alias: "m" | "newer") => `
+    (?3 IS NULL OR ${alias}.timestamp >= ?3)
+    AND (?4 IS NULL OR ${alias}.timestamp < ?4)
+    AND NOT EXISTS (
+      SELECT 1 FROM json_each(?1) word WHERE instr(lower(${alias}.subject), lower(word.value)) = 0
+    )
+    AND (?2 IS NULL OR lower(trim(${alias}.envelope_recipient)) = ?2 OR EXISTS (
+      SELECT 1 FROM json_each(${alias}.people, '$.members') person
+      WHERE lower(trim(json_extract(person.value, '$.address'))) = ?2
+    ) OR (${alias}.people IS NULL AND
+      (lower(trim(${alias}.sender)) = ?2 OR lower(trim(${alias}.recipient)) = ?2)
+    ))
+  `;
+  const unreadMembers = `FROM mail_index_messages member
+    WHERE ${inThread("member")} AND member.folder = 'inbox' AND member.unread = 1`;
+  const incomingPriority = `coalesce((${senderPriority("incoming")}),
+    CASE WHEN incoming.list_mail = 1 THEN 'noise' ELSE 'signal' END)`;
+  const viewFilters = {
+    all: "",
+    sent: `AND EXISTS (SELECT 1 FROM mail_index_messages member
+      WHERE ${inThread("member")} AND member.folder = 'sent')`,
+    archive: "AND incoming.archived = 1",
+    inbox: `AND incoming.archived = 0 AND ${incomingPriority} = 'signal'`,
+    noise: `AND incoming.archived = 0 AND ${incomingPriority} = 'noise'`,
+  };
+  const { results } = await db
+    .prepare(
+      `
+      SELECT ${indexedMessageFields}, coalesce(incoming.archived, 0) AS archived,
+        (SELECT count(*) ${unreadMembers}) AS unreadCount,
+        (SELECT count(*) FROM mail_index_messages member WHERE ${inThread("member")}) AS messageCount,
+        (SELECT member.timestamp FROM mail_index_messages member WHERE ${inThread("member")}
+          ORDER BY member.timestamp DESC, member.id DESC LIMIT 1) AS lastMessageAt
+      FROM mail_index_messages m
+      LEFT JOIN mail_index_messages incoming ON incoming.mailbox_id = m.mailbox_id AND incoming.id = (
+        SELECT member.id FROM mail_index_messages member
+        WHERE ${inThread("member")} AND member.folder = 'inbox'
+        ORDER BY member.timestamp DESC, member.id DESC LIMIT 1
+      )
+      WHERE m.mailbox_id = ${mailboxSql(db)} AND m.deleted = 0
+        AND (?5 IS NULL OR (m.timestamp, m.id) < (?5, ?6))
+        AND ${matches("m")}
+        AND NOT EXISTS (
+          SELECT 1 FROM mail_index_messages newer
+          WHERE ${inThread("newer")} AND (newer.timestamp, newer.id) > (m.timestamp, m.id)
+            AND ${matches("newer")}
+        )
+        ${viewFilters[query.view]}
+        ${query.status === "all" ? "" : `AND ${query.status === "read" ? "NOT " : ""}EXISTS (SELECT 1 ${unreadMembers})`}
+      ORDER BY m.timestamp DESC, m.id DESC LIMIT ?7
+    `,
+    )
+    .bind(
+      JSON.stringify(query.subjectWords),
+      query.participantEmail,
+      query.fromInclusive,
+      query.toExclusive,
+      query.cursor.timestamp,
+      query.cursor.id,
+      query.limit,
+    )
+    .all<
+      IndexedThreadMember & {
+        archived: number;
+        unreadCount: number;
+        messageCount: number;
+        lastMessageAt: number;
+      }
+    >();
+  return results.map(presentMessage);
+};
+
+export const readIndexedMailMessage = async (db: MailDatabase, id: string) => {
+  const row = await db
+    .prepare(
+      `SELECT ${indexedMessageFields} FROM mail_index_messages m
+       WHERE m.mailbox_id = ${mailboxSql(db)} AND m.id = ? AND m.deleted = 0`,
+    )
+    .bind(id)
+    .first<IndexedThreadMember>();
+  return row && presentMessage(row);
+};
+
+export const readIndexedThreadPage = async (
+  db: MailDatabase,
+  id: string,
+  cursor: MailCursor,
+  limit: number,
+) => {
+  const { results } = await db
+    .prepare(
+      `SELECT ${indexedMessageFields}, m.body_preview AS bodyPreview
+       FROM mail_index_messages m
+       WHERE m.mailbox_id = ${mailboxSql(db)} AND m.deleted = 0
+         AND m.thread_id = (
+           SELECT thread_id FROM mail_index_messages
+           WHERE mailbox_id = ${mailboxSql(db)} AND id = ?1 AND deleted = 0
+         )
+         AND (?2 IS NULL OR (m.timestamp, m.id) > (?2, ?3))
+       ORDER BY m.timestamp, m.id LIMIT ?4`,
+    )
+    .bind(id, cursor.timestamp, cursor.id, limit)
+    .all<IndexedThreadMember & { bodyPreview: string | null }>();
+  return results.map(presentMessage);
 };
 
 export const listConversations = async (
@@ -519,7 +663,7 @@ export const readThread = async (db: MailDatabase, id: string) => {
   const { results } = await db
     .prepare(
       `
-    SELECT id, folder, sender AS "from", recipient AS "to", subject, timestamp, unread, people, archived,
+    SELECT ${indexedMessageFields}, archived,
            CASE WHEN m.folder = 'inbox' THEN ${indexedSender("m")} END AS senderAddress,
            CASE WHEN m.folder = 'inbox' THEN (${senderPriority("m")}) END AS senderPriority
     FROM mail_index_messages m
@@ -530,10 +674,8 @@ export const readThread = async (db: MailDatabase, id: string) => {
     )
     .bind(localIdentity(id))
     .all<
-      Omit<ConversationMessage, "unread" | "people"> & {
-        unread: number;
+      IndexedThreadMember & {
         archived: number;
-        people: string | null;
         senderAddress: string | null;
         senderPriority: "signal" | "noise" | null;
       }
@@ -547,15 +689,11 @@ export const readThread = async (db: MailDatabase, id: string) => {
       db,
       results.map(
         ({
-          unread,
           archived: _archived,
           senderAddress: _senderAddress,
           senderPriority: _senderPriority,
           ...message
-        }) => ({
-          ...withPeople(message),
-          unread: unread === 1,
-        }),
+        }) => presentMessage(message),
       ),
     ),
   };
@@ -605,8 +743,8 @@ export const scanMail = async (
   const scanId = incomingOnly
     ? "inbox:push"
     : folder === "inbox"
-      ? "inbox:list-mail"
-      : "sent:people";
+      ? inboxIndexScan
+      : sentIndexScan;
   const state = await db
     .prepare(
       `SELECT cursor, scanned_at AS scannedAt, ready FROM mail_index_scans WHERE mailbox_id = ${mailboxSql(db)} AND folder = ?`,

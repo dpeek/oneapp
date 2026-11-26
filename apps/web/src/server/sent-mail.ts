@@ -5,7 +5,6 @@ import type {
   R2Objects,
 } from "@cloudflare/workers-types";
 import { Effect, Schedule, Schema } from "effect";
-import PostalMime from "postal-mime";
 import { convert } from "html-to-text";
 import {
   describeOutgoingAttachments,
@@ -13,6 +12,7 @@ import {
   mailMimeOptions,
   receivedMessageLimit,
 } from "./mail-attachments.ts";
+import { readMailMime } from "./mail-content.ts";
 import {
   describeRawMail,
   describeStoredRawMail,
@@ -145,7 +145,7 @@ export const listSent = async (
   };
 };
 
-const readSentRecord = async (
+export const readSentRecord = async (
   bucket: R2Bucket,
   id: string,
   stored?: R2ObjectBody,
@@ -184,7 +184,10 @@ export const readSent = async (
     const tooLarge = object.size > receivedMessageLimit;
     if (tooLarge) await object.body.cancel();
     const mail = await describeStoredRawMail(bucket, object, "sent");
-    if (!mail) return null;
+    if (!mail) {
+      if (!tooLarge) await object.body.cancel();
+      return null;
+    }
     const summary = {
       id,
       from: mail.from,
@@ -194,11 +197,10 @@ export const readSent = async (
       people: mail.people,
     };
     if (tooLarge) return { ...summary, text: "", preview: "tooLarge" };
-    const email = await PostalMime.parse(
-      await object.arrayBuffer(),
-      mailMimeOptions,
-    ).catch(() => null);
-    if (!email) return { ...summary, text: "", preview: "unreadable" };
+    const mime = await readMailMime(object);
+    if (mime.status !== "complete")
+      return { ...summary, text: "", preview: mime.status };
+    const { email } = mime;
     const limit = 128 * 1024;
     const html = email.text?.trim() ? "" : (email.html ?? "");
     const text = html ? convert(html.slice(0, limit)) : (email.text ?? "");

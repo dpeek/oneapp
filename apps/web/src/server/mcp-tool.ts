@@ -23,3 +23,14 @@ export const toolFailure = (text: string): CallToolResult => ({
   content: [{ type: "text", text }],
   isError: true,
 });
+
+export const runTool = async (
+  failure: string,
+  run: () => Promise<CallToolResult>,
+) => {
+  try {
+    return await run();
+  } catch {
+    return toolFailure(failure);
+  }
+};

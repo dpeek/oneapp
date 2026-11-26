@@ -388,6 +388,16 @@ codex mcp login orumai --scopes links:read,tasks:read
 
 `tasks:write` exposes `create_task`, `update_task`, `delete_task`, and `create_tag`. Pass the task's latest `revision` when updating or deleting it. Deletion permanently removes the task and its screenshots. Use `addTagIds` or `removeTagIds` to change its tags. Omitted update fields keep their values. A UUID `requestId` lets a client safely retry task creation.
 
+Mail requires an explicit `mail:read` grant and uses the same personal mailbox as the web app. To search Mail and create or review tasks from the same connection, request these scopes and approve the new grant in your browser. Start a new Codex session after approval.
+
+```sh
+codex mcp login orumai --scopes mail:read,tasks:read,tasks:write
+```
+
+- `search_mail` browses All Mail by default. Filter with `subject` words, an exact `participantEmail`, inclusive UTC dates in `onOrAfter` and `onOrBefore` (YYYY-MM-DD), a `view` (`all`, `inbox`, `archive`, `sent`, or `noise`), or conversation `status` (`all`, `read`, or `unread`). Each conversation is represented by its newest matching message, which may be an older reply. Search uses message metadata. An `incomplete` value in `indexCoverage` means results may omit mail still being indexed.
+- `get_mail_thread` takes a `messageId` and returns incoming and sent messages from oldest to newest. Both paged tools default to 10 results and allow up to 20. Pass `nextCursor` back as `cursor` with the same filters or message ID.
+- `get_mail_message` takes a `messageId` and returns plain text and attachment details. Check `textStatus` for `complete`, `truncated`, or `unavailable`. Mail reads preserve unread status. Add the message's `url` as a Markdown link in a task description to open that message in Orumai.
+
 Access tokens refresh automatically within the 30-day grant. Open **Settings → Clients** in the web app to revoke a grant.
 
 ### Run tagged tasks with Codex

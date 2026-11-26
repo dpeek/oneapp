@@ -2,7 +2,11 @@ import { appName } from "@orumai/core";
 import { linksReadScope, linksWriteScope } from "@orumai/core/links";
 import { OAuthServer } from "@yielded/auth";
 import { Effect, Layer } from "effect";
-import { tasksReadScope, tasksWriteScope } from "../mcp-access-contract.ts";
+import {
+  mailReadScope,
+  tasksReadScope,
+  tasksWriteScope,
+} from "../mcp-access-contract.ts";
 
 const scopeLabels = new Map<string, string>([
   [linksReadScope, "Read your saved links"],
@@ -12,6 +16,7 @@ const scopeLabels = new Map<string, string>([
     tasksWriteScope,
     "Create, edit, and delete your tasks and create reusable tags",
   ],
+  [mailReadScope, "Search and read your mail and attachment details"],
 ]);
 
 const escapeHtml = (value: string) =>

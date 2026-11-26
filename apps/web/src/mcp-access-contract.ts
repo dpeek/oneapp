@@ -6,6 +6,7 @@ export const mcpAuthorizePath = "/oauth/mcp/authorize";
 export const mcpGrantsPath = "/api/mcp-grants";
 export const tasksReadScope = "tasks:read";
 export const tasksWriteScope = "tasks:write";
+export const mailReadScope = "mail:read";
 export const codexClientId = "oneapp-codex";
 export const codexMetadataOrigin = "https://chatgpt.com";
 export const isCodexMetadataId = (id: string) =>

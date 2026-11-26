@@ -1,5 +1,10 @@
 import { expect, it } from "@effect/vitest";
-import { folderPath, mailMessagePage, mailRouteFor } from "./inbox-contract.ts";
+import {
+  folderPath,
+  mailMessageLink,
+  mailMessagePage,
+  mailRouteFor,
+} from "./inbox-contract.ts";
 
 const key = "0-8199999999990-00000000-0000-4000-8000-000000000000";
 const inboxId = `${key}.eml`;
@@ -45,6 +50,18 @@ it("distinguishes received and sent mail with matching key stems", () => {
     id: key,
   });
   expect(mailRouteFor(`/mail/sent/${inboxId}`)).toBeNull();
+});
+
+it("keeps message citations focused on the linked message in All Mail", () => {
+  for (const id of [inboxId, key]) {
+    const url = new URL(mailMessageLink(id), "https://example.net");
+    expect(url.pathname).toBe(mailMessagePage("all", id));
+    expect(mailRouteFor(url.pathname, url.hash.slice(1))).toEqual({
+      folder: "all",
+      id,
+      focusMessage: true,
+    });
+  }
 });
 
 it("validates recipient lists and attachment limits before sending", async () => {

@@ -27,6 +27,7 @@ import { Effect, Option } from "effect";
 import { Mount, Submodel } from "foldkit";
 import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html";
 import * as Attachments from "./task-attachments.ts";
+import { mailMessageLink, mailRouteFor } from "./inbox-contract.ts";
 import { tagNameKey, tagNameLimit, type Tag } from "./items-contract.ts";
 import { isTaskRunInterrupted, type TaskRun } from "./task-run-contract.ts";
 import {
@@ -830,6 +831,28 @@ const taskDocumentField = (
   );
 };
 
+const taskMailSources = (description: string, h: HtmlBuilder<Message>) => {
+  const origin = window.location.origin;
+  const sources = new Map<string, string>();
+  for (const [, label = "", href = ""] of description.matchAll(
+    /(?<![!\\])\[([^\[\]\r\n]{1,200})\]\(([^()\s]{1,512})\)/gu,
+  )) {
+    const url = URL.parse(href, origin);
+    if (url?.origin !== origin) continue;
+    const route = mailRouteFor(url.pathname, url.hash.slice(1));
+    if (route?.focusMessage && route.id && label.trim())
+      sources.set(mailMessageLink(route.id), label);
+  }
+  return sources.size
+    ? h.ul(
+        [h.Class("task-mail-sources"), h.AriaLabel("Mail sources")],
+        [...sources].map(([href, label]) =>
+          h.li([h.Key(href)], [h.a([h.Href(href)], [label])]),
+        ),
+      )
+    : h.empty;
+};
+
 const editFeedback = (model: Model, h: HtmlBuilder<Message>) =>
   Object.entries(model.edits).flatMap(([id, draft]) => {
     if (!draft.error) return [];
@@ -968,6 +991,7 @@ const taskDetail = (
                   ],
                 ),
                 taskDocumentField(model, task, "description", h),
+                taskMailSources(task.description, h),
                 Attachments.section(
                   task.id,
                   model.attachments,

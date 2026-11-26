@@ -1001,7 +1001,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     creationMenu: null,
     pendingCreateAction: null,
     taskRoute: taskRouteFor(url.pathname),
-    mailRoute: mailRouteFor(url.pathname),
+    mailRoute: mailRouteFor(url.pathname, Option.getOrUndefined(url.hash)),
     peopleRoute: contactsRouteFor(url.pathname),
     signInNotice: null,
     links: Links.initial,
@@ -1037,6 +1037,13 @@ const update = (
     RequestedUrl: ({ request }) => {
       const settingsSection =
         request._tag === "Internal" ? settingsSectionFor(request.url) : null;
+      const mailRoute =
+        request._tag === "Internal"
+          ? mailRouteFor(
+              request.url.pathname,
+              Option.getOrUndefined(request.url.hash),
+            )
+          : null;
       if (
         request._tag === "Internal" &&
         !isApproval(model) &&
@@ -1046,7 +1053,7 @@ const update = (
           calendarRouteFor(request.url.pathname) ||
           taskRouteFor(request.url.pathname) ||
           fileRouteFor(request.url.pathname) ||
-          mailRouteFor(request.url.pathname) ||
+          mailRoute ||
           contactsRouteFor(request.url.pathname))
       ) {
         const from = Update.combine(model, [
@@ -1055,6 +1062,8 @@ const update = (
         ]);
         if (
           request.url.pathname === window.location.pathname &&
+          (!mailRoute ||
+            mailRoute.focusMessage === model.mailRoute?.focusMessage) &&
           (!settingsSection || settingsSection === model.settingsSection)
         )
           return from;
@@ -1073,7 +1082,10 @@ const update = (
     ChangedUrl: ({ url }) => {
       const page = pageFor(url);
       const settingsSection = settingsSectionFor(url);
-      const mailRoute = mailRouteFor(url.pathname);
+      const mailRoute = mailRouteFor(
+        url.pathname,
+        Option.getOrUndefined(url.hash),
+      );
       const calendarRoute = calendarRouteFor(url.pathname);
       const taskRoute = taskRouteFor(url.pathname);
       const fileRoute = fileRouteFor(url.pathname);
@@ -1086,6 +1098,7 @@ const update = (
         fileRoute?.id === model.fileRoute?.id &&
         mailRoute?.folder === model.mailRoute?.folder &&
         mailRoute?.id === model.mailRoute?.id &&
+        mailRoute?.focusMessage === model.mailRoute?.focusMessage &&
         peopleRoute?.id === model.peopleRoute?.id &&
         peopleRoute?.section === model.peopleRoute?.section;
       const result = sameRoute

@@ -49,8 +49,14 @@ export const TaskRunClaim = Schema.Struct({
 });
 export const TaskRunUpdate = Schema.Union([
   Schema.Struct({ phase: Schema.Literal("implementation") }),
-  Schema.Struct({ phase: Schema.Literal("checks"), summary: TaskRunSummary }),
-  Schema.Struct({ phase: Schema.Literal("deployment") }),
+  Schema.Struct({
+    phase: Schema.Literal("checks"),
+    summary: Schema.optionalKey(TaskRunSummary),
+  }),
+  Schema.Struct({
+    phase: Schema.Literal("deployment"),
+    summary: Schema.optionalKey(TaskRunSummary),
+  }),
   Schema.Struct({
     phase: Schema.Literal("heartbeat"),
     activePhase: Schema.Literals(activePhases),

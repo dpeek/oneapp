@@ -3158,6 +3158,23 @@ it("lets a dedicated runner claim opted-in tasks and report only the latest run 
     });
 
     expect(
+      await queue.report(task.id, runId, { phase: "implementation" }),
+    ).toBe("updated");
+    expect(
+      await queue.report(task.id, runId, {
+        phase: "heartbeat",
+        activePhase: "checks",
+      }),
+    ).toBe("stale");
+    expect(await queue.get(task.id)).toMatchObject({
+      status: "in-progress",
+      revision,
+      latestRun: { id: runId, phase: "implementation" },
+    });
+    expect(await queue.report(task.id, runId, { phase: "checks" })).toBe(
+      "updated",
+    );
+    expect(
       await queue.report(task.id, runId, {
         phase: "finished",
         outcome: "checks-failed",
@@ -3202,15 +3219,18 @@ it("lets a dedicated runner claim opted-in tasks and report only the latest run 
     expect(
       await queue.report(task.id, retry, { phase: "implementation" }),
     ).toBe("updated");
+    expect(await queue.report(task.id, retry, { phase: "checks" })).toBe(
+      "updated",
+    );
+    expect(
+      await queue.report(task.id, retry, { phase: "implementation" }),
+    ).toBe("updated");
     expect(
       await queue.report(task.id, retry, {
-        phase: "checks",
+        phase: "deployment",
         summary: "Fixed and verified.",
       }),
     ).toBe("updated");
-    expect(await queue.report(task.id, retry, { phase: "deployment" })).toBe(
-      "updated",
-    );
     expect(
       await queue.report(task.id, runId, {
         phase: "finished",

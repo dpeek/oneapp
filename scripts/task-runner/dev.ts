@@ -1,54 +1,12 @@
 import { open } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout } from "node:timers/promises";
+import { stopProcessGroup } from "./processes.ts";
 
 type DevSession = {
   readonly url: string;
   readonly credentials: string;
 };
-
-async function stopDev(child: ReturnType<typeof Bun.spawn>) {
-  if (process.platform === "win32") {
-    if (child.exitCode !== null || child.signalCode !== null) return;
-    const stop = Bun.spawn(
-      ["taskkill", "/PID", String(child.pid), "/T", "/F"],
-      {
-        stdout: "ignore",
-        stderr: "inherit",
-        signal: AbortSignal.timeout(10_000),
-      },
-    );
-    if (
-      (await stop.exited) !== 0 &&
-      child.exitCode === null &&
-      child.signalCode === null
-    )
-      throw new Error(
-        `Could not stop the dev server process tree (${child.pid}).`,
-      );
-    await child.exited;
-    return;
-  }
-
-  const signalGroup = (signal: NodeJS.Signals | 0) => {
-    try {
-      process.kill(-child.pid, signal);
-      return true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
-      throw error;
-    }
-  };
-  // The launcher can exit a little before its Worker and Vite children.
-  for (const signal of ["SIGINT", "SIGTERM", "SIGKILL"] as const) {
-    if (!signalGroup(signal)) return;
-    for (let attempt = 0; attempt < 20; attempt++) {
-      if (!signalGroup(0)) return;
-      await setTimeout(150);
-    }
-  }
-  throw new Error(`Dev server process group ${child.pid} did not exit.`);
-}
 
 export async function withDevServer<T>(
   options: {
@@ -129,6 +87,6 @@ export async function withDevServer<T>(
     signal.throwIfAborted();
     throw new Error(`Dev server failed to start. Check ${logPath}.`);
   } finally {
-    if (child) await stopDev(child);
+    if (child) await stopProcessGroup(child);
   }
 }

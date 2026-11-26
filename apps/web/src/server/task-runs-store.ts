@@ -86,9 +86,9 @@ export const claimTaskRun = async (
 };
 
 const previousPhase = {
-  implementation: "setup",
-  checks: "implementation",
-  deployment: "checks",
+  implementation: ["setup", "checks"],
+  checks: ["implementation", null],
+  deployment: ["implementation", "checks"],
 } as const;
 const outcomePhase = {
   "setup-failed": "setup",
@@ -113,8 +113,10 @@ export const updateTaskRun = async (
   if (update.phase !== "finished") {
     const phase =
       update.phase === "heartbeat" ? update.activePhase : update.phase;
-    const from =
-      update.phase === "heartbeat" ? phase : previousPhase[update.phase];
+    const [from, alsoFrom] =
+      update.phase === "heartbeat"
+        ? [phase, null]
+        : previousPhase[update.phase];
     const deployment =
       update.phase === "heartbeat" && phase === "deployment" ? update : null;
     const [updated] = await db.batch([
@@ -124,7 +126,7 @@ export const updateTaskRun = async (
            expires_at = MAX(expires_at, ?6),
            summary = COALESCE(?7, summary), deployment_url = COALESCE(?8, deployment_url),
            reason = COALESCE(?9, reason)
-         WHERE ${match} AND phase IN (?10, ?4)`,
+         WHERE ${match} AND phase IN (?4, ?10, ?11)`,
         )
         .bind(
           account,
@@ -133,10 +135,13 @@ export const updateTaskRun = async (
           phase,
           now,
           now + taskRunLeaseMs,
-          update.phase === "checks" ? update.summary : null,
+          update.phase === "checks" || update.phase === "deployment"
+            ? (update.summary ?? null)
+            : null,
           deployment?.deploymentUrl ?? null,
           deployment?.reason ?? null,
           from,
+          alsoFrom,
         ),
       incrementTaskVersion(db, "changes() = 1").bind(account),
     ]);

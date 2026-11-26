@@ -10,7 +10,10 @@ import {
 import { basename, join } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { ItemId } from "../../apps/web/src/items-contract.ts";
-import type { TaskRunUpdate } from "../../apps/web/src/task-run-contract.ts";
+import {
+  TaskRunSummary,
+  type TaskRunUpdate,
+} from "../../apps/web/src/task-run-contract.ts";
 import { recordRunEvent } from "./events.ts";
 import { GitSha, type ProductionDeployment } from "./github.ts";
 
@@ -22,10 +25,16 @@ const Deployment = Schema.Struct({
   origin: Schema.String,
   repository: Schema.String,
   createdAt: Schema.Int,
+  activate: Schema.optionalKey(Schema.Literal(true)),
+  summary: Schema.optionalKey(TaskRunSummary),
 });
 type Deployment = typeof Deployment.Type;
 const deploymentTimeout = 30 * 60_000;
 const pollInterval = 10_000;
+const pushesInFlight = new Set<string>();
+
+const deploymentFile = (directory: string, run: string) =>
+  join(directory, "deployments", `${basename(run)}.json`);
 
 export async function savePendingDeployment(
   directory: string,
@@ -34,7 +43,7 @@ export async function savePendingDeployment(
 ) {
   const pending = join(directory, "deployments");
   await mkdir(pending, { recursive: true, mode: 0o700 });
-  const file = join(pending, `${basename(run)}.json`);
+  const file = deploymentFile(directory, run);
   const temporary = `${file}.${crypto.randomUUID()}.tmp`;
   try {
     await writeFile(
@@ -49,6 +58,30 @@ export async function savePendingDeployment(
   } finally {
     await rm(temporary, { force: true });
   }
+}
+
+export async function preparePendingPush(
+  directory: string,
+  run: string,
+  deployment: Omit<Deployment, "createdAt" | "activate">,
+) {
+  // Persist before sending the push. A restart can reconcile this candidate
+  // if the process exited before it learned whether the push was accepted.
+  const file = deploymentFile(directory, run);
+  pushesInFlight.add(file);
+  try {
+    await savePendingDeployment(directory, run, {
+      ...deployment,
+      activate: true,
+    });
+  } catch (error) {
+    pushesInFlight.delete(file);
+    throw error;
+  }
+  return async (track: boolean) => {
+    if (!track) await rm(file, { force: true });
+    pushesInFlight.delete(file);
+  };
 }
 
 export async function watchDeployments(options: {
@@ -72,6 +105,7 @@ export async function watchDeployments(options: {
     options;
   const pending = join(directory, "deployments");
   const reported = new Map<string, string>();
+  const activated = new Set<string>();
   let failed = false;
 
   while (!signal.aborted) {
@@ -90,9 +124,14 @@ export async function watchDeployments(options: {
       if (signal.aborted) return;
       if (!name.endsWith(".json")) continue;
       const file = join(pending, name);
-      const deployment = Schema.decodeUnknownSync(Deployment)(
-        JSON.parse(await readFile(file, "utf8")),
+      if (pushesInFlight.has(file)) continue;
+      const json = await readFile(file, "utf8").catch(
+        (error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+        },
       );
+      if (json === undefined) continue;
+      const deployment = Schema.decodeUnknownSync(Deployment)(JSON.parse(json));
       if (deployment.origin !== origin || deployment.repository !== repository)
         continue;
       const { taskId, runId, revision, sha, createdAt } = deployment;
@@ -110,6 +149,13 @@ export async function watchDeployments(options: {
       const deploymentUrl = production?.buildUrl ?? undefined;
       const timeout = Date.now() - createdAt >= deploymentTimeout;
       try {
+        if (deployment.activate && runId && !activated.has(name)) {
+          await options.report(taskId, runId, {
+            phase: "deployment",
+            ...(deployment.summary ? { summary: deployment.summary } : {}),
+          });
+          activated.add(name);
+        }
         if (production?.conclusion === "success") {
           const status = runId
             ? await options.report(taskId, runId, {
@@ -132,6 +178,7 @@ export async function watchDeployments(options: {
           );
           await rm(file);
           reported.delete(name);
+          activated.delete(name);
           continue;
         }
         if (production?.conclusion)
@@ -160,6 +207,7 @@ export async function watchDeployments(options: {
           }
           await rm(file);
           reported.delete(name);
+          activated.delete(name);
           continue;
         }
         if (
@@ -175,6 +223,7 @@ export async function watchDeployments(options: {
           });
           await rm(file);
           reported.delete(name);
+          activated.delete(name);
           continue;
         }
       } catch (error) {

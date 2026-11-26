@@ -299,6 +299,8 @@ Set `ACCOUNT_EMAIL_ZONE_ID` to the Cloudflare DNS zone ID that owns `APP_DOMAIN`
 
 Set `INBOX_EMAIL_ZONE_ID` to the Cloudflare DNS zone ID that owns the `APP_DOMAIN` subdomain to receive mail at `mail@APP_DOMAIN`. Alchemy configures Email Routing for the subdomain and creates a rule for that address. After deploying, send a test email and verify that a `.eml` object appears in the stage's private `InboxMessages` R2 bucket. Each object contains the raw email, including attachments, and stores the SMTP envelope sender and recipient as object metadata.
 
+Set `INBOX_EMAIL_SENDING_DOMAIN` to use `mail@INBOX_EMAIL_SENDING_DOMAIN` for outbound mailbox mail. The domain must belong to `ACCOUNT_EMAIL_ZONE_ID`, and the `personal` mailbox identity for the new address must have `can_send` enabled. Alchemy verifies the sending domain separately from inbound Email Routing. The Worker uses `mail@APP_DOMAIN` while the new sending domain is pending verification. Account email continues to use `accounts@APP_DOMAIN`.
+
 Sign in and open **Mail** (`/mail`) to browse Inbox conversations by their latest incoming message. Open a conversation to read the selected message and expand earlier emails and sent replies. Select **Back** to return to the folder’s list.
 
 **Contacts** (`/contacts`) holds people and companies. Choose **Add contact**, then select **Person** or **Company**; company contacts can have email addresses, website domains and a logo. Contact details use `/contacts/<id>`.

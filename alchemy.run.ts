@@ -67,6 +67,23 @@ export const Web = Cloudflare.Worker(
         previewEnabled: false,
       });
     });
+    const inboxSendingDomain = yield* Config.option(
+      Config.NonEmptyString("INBOX_EMAIL_SENDING_DOMAIN").pipe(
+        Config.map((hostname) => hostname.trim().toLowerCase()),
+      ),
+    );
+    const alternateInboxDomain = Option.getOrUndefined(inboxSendingDomain);
+    const alternateInboxSending =
+      inbox &&
+      alternateInboxDomain &&
+      alternateInboxDomain !== inbox.name &&
+      Option.isSome(emailZone)
+        ? yield* Cloudflare.Email.SendingSubdomain("InboxSendingDomain", {
+            zoneId: emailZone.value,
+            name: alternateInboxDomain,
+            previewEnabled: false,
+          })
+        : undefined;
     const from = `accounts@${Option.getOrUndefined(domain)}`;
     const assetRouting = {
       notFoundHandling: "single-page-application" as const,
@@ -176,13 +193,29 @@ export const Web = Cloudflare.Worker(
           : {}),
         ...(sending && inbox
           ? {
-              INBOX_EMAIL_FROM: sending.enabled.pipe(
-                Output.map((enabled) =>
-                  enabled ? inboxAddress(inbox.name) : "",
-                ),
-              ),
+              INBOX_EMAIL_FROM: alternateInboxSending
+                ? Output.all(
+                    alternateInboxSending.enabled,
+                    alternateInboxSending.name,
+                    sending.enabled,
+                  ).pipe(
+                    Output.map(([enabled, hostname, fallbackEnabled]) => {
+                      if (enabled) return inboxAddress(hostname);
+                      return fallbackEnabled ? inboxAddress(inbox.name) : "";
+                    }),
+                  )
+                : sending.enabled.pipe(
+                    Output.map((enabled) =>
+                      enabled ? inboxAddress(inbox.name) : "",
+                    ),
+                  ),
               INBOX_SEND: Cloudflare.Email.SendEmail("InboxSend", {
-                allowedSenderAddresses: [inboxAddress(inbox.name)],
+                allowedSenderAddresses: [
+                  inboxAddress(inbox.name),
+                  ...(alternateInboxSending && alternateInboxDomain
+                    ? [inboxAddress(alternateInboxDomain)]
+                    : []),
+                ],
               }),
               INBOX_SEND_LIMIT: Cloudflare.RateLimit("InboxSendLimit", {
                 namespaceId: 1005,

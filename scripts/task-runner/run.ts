@@ -2,6 +2,7 @@ import { Schema } from "effect";
 import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { taskPath } from "../../apps/web/src/tasks-contract.ts";
+import { withBrowserSession } from "./browser.ts";
 import type { TaskQueue } from "./queue.ts";
 
 const AgentResult = Schema.Struct({
@@ -175,39 +176,60 @@ ${JSON.stringify({ id: task.id, title: task.title, description: task.description
     const codexLog = join(run, "codex.jsonl");
     await writeFile(codexLog, "", { mode: 0o600 });
     await record("implementing", { log: codexLog });
-    await execute(
-      [
-        "codex",
-        "-a",
-        "never",
-        "exec",
-        "--json",
-        "--model",
-        "gpt-6.2-sol",
-        "-c",
-        'model_reasoning_effort="high"',
-        "--sandbox",
-        "workspace-write",
-        "-c",
-        'shell_environment_policy.filters={CODEX_API_KEY="exclude"}',
-        "--ignore-user-config",
-        "--output-schema",
-        schemaPath,
-        "--output-last-message",
-        resultPath,
-        ...images,
-        "-",
-      ],
-      repo,
-      AbortSignal.any([signal, AbortSignal.timeout(30 * 60_000)]),
-      {
-        stdin: new TextEncoder().encode(prompt),
-        stdout: Bun.file(codexLog),
-        env: {
-          CODEX_HOME: process.env.CODEX_HOME,
-          CODEX_API_KEY: process.env.CODEX_API_KEY,
+    await withBrowserSession(source, (browser) =>
+      execute(
+        [
+          "codex",
+          "-a",
+          "never",
+          "exec",
+          "--json",
+          "--model",
+          "gpt-6.2-sol",
+          "-c",
+          'model_reasoning_effort="high"',
+          "-c",
+          'default_permissions="orumai-runner"',
+          "-c",
+          'permissions.orumai-runner.extends=":workspace"',
+          "-c",
+          "permissions.orumai-runner.network.enabled=true",
+          "-c",
+          "permissions.orumai-runner.network.allow_local_binding=true",
+          "-c",
+          "permissions.orumai-runner.network.allow_upstream_proxy=false",
+          "-c",
+          'permissions.orumai-runner.network.domains={localhost="allow","127.0.0.1"="allow","::1"="allow"}',
+          "-c",
+          "features.network_proxy=true",
+          ...(browser ? ["-c", browser.permission] : []),
+          "-c",
+          'shell_environment_policy.filters={CODEX_API_KEY="exclude"}',
+          "--ignore-user-config",
+          "--output-schema",
+          schemaPath,
+          "--output-last-message",
+          resultPath,
+          ...images,
+          "-",
+        ],
+        repo,
+        AbortSignal.any([signal, AbortSignal.timeout(30 * 60_000)]),
+        {
+          stdin: new TextEncoder().encode(
+            browser
+              ? prompt +
+                  '\n\nFor local browser checks, use the runner-provided agent-browser CLI via "$ORUMAI_BROWSER". Open a localhost URL, use snapshot -i for element references, and use fill and click to interact with the page. Read generated login values inside a helper process so credentials stay out of commands shown in logs. Close the browser session with "$ORUMAI_BROWSER" close when finished.'
+              : prompt,
+          ),
+          stdout: Bun.file(codexLog),
+          env: {
+            ...browser?.env,
+            CODEX_HOME: process.env.CODEX_HOME,
+            CODEX_API_KEY: process.env.CODEX_API_KEY,
+          },
         },
-      },
+      ),
     );
     const result = Schema.decodeUnknownSync(AgentResult)(
       await Bun.file(resultPath).json(),

@@ -2,6 +2,7 @@
 
 - Bun workspace. Use Bun 1.4.4+ and `bun install` at the root. CLI, web, and extension live in `apps/`. Shared runtime-neutral code lives in `packages/core`; shared Foldkit UI lives in `packages/ui`.
 - Verify with `bun check` and `bun run test` (Vitest on Bun with `@effect/vitest`). `bun run verify` also formats files. Use `bun run build` to check app builds.
+- Use `agent-browser` to verify the local web UI. Invoke it with `"$ORUMAI_BROWSER"` when provided by the task runner or `bun run agent-browser` from the repo root. Use `skills list` to discover bundled skills and `skills get core` to read the usage guide.
 
 ## Library references
 

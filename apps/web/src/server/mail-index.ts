@@ -27,6 +27,11 @@ import {
 } from "./mail-conversation-filters.ts";
 import { mailPeople } from "./mail-people.ts";
 import { enqueueMailPush, pushLifetimeMs } from "./push-store.ts";
+import {
+  indexConversationItem,
+  mergeConversationItems,
+  removeConversationItem,
+} from "./mail-conversation-items.ts";
 
 export type IndexedMail = ConversationMessage & {
   messageIds: readonly string[];
@@ -61,8 +66,12 @@ export const indexMailStatements = async (
 ) => {
   const scope = mailboxSql(db);
   const matchingThreads = `SELECT thread_id FROM mail_index_keys WHERE mailbox_id = ${scope} AND identity IN (SELECT value FROM json_each(?1))`;
-  const canonicalThread = `SELECT min(thread_id) FROM (${matchingThreads})`;
-  const threadsToMerge = `WITH matched AS MATERIALIZED (${matchingThreads}), target AS (SELECT min(thread_id) FROM matched)`;
+  // Keep an existing item if a message also matches a thread with only
+  // tombstones. Otherwise use the same deterministic thread ordering.
+  const threadsToMerge = `WITH matched AS MATERIALIZED (${matchingThreads}), target(thread_id) AS MATERIALIZED (
+    SELECT coalesce(min(c.thread_id), min(m.thread_id)) FROM matched m
+    LEFT JOIN mail_conversations c ON c.mailbox_id = ${scope} AND c.thread_id = m.thread_id
+  )`;
   const {
     id,
     folder,
@@ -81,14 +90,14 @@ export const indexMailStatements = async (
     ...(originalId ? [localIdentity(originalId)] : []),
     ...(await Promise.all(messageIds.map(hashMessageId))),
   ]);
-  // D1 batches run atomically. Move both memberships and aliases when a
-  // message connects conversations that were previously indexed separately.
+  // D1 batches run atomically. Merge memberships, items and aliases together.
   return [
     db
       .prepare(
         `
+      ${threadsToMerge}
       INSERT OR IGNORE INTO mail_index_keys (mailbox_id, identity, thread_id)
-      SELECT ${mailboxSql(db)}, value, coalesce((${canonicalThread}), ?2) FROM json_each(?1)
+      SELECT ${scope}, value, coalesce((SELECT thread_id FROM target), ?2) FROM json_each(?1)
     `,
       )
       .bind(aliases, id),
@@ -101,6 +110,7 @@ export const indexMailStatements = async (
     `,
       )
       .bind(aliases),
+    ...mergeConversationItems(db, threadsToMerge, aliases),
     db
       .prepare(
         `
@@ -150,6 +160,7 @@ export const indexMailStatements = async (
           : Number(mail.initialArchived),
         mail.envelopeRecipient ?? null,
       ),
+    ...indexConversationItem(db, id),
     // Incoming mail and merges with an active conversation reopen the whole
     // thread. Keep that state even if the new incoming message is later deleted.
     db
@@ -186,16 +197,18 @@ export const removeIndexedMail = async (
   id: string,
 ) => {
   // Retain the opaque ID to prevent an in-flight R2 scan from recreating this row.
-  await db
-    .prepare(
-      `
-    INSERT INTO mail_index_messages (mailbox_id, id, thread_id, folder, sender, recipient, subject, timestamp, deleted)
-    VALUES (${mailboxSql(db)}, ?1, ?1, ?2, '', '', '', 0, 1)
-    ON CONFLICT(mailbox_id, id) DO UPDATE SET sender = '', recipient = '', envelope_recipient = NULL, subject = '', timestamp = 0, deleted = 1, deleted_at = NULL, unread = 0, people = NULL, body_preview = NULL
-  `,
-    )
-    .bind(id, folder)
-    .run();
+  await db.batch([
+    db
+      .prepare(
+        `
+      INSERT INTO mail_index_messages (mailbox_id, id, thread_id, folder, sender, recipient, subject, timestamp, deleted)
+      VALUES (${mailboxSql(db)}, ?1, ?1, ?2, '', '', '', 0, 1)
+      ON CONFLICT(mailbox_id, id) DO UPDATE SET sender = '', recipient = '', envelope_recipient = NULL, subject = '', timestamp = 0, deleted = 1, deleted_at = NULL, unread = 0, people = NULL, body_preview = NULL
+    `,
+      )
+      .bind(id, folder),
+    ...removeConversationItem(db, id),
+  ]);
 };
 
 const isInboxId = Schema.is(InboxMessageId);

@@ -400,6 +400,7 @@ it("retries after a lost R2 response and an atomic D1 failure without duplicates
     completed_at: null,
   });
   expect(sqlite.query("SELECT id FROM mail_index_messages").all()).toEqual([]);
+  expect(sqlite.query("SELECT id FROM items").all()).toEqual([]);
   const recovered = await ingestRawMail(
     store,
     { ...metadata, archived: false, flags: [] },
@@ -410,6 +411,125 @@ it("retries after a lost R2 response and an atomic D1 failure without duplicates
   expect(
     sqlite.query("SELECT unread, archived FROM mail_index_messages").get(),
   ).toEqual({ unread: 0, archived: 1 });
+});
+
+it("preserves conversation item identity and tags through replies, merges and Trash", async () => {
+  using sqlite = new Database(":memory:");
+  const { DB } = await setup(sqlite);
+  sqlite.exec("PRAGMA foreign_keys = ON");
+  const message = (
+    id: string,
+    timestamp: number,
+    messageIds: string[],
+    subject: string,
+  ) => ({
+    id,
+    timestamp,
+    messageIds,
+    subject,
+    folder: "inbox" as const,
+    from: "alice@example.com",
+    to: "mail@example.com",
+    unread: false,
+  });
+  const first = message("100.eml", 10, ["first@example.com"], "First subject");
+  const second = message(
+    "200.eml",
+    20,
+    ["second@example.com"],
+    "Other subject",
+  );
+  const reply = message(
+    "300.eml",
+    30,
+    ["first@example.com"],
+    "Re: First subject",
+  );
+  const bridge = message(
+    "400.eml",
+    40,
+    ["first@example.com", "second@example.com"],
+    "Re: First subject",
+  );
+  const items = () =>
+    sqlite
+      .query<
+        {
+          id: string;
+          title: string;
+          revision: string;
+          created: number;
+          updated: number;
+        },
+        []
+      >(
+        `
+    SELECT i.id, i.title, i.revision, i.created_at AS created, i.updated_at AS updated
+    FROM items i JOIN mail_conversations c ON c.account_id = i.account_id AND c.item_id = i.id
+    ORDER BY i.created_at
+  `,
+      )
+      .all();
+  const tags = () =>
+    sqlite.query("SELECT item_id, tag_id FROM item_tags ORDER BY tag_id").all();
+  await indexMail(DB, first);
+  await indexMail(DB, reply);
+  const [initial] = items();
+  expect(initial).toMatchObject({
+    title: "First subject",
+    created: 10,
+    updated: 30,
+  });
+  expect(items()).toHaveLength(1);
+  await indexMail(DB, reply);
+  expect(items()).toEqual([initial]);
+
+  await indexMail(DB, second);
+  const other = items()[1]!;
+  sqlite.exec(
+    "INSERT INTO tags VALUES ('owner', 'a', 'A', 'a'), ('owner', 'b', 'B', 'b')",
+  );
+  const tag = sqlite.query("INSERT INTO item_tags VALUES ('owner', ?, ?)");
+  tag.run(initial!.id, "a");
+  tag.run(other.id, "a");
+  tag.run(other.id, "b");
+  await indexMail(DB, bridge);
+  const [merged] = items();
+  expect(merged).toMatchObject({
+    id: initial!.id,
+    title: "First subject",
+    created: 10,
+    updated: 40,
+  });
+  expect(items()).toHaveLength(1);
+  expect(merged!.revision).not.toBe(initial!.revision);
+  expect(tags()).toEqual([
+    { item_id: merged!.id, tag_id: "a" },
+    { item_id: merged!.id, tag_id: "b" },
+  ]);
+  expect(
+    (await readThread(DB, second.id)).messages.map(({ id }) => id),
+  ).toEqual([first.id, second.id, reply.id, bridge.id]);
+
+  for (const mail of [first, second, reply, bridge])
+    await trashMail(DB, mail.id);
+  expect(items()).toEqual([merged]);
+  expect(await restoreMail(DB, bridge.id)).toBe(true);
+  expect(items()).toEqual([merged]);
+  await removeIndexedMail(DB, "inbox", first.id);
+  expect(items()[0]).toMatchObject({
+    id: merged!.id,
+    title: "Other subject",
+    created: 20,
+    updated: 40,
+  });
+  for (const mail of [second, reply, bridge])
+    await removeIndexedMail(DB, "inbox", mail.id);
+  await indexMail(DB, bridge);
+  expect(items()).toEqual([]);
+  expect(sqlite.query("SELECT id FROM items").all()).toEqual([]);
+  expect(tags()).toEqual([]);
+  expect(sqlite.query("PRAGMA foreign_key_check").all()).toEqual([]);
 });
 
 it("makes concurrent retries idempotent and preserves subsequent user changes and deletion", async () => {

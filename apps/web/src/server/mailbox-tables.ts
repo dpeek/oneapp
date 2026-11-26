@@ -1,13 +1,25 @@
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import {
+  index,
+  integer,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 import { accounts } from "./database.ts";
 
-export const mailboxes = sqliteTable("mailboxes", {
-  id: text().primaryKey(),
-  ownerAccountId: text("owner_account_id")
-    .notNull()
-    .references(() => accounts.id),
-  name: text().notNull(),
-});
+export const mailboxes = sqliteTable(
+  "mailboxes",
+  {
+    id: text().primaryKey(),
+    ownerAccountId: text("owner_account_id")
+      .notNull()
+      .references(() => accounts.id),
+    name: text().notNull(),
+  },
+  (table) => [
+    uniqueIndex("mailboxes_id_owner").on(table.id, table.ownerAccountId),
+  ],
+);
 
 export const mailboxAddresses = sqliteTable(
   "mailbox_addresses",

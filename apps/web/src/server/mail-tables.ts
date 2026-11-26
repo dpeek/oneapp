@@ -1,12 +1,37 @@
 import {
+  foreignKey,
   index,
   integer,
   primaryKey,
   sqliteTable,
   text,
+  uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 import { mailboxes } from "./mailbox-tables.ts";
+import { items } from "./item-tables.ts";
 import { sql } from "drizzle-orm";
+
+export const mailConversations = sqliteTable(
+  "mail_conversations",
+  {
+    mailboxId: text("mailbox_id").notNull(),
+    threadId: text("thread_id").notNull(),
+    accountId: text("account_id").notNull(),
+    itemId: text("item_id").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.mailboxId, table.threadId] }),
+    uniqueIndex("mail_conversations_item").on(table.accountId, table.itemId),
+    foreignKey({
+      columns: [table.accountId, table.itemId],
+      foreignColumns: [items.accountId, items.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.mailboxId, table.accountId],
+      foreignColumns: [mailboxes.id, mailboxes.ownerAccountId],
+    }),
+  ],
+);
 
 export const mailIndexMessages = sqliteTable(
   "mail_index_messages",

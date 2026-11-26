@@ -52,6 +52,7 @@ const dataTables = [
   "calendar_events",
   "calendar_moved_uids",
   "items",
+  "mail_conversations",
   "tasks",
   "task_attachments",
   "files",

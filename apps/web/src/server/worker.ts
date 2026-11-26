@@ -13,6 +13,7 @@ import {
   mailboxBucket,
   scopeMailStore,
   mailboxIdentities,
+  mailboxSendAddress,
 } from "./mailbox.ts";
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import type { ForwardableEmailMessage } from "@cloudflare/workers-types";
@@ -50,14 +51,13 @@ import { authDependencies, databaseLayer } from "./database.ts";
 import { emailChangeRoutes } from "./email-change.ts";
 import { extensionAccessRoutes } from "./extension-access.ts";
 import {
-  inboxMessageKey,
   inboxRoutes,
   inboxSessionHeaders,
   inboxSubject,
-  notifyInbox,
   recoverIncomingMail,
   syncMailIndex,
 } from "./inbox.ts";
+import { inboxMessageKey, notifyInbox } from "./mail-delivery.ts";
 import { collectMailTrash } from "./mail-trash.ts";
 import { indexMail, isMailingList } from "./mail-index.ts";
 import { mailPeople } from "./mail-people.ts";
@@ -441,13 +441,10 @@ export default {
           ...store,
           // Permission in the mailbox and support from the sending transport
           // must both be present. Aliases never imply send-as permission.
-          INBOX_EMAIL_FROM: identities.some(
-            (identity) =>
-              identity.address === env.INBOX_EMAIL_FROM &&
-              identity.canSend === 1,
-          )
-            ? env.INBOX_EMAIL_FROM
-            : undefined,
+          INBOX_EMAIL_FROM: mailboxSendAddress(
+            env.INBOX_EMAIL_FROM,
+            identities,
+          ),
           INBOX_EMAIL_ADDRESS:
             identities.find(
               (identity) =>
@@ -465,7 +462,7 @@ export default {
         health,
         mcpOAuth.routes,
         mcpLoginRoute,
-        mcpRoutes(env, notifyItemChange),
+        mcpRoutes(env, notifyItemChange, defer),
         Layer.mergeAll(
           accountRoutes(http, {
             enabled: emailTransport !== disabledEmail,

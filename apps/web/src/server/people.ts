@@ -32,7 +32,7 @@ import {
 
 import { senderIconDomain } from "./mail-sender.ts";
 import { normalizeCompanyDomain } from "../company-domains.ts";
-import { notifyInbox } from "./inbox.ts";
+import { notifyInbox } from "./mail-delivery.ts";
 import {
   defaultMailboxId,
   ensureDefaultMailbox,

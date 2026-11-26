@@ -3,9 +3,14 @@ import type { Email } from "postal-mime";
 import { ComposeRecipient } from "../inbox-contract.ts";
 import type { SentReply } from "./sent-mail.ts";
 
+type ReplySender = Pick<Email, "replyTo" | "from">;
+
 const readRecipient = Schema.decodeUnknownOption(ComposeRecipient);
 
-export const replyRecipient = (email: Email | null, envelopeFrom: string) => {
+export const replyRecipient = (
+  email: ReplySender | null,
+  envelopeFrom: string,
+) => {
   const addresses = [
     ...(email?.replyTo ?? []).flatMap((address) =>
       address.group
@@ -103,7 +108,7 @@ export const replyHeaders = (email: Email) =>
 
 // Reply-To takes precedence over From. Never copy Bcc or our own addresses.
 export const replyAllRecipients = (
-  email: Email | null,
+  email: (ReplySender & Pick<Email, "to" | "cc">) | null,
   envelopeFrom: string,
   own: readonly string[],
 ) => {

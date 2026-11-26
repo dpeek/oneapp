@@ -160,3 +160,16 @@ export const mailSenderAvatars = sqliteTable(
   },
   (table) => [primaryKey({ columns: [table.mailboxId, table.address] })],
 );
+
+export const mailSendRequests = sqliteTable(
+  "mail_send_requests",
+  {
+    mailboxId: text("mailbox_id")
+      .notNull()
+      .references(() => mailboxes.id),
+    requestId: text("request_id").notNull(),
+    fingerprint: text().notNull(),
+    outcome: text(),
+  },
+  (table) => [primaryKey({ columns: [table.mailboxId, table.requestId] })],
+);

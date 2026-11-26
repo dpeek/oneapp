@@ -6,6 +6,7 @@ import {
   contactsReadScope,
   filesReadScope,
   mailReadScope,
+  mailSendScope,
   tasksReadScope,
   tasksWriteScope,
 } from "../mcp-access-contract.ts";
@@ -19,6 +20,7 @@ const scopeLabels = new Map<string, string>([
     "Create, edit, and delete your tasks and create reusable tags",
   ],
   [mailReadScope, "Search and read your mail and attachment details"],
+  [mailSendScope, "Send email and reply from your Orumai mailbox"],
   [filesReadScope, "Search and read your uploaded files and their tags"],
   [contactsReadScope, "Search and read your contacts and company details"],
 ]);

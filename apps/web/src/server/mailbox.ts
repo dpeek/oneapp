@@ -92,6 +92,14 @@ export const mailboxIdentities = async (db: MailDatabase) => {
   return results;
 };
 
+export const mailboxSendAddress = (
+  configuredAddress: string | undefined,
+  identities: Awaited<ReturnType<typeof mailboxIdentities>>,
+) =>
+  identities.find(
+    ({ address, canSend }) => canSend === 1 && address === configuredAddress,
+  )?.address;
+
 export const resolveMailRecipient = async (
   db: D1Database,
   recipient: string,

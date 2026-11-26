@@ -6,6 +6,7 @@ import type {
 } from "@cloudflare/workers-types";
 import { Effect, Schedule, Schema } from "effect";
 import { convert } from "html-to-text";
+import { addressParser } from "postal-mime";
 import {
   describeOutgoingAttachments,
   describeAttachments,
@@ -23,6 +24,7 @@ import {
   buildReplyHeaders,
   conversationMessageIds,
   outboundMessageId,
+  replyAllRecipients,
 } from "./mail-reply.ts";
 import type { IndexedMail } from "./mail-index.ts";
 import { mailPeople } from "./mail-people.ts";
@@ -243,7 +245,11 @@ export const readSent = async (
   };
 };
 
-export const readSentReplyTarget = async (bucket: R2Bucket, id: string) => {
+export const readSentReplyTarget = async (
+  bucket: R2Bucket,
+  id: string,
+  ownAddresses: readonly string[] = [],
+) => {
   const object = await bucket.get(id);
   if (!object) return null;
   if (object.customMetadata?.format === rawMailFormat) {
@@ -261,6 +267,7 @@ export const readSentReplyTarget = async (bucket: R2Bucket, id: string) => {
     const mail = describeRawMail(object, email, "sent");
     return {
       to: mail.to,
+      ...replyAllRecipients({ to: email.to, cc: email.cc }, "", ownAddresses),
       subject: mail.subject,
       headers: buildReplyHeaders(
         (name) => email.headers.find(({ key }) => key === name)?.value,
@@ -272,6 +279,14 @@ export const readSentReplyTarget = async (bucket: R2Bucket, id: string) => {
   const headers = sentThreadHeaders(record);
   return {
     to: record.to,
+    ...replyAllRecipients(
+      {
+        to: addressParser(record.to),
+        cc: addressParser(record.cc ?? ""),
+      },
+      "",
+      ownAddresses,
+    ),
     subject: record.subject,
     headers: buildReplyHeaders((name) => headers[name]),
   };

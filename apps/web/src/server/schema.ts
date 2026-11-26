@@ -24,6 +24,7 @@ export {
   mailIndexScans,
   mailSenderRules,
   mailSenderAvatars,
+  mailSendRequests,
 } from "./mail-tables.ts";
 
 export {

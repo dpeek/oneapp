@@ -88,6 +88,7 @@ import {
   contactsReadScope,
   filesReadScope,
   mailReadScope,
+  mailSendScope,
   McpGrantList,
   mcpGrantsPath,
   tasksReadScope,
@@ -2993,7 +2994,7 @@ const mcpRequest = async (
   return JSON.parse(data ?? "") as {
     error?: { message: string };
     result?: {
-      tools?: { name: string }[];
+      tools?: { name: string; annotations?: Record<string, boolean> }[];
       structuredContent?: unknown;
       content?: CallToolResult["content"];
       isError?: boolean;
@@ -3564,6 +3565,7 @@ it("issues MCP link scopes and exposes only the tools a grant authorises", async
         mailReadScope,
         filesReadScope,
         contactsReadScope,
+        mailSendScope,
       ],
     });
   }
@@ -3630,6 +3632,271 @@ it("issues MCP link scopes and exposes only the tools a grant authorises", async
   });
   expect(await refresh.json()).toMatchObject({ error: "invalid_grant" });
   expect(await listGrants()).toHaveLength(2);
+});
+
+it("sends and threads mail with a separate MCP grant and a durable request ID", async () => {
+  using sqlite = new Database(":memory:");
+  const from = "mail@app.example.net";
+  const alias = "alias@app.example.net";
+  const envelopeTo = "catchall@app.example.net";
+  const source = "0-8199999999990-00000000-0000-4000-8000-000000000001.eml";
+  const raw = [
+    "From: sender@example.net",
+    "Reply-To: desk@example.net",
+    `To: ${from}, ${envelopeTo}, team@example.net`,
+    `Cc: ${alias}, colleague@example.net, TEAM@example.net`,
+    "Bcc: private@example.net",
+    "Subject: Plan",
+    "Message-ID: <parent@example.net>",
+    "References: <root@example.net>",
+    "",
+    "Original message.",
+  ].join("\r\n");
+  const copies = new Map<string, string>();
+  const send = vi.fn(async (_message: EmailMessageBuilder) => ({
+    messageId: `<sent-${send.mock.calls.length}@example.net>`,
+  }));
+  const limit = vi.fn(async (_input: { key: string }) => ({ success: true }));
+  const { call, connect, names, useTool, request, db, origin, session } =
+    await setupMcp(sqlite, {
+      INBOX_EMAIL_ADDRESS: from,
+      INBOX_EMAIL_FROM: from,
+      MAILBOX_ALIASES: alias,
+      INBOX_SEND: { send } as SendEmail,
+      INBOX_SEND_LIMIT: { limit },
+      INBOX_MESSAGES: {
+        get: async (id: string) =>
+          id === source
+            ? {
+                text: async () => raw,
+                customMetadata: {
+                  envelopeFrom: "bounce@example.net",
+                  envelopeTo,
+                },
+              }
+            : null,
+      } as unknown as WorkerEnv["INBOX_MESSAGES"],
+      SENT_MESSAGES: {
+        put: async (id: string, json: string) => {
+          copies.set(id, json);
+          return {};
+        },
+        get: async (id: string) => {
+          const json = copies.get(id);
+          return json ? { json: async () => JSON.parse(json) } : null;
+        },
+      } as unknown as WorkerEnv["SENT_MESSAGES"],
+    });
+  await indexMail(db, {
+    id: source,
+    folder: "inbox",
+    from: "sender@example.net",
+    to: from,
+    subject: "Plan",
+    timestamp: Date.UTC(2022, 0, 1),
+    messageIds: ["<root@example.net>", "<parent@example.net>"],
+  });
+  const defaults = (await connect()).access_token;
+  const read = (await connect([mailReadScope])).access_token;
+  const write = (await connect([mailSendScope])).access_token;
+  expect(await names(defaults)).not.toContain("send_mail");
+  expect(await names(write)).toEqual(["reply_mail", "send_mail"]);
+  const listed = await mcpRequest(request, "/mcp", write, "tools/list");
+  for (const tool of listed.result?.tools ?? [])
+    expect(tool.annotations).toMatchObject({
+      readOnlyHint: false,
+      openWorldHint: true,
+    });
+
+  const draft = {
+    requestId: "new-message",
+    from,
+    to: "lead@example.net, team@example.net",
+    cc: "other@example.net",
+    subject: "New plan",
+    text: "Here is the plan.",
+  };
+  const sendMail = (args: object) => useTool(write, "send_mail", args);
+  const replyMail = (args: object) => useTool(write, "reply_mail", args);
+  const reply = {
+    requestId: "reply-all",
+    messageId: source,
+    mode: "reply-all",
+    text: "Agreed.",
+  };
+  expect((await useTool(read, "send_mail", draft)).error).toBeDefined();
+  expect((await useTool(read, "reply_mail", reply)).error).toBeDefined();
+  expect((await sendMail({ ...draft, from: alias })).result?.isError).toBe(
+    true,
+  );
+  expect(
+    (await sendMail({ ...draft, subject: "Injected\r\nCc: extra@example.net" }))
+      .result?.isError,
+  ).toBe(true);
+  expect(send).not.toHaveBeenCalled();
+  expect(limit).not.toHaveBeenCalled();
+
+  const deliver = (delivery: Awaited<ReturnType<typeof sendMail>>) => {
+    expect(delivery.error).toBeUndefined();
+    expect(
+      delivery.result?.isError,
+      JSON.stringify(delivery.result?.content),
+    ).toBeFalsy();
+    const sent = delivery.result?.structuredContent as {
+      status: string;
+      messageId: string;
+      url: string;
+    };
+    expect(sent.status).toBe("sent");
+    expect(sent.messageId).toBeTruthy();
+    expect(sent.url).toBe(origin + mailMessageLink(sent.messageId));
+    return sent;
+  };
+
+  const sent = deliver(await sendMail(draft));
+  expect(send.mock.lastCall?.[0]).toMatchObject({
+    from,
+    to: ["lead@example.net", "team@example.net"],
+    cc: ["other@example.net"],
+    text: draft.text,
+  });
+  expect(send.mock.lastCall?.[0].headers).toBeUndefined();
+  expect(
+    await (
+      await call(mailMessageApi("sent", sent.messageId), undefined, session)
+    ).json(),
+  ).toMatchObject({
+    id: sent.messageId,
+    text: draft.text,
+    subject: draft.subject,
+  });
+  expect(deliver(await sendMail(draft))).toEqual(sent);
+  expect(
+    (await sendMail({ ...draft, text: "Different." })).result,
+  ).toMatchObject({
+    isError: true,
+    content: [
+      { type: "text", text: expect.stringContaining("different mail content") },
+    ],
+  });
+  expect(
+    (await replyMail({ ...reply, requestId: draft.requestId })).result?.isError,
+  ).toBe(true);
+
+  const replied = deliver(await replyMail(reply));
+  expect(send.mock.lastCall?.[0]).toMatchObject({
+    from,
+    to: ["desk@example.net", "team@example.net"],
+    cc: ["colleague@example.net"],
+    subject: "Re: Plan",
+    headers: {
+      "In-Reply-To": "<parent@example.net>",
+      References: "<root@example.net> <parent@example.net>",
+    },
+  });
+  expect(JSON.parse(copies.get(replied.messageId)!).reply.originalId).toBe(
+    source,
+  );
+  const thread = await useTool(read, "get_mail_thread", { messageId: source });
+  expect(thread.result?.structuredContent).toMatchObject({
+    messages: [
+      { id: source, folder: "inbox" },
+      { id: replied.messageId, folder: "sent" },
+    ],
+  });
+  expect(
+    sqlite
+      .query("SELECT archived FROM mail_index_messages WHERE id = ?")
+      .get(source),
+  ).toEqual({ archived: 0 });
+  expect(deliver(await replyMail(reply))).toEqual(replied);
+  expect(send).toHaveBeenCalledTimes(2);
+
+  const completed = deliver(
+    await replyMail({
+      ...reply,
+      requestId: "reply-and-done",
+      mode: "reply",
+      completeThrough: source,
+    }),
+  );
+  expect(completed).toMatchObject({ completion: "done" });
+  expect(send.mock.lastCall?.[0].to).toBe("desk@example.net");
+  expect(send.mock.lastCall?.[0].cc).toBeUndefined();
+  expect(
+    sqlite
+      .query("SELECT archived FROM mail_index_messages WHERE id = ?")
+      .get(source),
+  ).toEqual({ archived: 1 });
+
+  deliver(
+    await replyMail({
+      ...reply,
+      requestId: "reply-to-sent",
+      messageId: replied.messageId,
+    }),
+  );
+  expect(send.mock.lastCall?.[0]).toMatchObject({
+    to: ["desk@example.net", "team@example.net"],
+    cc: ["colleague@example.net"],
+    headers: {
+      "In-Reply-To": "<sent-2@example.net>",
+      References:
+        "<root@example.net> <parent@example.net> <sent-2@example.net>",
+    },
+  });
+
+  const started = Promise.withResolvers<void>();
+  const provider = Promise.withResolvers<{ messageId: string }>();
+  send.mockImplementationOnce(() => {
+    started.resolve();
+    return provider.promise;
+  });
+  const pending = { ...draft, requestId: "pending" };
+  const first = sendMail(pending);
+  try {
+    await started.promise;
+    expect((await sendMail(pending)).result?.structuredContent).toMatchObject({
+      status: "uncertain",
+    });
+    expect(send).toHaveBeenCalledTimes(5);
+  } finally {
+    provider.resolve({ messageId: "<concurrent@example.net>" });
+  }
+  const dispatched = deliver(await first);
+  expect(deliver(await sendMail(pending))).toEqual(dispatched);
+
+  send.mockRejectedValueOnce(new Error("Connection closed during delivery"));
+  const uncertain = { ...draft, requestId: "uncertain" };
+  const unknown = (await sendMail(uncertain)).result?.structuredContent;
+  expect(unknown).toMatchObject({ status: "uncertain" });
+  expect((await sendMail(uncertain)).result?.structuredContent).toEqual(
+    unknown,
+  );
+  expect(send).toHaveBeenCalledTimes(6);
+  expect(copies.size).toBe(5);
+
+  limit.mockResolvedValueOnce({ success: false });
+  const throttled = { ...draft, requestId: "throttled" };
+  const rejected = (await sendMail(throttled)).result;
+  expect(rejected).toMatchObject({
+    isError: true,
+    content: [
+      { type: "text", text: "Sending limit reached. Try again later." },
+    ],
+  });
+  expect((await sendMail(throttled)).result).toEqual(rejected);
+  expect(send).toHaveBeenCalledTimes(6);
+  expect(limit).toHaveBeenCalledTimes(7);
+  expect(limit).toHaveBeenLastCalledWith({ key: "owner" });
+
+  sqlite.run("UPDATE mailbox_addresses SET can_send = 0 WHERE address = ?", [
+    from,
+  ]);
+  expect(
+    (await sendMail({ ...draft, requestId: "revoked-sender" })).result?.isError,
+  ).toBe(true);
+  expect(send).toHaveBeenCalledTimes(6);
 });
 
 it("searches account files and reads bounded content with only the Files scope", async () => {

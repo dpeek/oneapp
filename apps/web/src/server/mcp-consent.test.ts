@@ -4,6 +4,8 @@ import { Schema } from "@yielded/auth";
 import {
   contactsReadScope,
   filesReadScope,
+  mailReadScope,
+  mailSendScope,
   tasksReadScope,
   tasksWriteScope,
 } from "../mcp-access-contract.ts";
@@ -23,6 +25,8 @@ it("escapes consent metadata and preserves the approval form", () => {
       tasksWriteScope,
       filesReadScope,
       contactsReadScope,
+      mailReadScope,
+      mailSendScope,
       "<custom>",
     ],
     redirectUri: "http://127.0.0.1:55162/callback",
@@ -41,6 +45,8 @@ it("escapes consent metadata and preserves the approval form", () => {
   expect(html).toContain(
     "Create, edit, and delete your tasks and create reusable tags",
   );
+  expect(html).toContain("Search and read your mail and attachment details");
+  expect(html).toContain("Send email and reply from your Orumai mailbox");
   expect(html).toContain("&lt;custom&gt;");
   expect(html).toContain('method="post" action="/oauth/mcp/authorize"');
   expect(html).toContain('name="csrf" value="token&quot;&amp;"');

@@ -19,6 +19,8 @@ import { deleteSavedLink, insertSavedLink, listSavedLinks } from "./links.ts";
 import { defaultMailboxId, requireMailbox, scopeMailStore } from "./mailbox.ts";
 import { registerContactTools } from "./mcp-contacts.ts";
 import { registerFileTools } from "./mcp-files.ts";
+import type { MailSenderBindings } from "./mail-delivery.ts";
+import { registerMailSendTools } from "./mcp-mail-send.ts";
 import { registerMailTools } from "./mcp-mail.ts";
 import {
   defaultMcpScopes,
@@ -28,6 +30,7 @@ import {
   ReadLinks,
   ReadMail,
   ReadTasks,
+  SendMail,
   WriteLinks,
   WriteTasks,
   mcpOAuth,
@@ -52,13 +55,16 @@ type McpEnv = Pick<
   | "INBOX_MESSAGES"
   | "SENT_MESSAGES"
   | "INBOX_EMAIL_ADDRESS"
->;
+  | "INBOX_UPDATES"
+> &
+  MailSenderBindings;
 const createServer = (
   env: McpEnv,
   actor: WorkspaceActor,
   sql: SqlClient.SqlClient,
   scopes: readonly McpScope[],
   notifyItemChange: NotifyItemChange,
+  defer: (work: Promise<unknown>) => void,
 ) => {
   const { APP_ORIGIN: origin, DB: db, FILE_UPLOADS: bucket } = env;
   const ownerId = actor.accountId;
@@ -160,23 +166,15 @@ const createServer = (
     registerFileTools(server, origin, ownerId, db, bucket);
   if (canReadContacts)
     registerContactTools(server, origin, db, env.INBOX_EMAIL_ADDRESS);
-  if (actor.kind === "owner" && scopes.includes(ReadMail)) {
-    registerMailTools(
-      server,
-      origin,
-      async () => {
-        const { id } = await requireMailbox(db, defaultMailboxId, ownerId);
-        return scopeMailStore(
-          {
-            DB: db,
-            INBOX_MESSAGES: env.INBOX_MESSAGES,
-            SENT_MESSAGES: env.SENT_MESSAGES,
-          },
-          id,
-        );
-      },
-      canReadContacts,
-    );
+  if (actor.kind === "owner") {
+    const ownedMailStore = async () => {
+      const { id } = await requireMailbox(db, defaultMailboxId, ownerId);
+      return scopeMailStore(env, id);
+    };
+    if (scopes.includes(ReadMail))
+      registerMailTools(server, origin, ownedMailStore, canReadContacts);
+    if (scopes.includes(SendMail))
+      registerMailSendTools(server, origin, ownerId, ownedMailStore, defer);
   }
   if (actor.kind === "oru")
     registerTaskRunnerTools(server, actor, db, notifyItemChange);
@@ -199,7 +197,11 @@ const advertiseScopes = HttpRouter.middleware((effect) =>
   }),
 );
 
-export const mcpRoutes = (env: McpEnv, notifyItemChange: NotifyItemChange) => {
+export const mcpRoutes = (
+  env: McpEnv,
+  notifyItemChange: NotifyItemChange,
+  defer: (work: Promise<unknown>) => void,
+) => {
   const handle = <E, R>(
     authorize: Effect.Effect<
       { subjectId: string; scopes: readonly McpScope[] } | undefined,
@@ -232,10 +234,15 @@ export const mcpRoutes = (env: McpEnv, notifyItemChange: NotifyItemChange) => {
             sql,
             access.scopes,
             notifyItemChange,
+            defer,
           ),
         {
           maxRequestBodySize:
-            (access.scopes.includes(WriteTasks) ? 128 : 16) * 1024,
+            (access.scopes.includes(SendMail)
+              ? 256
+              : access.scopes.includes(WriteTasks)
+                ? 128
+                : 16) * 1024,
           maxSubscriptions: 0,
         },
       );

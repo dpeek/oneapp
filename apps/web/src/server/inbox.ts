@@ -1,14 +1,8 @@
 import { mailboxSql, type MailDatabase } from "./mailbox.ts";
-import type {
-  R2Object,
-  R2Bucket,
-  R2Objects,
-  RateLimit,
-  SendEmail,
-} from "@cloudflare/workers-types";
+import type { R2Object, R2Bucket, R2Objects } from "@cloudflare/workers-types";
 import { ByteSize, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
-import PostalMime, { decodeWords, type Email } from "postal-mime";
+import { decodeWords, type Email } from "postal-mime";
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import {
   allMailApiPath,
@@ -26,7 +20,6 @@ import {
   inboxApiPath,
   InboxDraft,
   DeletedMailCursor,
-  splitRecipients,
   InboxEntry,
   InboxMessageId,
   InboxPage,
@@ -44,7 +37,6 @@ import {
   noiseApiPath,
   NoiseSenders,
   noiseSendersApiPath,
-  type ReplyCompletion,
   replyCompletionHeader,
   replySubject,
   SentEntry,
@@ -70,6 +62,7 @@ import { mailPreview } from "./mail-preview.ts";
 import {
   readableMessage,
   readMailMime,
+  readHeaders,
   readRawMailPreview,
 } from "./mail-content.ts";
 import { jsonError, privateHeaders } from "./api-response.ts";
@@ -94,6 +87,14 @@ import {
   mailMimeOptions as mimeOptions,
 } from "./mail-attachments.ts";
 import { mailHtmlPreview, type MailImageOptions } from "./mail-html-preview.ts";
+import {
+  inboxSender,
+  notifyInbox,
+  sendDraft,
+  sendRateLimitMessage,
+  type MailSenderBindings,
+} from "./mail-delivery.ts";
+import { readReplyTarget } from "./mail-reply-target.ts";
 import { prepareMailBody } from "./mail-authoring.ts";
 import {
   conversationMessageIds,
@@ -116,13 +117,10 @@ import {
 import { normalizePersonEmail } from "../people-contract.ts";
 import { managedPersonAddresses, matchPeople } from "./people-store.ts";
 import {
-  describeSent,
   describeStoredSent,
   isSentMessageId,
   listSent,
   readSent,
-  readSentReplyTarget,
-  saveSent,
   type SentReply,
 } from "./sent-mail.ts";
 
@@ -131,28 +129,13 @@ type InboxEnv = Pick<
   | "APP_ORIGIN"
   | "INBOX_EMAIL_ADDRESS"
   | "INBOX_MESSAGES"
-  | "INBOX_EMAIL_FROM"
   | "INBOX_UPDATES"
   | "SENT_MESSAGES"
 > & {
   DB: MailDatabase;
   mailboxAddresses: readonly string[];
-  INBOX_SEND?: SendEmail;
-  INBOX_SEND_LIMIT?: RateLimit;
-};
+} & MailSenderBindings;
 type InboxBucket = InboxEnv["INBOX_MESSAGES"];
-
-export const notifyInbox = async ({
-  INBOX_UPDATES,
-  DB,
-}: Pick<WorkerEnv, "INBOX_UPDATES"> & { DB: MailDatabase }) => {
-  if (!INBOX_UPDATES) return;
-  try {
-    await INBOX_UPDATES.getByName(DB.mailboxId).publish();
-  } catch {
-    console.warn("Could not notify Inbox subscribers");
-  }
-};
 
 export const inboxSessionHeaders = {
   id: "x-oneapp-inbox-session-id",
@@ -233,14 +216,6 @@ const withBodyPreviews = async <
   });
 };
 
-// R2 lists keys in ascending order, so new messages sort newest first.
-const newestFirstKey = (date: number) => {
-  const time = String(9_999_999_999_999 - date).padStart(13, "0");
-  return `0-${time}-${crypto.randomUUID()}`;
-};
-
-export const inboxMessageKey = () => `${newestFirstKey(Date.now())}.eml`;
-
 export const inboxSubject = (header: string | null) =>
   decodeWords(header?.slice(0, 4096) ?? "")
     .trim()
@@ -252,22 +227,6 @@ const summary = (object: R2Object, subject: string) => ({
   from: object.customMetadata?.envelopeFrom ?? "",
   subject,
 });
-
-const readHeaders = async (bucket: InboxBucket, id: string, length: number) => {
-  const object = await bucket.get(id, { range: { offset: 0, length } });
-  if (!object) return null;
-  const raw = await object.text();
-  const boundary = raw.search(/\r\n\r\n|\n\n|\r\r/u);
-  try {
-    const email = await PostalMime.parse(
-      (boundary < 0 ? raw : raw.slice(0, boundary)) + "\r\n\r\n",
-      mimeOptions,
-    );
-    return { email, metadata: object.customMetadata };
-  } catch {
-    return { email: null, metadata: object.customMetadata };
-  }
-};
 
 const readSubject = async (bucket: InboxBucket, object: R2Object) => {
   if (object.customMetadata?.subject !== undefined)
@@ -407,15 +366,6 @@ const replyInfo = (
         },
       }
     : {};
-};
-
-const inboxSender = (env: InboxEnv) => {
-  const {
-    INBOX_EMAIL_FROM: from,
-    INBOX_SEND: binding,
-    INBOX_SEND_LIMIT: limit,
-  } = env;
-  return from && binding && limit ? { from, binding, limit } : null;
 };
 
 const listMessages = async (env: InboxEnv, cursor: string | undefined) => {
@@ -564,10 +514,7 @@ const conversationListQuery = HttpServerRequest.schemaSearchParams(
   }),
 );
 
-const unknownSend = () =>
-  jsonError(502, "Could not confirm whether the email was sent.");
-const sendRateLimit = () =>
-  jsonError(429, "Sending limit reached. Try again later.");
+const sendRateLimit = () => jsonError(429, sendRateLimitMessage);
 
 const isJsonRequest = Effect.map(
   HttpServerRequest.HttpServerRequest,
@@ -575,113 +522,6 @@ const isJsonRequest = Effect.map(
     request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase() ===
     "application/json",
 );
-
-const sendDraft = Effect.fnUntraced(function* (
-  binding: SendEmail,
-  env: InboxEnv,
-  defer: (work: Promise<unknown>) => void,
-  message: typeof InboxDraft.Type & { from: string },
-  reply: SentReply | undefined,
-  completeThrough: string | undefined,
-) {
-  const { attachments, cc, ...body } = message;
-  const sent = yield* Effect.tryPromise({
-    try: () =>
-      binding.send({
-        ...body,
-        to: message.to.includes(",") ? splitRecipients(message.to) : message.to,
-        ...(cc ? { cc: splitRecipients(cc) } : {}),
-        ...(attachments
-          ? {
-              attachments: attachments.map((file) => ({
-                ...file,
-                disposition: "attachment" as const,
-                content: Uint8Array.fromBase64(file.content),
-              })),
-            }
-          : {}),
-        ...(reply?.headers ? { headers: reply.headers } : {}),
-      }),
-    catch: (error) =>
-      typeof error === "object" && error !== null && "code" in error
-        ? error.code
-        : undefined,
-  }).pipe(Effect.result);
-  if (sent._tag === "Success") {
-    if (!sent.success?.messageId) return yield* unknownSend();
-    const sentAt = Date.now();
-    const record = {
-      ...message,
-      id: newestFirstKey(sentAt),
-      sentAt,
-      providerMessageId: sent.success.messageId,
-      ...(reply ? { reply } : {}),
-    };
-    const saved = yield* saveSent(env.SENT_MESSAGES, record);
-    if (saved)
-      yield* Effect.promise(() =>
-        indexMail(env.DB, describeSent(record)).catch(() => {
-          console.warn("Could not index sent email");
-        }),
-      );
-    let completion: typeof ReplyCompletion.Type | undefined;
-    if (reply && completeThrough) {
-      const result = yield* Effect.promise(() =>
-        setThreadArchived(
-          env.DB,
-          completeThrough,
-          true,
-          reply.originalId,
-        ).catch(() => {
-          console.warn("Could not mark replied conversation done");
-          return "missing" as const;
-        }),
-      );
-      completion =
-        result === "stale"
-          ? "new-mail"
-          : result === "missing"
-            ? "failed"
-            : "done";
-    }
-    if (saved || completion === "done") defer(notifyInbox(env));
-    return HttpServerResponse.empty({
-      status: 204,
-      headers: {
-        ...privateHeaders,
-        ...(saved
-          ? { [sentMessageHeader]: record.id }
-          : { [sentCopyHeader]: "failed" }),
-        ...(completion ? { [replyCompletionHeader]: completion } : {}),
-      },
-    });
-  }
-  switch (sent.failure) {
-    case "E_VALIDATION_ERROR":
-      return yield* jsonError(400, "Cloudflare rejected the email format.");
-    case "E_RECIPIENT_SUPPRESSED":
-      return yield* jsonError(
-        422,
-        "Cloudflare has suppressed this recipient address.",
-      );
-    case "E_RECIPIENT_NOT_ALLOWED":
-    case "E_RECIPIENT_PLAN_RESTRICTED":
-      return yield* jsonError(
-        422,
-        "Cloudflare does not allow sending to this address.",
-      );
-    case "E_DELIVERY_FAILED":
-      return yield* jsonError(
-        422,
-        "Cloudflare could not deliver the email to this address.",
-      );
-    case "E_RATE_LIMIT_EXCEEDED":
-    case "E_DAILY_LIMIT_EXCEEDED":
-      return yield* sendRateLimit();
-    default:
-      return yield* unknownSend();
-  }
-}, Effect.withTracerEnabled(false));
 
 const deliverMail = Effect.fnUntraced(function* (
   env: InboxEnv,
@@ -707,7 +547,26 @@ const deliverMail = Effect.fnUntraced(function* (
   // Keep the send and its archive write together if the client disconnects.
   defer(work);
   const result = yield* Effect.promise(() => work);
-  return yield* result;
+  const delivery = yield* result;
+  if (delivery.status === "uncertain")
+    return yield* jsonError(
+      502,
+      "Could not confirm whether the email was sent.",
+    );
+  if (delivery.status === "rejected")
+    return yield* jsonError(delivery.httpStatus, delivery.message);
+  return HttpServerResponse.empty({
+    status: 204,
+    headers: {
+      ...privateHeaders,
+      ...(delivery.messageId
+        ? { [sentMessageHeader]: delivery.messageId }
+        : { [sentCopyHeader]: "failed" }),
+      ...(delivery.completion
+        ? { [replyCompletionHeader]: delivery.completion }
+        : {}),
+    },
+  });
 });
 
 const sendEmail = (env: InboxEnv, defer: (work: Promise<unknown>) => void) =>
@@ -759,21 +618,6 @@ const sendEmail = (env: InboxEnv, defer: (work: Promise<unknown>) => void) =>
     }
     return yield* deliverMail(env, defer, sender, message, reply, replyToId);
   });
-
-const readReplyTarget = async (env: InboxEnv, id: string) => {
-  if (isSentMessageId(id)) return readSentReplyTarget(env.SENT_MESSAGES, id);
-  const original = await readHeaders(
-    env.INBOX_MESSAGES,
-    id,
-    mimeOptions.maxHeadersSize,
-  );
-  if (!original) return null;
-  return {
-    to: replyRecipient(original.email, original.metadata?.envelopeFrom ?? ""),
-    subject: original.email?.subject ?? original.metadata?.subject ?? "",
-    headers: original.email ? replyHeaders(original.email) : undefined,
-  };
-};
 
 const sendInlineReply = (
   env: InboxEnv,

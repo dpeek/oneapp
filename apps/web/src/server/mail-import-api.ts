@@ -32,7 +32,7 @@ import {
   readImportReceipt,
   finishMailImport,
 } from "./mail-import-runs.ts";
-import { notifyInbox } from "./inbox.ts";
+import { notifyInbox } from "./mail-delivery.ts";
 
 const operation = <A>(work: () => Promise<A>) =>
   Effect.tryPromise({

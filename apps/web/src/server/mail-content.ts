@@ -55,3 +55,23 @@ export const readRawMailPreview = async (bucket: R2Bucket, id: string) => {
   );
   return email ? mailPreview(email) : "";
 };
+
+export const readHeaders = async (
+  bucket: R2Bucket,
+  id: string,
+  length: number,
+) => {
+  const object = await bucket.get(id, { range: { offset: 0, length } });
+  if (!object) return null;
+  const raw = await object.text();
+  const boundary = raw.search(/\r\n\r\n|\n\n|\r\r/u);
+  try {
+    const email = await PostalMime.parse(
+      (boundary < 0 ? raw : raw.slice(0, boundary)) + "\r\n\r\n",
+      mailMimeOptions,
+    );
+    return { email, metadata: object.customMetadata };
+  } catch {
+    return { email: null, metadata: object.customMetadata };
+  }
+};

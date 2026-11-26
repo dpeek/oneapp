@@ -1,5 +1,18 @@
 import { setTimeout } from "node:timers/promises";
 
+function hasNoLiveDarwinGroupMembers(pgid: number) {
+  const processes = Bun.spawnSync(["/bin/ps", "-ax", "-o", "pgid=,stat="], {
+    stderr: "ignore",
+  });
+  return (
+    processes.exitCode === 0 &&
+    !processes.stdout.toString().split("\n").some((line) => {
+      const [group, state] = line.trim().split(/\s+/u);
+      return Number(group) === pgid && !state?.startsWith("Z");
+    })
+  );
+}
+
 export async function stopProcessGroup(child: ReturnType<typeof Bun.spawn>) {
   if (process.platform === "win32") {
     if (child.exitCode !== null || child.signalCode !== null) return;
@@ -26,7 +39,15 @@ export async function stopProcessGroup(child: ReturnType<typeof Bun.spawn>) {
       process.kill(-child.pid, signal);
       return true;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+      const { code } = error as NodeJS.ErrnoException;
+      if (code === "ESRCH") return false;
+      // macOS can return EPERM when only unreaped exits remain in the group.
+      if (
+        code === "EPERM" &&
+        process.platform === "darwin" &&
+        hasNoLiveDarwinGroupMembers(child.pid)
+      )
+        return false;
       throw error;
     }
   };

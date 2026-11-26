@@ -1,4 +1,4 @@
-import { Toast } from "@oneapp/ui";
+import { Toast } from "@orumai/ui";
 import { Effect } from "effect";
 import { Mount } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";

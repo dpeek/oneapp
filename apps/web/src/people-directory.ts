@@ -8,7 +8,7 @@ import {
   Sheet,
   spinner,
   trashIconPaths,
-} from "@oneapp/ui";
+} from "@orumai/ui";
 import { Effect } from "effect";
 import { Submodel } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";

@@ -1,4 +1,4 @@
-import { FileMetadata } from "@oneapp/core/files";
+import { FileMetadata } from "@orumai/core/files";
 import { Schema } from "effect";
 import { ItemId, ItemTagIds, Tag } from "./items-contract.ts";
 

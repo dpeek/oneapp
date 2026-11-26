@@ -5,7 +5,7 @@ import {
   linksPath,
   normalizeLinkUrl,
   SaveLink,
-} from "@oneapp/core/links";
+} from "@orumai/core/links";
 import { Effect, Schema } from "effect";
 
 const isSaveLink = Schema.is(SaveLink);

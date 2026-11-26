@@ -112,7 +112,7 @@ export const snapshotOwner = (db: Database): string => {
     .get();
   if (accounts?.count !== 1 || !row?.value)
     throw new Error(
-      "The snapshot must contain one active OneApp owner with an email address.",
+      "The snapshot must contain one active Orumai owner with an email address.",
     );
   return row.value;
 };

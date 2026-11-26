@@ -4,7 +4,7 @@ import {
   Popover,
   Sheet,
   Tokenizer,
-} from "@oneapp/ui";
+} from "@orumai/ui";
 import { Effect, Option, Schema } from "effect";
 import { Command, Update } from "foldkit";
 import { focus } from "foldkit/dom";

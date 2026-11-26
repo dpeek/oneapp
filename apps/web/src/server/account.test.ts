@@ -5,14 +5,14 @@ import {
   cliLinkScopes,
   cliLoginPath,
   cliTokensPath,
-} from "@oneapp/core/cli-auth";
-import { extensionAccessPath, digestSecret } from "@oneapp/core/extension-auth";
+} from "@orumai/core/cli-auth";
+import { extensionAccessPath, digestSecret } from "@orumai/core/extension-auth";
 import {
   linkPath,
   linksPath,
   linksReadScope,
   linksWriteScope,
-} from "@oneapp/core/links";
+} from "@orumai/core/links";
 import { EmailDelivery } from "@yielded/auth";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { ConfigProvider, Effect, Redacted, Schema } from "effect";
@@ -5974,7 +5974,7 @@ it("uses mailbox aliases for Reply All and never reads another mailbox's origina
 
 it("imports through a separately approved CLI permission with pinned plans, bounded uploads and resumable receipts", async () => {
   const { mailImportScope, MailImportPlan } =
-    await import("@oneapp/core/mail-import");
+    await import("@orumai/core/mail-import");
   const { importHash } = await import("./mail-import-runs.ts");
   const { openRemoteMailSink } =
     await import("../../../../scripts/mail/remote-sink.ts");

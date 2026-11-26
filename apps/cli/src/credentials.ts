@@ -1,4 +1,4 @@
-import { CliTokenSecret } from "@oneapp/core/cli-auth";
+import { CliTokenSecret } from "@orumai/core/cli-auth";
 import { Effect, Redacted, Schema } from "effect";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -49,7 +49,7 @@ export const credentials = Effect.gen(function* () {
     catch: () =>
       new CliError({
         message:
-          "Could not read the OneApp server setting. Run one auth login again.",
+          "Could not read the Orumai server setting. Run one auth login again.",
       }),
   });
   if (!origin)
@@ -85,7 +85,7 @@ export const storeCredentials = Effect.fnUntraced(function* (
       });
     },
     catch: () =>
-      new CliError({ message: "Could not write the OneApp server setting." }),
+      new CliError({ message: "Could not write the Orumai server setting." }),
   });
 
   yield* Effect.tryPromise({

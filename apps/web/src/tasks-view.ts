@@ -27,7 +27,7 @@ import {
   Tokenizer,
   userCheckIconPaths,
   visuallyHiddenStatus,
-} from "@oneapp/ui";
+} from "@orumai/ui";
 import { Effect, Option } from "effect";
 import { Mount, Submodel } from "foldkit";
 import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html";

@@ -4,7 +4,7 @@ import {
   createFieldGroup,
   createNativeSelect,
   trashIconPaths,
-} from "@oneapp/ui";
+} from "@orumai/ui";
 import type { EditableItemDetails, ItemType } from "./vault-item-content.ts";
 import { vaultField } from "./vault-field.ts";
 import { vaultIcon } from "./vault-item-icon.ts";

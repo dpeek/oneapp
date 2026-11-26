@@ -147,7 +147,7 @@ export const bindNotificationPermission = (element: HTMLElement) => {
     const request = crypto.randomUUID();
     const emit = (detail: object) =>
       element.dispatchEvent(
-        new CustomEvent("oneapp-push-permission", { detail }),
+        new CustomEvent("orumai-push-permission", { detail }),
       );
     let permission: Promise<NotificationPermission>;
     try {

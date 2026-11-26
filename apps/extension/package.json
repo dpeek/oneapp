@@ -1,5 +1,5 @@
 {
-  "name": "@oneapp/extension",
+  "name": "@orumai/extension",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,8 +10,8 @@
     "@stylexjs/unplugin": "0.19.2"
   },
   "dependencies": {
-    "@oneapp/core": "workspace:*",
-    "@oneapp/ui": "workspace:*",
+    "@orumai/core": "workspace:*",
+    "@orumai/ui": "workspace:*",
     "effect": "~4.1.0",
     "foldkit": "0.170.0"
   }

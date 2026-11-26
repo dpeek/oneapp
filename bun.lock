@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "oneapp",
+      "name": "orumai",
       "devDependencies": {
         "@alchemy.run/cloudflare": "2.0.0-beta.85",
         "@alchemy.run/cloudflare-runtime": "2.0.0-beta.85",
@@ -21,23 +21,23 @@
       },
     },
     "apps/cli": {
-      "name": "@oneapp/cli",
+      "name": "@orumai/cli",
       "version": "0.0.0",
       "bin": {
         "one": "./src/index.ts",
       },
       "dependencies": {
         "@effect/platform-bun": "~4.1.0",
-        "@oneapp/core": "workspace:*",
+        "@orumai/core": "workspace:*",
         "effect": "~4.1.0",
       },
     },
     "apps/extension": {
-      "name": "@oneapp/extension",
+      "name": "@orumai/extension",
       "version": "0.0.0",
       "dependencies": {
-        "@oneapp/core": "workspace:*",
-        "@oneapp/ui": "workspace:*",
+        "@orumai/core": "workspace:*",
+        "@orumai/ui": "workspace:*",
         "effect": "~4.1.0",
         "foldkit": "0.170.0",
       },
@@ -46,15 +46,15 @@
       },
     },
     "apps/web": {
-      "name": "@oneapp/web",
+      "name": "@orumai/web",
       "version": "0.0.0",
       "dependencies": {
         "@effect/sql-d1": "~4.1.0",
         "@js-temporal/polyfill": "0.5.1",
         "@modelcontextprotocol/server": "2.4.0",
         "@noble/hashes": "2.4.0",
-        "@oneapp/core": "workspace:*",
-        "@oneapp/ui": "workspace:*",
+        "@orumai/core": "workspace:*",
+        "@orumai/ui": "workspace:*",
         "@resvg/resvg-wasm": "2.6.2",
         "@yielded/auth": "0.1.0-beta.47",
         "@yielded/auth-persistence": "0.1.0-beta.47",
@@ -84,19 +84,19 @@
       },
     },
     "packages/core": {
-      "name": "@oneapp/core",
+      "name": "@orumai/core",
       "version": "0.0.0",
       "dependencies": {
         "effect": "~4.1.0",
       },
     },
     "packages/ui": {
-      "name": "@oneapp/ui",
+      "name": "@orumai/ui",
       "version": "0.0.0",
       "dependencies": {
         "@effect/platform-browser": "~4.1.0",
         "@foldkit/ui": "0.170.0",
-        "@oneapp/core": "workspace:*",
+        "@orumai/core": "workspace:*",
         "@stylexjs/stylex": "0.19.2",
         "effect": "~4.1.0",
         "foldkit": "0.170.0",
@@ -318,15 +318,15 @@
 
     "@noble/hashes": ["@noble/hashes@2.4.0", "", {}, "sha512-X5XaVWZIBCT7HHZGm5I7ZQXDwLG+bGXuSrMQAW+7Zvl87h1kmc1ZB1VSRJcpUfoUrGQp4Fkoxm5kZ+Ms+aW+eA=="],
 
-    "@oneapp/cli": ["@oneapp/cli@workspace:apps/cli"],
+    "@orumai/cli": ["@orumai/cli@workspace:apps/cli"],
 
-    "@oneapp/core": ["@oneapp/core@workspace:packages/core"],
+    "@orumai/core": ["@orumai/core@workspace:packages/core"],
 
-    "@oneapp/extension": ["@oneapp/extension@workspace:apps/extension"],
+    "@orumai/extension": ["@orumai/extension@workspace:apps/extension"],
 
-    "@oneapp/ui": ["@oneapp/ui@workspace:packages/ui"],
+    "@orumai/ui": ["@orumai/ui@workspace:packages/ui"],
 
-    "@oneapp/web": ["@oneapp/web@workspace:apps/web"],
+    "@orumai/web": ["@orumai/web@workspace:apps/web"],
 
     "@oxc-project/types": ["@oxc-project/types@0.153.0", "", {}, "sha512-jSNrRIyvPVLL5E1z/tS5zLAprosGz/FuI1PWwEOz59j3E4TTTzSpqKb/RDGqJhhW0QHYISGXxq582wGx6T11Tw=="],
 

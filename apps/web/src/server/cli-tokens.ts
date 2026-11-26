@@ -5,7 +5,7 @@ import {
   CliTokenSecret,
   cliTokensPath,
   currentCliTokenPath,
-} from "@oneapp/core/cli-auth";
+} from "@orumai/core/cli-auth";
 import { Clock, Data, Effect, Layer, Schema } from "effect";
 import { Hex } from "effect/encoding";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";

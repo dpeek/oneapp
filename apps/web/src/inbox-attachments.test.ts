@@ -1,11 +1,11 @@
 import { expect, it } from "@effect/vitest";
 import { vi } from "vitest";
-import { Dialog } from "@oneapp/ui";
+import { Dialog } from "@orumai/ui";
 import { initial, Message, update } from "./inbox-attachments.ts";
 
-vi.mock("@oneapp/ui", async () => {
+vi.mock("@orumai/ui", async () => {
   const { Dialog } = await import(
-    import.meta.resolve("@foldkit/ui", import.meta.resolve("@oneapp/ui"))
+    import.meta.resolve("@foldkit/ui", import.meta.resolve("@orumai/ui"))
   );
   return { Dialog };
 });

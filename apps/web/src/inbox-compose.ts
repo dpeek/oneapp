@@ -6,7 +6,7 @@ import {
   fieldClassNames,
   fileInput,
   input,
-} from "@oneapp/ui";
+} from "@orumai/ui";
 import { Effect, Option, Schema } from "effect";
 import { Command, Submodel, Update } from "foldkit";
 import type { ChildAttribute, HtmlBuilder } from "foldkit/html";

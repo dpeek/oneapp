@@ -1,23 +1,23 @@
 {
   "manifest_version": 3,
-  "name": "OneApp",
+  "name": "Orumai",
   "version": "0.0.0",
-  "description": "Save the current tab to OneApp.",
+  "description": "Save the current tab to Orumai.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxHo4MyNYA+3FtSMwn1GxbdAOcvLIj/C7clhZUNA0J114N/fslxM+YioaUg1vLezX3GYIXYMdn94gf2H4q6Q+OBgmfGeg1qEnvsdtOCoQBvIXU1SB9R9m2+Bv/+tju8xWe7sljmzyJYXCDj1KmNaLMfys6AS85nGsG/J8KY5dQYbumBNw03lTetIVnz7zaDg+6nHDL5g9Ox4sNjht7EeVE9pKWVxqphvy/rmdod0UZuyRO4I/FVU252zGerCE8ev40VuORfniEKYvYCKsUbAASwPWgS+nZodkEyKcja5z10IDa7UMWuiT7+tldi+PiQannEItOPCWOQp6dDCQJ9mPNQIDAQAB",
   "permissions": ["activeTab", "storage"],
   "host_permissions": ["https://app.dpeek.com/*"],
   "externally_connectable": { "matches": ["https://app.dpeek.com/*"] },
   "background": { "service_worker": "background.js", "type": "module" },
   "icons": {
-    "16": "icons/oneapp-16.png",
-    "32": "icons/oneapp-32.png",
-    "48": "icons/oneapp-48.png",
-    "128": "icons/oneapp-128.png"
+    "16": "icons/orumai-16.png",
+    "32": "icons/orumai-32.png",
+    "48": "icons/orumai-48.png",
+    "128": "icons/orumai-128.png"
   },
   "action": {
     "default_icon": {
-      "16": "icons/oneapp-16.png",
-      "32": "icons/oneapp-32.png"
+      "16": "icons/orumai-16.png",
+      "32": "icons/orumai-32.png"
     },
     "default_popup": "popup.html"
   }

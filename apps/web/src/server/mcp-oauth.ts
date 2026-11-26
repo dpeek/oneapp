@@ -1,4 +1,4 @@
-import { linksReadScope, linksWriteScope } from "@oneapp/core/links";
+import { linksReadScope, linksWriteScope } from "@orumai/core/links";
 import { OAuthScope, OAuthServer } from "@yielded/auth";
 import { OAuthServerPersistence } from "@yielded/auth-persistence";
 import { Clock, Effect, Layer, Redacted, Schema } from "effect";

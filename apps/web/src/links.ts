@@ -1,4 +1,4 @@
-import { Link, LinkList } from "@oneapp/core/links";
+import { Link, LinkList } from "@orumai/core/links";
 import {
   alert,
   avatar,
@@ -12,7 +12,7 @@ import {
   outlineIcon,
   plusIcon,
   trashIconPaths,
-} from "@oneapp/ui";
+} from "@orumai/ui";
 import { Effect, Schema } from "effect";
 import { Command, Mount, Submodel, type Update } from "foldkit";
 import type { ChildAttribute, HtmlBuilder } from "foldkit/html";

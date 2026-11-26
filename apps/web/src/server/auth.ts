@@ -149,7 +149,7 @@ export const AccountActionEvidence = Layer.mergeAll(
       );
       if (!proof) return Effect.fail(Email.EmailActionRequired.make({}));
 
-      // OneApp only issues sessions from its single password credential.
+      // Orumai only issues sessions from its single password credential.
       const [credential] = challenge.revision.credentials;
       return Effect.succeed({
         evidence: Sessions.AuthenticationEvidence.make({

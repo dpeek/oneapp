@@ -77,8 +77,8 @@ const openProfile = async () => {
 let step = "opening the first Chrome profile";
 const siteUrl = `https://login.oneapp.test:${new URL(origin).port}/fixture-login`;
 const webLoginUrl = `https://login.oneapp-vault.test:${new URL(origin).port}/fixture-login`;
-const signInToOneApp = async ({ context, localResponse }) => {
-  step = "signing in to OneApp";
+const signInToOrumai = async ({ context, localResponse }) => {
+  step = "signing in to Orumai";
   const app = context.pages()[0];
   await app.goto(origin);
   await app.getByLabel("Email", { exact: true }).fill(fixtureEmail);
@@ -87,7 +87,7 @@ const signInToOneApp = async ({ context, localResponse }) => {
   const auth = await localResponse((response) =>
     endpoint(response, "/api/auth/signIn", "POST"),
   );
-  assert.equal(auth.status(), 200, "OneApp did not issue a session");
+  assert.equal(auth.status(), 200, "Orumai did not issue a session");
   const identity = await localResponse(
     (response) => endpoint(response, "/api/me") && response.ok(),
   );
@@ -137,7 +137,7 @@ const connectBitwarden = async ({ context, responses, localResponse }) => {
   assert.equal(config.status(), 200);
   await email.fill(fixtureEmail);
 
-  step = "authorizing Bitwarden with the existing OneApp session";
+  step = "authorizing Bitwarden with the existing Orumai session";
   const consentPage = context.waitForEvent("page", { timeout: 15_000 });
   await popup.getByTestId("login-sso-button").click();
   const consent = await consentPage;
@@ -160,7 +160,7 @@ const connectBitwarden = async ({ context, responses, localResponse }) => {
   );
   const token = await redemption.json();
   console.log(
-    "PASS OneApp SSO used the existing sign-in and exchanged a PKCE code.",
+    "PASS Orumai SSO used the existing sign-in and exchanged a PKCE code.",
   );
   return { client, token };
 };
@@ -220,10 +220,10 @@ try {
   const first = await openProfile();
   const { responses, localResponse } = first;
   context = first.context;
-  const app = await signInToOneApp(first);
+  const app = await signInToOrumai(first);
 
   if (!seeded) {
-    step = "creating a vault in OneApp";
+    step = "creating a vault in Orumai";
     await app.getByRole("link", { name: "Vault", exact: true }).click();
     const status = await localResponse((response) =>
       endpoint(response, "/api/vault/setup"),
@@ -265,12 +265,12 @@ try {
       "wrappedKey",
       "wrappedPrivateKey",
     ]);
-    const unlock = app.locator("oneapp-vault-reader");
+    const unlock = app.locator("orumai-vault-reader");
     await unlock.getByLabel("Vault master password", { exact: true }).waitFor();
     await app.reload();
     await unlock.getByLabel("Vault master password", { exact: true }).waitFor();
     console.log(
-      "PASS A fresh OneApp account created a vault with browser-generated keys.",
+      "PASS A fresh Orumai account created a vault with browser-generated keys.",
     );
   }
 
@@ -399,7 +399,7 @@ try {
     step = "starting an independent second Chrome profile";
     const second = await openProfile();
     context = second.context;
-    await signInToOneApp(second);
+    await signInToOrumai(second);
     const { client: secondClient, token: secondToken } =
       await connectBitwarden(second);
     assert.notEqual(secondToken.access_token, token.access_token);
@@ -427,8 +427,8 @@ try {
     step = "opening the same login for editing in both profiles";
     const [original] = vault.ciphers;
     const cipherPath = `/api/ciphers/${original.id}`;
-    const rotatedPassword = "OneApp rotated fixture password #42";
-    const stalePassword = "OneApp stale fixture password #73";
+    const rotatedPassword = "Orumai rotated fixture password #42";
+    const stalePassword = "Orumai stale fixture password #73";
     await editPassword(secondClient, stalePassword);
     await editPassword(client, rotatedPassword);
 
@@ -643,7 +643,7 @@ try {
     );
 
     step = "creating an encrypted Secure Note in the first profile";
-    const noteName = "OneApp test Secure Note";
+    const noteName = "Orumai test Secure Note";
     const initialNote = "Synthetic note for Chrome.\nFirst revision.";
     const revisedNote = "Synthetic note for Chrome.\nRevised in profile one.";
     const newNote = new URL(client.url());
@@ -717,9 +717,9 @@ try {
       "PASS Bitwarden created, edited, and decrypted the Secure Note across profiles. The login still autofilled.",
     );
 
-    step = "opening the encrypted vault in the OneApp web app";
+    step = "opening the encrypted vault in the Orumai web app";
     await app.goto(new URL("/vault", origin).href);
-    const webVault = app.locator("oneapp-vault-reader");
+    const webVault = app.locator("orumai-vault-reader");
     const unlockPassword = webVault.getByLabel("Vault master password", {
       exact: true,
     });
@@ -758,10 +758,10 @@ try {
         noteName,
         "Revised in profile one.",
       ].some((value) => encryptedSnapshot.includes(value)),
-      "OneApp returned a plaintext vault value.",
+      "Orumai returned a plaintext vault value.",
     );
 
-    step = "reading the login and Secure Note in OneApp";
+    step = "reading the login and Secure Note in Orumai";
     await button(webVault, noteName).press("Enter");
     const noteText = webVault
       .locator("dd")
@@ -811,11 +811,11 @@ try {
     assert.equal(await noteText.count(), 0);
     assert.equal(await button(webVault, noteName).count(), 0);
     console.log(
-      "PASS OneApp opened both Bitwarden items locally and cleared decrypted values on lock and navigation.",
+      "PASS Orumai opened both Bitwarden items locally and cleared decrypted values on lock and navigation.",
     );
 
-    step = "creating a Secure Note in OneApp";
-    const webNoteTitle = "Created in the OneApp web vault";
+    step = "creating a Secure Note in Orumai";
+    const webNoteTitle = "Created in the Orumai web vault";
     const webNoteBody =
       "Encrypted before sending.\nSecond line with Unicode 🔒";
     const itemsPath = "/api/vault/items";
@@ -844,7 +844,7 @@ try {
         ![webNoteTitle, "Encrypted before sending.", masterPassword].some(
           (value) => submitted.includes(value),
         ),
-      "OneApp sent a plaintext vault value.",
+      "Orumai sent a plaintext vault value.",
     );
     const sealed = JSON.parse(submitted);
     assert.deepEqual(Object.keys(sealed).sort(), [
@@ -870,7 +870,7 @@ try {
     assert.equal(retry.status(), 201);
     assert.equal(retry.request().postData(), submitted);
     const savedWebNote = await retry.json();
-    step = "opening the saved note in the OneApp web vault";
+    step = "opening the saved note in the Orumai web vault";
     await webVault
       .getByRole("heading", { name: webNoteTitle, exact: true })
       .waitFor({ timeout: 10_000 });
@@ -879,7 +879,7 @@ try {
       webNoteBody,
     );
 
-    step = "syncing the OneApp Secure Note into the second Bitwarden profile";
+    step = "syncing the Orumai Secure Note into the second Bitwarden profile";
     const afterWebSave = await syncNow(second, secondClient);
     const syncedWebNote = afterWebSave.ciphers.find(
       ({ id }) => id === savedWebNote.id,
@@ -900,12 +900,12 @@ try {
     assert.equal(await decryptedNote.inputValue(), webNoteBody);
     await context.setOffline(false);
     console.log(
-      "PASS OneApp saved an encrypted Secure Note once across a retry and Bitwarden opened it offline.",
+      "PASS Orumai saved an encrypted Secure Note once across a retry and Bitwarden opened it offline.",
     );
 
-    step = "editing a Secure Note in OneApp";
-    const editedWebTitle = "Renamed in OneApp";
-    const editedWebBody = "First edit from the OneApp web vault.";
+    step = "editing a Secure Note in Orumai";
+    const editedWebTitle = "Renamed in Orumai";
+    const editedWebBody = "First edit from the Orumai web vault.";
     const webEditPath = `${itemsPath}/${savedWebNote.id}`;
     const isWebEdit = (response) => endpoint(response, webEditPath, "PUT");
     const editWebNote = button(webVault, "Edit");
@@ -945,7 +945,7 @@ try {
       .waitFor({ timeout: 10_000 });
     assert.equal(await webVault.locator("dd").textContent(), editedWebBody);
 
-    step = "syncing the OneApp edit into Bitwarden";
+    step = "syncing the Orumai edit into Bitwarden";
     const afterWebEdit = await syncNow(second, secondClient);
     const syncedWebEdit = afterWebEdit.ciphers.find(
       ({ id }) => id === savedWebNote.id,
@@ -974,8 +974,8 @@ try {
     );
 
     step =
-      "saving a newer Bitwarden edit while an older draft is open in OneApp";
-    const staleDraft = "Unsent changes in the OneApp editor.";
+      "saving a newer Bitwarden edit while an older draft is open in Orumai";
+    const staleDraft = "Unsent changes in the Orumai editor.";
     const deviceNoteBody = "A newer revision saved in Bitwarden.";
     await editWebNote.press("Enter");
     await webBody.fill(staleDraft);
@@ -991,7 +991,7 @@ try {
     const deviceEdit = await savedDeviceEdit.json();
     assert.ok(Date.parse(deviceEdit.revisionDate) > editedWebNote.revision);
 
-    step = "rejecting the stale OneApp edit and reloading the winning note";
+    step = "rejecting the stale Orumai edit and reloading the winning note";
     await saveWebNote.press("Enter");
     const rejectedWebEdit = await localResponse(
       (response) => isWebEdit(response) && response !== savedWebEdit,
@@ -1014,13 +1014,13 @@ try {
       item.id === deviceEdit.id ? deviceEdit : item,
     );
     console.log(
-      "PASS OneApp preserved the stale draft, rejected its save, and reloaded the newer Bitwarden edit.",
+      "PASS Orumai preserved the stale draft, rejected its save, and reloaded the newer Bitwarden edit.",
     );
 
-    step = "creating a personal login in OneApp";
-    const webLoginTitle = "Personal login created in OneApp";
+    step = "creating a personal login in Orumai";
+    const webLoginTitle = "Personal login created in Orumai";
     const webLoginUsername = "oneapp-login-test@example.net";
-    const webLoginPassword = "Synthetic-OneApp-Login-Password!37";
+    const webLoginPassword = "Synthetic-Orumai-Login-Password!37";
     await button(webVault, "Back to items").press("Enter");
     await button(webVault, "New Login").press("Enter");
     await webVault.getByLabel("Title", { exact: true }).fill(webLoginTitle);
@@ -1047,7 +1047,7 @@ try {
         webLoginUrl,
         masterPassword,
       ].some((value) => submittedLogin.includes(value)),
-      "OneApp sent a plaintext login field.",
+      "Orumai sent a plaintext login field.",
     );
     const encryptedLogin = JSON.parse(submittedLogin);
     assert.equal(encryptedLogin.type, 1);
@@ -1094,7 +1094,7 @@ try {
     );
 
     step =
-      "syncing and autofilling the OneApp login in the second Bitwarden profile";
+      "syncing and autofilling the Orumai login in the second Bitwarden profile";
     const afterWebLogin = await syncNow(second, secondClient);
     const syncedWebLogin = afterWebLogin.ciphers.find(
       ({ id }) => id === savedLogin.id,
@@ -1117,11 +1117,11 @@ try {
     await autofill(webLoginSite, webLoginUsername, webLoginPassword);
     await autofill();
     console.log(
-      "PASS OneApp encrypted a personal login before saving and Bitwarden autofilled it on the matching fixture site.",
+      "PASS Orumai encrypted a personal login before saving and Bitwarden autofilled it on the matching fixture site.",
     );
 
-    step = "rotating the personal login password in OneApp";
-    const rotatedWebPassword = "Rotated-In-OneApp!45";
+    step = "rotating the personal login password in Orumai";
+    const rotatedWebPassword = "Rotated-In-Orumai!45";
     const editWebLogin = button(webVault, "Edit");
     const saveWebLogin = button(webVault, "Save");
     const isWebLoginEdit = (response) =>
@@ -1149,7 +1149,7 @@ try {
         webLoginUsername,
         webLoginUrl,
       ].some((value) => loginEditRequest.includes(value)),
-      "OneApp sent a plaintext login field when editing.",
+      "Orumai sent a plaintext login field when editing.",
     );
     const loginEdit = JSON.parse(loginEditRequest);
     assert.equal(loginEdit.expectedRevision, savedLogin.revision);
@@ -1197,11 +1197,11 @@ try {
     );
     await autofill(webLoginSite, webLoginUsername, rotatedWebPassword);
     console.log(
-      "PASS Bitwarden synced and autofilled the password rotated in OneApp.",
+      "PASS Bitwarden synced and autofilled the password rotated in Orumai.",
     );
 
     step =
-      "rejecting a stale OneApp login edit after a newer Bitwarden rotation";
+      "rejecting a stale Orumai login edit after a newer Bitwarden rotation";
     const staleLoginDraft = "Unsaved-web-draft!48";
     const latestLoginPassword = "Newer-Bitwarden-password!51";
     await editWebLogin.press("Enter");
@@ -1242,10 +1242,10 @@ try {
       item.id === latestLogin.id ? latestLogin : item,
     );
     console.log(
-      "PASS OneApp rejected the stale login save, kept the draft, and reloaded the newer Bitwarden password.",
+      "PASS Orumai rejected the stale login save, kept the draft, and reloaded the newer Bitwarden password.",
     );
 
-    step = "moving the login to Trash in OneApp";
+    step = "moving the login to Trash in Orumai";
     await autofill(webLoginSite, webLoginUsername, latestLoginPassword);
     const lifecyclePath = `${itemsPath}/${savedLogin.id}`;
     await button(webVault, "Delete").press("Enter");
@@ -1298,11 +1298,11 @@ try {
     await button(secondClient, "Restore").waitFor();
     await assertNoAutofill(webLoginSite);
     console.log(
-      "PASS Bitwarden synced the OneApp-trashed login, and the matching site stayed blank.",
+      "PASS Bitwarden synced the Orumai-trashed login, and the matching site stayed blank.",
     );
 
     step =
-      "restoring the login in OneApp and checking that Bitwarden autofills it";
+      "restoring the login in Orumai and checking that Bitwarden autofills it";
     await button(webVault, "Restore").press("Enter");
     const restoredFromWeb = await localResponse((response) =>
       endpoint(response, `${lifecyclePath}/restore`, "PUT"),
@@ -1337,7 +1337,7 @@ try {
     assert.deepEqual(afterWebRestore.ciphers, vault.ciphers);
     await autofill(webLoginSite, webLoginUsername, latestLoginPassword);
     console.log(
-      "PASS Restoring the login in OneApp let Bitwarden sync and autofill it again.",
+      "PASS Restoring the login in Orumai let Bitwarden sync and autofill it again.",
     );
 
     step = "exchanging attachments and exporting ZIP files in both clients";
@@ -1395,7 +1395,7 @@ try {
     });
     vault.ciphers = transfer.passkey.sync.ciphers;
 
-    step = "revoking the second Bitwarden profile in OneApp Settings";
+    step = "revoking the second Bitwarden profile in Orumai Settings";
     const devicesPath = "/api/bitwarden/devices";
     const firstDevice = claims(token).device;
     const secondDevice = claims(secondToken).device;
@@ -1459,7 +1459,7 @@ try {
     await rowFor(firstDevice).waitFor();
     assert.equal(await target.count(), 0);
     console.log(
-      "PASS OneApp revoked one Bitwarden profile's access and refresh tokens. The other profile still synced.",
+      "PASS Orumai revoked one Bitwarden profile's access and refresh tokens. The other profile still synced.",
     );
 
     await context.close();
@@ -1540,7 +1540,7 @@ try {
     assert.equal(status, 204);
     const destination = await openProfile();
     context = destination.context;
-    const destinationApp = await signInToOneApp(destination);
+    const destinationApp = await signInToOrumai(destination);
     step = "reimporting both clients' exports into a new D1 vault";
     await restoreIntoFreshVault({
       app: destinationApp,

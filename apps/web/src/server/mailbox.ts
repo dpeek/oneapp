@@ -5,8 +5,8 @@ import { ownerId } from "./auth.ts";
 import { PersonEmail, normalizePersonEmail } from "../people-contract.ts";
 
 export const defaultMailboxId = "personal";
-import { MailboxId } from "@oneapp/core/mail-import";
-export { MailboxId } from "@oneapp/core/mail-import";
+import { MailboxId } from "@orumai/core/mail-import";
+export { MailboxId } from "@orumai/core/mail-import";
 export type MailDatabase = D1Database & { readonly mailboxId: string };
 
 // Scope is explicit at every mail query; this adapter does not rewrite SQL.

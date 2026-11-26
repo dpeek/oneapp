@@ -1,5 +1,5 @@
-import { defaultServerUrl } from "@oneapp/core";
-import { digestSecret, ExtensionRequestId } from "@oneapp/core/extension-auth";
+import { defaultServerUrl } from "@orumai/core";
+import { digestSecret, ExtensionRequestId } from "@orumai/core/extension-auth";
 import { Schema } from "effect";
 import { readConnection } from "./access.ts";
 

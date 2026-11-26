@@ -12,7 +12,7 @@ import {
   taskIconPaths,
   Tooltip,
   unreadBadge,
-} from "@oneapp/ui";
+} from "@orumai/ui";
 import { Option, Schema, Stream } from "effect";
 import { Mount, Update } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";

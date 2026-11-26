@@ -1,5 +1,5 @@
 {
-  "name": "oneapp",
+  "name": "orumai",
   "private": true,
   "packageManager": "bun@1.4.4",
   "engines": {
@@ -13,7 +13,7 @@
     "dev": "bun scripts/dev.ts",
     "dev:pull": "bun scripts/dev-pull.ts",
     "apple:build": "sh apps/apple/build.sh",
-    "apple:dev": "bun run apple:build && open apps/apple/dist/OneApp.app",
+    "apple:dev": "bun run apple:build && open apps/apple/dist/Orumai.app",
     "build": "bun run --parallel --filter './apps/*' build",
     "deploy": "bun scripts/deploy.ts",
     "db:generate": "bun --bun drizzle-kit generate --config apps/web/drizzle.config.ts",

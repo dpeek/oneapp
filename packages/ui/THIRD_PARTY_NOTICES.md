@@ -3,29 +3,29 @@
 `src/toast.ts`, `src/toast-state.ts`, and `src/toast-focus.ts` adapt CreaseUI's
 StyleX toast, toast behavior, and focus recovery helper at revision
 [b11a974af28917ae6fea67cbf9ade89d8a3c464c](https://github.com/Potti1234/creaseui/tree/b11a974af28917ae6fea67cbf9ade89d8a3c464c).
-The local adaptation uses OneApp tokens and buttons, adds notification defaults,
+The local adaptation uses Orumai tokens and buttons, adds notification defaults,
 and includes action activation in the runtime message schema.
 
 `src/color-picker.ts` and `src/color-picker-color.ts` adapt the opaque picker
-from the same CreaseUI revision for OneApp’s shared dialog and popover UI.
+from the same CreaseUI revision for Orumai’s shared dialog and popover UI.
 
 `src/tokenizer.ts` adapts the StyleX Tokenizer from the same CreaseUI revision.
-It uses OneApp control tokens and renders selections owned by the task draft.
+It uses Orumai control tokens and renders selections owned by the task draft.
 
 `src/command-menu.ts` adapts the StyleX Command from the same CreaseUI revision.
 
 `src/dialog.ts` adapts the StyleX Dialog layout from the same CreaseUI revision
-and its AlertDialog variation using OneApp tokens and the installed Foldkit
+and its AlertDialog variation using Orumai tokens and the installed Foldkit
 Dialog primitive.
 
 `src/alert.ts` adapts the StyleX Alert layout and announcement options from
-the same CreaseUI revision using OneApp tokens and a persistent message region.
+the same CreaseUI revision using Orumai tokens and a persistent message region.
 
 `src/checkbox.ts` adapts the StyleX Checkbox from the same CreaseUI revision
-using OneApp tokens and the installed Foldkit Checkbox primitive.
+using Orumai tokens and the installed Foldkit Checkbox primitive.
 
 `src/empty.ts` and `src/skeleton.ts` adapt the StyleX Empty and Skeleton
-components from the same CreaseUI revision using OneApp tokens.
+components from the same CreaseUI revision using Orumai tokens.
 
 MIT License
 

@@ -1,2 +1,2 @@
-export const appName = "OneApp";
+export const appName = "Orumai";
 export const defaultServerUrl = "https://app.dpeek.com";

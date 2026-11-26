@@ -1,4 +1,4 @@
-import { Popover, Tokenizer } from "@oneapp/ui";
+import { Popover, Tokenizer } from "@orumai/ui";
 import { Effect, Option, Schema } from "effect";
 import { Command, Update } from "foldkit";
 import { focus } from "foldkit/dom";

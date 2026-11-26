@@ -1,4 +1,4 @@
-import { navigationLinks, outlineIcon } from "@oneapp/ui";
+import { navigationLinks, outlineIcon } from "@orumai/ui";
 import { Option, Schema } from "effect";
 import type { Url } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";

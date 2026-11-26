@@ -70,7 +70,7 @@ it("shows a visible private alert for every push, including malformed payloads",
   expect(worker.notifications).toHaveBeenCalledWith(
     "New mail",
     expect.objectContaining({
-      body: "Open OneApp to read your message.",
+      body: "Open Orumai to read your message.",
       tag: "stable-message",
       data: { url: href },
     }),
@@ -160,7 +160,7 @@ it("opens the calendar from a private reminder using the same-origin calendar ro
   expect(worker.notifications).toHaveBeenCalledWith(
     "Calendar reminder",
     expect.objectContaining({
-      body: "Open OneApp to see your schedule.",
+      body: "Open Orumai to see your schedule.",
       tag: "calendar:event:time",
       data: { url },
     }),

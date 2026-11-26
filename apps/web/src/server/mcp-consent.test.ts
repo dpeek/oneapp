@@ -1,5 +1,5 @@
 import { expect, it } from "@effect/vitest";
-import { linksReadScope, linksWriteScope } from "@oneapp/core/links";
+import { linksReadScope, linksWriteScope } from "@orumai/core/links";
 import { Schema } from "@yielded/auth";
 import { tasksReadScope, tasksWriteScope } from "../mcp-access-contract.ts";
 import { renderMcpConsent } from "./mcp-consent.ts";

@@ -1,4 +1,4 @@
-import { avatar as uiAvatar } from "@oneapp/ui";
+import { avatar as uiAvatar } from "@orumai/ui";
 import type { HtmlBuilder } from "foldkit/html";
 import type { MailPerson } from "./inbox-contract.ts";
 import type { PersonSummary } from "./people-contract.ts";

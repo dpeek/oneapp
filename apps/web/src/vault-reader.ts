@@ -12,7 +12,7 @@ import {
   itemClassNames,
   sidebarClassNames,
   sidebarItemClassName,
-} from "@oneapp/ui";
+} from "@orumai/ui";
 import { Schema } from "effect";
 import { CustomElement } from "foldkit";
 import {
@@ -85,7 +85,7 @@ import { mountVaultMoveMenu } from "./vault-move-menu.ts";
 import { mountVaultWorkspaceHeader } from "./vault-workspace-header.ts";
 
 export const vaultReader = CustomElement.define({
-  tag: "oneapp-vault-reader",
+  tag: "orumai-vault-reader",
   properties: {},
   events: {},
 });
@@ -537,7 +537,7 @@ class VaultReader extends HTMLElement {
             signal,
           });
           if (response.status === 401)
-            error = { message: "Sign in to OneApp to open your vault." };
+            error = { message: "Sign in to Orumai to open your vault." };
           if (!response.ok) throw new Error("Vault fetch failed");
           const snapshot = decodeSnapshot(await response.json());
           error = {
@@ -1338,7 +1338,7 @@ class VaultReader extends HTMLElement {
         },
         (result) => {
           if (result.format === "zip") {
-            downloadVaultFile(result.archive, "oneapp-vault.zip");
+            downloadVaultFile(result.archive, "orumai-vault.zip");
             if (result.failed.length) {
               const missing = create("ul");
               for (const name of result.failed)
@@ -1359,7 +1359,7 @@ class VaultReader extends HTMLElement {
               new Blob([result.data], {
                 type: chosen === "csv" ? "text/csv" : "application/json",
               }),
-              chosen === "csv" ? "oneapp-vault.csv" : "oneapp-vault.json",
+              chosen === "csv" ? "orumai-vault.csv" : "orumai-vault.json",
             );
           }
           this.#showBrowse("Vault export downloaded.");
@@ -1698,7 +1698,7 @@ class VaultReader extends HTMLElement {
           },
         );
         if (response.status === 401)
-          failure = "Sign in to OneApp to update this item.";
+          failure = "Sign in to Orumai to update this item.";
         if (response.status === 409 || response.status === 404)
           failure =
             "This item changed. Reload the page and unlock your vault again.";
@@ -1895,7 +1895,7 @@ class VaultReader extends HTMLElement {
             },
           );
           if (response.status === 401)
-            failure = `Sign in to OneApp to save your ${item}.`;
+            failure = `Sign in to Orumai to save your ${item}.`;
           if (edit && (response.status === 409 || response.status === 404)) {
             failure = conflictMessage;
             if (!signal.aborted) conflict = true;

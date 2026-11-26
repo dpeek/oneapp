@@ -1,5 +1,5 @@
 import { randomInt } from "node:crypto";
-import { appName } from "@oneapp/core";
+import { appName } from "@orumai/core";
 import {
   Auth,
   EmailDelivery,
@@ -235,7 +235,7 @@ export const emailChangeRoutes = (
                 to: oldEmail,
                 subject: `Your ${appName} sign-in email changed`,
                 text: Redacted.make(
-                  `Your ${appName} sign-in email was changed and your browser sessions were signed out. If you did not make this change, contact your OneApp administrator.`,
+                  `Your ${appName} sign-in email was changed and your browser sessions were signed out. If you did not make this change, contact your Orumai administrator.`,
                 ),
               })
               .pipe(

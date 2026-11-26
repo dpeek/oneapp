@@ -166,7 +166,7 @@ export const sync = (
 
 export const config = (origin: string) => ({
   version: "2026.6.0",
-  server: { name: "OneApp", url: origin },
+  server: { name: "Orumai", url: origin },
   settings: {
     disableUserRegistration: true,
     suppressOnboardingInterstitials: true,

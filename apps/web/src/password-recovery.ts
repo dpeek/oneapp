@@ -1,5 +1,5 @@
-import { appName } from "@oneapp/core";
-import { alert, button, field, input } from "@oneapp/ui";
+import { appName } from "@orumai/core";
+import { alert, button, field, input } from "@orumai/ui";
 import { EmailDelivery } from "@yielded/auth";
 import { Effect, Option, Redacted, Schema } from "effect";
 import { Command, Runtime, Update } from "foldkit";
@@ -241,7 +241,7 @@ export const run = (pathname: string) => {
         h.p(
           [h.Role("status")],
           [
-            "If that address is verified on OneApp, check your inbox for a reset link. The link expires in five minutes.",
+            "If that address is verified on Orumai, check your inbox for a reset link. The link expires in five minutes.",
           ],
         ),
       reset: () =>

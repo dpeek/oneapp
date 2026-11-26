@@ -12,7 +12,7 @@ import {
   skeleton,
   Tokenizer,
   visuallyHiddenStatus,
-} from "@oneapp/ui";
+} from "@orumai/ui";
 import { Effect } from "effect";
 import { Mount, Submodel } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";

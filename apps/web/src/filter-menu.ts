@@ -1,4 +1,4 @@
-import { badge, outlineIcon, Popover } from "@oneapp/ui";
+import { badge, outlineIcon, Popover } from "@orumai/ui";
 import { Effect, Option, Queue, Schema, Stream } from "effect";
 import { Mount } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";

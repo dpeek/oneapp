@@ -1,4 +1,4 @@
-import { appName } from "@oneapp/core";
+import { appName } from "@orumai/core";
 import { Schema } from "effect";
 import { Runtime } from "foldkit";
 import type { Document, HtmlBuilder } from "foldkit/html";
@@ -97,7 +97,7 @@ const view = (model: Model, h: HtmlBuilder<never>): Document => ({
   body: h.main([], [h.h1([], [model.title])]),
 });
 
-export function mountOneApp(container: HTMLElement) {
+export function mountOrumai(container: HTMLElement) {
   Runtime.run(
     Runtime.makeApplication({
       Model,

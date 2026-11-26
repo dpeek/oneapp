@@ -7,7 +7,7 @@ import {
   CliLoginId,
   CliLoginRequest,
   cliLoginPath,
-} from "@oneapp/core/cli-auth";
+} from "@orumai/core/cli-auth";
 import { ByteSize, Clock, Effect, Layer, Schema } from "effect";
 import { Hex } from "effect/encoding";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";

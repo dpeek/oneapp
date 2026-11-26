@@ -8,14 +8,14 @@ export async function cloudflareEnvironment() {
   env.ALCHEMY_HOME ??= stateDirectory;
   if (!env.CLOUDFLARE_ACCOUNT_ID) {
     throw new Error(
-      "Set CLOUDFLARE_ACCOUNT_ID to the account OneApp should deploy to.",
+      "Set CLOUDFLARE_ACCOUNT_ID to the account Orumai should deploy to.",
     );
   }
 
   if (env.CLOUDFLARE_AUTH_PROFILE || !env.CLOUDFLARE_API_TOKEN) {
     const profile = env.CLOUDFLARE_AUTH_PROFILE ?? "dpeek";
     const auth = createCfAuth({
-      userAgent: "OneApp deploy",
+      userAgent: "Orumai deploy",
       logger: { debug() {}, info() {}, log() {}, warn() {}, error() {} },
       prompt: async () => {
         throw new Error("Authenticate with the cf CLI first.");

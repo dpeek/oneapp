@@ -8,7 +8,7 @@ import {
   authorizationFromFragment,
   bitwardenSignInQuery,
 } from "./bitwarden-connection.ts";
-import { appName } from "@oneapp/core";
+import { appName } from "@orumai/core";
 import {
   alert,
   button,
@@ -26,7 +26,7 @@ import {
   plusIcon,
   Sheet,
   taskIconPaths,
-} from "@oneapp/ui";
+} from "@orumai/ui";
 import * as Client from "@yielded/auth/Client";
 import { Effect, Option, Schema, Stream } from "effect";
 import {
@@ -1357,7 +1357,7 @@ const update = (
           signedOut(
             oldAddressNotified
               ? "Email changed. Sign in with your new address."
-              : "Email changed. Sign in with your new address. OneApp could not send the notice to your old address.",
+              : "Email changed. Sign in with your new address. Orumai could not send the notice to your old address.",
           ),
         SignedOut: () => signedOut(null),
         Failed: ({ error }) => ({
@@ -1803,9 +1803,9 @@ const signInView = (model: Model, h: HtmlBuilder<Message>) =>
     [h.Id("sign-in"), h.Method("post"), h.OnSubmit(Message.SubmittedSignIn())],
     [
       ...(model.cliLogin
-        ? [h.p([], ["Sign in to connect the OneApp CLI."])]
+        ? [h.p([], ["Sign in to connect the Orumai CLI."])]
         : model.extensionAccess.approvalId
-          ? [h.p([], ["Sign in to connect the OneApp extension."])]
+          ? [h.p([], ["Sign in to connect the Orumai extension."])]
           : []),
       field(
         "Email",
@@ -1900,10 +1900,10 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
         [
           h.h1([], [appName]),
           ...(connectingBitwarden && !model.account
-            ? [h.p([], ["Sign in to connect Bitwarden to OneApp."])]
+            ? [h.p([], ["Sign in to connect Bitwarden to Orumai."])]
             : []),
           ...(connectingMcp && !model.account
-            ? [h.p([], ["Sign in to connect Codex to OneApp."])]
+            ? [h.p([], ["Sign in to connect Codex to Orumai."])]
             : []),
           ...(model.signInNotice
             ? [h.p([h.Role("status")], [model.signInNotice])]

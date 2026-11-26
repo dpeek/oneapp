@@ -1,7 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import { Option, Schema } from "effect";
 import { vi } from "vitest";
-vi.mock("@oneapp/ui", async () => ({
+vi.mock("@orumai/ui", async () => ({
   Toast: await import("../../../packages/ui/src/toast-state.ts"),
 }));
 import * as Toast from "../../../packages/ui/src/toast-state.ts";

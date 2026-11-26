@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { appName, defaultServerUrl } from "@oneapp/core";
+import { appName, defaultServerUrl } from "@orumai/core";
 import {
   cliMailImportScopes,
   currentCliTokenPath,
-} from "@oneapp/core/cli-auth";
+} from "@orumai/core/cli-auth";
 import {
   Link,
   LinkId,
@@ -12,7 +12,7 @@ import {
   SaveLink,
   linkPath,
   linksPath,
-} from "@oneapp/core/links";
+} from "@orumai/core/links";
 import { Console, Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { readResponse, request, requireSuccess } from "./api.ts";
@@ -35,12 +35,12 @@ const login = Command.make(
     server: Flag.String("server").pipe(
       Flag.withDefault(defaultServerUrl),
       Flag.withDescription(
-        `OneApp server origin (default: ${defaultServerUrl})`,
+        `Orumai server origin (default: ${defaultServerUrl})`,
       ),
     ),
     browser: Flag.Boolean("browser").pipe(
       Flag.withDefault(true),
-      Flag.withDescription("Open the OneApp access page"),
+      Flag.withDescription("Open the Orumai access page"),
     ),
     mailImport: Flag.Boolean("mail-import").pipe(
       Flag.withDefault(false),
@@ -49,7 +49,7 @@ const login = Command.make(
       ),
     ),
     name: Flag.String("name").pipe(
-      Flag.withDefault("OneApp CLI"),
+      Flag.withDefault("Orumai CLI"),
       Flag.withDescription("Name to show under CLI access"),
     ),
   },
@@ -70,7 +70,7 @@ const login = Command.make(
     yield* storeCredentials(origin, token);
     yield* Console.log(`Signed in to ${origin}`);
   }),
-).pipe(Command.withDescription("Connect the CLI to your OneApp account"));
+).pipe(Command.withDescription("Connect the CLI to your Orumai account"));
 
 const logout = Command.make(
   "logout",

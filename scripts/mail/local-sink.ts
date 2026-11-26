@@ -28,7 +28,7 @@ export const openLocalMailSink = async (stage: string, mailboxId: string) => {
       getByName(name: string): MailSample;
     };
   }>({
-    name: "oneapp-snapshot-import",
+    name: "orumai-snapshot-import",
     compatibilityDate: "2026-11-01",
     persist: { directory: join(localDirectory, "local") },
     bindings: [

@@ -1,5 +1,5 @@
 {
-  "name": "@oneapp/ui",
+  "name": "@orumai/ui",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,7 +10,7 @@
   "dependencies": {
     "@effect/platform-browser": "~4.1.0",
     "@foldkit/ui": "0.170.0",
-    "@oneapp/core": "workspace:*",
+    "@orumai/core": "workspace:*",
     "@stylexjs/stylex": "0.19.2",
     "effect": "~4.1.0",
     "foldkit": "0.170.0"

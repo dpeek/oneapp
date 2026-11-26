@@ -13,7 +13,7 @@ export const calendarExportName = (name: string) =>
   (name
     .replace(/[\\/:*?"<>|\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "_")
     .replace(/^[.]+|[. ]+$/gu, "")
-    .toWellFormed() || "oneapp-calendar") + ".ics";
+    .toWellFormed() || "orumai-calendar") + ".ics";
 
 export const CalendarId = Schema.String.check(
   Schema.isPattern(

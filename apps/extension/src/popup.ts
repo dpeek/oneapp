@@ -1,7 +1,7 @@
-import { appName, defaultServerUrl } from "@oneapp/core";
-import { currentExtensionPath } from "@oneapp/core/extension-auth";
-import { linksPath, SaveLink } from "@oneapp/core/links";
-import { alert, button } from "@oneapp/ui";
+import { appName, defaultServerUrl } from "@orumai/core";
+import { currentExtensionPath } from "@orumai/core/extension-auth";
+import { linksPath, SaveLink } from "@orumai/core/links";
+import { alert, button } from "@orumai/ui";
 import { Effect, Schema } from "effect";
 import { Command, Runtime, type Update } from "foldkit";
 import type { Document, HtmlBuilder } from "foldkit/html";
@@ -57,7 +57,7 @@ const Connect = Command.define("OpenExtensionApproval", {
     Effect.tryPromise(async () => {
       await connect();
       return Message.OpenedApproval();
-    }).pipe(Effect.catch(failed("Could not open OneApp. Try again."))),
+    }).pipe(Effect.catch(failed("Could not open Orumai. Try again."))),
 });
 
 const Save = Command.define("SaveCurrentTab", {
@@ -96,7 +96,7 @@ const Save = Command.define("SaveCurrentTab", {
     }).pipe(
       Effect.catch(
         failed(
-          "Could not confirm the save. Check your OneApp links before trying again.",
+          "Could not confirm the save. Check your Orumai links before trying again.",
         ),
       ),
     ),
@@ -192,17 +192,17 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
                       h.Target("_blank"),
                       h.Rel("noopener noreferrer"),
                     ],
-                    ["Open OneApp"],
+                    ["Open Orumai"],
                   ),
                   action("Disconnect", Message.ClickedDisconnect(), true),
                 ],
               ),
             ]
           : model.status === "disconnected"
-            ? [action("Connect to OneApp", Message.ClickedConnect())]
+            ? [action("Connect to Orumai", Message.ClickedConnect())]
             : model.status === "pending"
               ? [
-                  h.p([], ["Approve the connection in the OneApp tab."]),
+                  h.p([], ["Approve the connection in the Orumai tab."]),
                   action("Check connection", Message.ClickedCheck()),
                 ]
               : model.busy

@@ -268,7 +268,7 @@ export const checkTransfers = async ({
   const otherProfile = await syncNow(first, client);
   assert.deepEqual(otherProfile.ciphers, withLicense.ciphers);
   console.log(
-    "PASS Stock import reached both profiles and OneApp. Folder movement, archive, bulk Trash and Restore kept the same IDs.",
+    "PASS Stock import reached both profiles and Orumai. Folder movement, archive, bulk Trash and Restore kept the same IDs.",
   );
 
   const plain = JSON.parse(await webExport(app, web, password, "json"));
@@ -323,7 +323,7 @@ export const checkTransfers = async ({
     false,
   );
   console.log(
-    "PASS Stock and OneApp exported JSON, CSV and password-protected JSON. Stock also exported account-restricted JSON.",
+    "PASS Stock and Orumai exported JSON, CSV and password-protected JSON. Stock also exported account-restricted JSON.",
   );
   return { plain, toRestore, stockProtected };
 };
@@ -348,7 +348,7 @@ export const restoreIntoFreshVault = async ({
   toRestore,
   stockProtected,
 }) => {
-  const web = app.locator("oneapp-vault-reader");
+  const web = app.locator("orumai-vault-reader");
   await app.getByRole("link", { name: "Vault", exact: true }).click();
   await app.getByLabel("Vault master password", { exact: true }).fill(password);
   await app
@@ -367,12 +367,12 @@ export const restoreIntoFreshVault = async ({
   await importWeb(web, stockProtected, protectedPassword);
   assert.equal(await button(web, "Imported fixture login").count(), 2);
   console.log(
-    "PASS A fresh vault recovered all supported OneApp export fields and accepted Bitwarden’s password-protected export.",
+    "PASS A fresh vault recovered all supported Orumai export fields and accepted Bitwarden’s password-protected export.",
   );
 };
 
 const passkeyName = "Disposable passkey login";
-const relyingPartyName = "OneApp passkey fixture";
+const relyingPartyName = "Orumai passkey fixture";
 const fixtureUser = "passkey-fixture@example.net";
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest();
 const fromBase64Url = (value) => Buffer.from(value, "base64url");
@@ -480,7 +480,7 @@ export const importFixturePasskey = async ({
   openItem,
 }) => {
   await app.bringToFront();
-  const web = app.locator("oneapp-vault-reader");
+  const web = app.locator("orumai-vault-reader");
   await importWeb(web, fixture.contents);
   await button(web, passkeyName).press("Enter");
   await web.getByText("Saved in this login", { exact: true }).waitFor();
@@ -556,7 +556,7 @@ export const importFixturePasskey = async ({
     "The re-exported passkey changed beyond the signature counter",
   );
   console.log(
-    "PASS A fresh Bitwarden profile signed in with an imported passkey and OneApp re-exported its updated counter.",
+    "PASS A fresh Bitwarden profile signed in with an imported passkey and Orumai re-exported its updated counter.",
   );
 
   await openItem(client, passkeyName);

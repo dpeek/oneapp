@@ -47,7 +47,7 @@ const hover = (model: Toast.Model, hovered: boolean) =>
     }),
   );
 
-it("applies OneApp timing and persistence defaults, with explicit overrides", () => {
+it("applies Orumai timing and persistence defaults, with explicit overrides", () => {
   const model = initial();
   expect(model.position).toBe("bottom-right");
   expect(model.limit).toBe(3);

@@ -206,6 +206,7 @@ export type WorkerEnv = Omit<
 };
 
 export default Alchemy.Stack(
+  // Keep existing stages associated with their provisioned resources.
   "OneApp",
   {
     providers: Cloudflare.providers(),

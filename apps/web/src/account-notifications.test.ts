@@ -2,9 +2,9 @@ import { expect, it } from "@effect/vitest";
 import { Schema } from "effect";
 import { PendingEmailChange } from "./account-contract.ts";
 import { vi } from "vitest";
-vi.mock("@oneapp/ui", async () => {
+vi.mock("@orumai/ui", async () => {
   const { Dialog } = await import(
-    import.meta.resolve("@foldkit/ui", import.meta.resolve("@oneapp/ui"))
+    import.meta.resolve("@foldkit/ui", import.meta.resolve("@orumai/ui"))
   );
   return {
     Dialog,

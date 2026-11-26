@@ -1,12 +1,12 @@
 # Components and style system
 
-Use Crease UI's StyleX components as the reference for OneApp. Keep reusable
-component styles and states in StyleX, and use OneApp's shared typed tokens for
+Use Crease UI's StyleX components as the reference for Orumai. Keep reusable
+component styles and states in StyleX, and use Orumai's shared typed tokens for
 their theme values. Apply this pattern as each workflow is updated.
 
 ## Compose with Crease
 
-- Start with the components exported by [`@oneapp/ui`](src/index.ts). For a missing
+- Start with the components exported by [`@orumai/ui`](src/index.ts). For a missing
   component or variant, start from the Crease StyleX source at the revision in
   [Third-party notices](THIRD_PARTY_NOTICES.md). Follow its slots, defaults, and
   interaction behavior. Check the installed Foldkit API when adapting a primitive.

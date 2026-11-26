@@ -1,4 +1,4 @@
-import { button, item, itemGroup } from "@oneapp/ui";
+import { button, item, itemGroup } from "@orumai/ui";
 import { Effect, Option, Schema } from "effect";
 import { Command, Mount, type Update } from "foldkit";
 import { type HtmlBuilder } from "foldkit/html";
@@ -161,12 +161,12 @@ export const view = <Parent>(
     checking: "Checking notifications on this device…",
     unsupported: "This browser does not support push notifications.",
     install:
-      "On iPhone or iPad, use Share → Add to Home Screen, then open OneApp from its icon to enable notifications.",
+      "On iPhone or iPad, use Share → Add to Home Screen, then open Orumai from its icon to enable notifications.",
     unconfigured: "Notifications are not available on this deployment yet.",
     blocked:
       "Notifications are blocked. Allow them in your device or browser notification settings, then check again.",
     on: "New mail alerts are enabled on this device. Message contents stay private. Signing out or an expired session stops alerts.",
-    off: "Get a notification when new mail arrives, even when OneApp is closed. Message contents stay private.",
+    off: "Get a notification when new mail arrives, even when Orumai is closed. Message contents stay private.",
   };
   return h.section(
     [h.Class("settings-section"), h.AriaLabel("Mail notifications")],
@@ -192,7 +192,7 @@ export const view = <Parent>(
                           h.OnMount(Mount.mapMessage(BindPermission(), emit)),
                           {
                             _tag: "OnCustomEvent",
-                            name: "oneapp-push-permission",
+                            name: "orumai-push-permission",
                             f: (event: CustomEvent<unknown>) =>
                               Option.map(
                                 Schema.decodeUnknownOption(PermissionEvent)(

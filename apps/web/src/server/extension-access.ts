@@ -7,7 +7,7 @@ import {
   extensionAccessPath,
   ExtensionRequestId,
   ExtensionSecret,
-} from "@oneapp/core/extension-auth";
+} from "@orumai/core/extension-auth";
 import { ByteSize, Clock, Data, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { SqlClient } from "effect/sql";

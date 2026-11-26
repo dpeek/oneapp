@@ -8,7 +8,7 @@ import {
   linksReadScope,
   linksWriteScope,
   normalizeLinkUrl,
-} from "@oneapp/core/links";
+} from "@orumai/core/links";
 import { ByteSize, Clock, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { SqlClient } from "effect/sql";

@@ -5,7 +5,7 @@ import {
   cliLinkScopes,
   cliLoginQuery,
   cliLoginPath,
-} from "@oneapp/core/cli-auth";
+} from "@orumai/core/cli-auth";
 import { Effect, Schema } from "effect";
 import { Command, Submodel, type Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";
@@ -134,7 +134,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
   h.section(
     [h.Class("cli-approval")],
     [
-      h.h2([], ["Connect the OneApp CLI"]),
+      h.h2([], ["Connect the Orumai CLI"]),
       ...(model.decision !== null
         ? [
             h.p(
@@ -145,7 +145,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
                   : "CLI login declined.",
               ],
             ),
-            h.a([h.Href("/")], ["Back to OneApp"]),
+            h.a([h.Href("/")], ["Back to Orumai"]),
           ]
         : model.approval
           ? [

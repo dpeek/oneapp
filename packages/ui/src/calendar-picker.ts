@@ -21,7 +21,7 @@ const dayKeys = new Set([
   " ",
 ]);
 
-// Crease UI's Calendar composition using OneApp controls and a compact grid.
+// Crease UI's Calendar composition using Orumai controls and a compact grid.
 export const view = <Message>(
   props: {
     model: typeof Model.Type;

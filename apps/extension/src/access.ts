@@ -1,10 +1,10 @@
-import { defaultServerUrl } from "@oneapp/core";
+import { defaultServerUrl } from "@orumai/core";
 import {
   currentExtensionPath,
   extensionApprovalHash,
   ExtensionRequestId,
   ExtensionSecret,
-} from "@oneapp/core/extension-auth";
+} from "@orumai/core/extension-auth";
 import { Schema } from "effect";
 import { Base64Url } from "effect/encoding";
 

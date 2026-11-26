@@ -1,6 +1,6 @@
 import { expect, it } from "@effect/vitest";
 import { vi } from "vitest";
-vi.mock("@oneapp/ui", () => ({}));
+vi.mock("@orumai/ui", () => ({}));
 import { initial, Message, update } from "./push-settings.ts";
 import { bindNotificationPermission } from "./push-browser.ts";
 
@@ -10,7 +10,7 @@ it("calls permission from the click handler and cleans up the listener", async (
   try {
     const element = new EventTarget();
     const events: { request: string; permission: string }[] = [];
-    element.addEventListener("oneapp-push-permission", (event) =>
+    element.addEventListener("orumai-push-permission", (event) =>
       events.push((event as CustomEvent).detail),
     );
     const cleanup = bindNotificationPermission(element as HTMLElement);

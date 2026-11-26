@@ -16,7 +16,7 @@ import {
 } from "./mailbox.ts";
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import type { ForwardableEmailMessage } from "@cloudflare/workers-types";
-import { cliLoginPath } from "@oneapp/core/cli-auth";
+import { cliLoginPath } from "@orumai/core/cli-auth";
 import { EmailDelivery } from "@yielded/auth";
 import { ProofDispatchScheduler } from "@yielded/auth/Proofs";
 import { Effect, Layer, Redacted } from "effect";

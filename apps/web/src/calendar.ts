@@ -20,7 +20,7 @@ import {
   sidebarItemClassName,
   textarea,
   viewToggleGroup,
-} from "@oneapp/ui";
+} from "@orumai/ui";
 import { Clock, Effect, Option, Queue, Schema, Stream } from "effect";
 import { Command, Mount, Submodel, Update } from "foldkit";
 import { defaultEnglishLocale } from "foldkit/calendar";

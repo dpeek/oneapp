@@ -115,7 +115,7 @@ try {
       "--outfile",
       join(work, "worker.mjs"),
     ]),
-    run(["bun", "run", "--filter", "@oneapp/web", "build"]),
+    run(["bun", "run", "--filter", "@orumai/web", "build"]),
   ]);
 
   const cert = join(work, "cert.pem");

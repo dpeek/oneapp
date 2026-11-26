@@ -7,7 +7,7 @@ import {
   Schema as AuthSchema,
 } from "@yielded/auth";
 import { ProofRequestContext, ProofRequestId } from "@yielded/auth/Proofs";
-import { appName } from "@oneapp/core";
+import { appName } from "@orumai/core";
 import { ByteSize, Effect, Layer, Redacted } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { SqlClient } from "effect/sql";
@@ -309,7 +309,7 @@ export const accountRoutes = (
                   to: address,
                   subject: `Your ${appName} password changed`,
                   text: Redacted.make(
-                    `Your ${appName} password was changed and your browser sessions were signed out. If this wasn't you, contact your OneApp administrator.`,
+                    `Your ${appName} password was changed and your browser sessions were signed out. If this wasn't you, contact your Orumai administrator.`,
                   ),
                 })
                 .pipe(

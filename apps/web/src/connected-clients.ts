@@ -1,9 +1,9 @@
-import { button, item, itemGroup, outlineIcon, spinner } from "@oneapp/ui";
-import { CliTokenList, cliTokensPath } from "@oneapp/core/cli-auth";
+import { button, item, itemGroup, outlineIcon, spinner } from "@orumai/ui";
+import { CliTokenList, cliTokensPath } from "@orumai/core/cli-auth";
 import {
   ExtensionAccessList,
   extensionAccessPath,
-} from "@oneapp/core/extension-auth";
+} from "@orumai/core/extension-auth";
 import { Effect, Schema } from "effect";
 import { Command, Submodel, type Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";

@@ -1,4 +1,4 @@
-import { Toast } from "@oneapp/ui";
+import { Toast } from "@orumai/ui";
 import { Schema } from "effect";
 import { Command, type Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";

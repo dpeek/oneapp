@@ -8,7 +8,7 @@ import {
   itemGroup,
   spinner,
   visuallyHiddenStatus,
-} from "@oneapp/ui";
+} from "@orumai/ui";
 import { Effect, Option, Schema } from "effect";
 import { Command, Submodel, Update } from "foldkit";
 import { focus } from "foldkit/dom";

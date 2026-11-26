@@ -7,8 +7,8 @@ import {
   mailImportScope,
   mailImportMaxBytes,
   mailImportPlanMaxBytes,
-} from "@oneapp/core/mail-import";
-import { Sha256 } from "@oneapp/core/mail-snapshot";
+} from "@orumai/core/mail-import";
+import { Sha256 } from "@orumai/core/mail-snapshot";
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import { ownerId } from "./auth.ts";
 import {

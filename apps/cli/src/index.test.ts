@@ -12,7 +12,7 @@ it.effect("the CLI entry point runs from the workspace", () =>
 
     expect(result.exitCode).toBe(0);
     const help = result.stdout.toString();
-    expect(help).toContain("OneApp");
+    expect(help).toContain("Orumai");
     expect(help).toContain("Manage CLI access");
     expect(help).toContain("Manage saved links");
   }),

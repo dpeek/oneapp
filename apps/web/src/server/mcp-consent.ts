@@ -1,5 +1,5 @@
-import { appName } from "@oneapp/core";
-import { linksReadScope, linksWriteScope } from "@oneapp/core/links";
+import { appName } from "@orumai/core";
+import { linksReadScope, linksWriteScope } from "@orumai/core/links";
 import { OAuthServer } from "@yielded/auth";
 import { Effect, Layer } from "effect";
 import { tasksReadScope, tasksWriteScope } from "../mcp-access-contract.ts";

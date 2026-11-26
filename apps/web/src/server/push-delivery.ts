@@ -136,7 +136,7 @@ export const deliverMailPush = async (
         config,
         {
           title: "New mail",
-          body: "Open OneApp to read your message.",
+          body: "Open Orumai to read your message.",
           tag: `mail:${job.mailbox_id}:${job.message_id}`,
           url: mailMessagePage("all", job.message_id),
         },

@@ -1,4 +1,4 @@
-// Adapts CreaseUI's Without Alpha example to OneApp's Foldkit and StyleX UI.
+// Adapts CreaseUI's Without Alpha example to Orumai's Foldkit and StyleX UI.
 import * as stylex from "@stylexjs/stylex";
 import { Effect, Option, Queue, Schema, Stream } from "effect";
 import { Command, Mount, Update } from "foldkit";

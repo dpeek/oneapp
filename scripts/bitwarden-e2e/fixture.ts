@@ -14,8 +14,8 @@ import type {
 } from "../../apps/web/src/server/vault/personal.ts";
 
 export const fixtureEmail = "owner@oneapp.test";
-export const masterPassword = "OneApp compatibility fixture only";
-export const itemName = "OneApp test login";
+export const masterPassword = "Orumai compatibility fixture only";
+export const itemName = "Orumai test login";
 export const itemUsername = "oneapp-fixture-user";
 export const itemPassword = "fixture-password-for-sync";
 

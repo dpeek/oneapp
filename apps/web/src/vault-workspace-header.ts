@@ -5,7 +5,7 @@ import {
   outlineIcon,
   plusIcon,
   Sheet,
-} from "@oneapp/ui";
+} from "@orumai/ui";
 import { Effect, Option, Schema } from "effect";
 import { Command, Port, Runtime, Subscription, Update } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";

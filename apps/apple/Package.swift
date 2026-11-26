@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "OneApp",
+    name: "Orumai",
     platforms: [.macOS(.v14)],
-    targets: [.executableTarget(name: "OneApp")]
+    targets: [.executableTarget(name: "Orumai")]
 )

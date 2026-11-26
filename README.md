@@ -1,6 +1,6 @@
-# OneApp
+# Orumai
 
-A Bun workspace for the OneApp CLI, web app, and Chromium extension, with a Swift app for macOS. The web app and extension popup use Foldkit and Effect.
+A Bun workspace for the Orumai CLI, web app, and Chromium extension, with a Swift app for macOS. The web app and extension popup use Foldkit and Effect.
 
 ## Getting started
 
@@ -19,7 +19,7 @@ Run `bun fmt` to format and `bun check` to type-check. `bun run test` runs Vites
 
 ## Mobile mail notifications
 
-OneApp can be installed as a PWA and receive private new-mail alerts while closed.
+Orumai can be installed as a PWA and receive private new-mail alerts while closed.
 To enable delivery on a deployment:
 
 1. Run `bun run push:keys` once and store the printed `PUSH_PUBLIC_KEY` and
@@ -27,7 +27,7 @@ To enable delivery on a deployment:
    and both keys stable across deployments.
 2. Set `PUSH_SUBJECT` to a contact URI such as `mailto:mail@dpeek.com`.
 3. Run `bun run deploy` to apply the migration and publish the Worker and PWA.
-4. On iPhone/iPad (iOS 16.4+), use Share → Add to Home Screen, open OneApp from
+4. On iPhone/iPad (iOS 16.4+), use Share → Add to Home Screen, open Orumai from
    its icon, sign in, and choose **Settings → Notifications → Enable notifications**.
    Supported desktop/Android browsers can also opt in.
 
@@ -64,7 +64,7 @@ Run the read-only inventory from a terminal:
 bun run mail:inventory --user 'your-login@icloud.com'
 ```
 
-Enter an [Apple app-specific password](https://support.apple.com/102654) at the hidden prompt. Use the iCloud IMAP login associated with the mailbox, which may differ from a custom-domain address such as `mail@dpeek.com`. The command connects to `imap.mail.me.com:993` with TLS. It does not save the password, fetch message bodies, change flags, or write to OneApp.
+Enter an [Apple app-specific password](https://support.apple.com/102654) at the hidden prompt. Use the iCloud IMAP login associated with the mailbox, which may differ from a custom-domain address such as `mail@dpeek.com`. The command connects to `imap.mail.me.com:993` with TLS. It does not save the password, fetch message bodies, change flags, or write to Orumai.
 
 For a noninteractive audit, put these values in the root `.env` (already ignored by Git), set its permissions with `chmod 600 .env`, and run `bun run mail:inventory`:
 
@@ -79,7 +79,7 @@ The JSON report lists every folder, its special-use role and how it was identifi
 
 The server's `ingestRawMail` service in `apps/web/src/server/mail-import.ts` accepts original RFC 822 bytes and validated source metadata. A source identity is `(account, mailbox, UIDVALIDITY, UID)`; use a stable account identifier, including the provider. Callers explicitly map a source folder to Inbox, Archive (`folder: "inbox", archived: true`), or Sent. Preserve custom folders and source flags in the metadata until their UI mapping is decided. Do not map Trash, Junk or Drafts into Inbox automatically.
 
-The service reserves an import receipt, writes the original to R2 conditionally, and completes the receipt atomically with D1 indexing. Retrying identical source bytes resumes pending work or skips completed work, preserving subsequent OneApp read/archive/deletion changes. Different bytes for the same identity are rejected. A changed UIDVALIDITY starts a new identity namespace; cross-folder copies and reset epochs are not deduplicated by Message-ID. Original dates survive reindexing, and Sent imports retain their original MIME data and threading headers.
+The service reserves an import receipt, writes the original to R2 conditionally, and completes the receipt atomically with D1 indexing. Retrying identical source bytes resumes pending work or skips completed work, preserving subsequent Orumai read/archive/deletion changes. Different bytes for the same identity are rejected. A changed UIDVALIDITY starts a new identity namespace; cross-folder copies and reset epochs are not deduplicated by Message-ID. Original dates survive reindexing, and Sent imports retain their original MIME data and threading headers.
 
 To evaluate real mail locally, start the isolated sample stage:
 
@@ -87,7 +87,7 @@ To evaluate real mail locally, start the isolated sample stage:
 bun run mail:dev
 ```
 
-Keep that terminal running. `mail:dev` starts Alchemy in local mode with stage `mail_sample`, applies the migrations, and serves OneApp at the URL it prints (normally `http://localhost:1337`). It creates local sign-in credentials in `.alchemy/mail-sample.env` with permissions `600`; use its `OWNER_EMAIL` and `OWNER_PASSWORD` to sign in. It does not inherit production domain, email routing, sending, or authentication configuration.
+Keep that terminal running. `mail:dev` starts Alchemy in local mode with stage `mail_sample`, applies the migrations, and serves Orumai at the URL it prints (normally `http://localhost:1337`). It creates local sign-in credentials in `.alchemy/mail-sample.env` with permissions `600`; use its `OWNER_EMAIL` and `OWNER_PASSWORD` to sign in. It does not inherit production domain, email routing, sending, or authentication configuration.
 
 In another terminal, with the iCloud credentials in the root `.env`, run:
 
@@ -116,7 +116,7 @@ The version-1 format contains:
 
 | File                        | Purpose                                                                                                                       |
 | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `inventory.json`            | Frozen folder/UID selection, UIDVALIDITY, IMAP dates, flags and expected byte sizes. No OneApp folder mapping or credentials. |
+| `inventory.json`            | Frozen folder/UID selection, UIDVALIDITY, IMAP dates, flags and expected byte sizes. No Orumai folder mapping or credentials. |
 | `messages/<source-id>.eml`  | Unchanged original MIME bytes, including attachments.                                                                         |
 | `receipts/<source-id>.json` | Per-file checksums and sizes for resuming an interrupted export.                                                              |
 | `manifest.json`             | Completion marker, inventory checksum and checksums for every original. Written only after the entire selection is saved.     |
@@ -144,7 +144,7 @@ After every selected message has imported successfully and threading is finished
 
 The policy, cutoff and per-conversation reasons are recorded in D1's `mail_import_completions` table and the local import report. Decisions and archive updates commit atomically. Retrying a completed import returns its recorded decisions without changing subsequent user choices or reopening/completing conversations again. A failed or partial import never runs this step. Dry-run displays the policy; conversation decisions require the destination's completed thread index. This is an import policy, not an ongoing auto-archive rule.
 
-Folder mappings are recorded separately from the snapshot and bound to the destination. OneApp can reopen archived members while merging them into an active Inbox conversation; the final completion policy runs after those merges. The original folder metadata remains in the snapshot and import receipts. To change mappings, reevaluate completion rules or evaluate changed parsing, replay into a fresh destination mailbox. Do not edit the inventory or original files: their checksums are part of the format. The same snapshot can be copied to another machine without iCloud credentials.
+Folder mappings are recorded separately from the snapshot and bound to the destination. Orumai can reopen archived members while merging them into an active Inbox conversation; the final completion policy runs after those merges. The original folder metadata remains in the snapshot and import receipts. To change mappings, reevaluate completion rules or evaluate changed parsing, replay into a fresh destination mailbox. Do not edit the inventory or original files: their checksums are part of the format. The same snapshot can be copied to another machine without iCloud credentials.
 
 ### Import through the deployed API
 
@@ -183,20 +183,20 @@ The personal mailbox retains its original R2 keys, including legacy timestamp ke
 
 | Workspace        | Run or build                                                                                                                                                                       |
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apps/cli`       | `bun run --filter @oneapp/cli dev` runs from source. The build produces `apps/cli/dist/one` for the current platform.                                                              |
-| `apps/web`       | `bun run --filter @oneapp/web dev` starts the local web app. The static build goes to `apps/web/dist`.                                                                             |
-| `apps/extension` | `bun run --filter @oneapp/extension build` builds the popup and manifest. In `chrome://extensions`, enable Developer mode and load `apps/extension/dist` as an unpacked extension. |
+| `apps/cli`       | `bun run --filter @orumai/cli dev` runs from source. The build produces `apps/cli/dist/one` for the current platform.                                                              |
+| `apps/web`       | `bun run --filter @orumai/web dev` starts the local web app. The static build goes to `apps/web/dist`.                                                                             |
+| `apps/extension` | `bun run --filter @orumai/extension build` builds the popup and manifest. In `chrome://extensions`, enable Developer mode and load `apps/extension/dist` as an unpacked extension. |
 | `apps/apple`     | `bun run apple:dev` builds and opens the macOS app.                                                                                                                                |
 | `packages/core`  | Shared, runtime-neutral TypeScript imported by all three apps.                                                                                                                     |
 | `packages/ui`    | Foldkit starter UI mounted by the extension.                                                                                                                                       |
 
 ## macOS app
 
-Install the standalone Command Line Tools with `xcode-select --install` or use an existing Xcode installation. On macOS 14 or later, run `bun run apple:dev` to open OneApp. Quit a running copy before rebuilding to pick up native changes. `bun run apple:build` writes a locally signed app to `apps/apple/dist/OneApp.app`.
+Install the standalone Command Line Tools with `xcode-select --install` or use an existing Xcode installation. On macOS 14 or later, run `bun run apple:dev` to open Orumai. Quit a running copy before rebuilding to pick up native changes. `bun run apple:build` writes a locally signed app to `apps/apple/dist/Orumai.app`.
 
-The macOS build bundles the static [OneApp icon](apps/apple/OneApp.icns). Open the [spiral explorer](doc/brand/spiral-explorer.html) in a browser to revisit the settings used for the mark.
+The macOS build bundles the static [Orumai icon](apps/apple/Orumai.icns). Open the [spiral explorer](doc/brand/spiral-explorer.html) in a browser to revisit the settings used for the mark.
 
-The app loads `https://app.dpeek.com` and keeps its own OneApp sign-in session. Links to other sites open in your default browser.
+The app loads `https://app.dpeek.com` and keeps its own Orumai sign-in session. Links to other sites open in your default browser.
 
 ## Local production backups
 
@@ -244,7 +244,7 @@ Ordinary restarts reuse the current data, including local edits. A successful pu
 
 ## Cloudflare production
 
-`OneApp/production` serves `app.dpeek.com` on the `oneapp-web-production` Worker. The former `OneApp/preview` stage was retired after the cutover.
+Orumai uses the existing `OneApp/production` stage and `oneapp-web-production` Worker to serve `app.dpeek.com`. The former `OneApp/preview` stage was retired after the cutover.
 
 The Alchemy stack deploys the Foldkit web app and Effect API to one Worker. It creates a D1 database per stage, applies the committed Drizzle migrations, and provisions the owner through Yielded Auth.
 
@@ -282,7 +282,7 @@ Automatic sender appearance uses the visible From address and headers. Transacti
 
 Mail loads remote images through the server after displaying the message. Likely tracking pixels (tiny or hidden images and known tracking URL patterns) are blocked before fetching; successful downloads are cached for seven days. The proxy hides browser credentials and the client IP, but a recipient-specific image URL can still reveal the first open. The message’s **More actions** menu offers **Load blocked images** and **Show plain text**; the latter replaces the HTML view and offers **Show formatted email** to switch back. These choices reset when you open another message. Fetches are limited to public HTTP(S) destinations, validated raster formats, 24 unique images, 1 MiB per image, 8 MiB downloaded per request, and eight seconds; HTML image embedding shares a 5 MiB budget with inline attachments. CSS background images remain blocked.
 
-The OneApp vault and Bitwarden clients request website icons from OneApp at `/icons/<hostname>/icon.png`. On a cache miss, the Worker tries the site’s HTTPS favicon and checks its homepage for icon links. It serves raster icons and caches successful lookups for seven days and misses for one hour. IP literals and private DNS addresses are blocked. The web vault shows a generic icon for protected logins and when no website icon is available. Icon requests contain the login hostname, which can appear in Cloudflare’s Worker request logs.
+The Orumai vault and Bitwarden clients request website icons from Orumai at `/icons/<hostname>/icon.png`. On a cache miss, the Worker tries the site’s HTTPS favicon and checks its homepage for icon links. It serves raster icons and caches successful lookups for seven days and misses for one hour. IP literals and private DNS addresses are blocked. The web vault shows a generic icon for protected logins and when no website icon is available. Icon requests contain the login hostname, which can appear in Cloudflare’s Worker request logs.
 
 Cloudflare stores invocation logs and traces at 100% sampling and groups recurring errors in Workers Issues. Query strings are redacted from request URLs in telemetry. Open **Workers & Pages → oneapp-web-production → Observability** to inspect production logs and traces. [Cloudflare Query Builder](https://developers.cloudflare.com/workers/observability/query-builder/) also documents the telemetry API.
 
@@ -290,7 +290,7 @@ Open the URL printed at the end of the deploy and sign in with the configured em
 
 In **Settings → Account**, request a code to verify the current email or use your current password to set a new one. Password changes sign out all browser sessions and send a notice to the verified address when email sending is configured. New passwords must have at least 15 characters. For breach screening, the server sends the first five hexadecimal characters of the new password's SHA-1 hash to [Pwned Passwords](https://haveibeenpwned.com/API/v3#PwnedPasswords) and matches the returned hashes locally.
 
-Use **Change email** in the same panel to enter the new address and your current password. The code must be confirmed within five minutes in the session that requested it. OneApp then switches the sign-in address, signs out browser sessions, and sends a notice to the previous address.
+Use **Change email** in the same panel to enter the new address and your current password. The code must be confirmed within five minutes in the session that requested it. Orumai then switches the sign-in address, signs out browser sessions, and sends a notice to the previous address.
 
 **Forgot password?** on the sign-in screen sends a single-use link to the verified sign-in address. It expires in five minutes and can be opened in another browser or on another device. Submitting a new password signs out all browser sessions. Sign in again with the new password.
 
@@ -300,7 +300,7 @@ After a schema change, generate a migration with `bun run db:generate --name <ch
 
 ## CLI
 
-After installing workspace dependencies, run `bun link` from the CLI package directory to put `one` on your PATH. The link runs the TypeScript source directly with Bun. For a standalone binary, run `bun run --filter @oneapp/cli build`.
+After installing workspace dependencies, run `bun link` from the CLI package directory to put `one` on your PATH. The link runs the TypeScript source directly with Bun. For a standalone binary, run `bun run --filter @orumai/cli build`.
 
 ```sh
 cd apps/cli
@@ -321,30 +321,30 @@ New CLI tokens grant `links:read` to list links and `links:write` to save and de
 
 ## Chrome extension
 
-Run `bun run --filter @oneapp/extension build`. In Chrome, open `chrome://extensions`, turn on **Developer mode**, and choose **Load unpacked**. Select the `apps/extension/dist` directory.
+Run `bun run --filter @orumai/extension build`. In Chrome, open `chrome://extensions`, turn on **Developer mode**, and choose **Load unpacked**. Select the `apps/extension/dist` directory.
 
-Open OneApp from the Chrome toolbar and select **Connect to OneApp**. Approve the connection in the OneApp tab, signing in first if needed. On the page you want to keep, open the extension and select **Save this tab**. Saved links appear in the web app and in `one links list`.
+Open Orumai from the Chrome toolbar and select **Connect to Orumai**. Approve the connection in the Orumai tab, signing in first if needed. On the page you want to keep, open the extension and select **Save this tab**. Saved links appear in the web app and in `one links list`.
 
 New extension credentials only allow saving links and stay active until revoked. Use **Disconnect** in Chrome or **Settings → Clients** in the web app to revoke one. Credentials issued under the previous 30-day policy keep their original expiry.
 
 ## MCP
 
-OneApp serves Streamable HTTP at `https://app.dpeek.com/mcp`. The `links:read` scope exposes `list_links`, which returns links newest first with a `nextOffset` for paging. The `links:write` scope exposes `save_link` and `delete_link`.
+Orumai serves Streamable HTTP at `https://app.dpeek.com/mcp`. The `links:read` scope exposes `list_links`, which returns links newest first with a `nextOffset` for paging. The `links:write` scope exposes `save_link` and `delete_link`.
 
 Register the server with Codex:
 
 ```sh
-codex mcp add oneapp --url https://app.dpeek.com/mcp
+codex mcp add orumai --url https://app.dpeek.com/mcp
 ```
 
-Codex supplies its client ID automatically through its OAuth client metadata. Approve access in your browser. If the approval page doesn't open, run `codex mcp login oneapp`. Start a new Codex session to use the tools. For a setup that used `ONEAPP_MCP_TOKEN`, remove that MCP registration and add it again with the command above.
+Codex supplies its client ID automatically through its OAuth client metadata. Approve access in your browser. If the approval page doesn't open, run `codex mcp login orumai`. Start a new Codex session to use the tools. Existing registrations can continue to use their configured name, such as `oneapp`. For a setup that used `ONEAPP_MCP_TOKEN`, remove that MCP registration and add it again with the command above.
 
-OneApp requests approval for `links:read`, `links:write`, `tasks:read`, and `tasks:write` by default. To add Tasks to an existing connection, run `codex mcp login oneapp`, approve access in the browser, then start a new Codex session.
+Orumai requests approval for `links:read`, `links:write`, `tasks:read`, and `tasks:write` by default. To add Tasks to an existing connection, run `codex mcp login <connection-name>`, approve access in the browser, then start a new Codex session.
 
 For read-only access to both features, request the read scopes.
 
 ```sh
-codex mcp login oneapp --scopes links:read,tasks:read
+codex mcp login orumai --scopes links:read,tasks:read
 ```
 
 `tasks:read` exposes `list_tasks`, `get_task`, `get_task_attachment`, and `list_tags`. The task list defaults to active tasks and supports title, status, priority, tag ID, and due-date filters. `get_task` returns the Markdown description and screenshot metadata. Pass the task ID and attachment ID to `get_task_attachment` to view the screenshot as a native MCP image. Both list tools return `nextOffset` for paging.

@@ -11,7 +11,7 @@ model and mapping its commands to the parent. Dispatch `RequestedOpen` from
 the trigger. Foldkit manages the backdrop, Escape, focus, and scroll lock.
 
 ```ts
-import { button, Dialog, field, input } from "@oneapp/ui";
+import { button, Dialog, field, input } from "@orumai/ui";
 
 const editDialog = Dialog.init({ id: "edit-label" });
 const toDialogMessage = (message: typeof Dialog.Message.Type) =>
@@ -59,7 +59,7 @@ with Escape and backdrop dismissal.
 
 ## Inline alerts
 
-Use `alert` from `@oneapp/ui` for persistent feedback in the affected workspace
+Use `alert` from `@orumai/ui` for persistent feedback in the affected workspace
 or dialog. Pass the message, visual severity, and announcement mode separately.
 Use `announcement: "status"` for routine recoverable failures and `"alert"`
 when the user needs to hear the result immediately. Use `"static"` for a
@@ -74,7 +74,7 @@ below for outcomes that would otherwise go unnoticed.
 
 ## Toast notifications
 
-`Toast` from `@oneapp/ui` adapts CreaseUI's StyleX toast to OneApp's tokens and
+`Toast` from `@orumai/ui` adapts CreaseUI's StyleX toast to Orumai's tokens and
 buttons. Its state and commands use the installed Foldkit toast primitive. The
 source revision and license are recorded in `THIRD_PARTY_NOTICES.md`.
 
@@ -114,7 +114,7 @@ passwords, copied values, or decrypted vault content in notification state.
 Own one `Toast.Model` in the application, initialized with a stable, unique ID:
 
 ```ts
-import { Toast } from "@oneapp/ui";
+import { Toast } from "@orumai/ui";
 
 const initial = Toast.init({ id: "notifications" });
 const result = Toast.show(initial, Toast.success({ title: "Email sent." }));

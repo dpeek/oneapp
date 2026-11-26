@@ -18,7 +18,7 @@ import {
   spinner,
   timestamp,
   trashIconPaths,
-} from "@oneapp/ui";
+} from "@orumai/ui";
 import { Effect, Option, Queue, Schema, Stream } from "effect";
 import { Command, Submodel, Update } from "foldkit";
 import { focus } from "foldkit/dom";

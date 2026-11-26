@@ -1,4 +1,4 @@
-import { FileMetadata } from "@oneapp/core/files";
+import { FileMetadata } from "@orumai/core/files";
 import { Schema as AuthSchema } from "@yielded/auth";
 import { Schema } from "effect";
 import { PersonEmail, PersonId, PersonMatch } from "./people-contract.ts";

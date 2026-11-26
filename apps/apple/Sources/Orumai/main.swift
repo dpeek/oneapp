@@ -2,7 +2,7 @@ import AppKit
 import WebKit
 
 @MainActor
-final class OneApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate,
+final class Orumai: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate,
     WKDownloadDelegate
 {
     private let home = URL(string: "https://app.dpeek.com")!
@@ -20,11 +20,12 @@ final class OneApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUID
             backing: .buffered,
             defer: false
         )
-        window.title = "OneApp"
+        window.title = "Orumai"
         window.isReleasedWhenClosed = false
         window.contentView = webView
-        window.setFrameAutosaveName("OneApp Main Window")
-        if !window.setFrameUsingName("OneApp Main Window") {
+        let frameAutosaveName = "OneApp Main Window"
+        window.setFrameAutosaveName(frameAutosaveName)
+        if !window.setFrameUsingName(frameAutosaveName) {
             window.center()
         }
 
@@ -39,9 +40,9 @@ final class OneApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUID
     private func configureMenus() {
         let mainMenu = NSMenu()
 
-        let appMenu = NSMenu(title: "OneApp")
-        appMenu.addItem(withTitle: "Quit OneApp", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        mainMenu.addItem(withTitle: "OneApp", action: nil, keyEquivalent: "").submenu = appMenu
+        let appMenu = NSMenu(title: "Orumai")
+        appMenu.addItem(withTitle: "Quit Orumai", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        mainMenu.addItem(withTitle: "Orumai", action: nil, keyEquivalent: "").submenu = appMenu
 
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
@@ -72,14 +73,14 @@ final class OneApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUID
         }
     }
 
-    private func isOneApp(_ url: URL) -> Bool {
+    private func isOrumai(_ url: URL) -> Bool {
         url.scheme == home.scheme && url.host == home.host && (url.port ?? 443) == 443
     }
 
     private func openExternalLink(_ url: URL, from action: WKNavigationAction) {
         guard action.navigationType == .linkActivated || action.navigationType == .other,
             action.sourceFrame.isMainFrame,
-            let source = action.sourceFrame.request.url, isOneApp(source),
+            let source = action.sourceFrame.request.url, isOrumai(source),
             url.scheme == "https" || url.scheme == "http" || url.scheme == "mailto"
         else { return }
 
@@ -90,8 +91,8 @@ final class OneApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUID
         -> WKNavigationActionPolicy
     {
         guard let url = action.request.url else { return .cancel }
-        let isOneAppBlob = url.scheme == "blob" && action.sourceFrame.request.url.map(isOneApp) == true
-        if isOneApp(url) || (isOneAppBlob && action.shouldPerformDownload) {
+        let isOrumaiBlob = url.scheme == "blob" && action.sourceFrame.request.url.map(isOrumai) == true
+        if isOrumai(url) || (isOrumaiBlob && action.shouldPerformDownload) {
             return action.shouldPerformDownload ? .download : .allow
         }
         if action.targetFrame?.isMainFrame == false { return .allow }
@@ -104,7 +105,7 @@ final class OneApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUID
         for action: WKNavigationAction, windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
         guard let url = action.request.url else { return nil }
-        if isOneApp(url) {
+        if isOrumai(url) {
             webView.load(action.request)
         } else {
             openExternalLink(url, from: action)
@@ -119,7 +120,7 @@ final class OneApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUID
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         guard !hasLoadedPage, (error as NSError).code != NSURLErrorCancelled else { return }
         let alert = NSAlert()
-        alert.messageText = "Couldn’t open OneApp"
+        alert.messageText = "Couldn’t open Orumai"
         alert.informativeText = error.localizedDescription
         alert.addButton(withTitle: "Retry")
         alert.addButton(withTitle: "Close")
@@ -136,7 +137,7 @@ final class OneApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUID
         _ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
         initiatedByFrame frame: WKFrameInfo
     ) async -> [URL]? {
-        guard let source = frame.request.url, isOneApp(source) else { return nil }
+        guard let source = frame.request.url, isOrumai(source) else { return nil }
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = parameters.allowsMultipleSelection
         panel.canChooseDirectories = parameters.allowsDirectories
@@ -183,7 +184,7 @@ final class OneApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUID
 }
 
 let application = NSApplication.shared
-let delegate = OneApp()
+let delegate = Orumai()
 application.setActivationPolicy(.regular)
 application.delegate = delegate
 application.run()

@@ -20,7 +20,7 @@ export default defineConfig({
     // Recovery pages allow same-origin stylesheets through their CSP.
     stylex({ ...stylexOptions, dev: true, devMode: "css-only" }),
     {
-      name: "oneapp-dev-assets",
+      name: "orumai-dev-assets",
       apply: "serve",
       transformIndexHtml: () => [
         {

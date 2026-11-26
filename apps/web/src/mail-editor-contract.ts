@@ -4,7 +4,7 @@ import { EditorBody } from "./mail-format.ts";
 export { EditorBody } from "./mail-format.ts";
 
 export const mailEditor = CustomElement.define({
-  tag: "oneapp-mail-editor",
+  tag: "orumai-mail-editor",
   properties: {
     value: EditorBody,
     readOnly: Schema.Boolean,

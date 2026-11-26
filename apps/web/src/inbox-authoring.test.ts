@@ -1,13 +1,13 @@
 import { vi } from "vitest";
 // These tests exercise state transitions without rendering StyleX components.
-vi.mock("@oneapp/ui", async () => {
+vi.mock("@orumai/ui", async () => {
   const { Dialog } = await import(
-    import.meta.resolve("@foldkit/ui", import.meta.resolve("@oneapp/ui"))
+    import.meta.resolve("@foldkit/ui", import.meta.resolve("@orumai/ui"))
   );
   return { Dialog };
 });
 import { expect, it } from "@effect/vitest";
-import { Dialog } from "@oneapp/ui";
+import { Dialog } from "@orumai/ui";
 import * as Compose from "./inbox-compose.ts";
 import { outgoingAttachmentLimit } from "./inbox-contract.ts";
 import * as Reply from "./inbox-inline-reply.ts";

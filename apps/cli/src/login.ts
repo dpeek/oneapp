@@ -5,7 +5,7 @@ import {
   cliLoginQuery,
   cliLoginInterval,
   cliLoginPath,
-} from "@oneapp/core/cli-auth";
+} from "@orumai/core/cli-auth";
 import { Console, Effect, Redacted, Schema } from "effect";
 import { Base64Url } from "effect/encoding";
 import { readResponse, request, requireSuccess } from "./api.ts";
@@ -94,7 +94,7 @@ export const browserLogin = Effect.fnUntraced(function* (
           return yield* approvalExpired();
         default:
           return yield* new CliError({
-            message: `OneApp returned HTTP ${result.value.status} while waiting for approval.`,
+            message: `Orumai returned HTTP ${result.value.status} while waiting for approval.`,
           });
       }
     }

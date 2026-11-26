@@ -71,7 +71,7 @@ export const isBitwardenPath = (path: string) =>
 
 const html = (body: string, status = 200, form = false) =>
   new Response(
-    `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Connect Bitwarden to OneApp</title><main>${body}</main></html>`,
+    `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Connect Bitwarden to Orumai</title><main>${body}</main></html>`,
     {
       status,
       headers: {
@@ -216,7 +216,7 @@ const authorize = async (
     const vault = await readPersonalVault(env.DB, browser.ownerId);
     if (!vault)
       return html(
-        "<h1>Vault setup required</h1><p>This OneApp account does not have a personal vault yet.</p>",
+        "<h1>Vault setup required</h1><p>This Orumai account does not have a personal vault yet.</p>",
         409,
       );
     const consent = randomSecret();
@@ -230,7 +230,7 @@ const authorize = async (
       await digest(consent),
     );
     return html(
-      `<h1>Connect Bitwarden to OneApp</h1><form method="post" action="${bitwardenAuthorizePath}">
+      `<h1>Connect Bitwarden to Orumai</h1><form method="post" action="${bitwardenAuthorizePath}">
       <input type="hidden" name="approval" value="${consent}"><button type="submit">Connect vault</button></form>`,
       200,
       true,

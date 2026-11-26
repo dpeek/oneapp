@@ -1,4 +1,4 @@
-@import "@oneapp/ui/theme.css";
+@import "@orumai/ui/theme.css";
 @import "./tasks.css";
 @import "./filter-menu.css";
 
@@ -230,7 +230,7 @@ body:has(.app-shell) {
   border: 0;
 }
 
-oneapp-vault-reader {
+orumai-vault-reader {
   display: block;
 }
 

@@ -1,9 +1,9 @@
 import { expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 // Exercise the installed menu state machine without compiling UI styles.
-vi.mock("@oneapp/ui", async () => {
+vi.mock("@orumai/ui", async () => {
   const { Combobox, Menu, Dialog, Popover } = await import(
-    import.meta.resolve("@foldkit/ui", import.meta.resolve("@oneapp/ui"))
+    import.meta.resolve("@foldkit/ui", import.meta.resolve("@orumai/ui"))
   );
   const picker = Combobox.Multi.create();
   return {
@@ -20,7 +20,7 @@ vi.mock("@oneapp/ui", async () => {
     Toast: await import("../../../packages/ui/src/toast-state.ts"),
   };
 });
-import { DropdownMenu } from "@oneapp/ui";
+import { DropdownMenu } from "@orumai/ui";
 import { initial, Message, update } from "./inbox.ts";
 
 const id = "0-8199999999990-00000000-0000-4000-8000-000000000000.eml";

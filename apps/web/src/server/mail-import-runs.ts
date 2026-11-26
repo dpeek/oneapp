@@ -1,5 +1,5 @@
 import { Data, Schema } from "effect";
-import { MailImportPlan, MailImportEntry } from "@oneapp/core/mail-import";
+import { MailImportPlan, MailImportEntry } from "@orumai/core/mail-import";
 import { mailboxSql, type MailDatabase } from "./mailbox.ts";
 import {
   completeImportedConversations,

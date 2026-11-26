@@ -15,8 +15,8 @@ import {
   calendarDraftTimes,
 } from "../calendar-time.ts";
 
-const oneAppTimeZone = "x-oneapp-timezone";
-const oneAppAlarm = "x-oneapp-reminder";
+const calendarTimeZoneProperty = "x-oneapp-timezone";
+const calendarReminderProperty = "x-oneapp-reminder";
 const recurringProperties = ["rrule", "rdate", "exdate"];
 const dateProperties = ["dtstart", "dtend", "recurrence-id", "rdate", "exdate"];
 const utc = ICAL.Timezone.utcTimezone;
@@ -28,7 +28,7 @@ const recurrenceExpansionLimit = 25_000;
 const newCalendar = () => {
   const calendar = new ICAL.Component("vcalendar");
   calendar.addPropertyWithValue("version", "2.0");
-  calendar.addPropertyWithValue("prodid", "-//OneApp//Calendar//EN");
+  calendar.addPropertyWithValue("prodid", "-//Orumai//Calendar//EN");
   return calendar;
 };
 
@@ -299,7 +299,7 @@ export const combineCalendarEvents = (
         names.set(id, existing);
         continue;
       }
-      const name = variants.size === 0 ? id : `OneApp/${crypto.randomUUID()}`;
+      const name = variants.size === 0 ? id : `Orumai/${crypto.randomUUID()}`;
       variants.set(key, name);
       names.set(id, name);
       zone.updatePropertyWithValue("tzid", name);
@@ -618,9 +618,9 @@ export const writeCalendarEvent = (
     "dtstamp",
     ICAL.Time.fromJSDate(new Date(), true),
   );
-  event.component.removeProperty(oneAppTimeZone);
+  event.component.removeProperty(calendarTimeZoneProperty);
   for (const alarm of event.component.getAllSubcomponents("valarm"))
-    if (alarm.hasProperty(oneAppAlarm))
+    if (alarm.hasProperty(calendarReminderProperty))
       event.component.removeSubcomponent(alarm);
 
   if (!times) {
@@ -634,7 +634,7 @@ export const writeCalendarEvent = (
     event.endDate = repeat
       ? localTime(times.end, times.zone, calendar)
       : utcTime(times.end);
-    event.component.addPropertyWithValue(oneAppTimeZone, times.zone);
+    event.component.addPropertyWithValue(calendarTimeZoneProperty, times.zone);
   }
 
   if (event === master) {
@@ -673,7 +673,7 @@ export const writeCalendarEvent = (
       "trigger",
       ICAL.Duration.fromString(`-PT${calendarReminderMinutes}M`),
     );
-    alarm.addPropertyWithValue(oneAppAlarm, "TRUE");
+    alarm.addPropertyWithValue(calendarReminderProperty, "TRUE");
     event.component.addSubcomponent(alarm);
   }
   return {
@@ -721,7 +721,7 @@ const draftFor = (
   if (!date.isDate) {
     try {
       zone = calendarTimeZone(
-        textProperty(event.component, oneAppTimeZone) ||
+        textProperty(event.component, calendarTimeZoneProperty) ||
           (date.zone === floating ? timeZone : date.zone.tzid),
       );
     } catch {

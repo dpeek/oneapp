@@ -1,4 +1,4 @@
-import { DropdownMenu, outlineIcon } from "@oneapp/ui";
+import { DropdownMenu, outlineIcon } from "@orumai/ui";
 import { Effect, Option, Schema } from "effect";
 import { Command, Port, Runtime, Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";

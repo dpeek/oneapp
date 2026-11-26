@@ -4,8 +4,8 @@ import { Schema } from "effect";
 import { indexMailStatements } from "./mail-index.ts";
 import { describeRawMail, parseRawHeaders, rawMailFormat } from "./raw-mail.ts";
 
-import { MailImportMetadata } from "@oneapp/core/mail-import";
-export { MailImportMetadata } from "@oneapp/core/mail-import";
+import { MailImportMetadata } from "@orumai/core/mail-import";
+export { MailImportMetadata } from "@orumai/core/mail-import";
 
 type ImportStore = {
   DB: MailDatabase;

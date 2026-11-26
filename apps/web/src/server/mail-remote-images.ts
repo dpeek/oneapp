@@ -107,7 +107,7 @@ export const loadMailImages = async (
         signal,
         headers: {
           accept: "image/png,image/jpeg,image/gif,image/webp,image/avif",
-          "user-agent": "OneApp-Images/1.0",
+          "user-agent": "Orumai-Images/1.0",
         },
       });
       if (response.status === 200) {

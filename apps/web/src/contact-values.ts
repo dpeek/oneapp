@@ -3,7 +3,7 @@ import {
   fieldClassNames,
   inputClassName,
   noiseIconPath,
-} from "@oneapp/ui";
+} from "@orumai/ui";
 import { Schema } from "effect";
 import { isCompanyDomain } from "./company-domains.ts";
 import { NoiseSenders, noiseSendersApiPath } from "./inbox-contract.ts";

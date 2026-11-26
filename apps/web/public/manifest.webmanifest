@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "OneApp",
-  "short_name": "OneApp",
+  "name": "Orumai",
+  "short_name": "Orumai",
   "start_url": "/mail",
   "scope": "/",
   "display": "standalone",

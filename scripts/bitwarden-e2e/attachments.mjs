@@ -46,7 +46,7 @@ const exportStockZip = async (client, password) => {
 const webFile = {
   name: "fixture-from-oneapp.txt",
   mimeType: "text/plain",
-  buffer: Buffer.from("Synthetic OneApp web file.\n"),
+  buffer: Buffer.from("Synthetic Orumai web file.\n"),
 };
 const stockFile = {
   name: "fixture-from-bitwarden.bin",

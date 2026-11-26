@@ -4,7 +4,7 @@ import {
   extensionAccessPath,
   extensionApprovalHash,
   extensionId,
-} from "@oneapp/core/extension-auth";
+} from "@orumai/core/extension-auth";
 import { Effect, Schema } from "effect";
 import { Command, Submodel, type Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";
@@ -51,7 +51,7 @@ const Approve = Command.define("ApproveChromeExtension", {
       if (!runtime?.sendMessage)
         return Message.Failed({
           error:
-            "Open the connection page from the OneApp extension in Chrome.",
+            "Open the connection page from the Orumai extension in Chrome.",
         });
 
       const approval = await new Promise<unknown>((resolve) => {
@@ -126,7 +126,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
   return h.section(
     [h.Id("extension-access")],
     [
-      h.h2([], ["Connect the OneApp extension"]),
+      h.h2([], ["Connect the Orumai extension"]),
       ...(model.approvalId
         ? [
             h.p(

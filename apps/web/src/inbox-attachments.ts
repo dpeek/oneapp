@@ -1,4 +1,4 @@
-import { button, buttonClassName, Dialog, outlineIcon } from "@oneapp/ui";
+import { button, buttonClassName, Dialog, outlineIcon } from "@orumai/ui";
 import { fileSize, renderPdf } from "./file-display.ts";
 import { Effect, Option, Schema } from "effect";
 import { Submodel, Update } from "foldkit";

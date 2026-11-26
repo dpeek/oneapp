@@ -11,7 +11,7 @@ import {
 const calendar = (...lines: string[]) =>
   [
     "BEGIN:VCALENDAR",
-    "PRODID:-//OneApp test//EN",
+    "PRODID:-//Orumai test//EN",
     "VERSION:2.0",
     ...lines,
     "END:VCALENDAR",

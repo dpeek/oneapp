@@ -3,7 +3,7 @@ import { cloudflareEnvironment } from "./cloudflare-env.ts";
 const env = await cloudflareEnvironment();
 
 const build = Bun.spawn(
-  [process.execPath, "run", "--filter", "@oneapp/web", "build"],
+  [process.execPath, "run", "--filter", "@orumai/web", "build"],
   {
     stdin: "inherit",
     stdout: "inherit",

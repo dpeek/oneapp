@@ -137,7 +137,7 @@ const verifyWorker = async (
       await response.body?.cancel();
       if (!response.ok)
         throw new Error(
-          "The restored OneApp failed its check for " + path + ".",
+          "The restored Orumai failed its check for " + path + ".",
         );
     }
   } finally {

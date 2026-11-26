@@ -1,4 +1,4 @@
-import { alert, button, field, input } from "@oneapp/ui";
+import { alert, button, field, input } from "@orumai/ui";
 import { Effect, Schema } from "effect";
 import { Command, Submodel, type Update } from "foldkit";
 import type { HtmlBuilder } from "foldkit/html";

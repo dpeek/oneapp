@@ -1,7 +1,7 @@
 import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
-import { appName } from "@oneapp/core";
-import { Link, LinkId, LinkList, SaveLink } from "@oneapp/core/links";
+import { appName } from "@orumai/core";
+import { Link, LinkId, LinkList, SaveLink } from "@orumai/core/links";
 import { Context, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { SqlClient } from "effect/sql";
@@ -68,7 +68,7 @@ const createServer = (
       "save_link",
       {
         title: "Save a link",
-        description: "Save an HTTP or HTTPS URL to your OneApp links.",
+        description: "Save an HTTP or HTTPS URL to your Orumai links.",
         inputSchema: standardSchema(SaveLink),
         outputSchema: standardSchema(SavedLink),
         annotations: {

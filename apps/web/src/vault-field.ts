@@ -3,7 +3,7 @@ import {
   createField,
   createInputGroup,
   inputGroupControlClassName,
-} from "@oneapp/ui";
+} from "@orumai/ui";
 import { vaultIcon } from "./vault-item-icon.ts";
 
 type FieldControl = HTMLInputElement | HTMLTextAreaElement;

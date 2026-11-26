@@ -1,4 +1,4 @@
-import { backIcon, buttonClassName, toolbar } from "@oneapp/ui";
+import { backIcon, buttonClassName, toolbar } from "@orumai/ui";
 import type { Attribute, Html, HtmlBuilder } from "foldkit/html";
 
 export const screenHeader = <Message>(

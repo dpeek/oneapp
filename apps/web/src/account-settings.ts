@@ -7,7 +7,7 @@ import {
   item,
   itemGroup,
   nativeSelect,
-} from "@oneapp/ui";
+} from "@orumai/ui";
 import { Effect, Schema } from "effect";
 import { Command } from "foldkit";
 import { focus } from "foldkit/dom";
@@ -531,7 +531,7 @@ export const view = <Parent>(
             h.p(
               [h.Class("account-hint")],
               [
-                "After you verify the new address, OneApp will sign out all browsers and notify your old address.",
+                "After you verify the new address, Orumai will sign out all browsers and notify your old address.",
               ],
             ),
             username,

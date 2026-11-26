@@ -1,4 +1,4 @@
-import { createAvatar } from "@oneapp/ui";
+import { createAvatar } from "@orumai/ui";
 import type { ItemType } from "./vault-item-content.ts";
 import { contactImage } from "./contact-image.ts";
 import type { PersonSummary } from "./people-contract.ts";

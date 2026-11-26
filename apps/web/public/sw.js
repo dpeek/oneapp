@@ -29,7 +29,7 @@ self.addEventListener("fetch", (event) => {
     fetch(event.request).catch(
       async () =>
         (await caches.match("/offline.html")) ??
-        new Response("You’re offline. Connect and reload to open OneApp.", {
+        new Response("You’re offline. Connect and reload to open Orumai.", {
           status: 503,
           headers: { "content-type": "text/plain" },
         }),
@@ -61,8 +61,8 @@ self.addEventListener("push", (event) => {
       calendar ? "Calendar reminder" : "New mail",
       {
         body: calendar
-          ? "Open OneApp to see your schedule."
-          : "Open OneApp to read your message.",
+          ? "Open Orumai to see your schedule."
+          : "Open Orumai to read your message.",
         icon: "/app-icon-192.png",
         tag:
           typeof payload?.tag === "string"

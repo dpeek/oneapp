@@ -1,5 +1,5 @@
 {
-  "name": "@oneapp/cli",
+  "name": "@orumai/cli",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@effect/platform-bun": "~4.1.0",
-    "@oneapp/core": "workspace:*",
+    "@orumai/core": "workspace:*",
     "effect": "~4.1.0"
   }
 }

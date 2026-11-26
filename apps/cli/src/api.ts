@@ -20,7 +20,7 @@ export const request = (
       });
     },
     catch: () =>
-      new CliError({ message: "Could not reach the OneApp server." }),
+      new CliError({ message: "Could not reach the Orumai server." }),
   });
 
 export const requireSuccess = Effect.fnUntraced(function* (response: Response) {
@@ -32,7 +32,7 @@ export const requireSuccess = Effect.fnUntraced(function* (response: Response) {
   }
   if (!response.ok)
     return yield* new CliError({
-      message: `OneApp returned HTTP ${response.status}.`,
+      message: `Orumai returned HTTP ${response.status}.`,
     });
 });
 
@@ -43,5 +43,5 @@ export const readResponse = <A>(
   Effect.tryPromise({
     try: async () => Schema.decodeUnknownSync(schema)(await response.json()),
     catch: () =>
-      new CliError({ message: "OneApp returned an unexpected response." }),
+      new CliError({ message: "Orumai returned an unexpected response." }),
   });

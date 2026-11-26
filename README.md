@@ -388,6 +388,11 @@ codex mcp login orumai --scopes links:read,tasks:read
 
 `tasks:write` exposes `create_task`, `update_task`, `delete_task`, and `create_tag`. Pass the task's latest `revision` when updating or deleting it. Deletion permanently removes the task and its screenshots. Use `addTagIds` or `removeTagIds` to change its tags. Omitted update fields keep their values. A UUID `requestId` lets a client safely retry task creation.
 
+Files requires an explicit `files:read` grant. Request it with `codex mcp login orumai --scopes files:read`, approve access, and start a new Codex session. Include any other scopes you want to use on the same connection.
+
+- `search_files` filters by filename substring (`query`) and exact tag name (`tag`, case-insensitive). Results include tags and a browser URL. Results default to 50 per page, up to 100. Pass `nextOffset` back as `offset` with the same filters.
+- `get_file` returns metadata by file ID. Set `includeContent` to read PNG, JPEG, GIF, and WebP as native MCP images, or UTF-8 plain text, Markdown, CSV, TSV, and JSON as text. Inline content is available for files up to 1 MiB. Text previews are limited to 32 KiB and report `truncated` when more text is available. Use the file URL to open larger files, PDFs, and other unsupported formats in Orumai.
+
 Mail requires an explicit `mail:read` grant and uses the same personal mailbox as the web app. To search Mail and create or review tasks from the same connection, request these scopes and approve the new grant in your browser. Start a new Codex session after approval.
 
 ```sh

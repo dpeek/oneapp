@@ -32,6 +32,7 @@ import { calendarApi, calendarImportLimit } from "../calendar-contract.ts";
 import {
   fileApi,
   fileContentApi,
+  filePath,
   FileIndex,
   fileNameHeader,
   filesApi,
@@ -84,6 +85,7 @@ import {
 import { workspaceEventsPath } from "../workspace-change-contract.ts";
 import {
   codexClientId,
+  filesReadScope,
   mailReadScope,
   McpGrantList,
   mcpGrantsPath,
@@ -3555,7 +3557,7 @@ it("issues MCP link scopes and exposes only the tools a grant authorises", async
     mcpOAuth.paths.metadata,
   ]) {
     expect(await (await request(path, {})).json()).toMatchObject({
-      scopes_supported: [...defaultMcpScopes, mailReadScope],
+      scopes_supported: [...defaultMcpScopes, mailReadScope, filesReadScope],
     });
   }
 
@@ -3621,6 +3623,222 @@ it("issues MCP link scopes and exposes only the tools a grant authorises", async
   });
   expect(await refresh.json()).toMatchObject({ error: "invalid_grant" });
   expect(await listGrants()).toHaveLength(2);
+});
+
+it("searches account files and reads bounded content with only the Files scope", async () => {
+  using sqlite = new Database(":memory:");
+  const objects = new Map<string, Uint8Array<ArrayBuffer>>();
+  const buffer = vi.fn((bytes: Uint8Array<ArrayBuffer>) => bytes);
+  const get = vi.fn(
+    async (
+      key: string,
+      options?: { range: { offset: number; length: number } },
+    ) => {
+      const bytes = objects.get(key);
+      if (!bytes) return null;
+      const range = options?.range;
+      return {
+        size: bytes.byteLength,
+        body: new ReadableStream(),
+        bytes: async () =>
+          buffer(
+            range
+              ? bytes.subarray(range.offset, range.offset + range.length)
+              : bytes,
+          ),
+      };
+    },
+  );
+  const { call, request, origin, session, connect, names, useTool } =
+    await setupMcp(sqlite, {
+      FILE_UPLOADS: {
+        put: async (key: string, bytes: ArrayBuffer) => {
+          objects.set(key, new Uint8Array(bytes));
+          return { size: bytes.byteLength };
+        },
+        get,
+      } as unknown as WorkerEnv["FILE_UPLOADS"],
+    });
+  const token = (await connect([filesReadScope])).access_token;
+  expect(await names(token)).toEqual(["get_file", "search_files"]);
+  const defaultToken = (await connect()).access_token;
+  for (const name of ["get_file", "search_files"]) {
+    expect(await names(defaultToken)).not.toContain(name);
+    expect((await useTool(defaultToken, name, {})).error).toBeDefined();
+  }
+  const invoke = async (name: string, args = {}) => {
+    const reply = await useTool(token, name, args);
+    expect(reply.error).toBeUndefined();
+    expect(reply.result?.isError).toBeUndefined();
+    return reply.result!;
+  };
+  const headers = { cookie: session, origin, "x-effect-auth-csrf": "1" };
+  const upload = async (name: string, mediaType: string, body: BodyInit) => {
+    const response = await request(filesApi, {
+      method: "POST",
+      headers: {
+        ...headers,
+        [fileNameHeader]: encodeURIComponent(name),
+        "content-type": mediaType,
+      },
+      body,
+    });
+    expect(response.status).toBe(201);
+    return Schema.decodeUnknownSync(StoredFile)(await response.json());
+  };
+  const png = Uint8Array.fromBase64(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2ZkAAAAASUVORK5CYII=",
+  );
+  const prefix = "x".repeat(32 * 1024 - 1);
+  const image = await upload("Budget.png", "application/octet-stream", png);
+  const notes = await upload("Budget%_notes.txt", "text/plain", "Total €42");
+  const long = await upload("long.md", "text/markdown", `${prefix}€ continued`);
+  const largeText = await upload(
+    "large.txt",
+    "text/plain",
+    "x".repeat(1024 * 1024 + 1),
+  );
+  const largePng = new Uint8Array(1024 * 1024 + 1);
+  largePng.set(png);
+  const largeImage = await upload("large.png", "image/png", largePng);
+  const pdf = await upload("report.pdf", "application/pdf", "%PDF-1.7");
+  const tag = Schema.decodeUnknownSync(Tag)(
+    await (await call(tagsApi, { name: "Receipts" }, session)).json(),
+  );
+  for (const file of [image, notes]) {
+    expect(
+      (
+        await request(fileApi(file.id), {
+          method: "PUT",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({ revision: file.revision, tagIds: [tag.id] }),
+        })
+      ).status,
+    ).toBe(200);
+  }
+
+  const foreign = crypto.randomUUID();
+  sqlite.run(
+    "INSERT INTO accounts (id, active, security_revision) VALUES ('other', 1, ?)",
+    [crypto.randomUUID()],
+  );
+  sqlite.run(
+    "INSERT INTO items (account_id, id, kind, title, revision, created_at, updated_at) VALUES ('other', ?, 'file', 'Budget.png', ?, 30, 30)",
+    [foreign, crypto.randomUUID()],
+  );
+  sqlite.run(
+    "INSERT INTO files (account_id, item_id, media_type, size, preview_type) VALUES ('other', ?, 'image/png', ?, 'image/png')",
+    [foreign, png.byteLength],
+  );
+  objects.set(`other/${foreign}`, png);
+
+  // Verify the secondary ID order with tied timestamps.
+  sqlite.run("UPDATE items SET created_at = 30 WHERE id IN (?, ?)", [
+    image.id,
+    notes.id,
+  ]);
+  const summary = (file: StoredFile, tags: Tag[] = []) => ({
+    id: file.id,
+    name: file.name,
+    size: file.size,
+    mediaType: file.mediaType,
+    createdAt: tags.length ? 30 : file.createdAt,
+    url: new URL(filePath(file.id), origin).href,
+    tags,
+  });
+  const [first, second] = [image, notes].sort((a, b) =>
+    b.id.localeCompare(a.id),
+  );
+  const search = async (args: object) =>
+    (await invoke("search_files", args)).structuredContent;
+  expect(await search({ query: "budget" })).toEqual({
+    files: [summary(first!, [tag]), summary(second!, [tag])],
+    nextOffset: null,
+  });
+  expect(await search({ query: "%_NOTES", tag: " ＲＥＣＥＩＰＴＳ " })).toEqual(
+    {
+      files: [summary(notes, [tag])],
+      nextOffset: null,
+    },
+  );
+  expect(await search({ tag: "receipts", limit: 1 })).toEqual({
+    files: [summary(first!, [tag])],
+    nextOffset: 1,
+  });
+  expect(await search({ tag: "receipts", limit: 1, offset: 1 })).toEqual({
+    files: [summary(second!, [tag])],
+    nextOffset: null,
+  });
+  expect(await search({ tag: "unknown" })).toEqual({
+    files: [],
+    nextOffset: null,
+  });
+
+  const read = (file: StoredFile) =>
+    invoke("get_file", { id: file.id, includeContent: true });
+  expect(
+    (await invoke("get_file", { id: notes.id })).structuredContent,
+  ).toEqual({
+    file: summary(notes, [tag]),
+    contentStatus: "not_requested",
+  });
+  const missing = await useTool(token, "get_file", {
+    id: foreign,
+    includeContent: true,
+  });
+  expect(missing.result).toMatchObject({
+    isError: true,
+    content: [{ type: "text", text: "File not found." }],
+  });
+  for (const [file, status] of [
+    [pdf, "unsupported"],
+    [largeImage, "too_large"],
+    [largeText, "too_large"],
+  ] as const) {
+    const fallback = await read(file);
+    expect(fallback.structuredContent).toEqual({
+      file: summary(file),
+      contentStatus: status,
+    });
+    expect(fallback.content).toHaveLength(1);
+  }
+  expect(get).not.toHaveBeenCalled();
+  expect(buffer).not.toHaveBeenCalled();
+
+  const imageResponse = await read(image);
+  expect(imageResponse.structuredContent).toEqual({
+    file: summary(image, [tag]),
+    contentStatus: "complete",
+  });
+  expect(imageResponse.content?.at(-1)).toEqual({
+    type: "image",
+    mimeType: "image/png",
+    data: png.toBase64(),
+  });
+  const textResponse = await read(notes);
+  expect(textResponse.structuredContent).toMatchObject({
+    contentStatus: "complete",
+  });
+  expect(textResponse.content?.at(-1)).toEqual({
+    type: "text",
+    text: "Total €42",
+  });
+  const truncated = await read(long);
+  expect(truncated.structuredContent).toMatchObject({
+    contentStatus: "truncated",
+  });
+  expect(truncated.content?.at(-1)).toEqual({ type: "text", text: prefix });
+  expect(get).toHaveBeenLastCalledWith(`owner/${long.id}`, {
+    range: { offset: 0, length: 32 * 1024 },
+  });
+  expect(buffer.mock.lastCall?.[0].byteLength).toBe(32 * 1024);
+
+  objects.set(`owner/${image.id}`, largePng);
+  buffer.mockClear();
+  expect((await read(image)).structuredContent).toMatchObject({
+    contentStatus: "too_large",
+  });
+  expect(buffer).not.toHaveBeenCalled();
 });
 
 it("finds older archived replies and cites scoped mail in a task without marking it read", async () => {

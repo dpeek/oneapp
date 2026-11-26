@@ -1,7 +1,11 @@
 import { expect, it } from "@effect/vitest";
 import { linksReadScope, linksWriteScope } from "@orumai/core/links";
 import { Schema } from "@yielded/auth";
-import { tasksReadScope, tasksWriteScope } from "../mcp-access-contract.ts";
+import {
+  filesReadScope,
+  tasksReadScope,
+  tasksWriteScope,
+} from "../mcp-access-contract.ts";
 import { renderMcpConsent } from "./mcp-consent.ts";
 
 it("escapes consent metadata and preserves the approval form", () => {
@@ -16,6 +20,7 @@ it("escapes consent metadata and preserves the approval form", () => {
       linksWriteScope,
       tasksReadScope,
       tasksWriteScope,
+      filesReadScope,
       "<custom>",
     ],
     redirectUri: "http://127.0.0.1:55162/callback",
@@ -29,6 +34,7 @@ it("escapes consent metadata and preserves the approval form", () => {
   expect(html).toContain("Read your saved links");
   expect(html).toContain("Save and delete your links");
   expect(html).toContain("Read your tasks, screenshots, and tags");
+  expect(html).toContain("Search and read your uploaded files and their tags");
   expect(html).toContain(
     "Create, edit, and delete your tasks and create reusable tags",
   );

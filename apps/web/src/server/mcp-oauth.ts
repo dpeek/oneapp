@@ -13,6 +13,7 @@ import { SqlClient } from "effect/sql";
 import {
   codexClientId,
   codexMetadataOrigin,
+  filesReadScope,
   isCodexMetadataId,
   mailReadScope,
   McpGrant,
@@ -38,13 +39,14 @@ export const WriteLinks = OAuthScope.make(linksWriteScope);
 export const ReadTasks = OAuthScope.make(tasksReadScope);
 export const WriteTasks = OAuthScope.make(tasksWriteScope);
 export const ReadMail = OAuthScope.make(mailReadScope);
+export const ReadFiles = OAuthScope.make(filesReadScope);
 export const defaultMcpScopes = [
   ReadLinks,
   WriteLinks,
   ReadTasks,
   WriteTasks,
 ] as const;
-const supportedMcpScopes = [...defaultMcpScopes, ReadMail] as const;
+const supportedMcpScopes = [...defaultMcpScopes, ReadMail, ReadFiles] as const;
 export type McpScope = (typeof supportedMcpScopes)[number];
 export const mcpOAuth = OAuthServer.make("mcp", {
   scopes: supportedMcpScopes,

@@ -16,10 +16,12 @@ import {
 } from "./cli-tokens.ts";
 import { deleteSavedLink, insertSavedLink, listSavedLinks } from "./links.ts";
 import { defaultMailboxId, requireMailbox, scopeMailStore } from "./mailbox.ts";
+import { registerFileTools } from "./mcp-files.ts";
 import { registerMailTools } from "./mcp-mail.ts";
 import {
   defaultMcpScopes,
   type McpScope,
+  ReadFiles,
   ReadLinks,
   ReadMail,
   ReadTasks,
@@ -142,6 +144,8 @@ const createServer = (
     scopes,
     notifyItemChange,
   );
+  if (actor.kind === "owner" && scopes.includes(ReadFiles))
+    registerFileTools(server, origin, ownerId, db, bucket);
   if (actor.kind === "owner" && scopes.includes(ReadMail)) {
     registerMailTools(server, origin, async () => {
       const { id } = await requireMailbox(db, defaultMailboxId, ownerId);

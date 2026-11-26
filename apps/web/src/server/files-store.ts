@@ -1,6 +1,6 @@
 import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
 import type { FileTagUpdate, StoredFile } from "../files-contract.ts";
-import type { Tag } from "../items-contract.ts";
+import { type Tag, tagNameKey } from "../items-contract.ts";
 import {
   claimed,
   deleteTags,
@@ -13,17 +13,30 @@ import {
 } from "./items-store.ts";
 
 type FileRow = Omit<StoredFile, "tagIds"> & { tagIds: string };
+type FileWithTagsRow = Omit<StoredFile, "tagIds"> & { tags: string };
 
-const fileProjection = `
-  SELECT i.id, i.title AS name, i.revision, i.created_at AS createdAt,
-    f.media_type AS mediaType, f.size, f.preview_type AS previewType, ${itemTagIdsColumn}
+const fileColumns = `i.id, i.title AS name, i.revision, i.created_at AS createdAt,
+  f.media_type AS mediaType, f.size, f.preview_type AS previewType`;
+const fileSource = `
   FROM items i JOIN files f ON f.account_id = i.account_id AND f.item_id = i.id
   WHERE i.account_id = ?1 AND i.kind = 'file'`;
+const fileProjection = `SELECT ${fileColumns}, ${itemTagIdsColumn} ${fileSource}`;
+const fileWithTagsProjection = `
+  SELECT ${fileColumns}, (
+    SELECT json_group_array(json_object('id', t.id, 'name', t.name) ORDER BY t.name_key)
+    FROM item_tags it JOIN tags t ON t.account_id = it.account_id AND t.id = it.tag_id
+    WHERE it.account_id = i.account_id AND it.item_id = i.id
+  ) AS tags ${fileSource}`;
+const fileOrder = "ORDER BY i.created_at DESC, i.id DESC";
 const fileStatement = (db: D1Database, account: string, id: string) =>
   db.prepare(`${fileProjection} AND i.id = ?2`).bind(account, id);
 const decodeFile = ({ tagIds, ...file }: FileRow): StoredFile => ({
   ...file,
   tagIds: JSON.parse(tagIds) as readonly string[],
+});
+const decodeFileWithTags = ({ tags, ...file }: FileWithTagsRow) => ({
+  ...file,
+  tags: JSON.parse(tags) as readonly Tag[],
 });
 
 export const fileObjectKey = (account: string, id: string) =>
@@ -32,6 +45,55 @@ export const fileObjectKey = (account: string, id: string) =>
 export const getFile = async (db: D1Database, account: string, id: string) => {
   const row = await fileStatement(db, account, id).first<FileRow>();
   return row ? decodeFile(row) : null;
+};
+
+export const getFileWithTags = async (
+  db: D1Database,
+  account: string,
+  id: string,
+) => {
+  const row = await db
+    .prepare(`${fileWithTagsProjection} AND i.id = ?2`)
+    .bind(account, id)
+    .first<FileWithTagsRow>();
+  return row ? decodeFileWithTags(row) : null;
+};
+
+export const searchFiles = async (
+  db: D1Database,
+  account: string,
+  {
+    query,
+    tag,
+    limit,
+    offset,
+  }: {
+    query: string;
+    tag?: string | undefined;
+    limit: number;
+    offset: number;
+  },
+) => {
+  const { results } = await db
+    .prepare(
+      `${fileWithTagsProjection}
+      AND instr(lower(i.title), lower(?2)) > 0
+      AND (?3 IS NULL OR EXISTS (
+        SELECT 1 FROM tags t JOIN item_tags it
+          ON it.account_id = t.account_id AND it.tag_id = t.id
+        WHERE t.account_id = i.account_id AND it.item_id = i.id AND t.name_key = ?3
+      ))
+      ${fileOrder} LIMIT ?4 OFFSET ?5`,
+    )
+    .bind(
+      account,
+      query,
+      tag === undefined ? null : tagNameKey(tag),
+      limit,
+      offset,
+    )
+    .all<FileWithTagsRow>();
+  return results.map(decodeFileWithTags);
 };
 
 const versionStatement = (db: D1Database, account: string) =>
@@ -44,9 +106,7 @@ export const fileIndex = async (db: D1Database, account: string) => {
   const [fileRows, tagRows, versionRows] = await db.batch<
     FileRow | Tag | { version: number }
   >([
-    db
-      .prepare(`${fileProjection} ORDER BY i.created_at DESC, i.id DESC`)
-      .bind(account),
+    db.prepare(`${fileProjection} ${fileOrder}`).bind(account),
     tagCatalog(db, account),
     versionStatement(db, account),
   ]);

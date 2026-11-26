@@ -107,7 +107,9 @@
   color: var(--text);
   font-weight: 600;
   text-decoration: none;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .task-row-link:hover {

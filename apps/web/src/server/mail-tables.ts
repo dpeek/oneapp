@@ -11,6 +11,13 @@ import { mailboxes } from "./mailbox-tables.ts";
 import { items } from "./item-tables.ts";
 import { sql } from "drizzle-orm";
 
+export const mailChanges = sqliteTable("mail_changes", {
+  mailboxId: text("mailbox_id")
+    .primaryKey()
+    .references(() => mailboxes.id, { onDelete: "cascade" }),
+  version: integer().notNull(),
+});
+
 export const mailConversations = sqliteTable(
   "mail_conversations",
   {

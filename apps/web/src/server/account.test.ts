@@ -68,6 +68,7 @@ import {
   inboxReplyApi,
   inboxSendPath,
   inboxUnreadPath,
+  inboxVersionPath,
   mailMessageApi,
   noiseApiPath,
   noiseSendersApiPath,
@@ -1944,6 +1945,7 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
   expect((await call(allMailApiPath)).status).toBe(401);
   expect((await call(conversationApi(root.key))).status).toBe(401);
   expect((await call(inboxUnreadPath)).status).toBe(401);
+  expect((await call(inboxVersionPath)).status).toBe(401);
   const session = cookies(await signIn(password));
   const customer = await call(
     peopleApiPath,
@@ -1951,6 +1953,8 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
     session,
   );
   expect(customer.status).toBe(201);
+  expect(publish).toHaveBeenCalledOnce();
+  publish.mockClear();
   const customerProfile = await customer.json();
   const get = async (path: string) => {
     const result = await call(path, undefined, session);
@@ -2049,6 +2053,11 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
     unread: true,
   });
   expect(await get(inboxUnreadPath)).toEqual({ unreadCount: 2 });
+  const { version } = await get(inboxVersionPath);
+  const versionCheck = `${inboxVersionPath}?since=${version}`;
+  const unchanged = await call(versionCheck, undefined, session);
+  expect(unchanged.status).toBe(204);
+  expect(unchanged.headers.get("cache-control")).toBe("no-store");
   const mark = (
     id: string,
     unread: boolean,
@@ -2070,6 +2079,7 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
   expect((await mark(latest.key, false, approved)).status).toBe(204);
   expect((await mark(latest.key, false, approved)).status).toBe(204);
   expect(publish).toHaveBeenCalledOnce();
+  expect((await get(versionCheck)).version).toBeGreaterThan(version);
   expect(await get(inboxUnreadPath)).toEqual({ unreadCount: 1 });
   const readThread = await get(conversationApi(root.key));
   expect(

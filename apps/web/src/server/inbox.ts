@@ -36,6 +36,8 @@ import {
   inboxSendPath,
   InboxUnread,
   inboxUnreadPath,
+  InboxVersion,
+  inboxVersionPath,
   InlineReply,
   MailFilters,
   type MailFolder,
@@ -1372,6 +1374,29 @@ export const inboxRoutes = (
     ),
     folderRoutes("inbox"),
     folderRoutes("sent"),
+    HttpRouter.add(
+      "GET",
+      inboxVersionPath,
+      Effect.gen(function* () {
+        if (!(yield* requireInboxOwner))
+          return yield* jsonError(403, "Access denied");
+        const { since } = yield* HttpServerRequest.ParsedSearchParams;
+        const row = yield* Effect.tryPromise(() =>
+          env.DB.prepare(
+            "SELECT version FROM mail_changes WHERE mailbox_id = ?",
+          )
+            .bind(env.DB.mailboxId)
+            .first<{ version: number }>(),
+        );
+        const version = row?.version ?? 0;
+        return since === String(version)
+          ? HttpServerResponse.empty({ status: 204, headers: privateHeaders })
+          : yield* HttpServerResponse.schemaJson(InboxVersion)(
+              { version },
+              { headers: privateHeaders },
+            );
+      }).pipe(Effect.catchTags(inboxErrors)),
+    ),
     HttpRouter.add(
       "GET",
       inboxUnreadPath,

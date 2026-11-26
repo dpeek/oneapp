@@ -230,7 +230,6 @@ const savePerson = async (
     }
     if (current?.photo && current.photo !== photo)
       defer(removePhotoIfUnused(env, owner, current.photo));
-    if (mailbox) defer(notifyInbox({ ...env, DB: mailbox }));
     const managedAddresses = current?.self ? managed : [];
     return {
       status: "ok",
@@ -299,6 +298,7 @@ export const peopleRoutes = (
           );
           switch (result.status) {
             case "ok":
+              notifyContactChange();
               return yield* HttpServerResponse.schemaJson(Person)(
                 result.profile,
                 { status: existing ? 200 : 201, headers: privateHeaders },

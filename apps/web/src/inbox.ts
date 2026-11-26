@@ -1574,10 +1574,7 @@ const transition = (model: Model, message: Message): Result =>
           )
         : result;
     },
-    LiveChanged: () =>
-      withUnread(
-        withThread(model.folder !== "sent" ? refreshList(model) : { model }),
-      ),
+    LiveChanged: () => withUnread(withThread(refreshList(model))),
     RequestedMore: ({ folder, cursor }) =>
       model.selected === null &&
       model.folder === folder &&

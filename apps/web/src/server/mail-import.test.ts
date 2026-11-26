@@ -47,6 +47,7 @@ import {
   readSentReplyTarget,
 } from "./sent-mail.ts";
 import { attachmentResponse } from "./mail-attachments.ts";
+import { deleteContact, restoreContact, writeProfile } from "./people-store.ts";
 
 const metadata: MailImportMetadata = {
   source: {
@@ -192,6 +193,66 @@ const setup = async (sqlite: Database) => {
     },
   };
 };
+
+it("advances the mailbox version for committed mail and directory changes", async () => {
+  using sqlite = new Database(":memory:");
+  const store = await setup(sqlite);
+  const { DB } = store;
+  sqlite.exec("PRAGMA foreign_keys = ON");
+  sqlite.run(
+    "INSERT INTO mailboxes (id, owner_account_id, name) VALUES ('other', 'owner', 'Other')",
+  );
+  const versions = sqlite.query<{ version: number }, [string]>(
+    "SELECT version FROM mail_changes WHERE mailbox_id = ?",
+  );
+  const version = (mailbox = DB.mailboxId) =>
+    versions.get(mailbox)?.version ?? 0;
+  const advances = async <A>(change: () => Promise<A>) => {
+    const previous = version();
+    const result = await change();
+    expect(version()).toBeGreaterThan(previous);
+    return result;
+  };
+
+  store.failNextBatch();
+  await expect(ingestRawMail(store, metadata, raw())).rejects.toThrow(
+    "D1 failure",
+  );
+  expect(version()).toBe(0);
+  const { id } = await ingestRawMail(store, metadata, raw());
+  expect(version()).toBeGreaterThan(0);
+  const imported = version();
+  await ingestRawMail(store, metadata, raw());
+  sqlite.run("UPDATE mail_index_messages SET body_preview = 'Cached preview'");
+  expect(version()).toBe(imported);
+
+  await advances(() => setInboxUnread(DB, id, true));
+  await advances(() => setThreadArchived(DB, id, false));
+  await advances(() => trashMail(DB, id));
+  await advances(() => restoreMail(DB, id));
+  await advances(() =>
+    setSenderRule(DB, { address: "alice@example.com", priority: "noise" }),
+  );
+  await advances(() =>
+    setSenderAppearance(DB, { address: "alice@example.com", mode: "service" }),
+  );
+  expect(version("other")).toBe(0);
+
+  const person = crypto.randomUUID();
+  const address = "alice@example.com";
+  const revision = await advances(() =>
+    writeProfile(DB, person, undefined, "Alice", [address], null),
+  );
+  const updated = await advances(() =>
+    writeProfile(DB, person, revision!, "Alice", ["new@example.com"], null),
+  );
+  expect(updated).toBeTruthy();
+  const deletion = await advances(() => deleteContact(DB, person, updated!));
+  if (deletion.status !== "ok")
+    throw new Error("Fixture contact could not be deleted");
+  await advances(() => restoreContact(DB, deletion.receipt));
+  expect(version("other")).toBe(4);
+});
 
 it("filters conversation members and unread state before paging in mailbox order", async () => {
   using sqlite = new Database(":memory:");

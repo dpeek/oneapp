@@ -87,9 +87,17 @@ export const startDev = (
   // Local workers must use local credentials and services, including on a
   // machine with production settings in its shell environment.
   const env = Object.fromEntries(
-    ["PATH", "HOME", "TMPDIR", "TERM", "COLORTERM", "USER", "SHELL"].flatMap(
-      (key) => (process.env[key] ? [[key, process.env[key]!]] : []),
-    ),
+    [
+      "PATH",
+      "HOME",
+      "TMPDIR",
+      "TERM",
+      "COLORTERM",
+      "USER",
+      "SHELL",
+      "ALCHEMY_HOME",
+      "XDG_STATE_HOME",
+    ].flatMap((key) => (process.env[key] ? [[key, process.env[key]!]] : [])),
   );
   return Bun.spawn(
     [

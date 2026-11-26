@@ -13,9 +13,34 @@ bun run dev
 
 Open `http://localhost:1337`. The root `dev` command starts the local Cloudflare Worker and Vite web app together and watches both for changes. On first run it populates local dev from the latest encrypted backup. Use the `OWNER_EMAIL` and `OWNER_PASSWORD` from the local environment file printed at startup. See [Local production backups](#local-production-backups) for setup and refresh.
 
-Pass `--port <port>` to change the port. Use `bun run dev --stage sandbox` to start a separate empty database for experiments.
+For a fresh checkout without a backup, follow [Run the full web stack with an empty database](#run-the-full-web-stack-with-an-empty-database).
 
 Run `bun fmt` to format and `bun check` to type-check. `bun run test` runs Vitest on Bun with `@effect/vitest`, and `bun run test:watch` reruns tests as you edit. `bun run verify` formats files, then checks types and runs tests. `bun run build` checks production builds independently of the dev server.
+
+### Run the full web stack with an empty database
+
+From the repository root, use a fresh named stage and an unused port. In a workspace-write sandbox, put Alchemy's profile and local Worker registry in the checkout so their writes work.
+
+```sh
+bun install
+mkdir -p .alchemy/home .alchemy/xdg-state
+ALCHEMY_HOME="$PWD/.alchemy/home" XDG_STATE_HOME="$PWD/.alchemy/xdg-state" \
+  bun run dev --stage clean_clone --port 18373
+```
+
+The root launcher starts the local Worker and Vite, applies the migrations to an empty local database, and provisions a local owner. Use a different stage name for another empty database. The launcher reuses the named stage's database on restart.
+
+Open `http://localhost:18373/tasks` and sign in with `OWNER_EMAIL` and `OWNER_PASSWORD` from `.alchemy/clean_clone.env`. The Tasks page should show **No tasks yet**.
+
+With the runner's browser, skip its external Chrome version check, which the sandbox blocks. Wait for the sign-in form to appear in `snapshot -i`, then use its references to `fill` the fields and `click` **Sign in**. Read the login values inside a helper process that passes the commands via `batch --bail` on stdin and suppresses the batch output.
+
+```sh
+export AGENT_BROWSER_NO_VERSION_CHECK=1
+"$ORUMAI_BROWSER" open http://localhost:18373/tasks
+"$ORUMAI_BROWSER" snapshot -i
+```
+
+Close the browser session with `"$ORUMAI_BROWSER" close` if you used it. Stop a foreground dev server with Ctrl+C. For automation, keep the supervisor that launched the dev server alive and have it send `SIGINT` to the dev process group even if the browser check fails. The sandbox can reject signals sent from a separate tool invocation. Wait for Alchemy to stop its children, then confirm `lsof -nP -iTCP:18373 -sTCP:LISTEN` reports no listener on the chosen port.
 
 ## Mobile mail notifications
 

@@ -21,6 +21,7 @@ import { registerContactTools } from "./mcp-contacts.ts";
 import { registerFileTools } from "./mcp-files.ts";
 import type { MailSenderBindings } from "./mail-delivery.ts";
 import { registerMailSendTools } from "./mcp-mail-send.ts";
+import { registerMailTriageTools } from "./mcp-mail-triage.ts";
 import { registerMailTools } from "./mcp-mail.ts";
 import {
   defaultMcpScopes,
@@ -31,6 +32,7 @@ import {
   ReadMail,
   ReadTasks,
   SendMail,
+  TriageMail,
   WriteLinks,
   WriteTasks,
   mcpOAuth,
@@ -175,6 +177,8 @@ const createServer = (
       registerMailTools(server, origin, ownedMailStore, canReadContacts);
     if (scopes.includes(SendMail))
       registerMailSendTools(server, origin, ownerId, ownedMailStore, defer);
+    if (scopes.includes(TriageMail))
+      registerMailTriageTools(server, origin, ownedMailStore, defer);
   }
   if (actor.kind === "oru")
     registerTaskRunnerTools(server, actor, db, notifyItemChange);

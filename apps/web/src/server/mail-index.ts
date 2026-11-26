@@ -275,34 +275,47 @@ export const setThreadArchived = async (
   db: MailDatabase,
   id: string,
   archived: boolean,
-  anchorId = id,
+  { anchorId = id, requireLatest = false } = {},
 ) => {
+  const mailbox = mailboxSql(db);
+  const thread = requireLatest
+    ? `SELECT thread_id FROM mail_index_messages WHERE mailbox_id = ${mailbox} AND id = ?1 AND folder = 'inbox' AND deleted = 0`
+    : `SELECT thread_id FROM mail_index_keys WHERE mailbox_id = ${mailbox} AND identity = ?1`;
   const newestIncoming = `
     SELECT id, archived FROM mail_index_messages
-    WHERE mailbox_id = ${mailboxSql(db)} AND thread_id = (SELECT thread_id FROM mail_index_keys WHERE mailbox_id = ${mailboxSql(db)} AND identity = ?1)
+    WHERE mailbox_id = ${mailbox} AND thread_id = (${thread})
       AND folder = 'inbox' AND deleted = 0
     ORDER BY timestamp DESC, id DESC LIMIT 1
   `;
-  const identity = localIdentity(anchorId);
-  const changed = await db
+  const anchor = requireLatest ? id : localIdentity(anchorId);
+  const state = Number(archived);
+  const update = db
     .prepare(
       `
     UPDATE mail_index_messages SET archived = ?2
-    WHERE mailbox_id = ${mailboxSql(db)} AND thread_id = (SELECT thread_id FROM mail_index_keys WHERE mailbox_id = ${mailboxSql(db)} AND identity = ?1)
+    WHERE mailbox_id = ${mailbox} AND thread_id = (${thread})
       AND folder = 'inbox' AND deleted = 0 AND archived <> ?2
-      AND (?2 = 0 OR ?3 = (SELECT id FROM (${newestIncoming})))
-    RETURNING id
+      AND (${requireLatest ? "" : "?2 = 0 OR "}?3 = (SELECT id FROM (${newestIncoming})))
+    RETURNING id, archived
   `,
     )
-    .bind(identity, archived ? 1 : 0, id)
-    .first<{ id: string }>();
-  if (changed) return "changed";
-  const current = await db
-    .prepare(newestIncoming)
-    .bind(identity)
-    .first<{ id: string; archived: number }>();
+    .bind(anchor, state, id);
+  const readCurrent = db.prepare(newestIncoming).bind(anchor);
+  type ArchiveRow = { id: string; archived: number };
+  if (requireLatest) {
+    // Classify a no-op in the same transaction that checked the precondition.
+    const [changed, newest] = await db.batch<ArchiveRow>([update, readCurrent]);
+    if (changed?.results.length) return "changed";
+    const current = newest?.results[0];
+    if (!current) return "missing";
+    return current.id === id && current.archived === state
+      ? "unchanged"
+      : "stale";
+  }
+  if (await update.first<ArchiveRow>()) return "changed";
+  const current = await readCurrent.first<ArchiveRow>();
   if (!current) return "missing";
-  return current.archived === (archived ? 1 : 0) ? "unchanged" : "stale";
+  return current.archived === state ? "unchanged" : "stale";
 };
 
 type ConversationView = Exclude<MailboxView, "sent">;
@@ -422,7 +435,8 @@ export const searchIndexedMail = async (
   const statement = db.prepare(
     `
       WITH page_size(size) AS (VALUES (?7))
-      SELECT ${indexedMessageFields}, coalesce(incoming.archived, 0) AS archived,
+      SELECT ${indexedMessageFields}, incoming.id AS latestIncomingId,
+        coalesce(incoming.archived, 0) AS archived,
         (SELECT count(*) ${unreadMembers}) AS unreadCount,
         (SELECT count(*) FROM mail_index_messages member WHERE ${inThread("member")}) AS messageCount,
         (SELECT member.timestamp FROM mail_index_messages member WHERE ${inThread("member")}
@@ -471,6 +485,7 @@ export const searchIndexedMail = async (
       .all<
         IndexedThreadMember & {
           archived: number;
+          latestIncomingId: string | null;
           unreadCount: number;
           messageCount: number;
           lastMessageAt: number;
@@ -510,11 +525,17 @@ export const searchIndexedMail = async (
 export const readIndexedMailMessage = async (db: MailDatabase, id: string) => {
   const row = await db
     .prepare(
-      `SELECT ${indexedMessageFields} FROM mail_index_messages m
+      `SELECT ${indexedMessageFields}, (
+         SELECT incoming.id FROM mail_index_messages incoming
+         WHERE incoming.mailbox_id = m.mailbox_id AND incoming.thread_id = m.thread_id
+           AND incoming.folder = 'inbox' AND incoming.deleted = 0
+         ORDER BY incoming.timestamp DESC, incoming.id DESC LIMIT 1
+       ) AS latestIncomingId
+       FROM mail_index_messages m
        WHERE m.mailbox_id = ${mailboxSql(db)} AND m.id = ? AND m.deleted = 0`,
     )
     .bind(id)
-    .first<IndexedThreadMember>();
+    .first<IndexedThreadMember & { latestIncomingId: string | null }>();
   return row && presentMessage(row);
 };
 

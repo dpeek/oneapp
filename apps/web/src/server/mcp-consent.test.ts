@@ -6,6 +6,7 @@ import {
   filesReadScope,
   mailReadScope,
   mailSendScope,
+  mailTriageScope,
   tasksReadScope,
   tasksWriteScope,
 } from "../mcp-access-contract.ts";
@@ -27,6 +28,7 @@ it("escapes consent metadata and preserves the approval form", () => {
       contactsReadScope,
       mailReadScope,
       mailSendScope,
+      mailTriageScope,
       "<custom>",
     ],
     redirectUri: "http://127.0.0.1:55162/callback",
@@ -47,6 +49,9 @@ it("escapes consent metadata and preserves the approval form", () => {
   );
   expect(html).toContain("Search and read your mail and attachment details");
   expect(html).toContain("Send email and reply from your Orumai mailbox");
+  expect(html).toContain(
+    "Mark mail read or unread and archive or move conversations back to Inbox",
+  );
   expect(html).toContain("&lt;custom&gt;");
   expect(html).toContain('method="post" action="/oauth/mcp/authorize"');
   expect(html).toContain('name="csrf" value="token&quot;&amp;"');

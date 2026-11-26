@@ -109,12 +109,9 @@ export const sendDraft = Effect.fnUntraced(function* (
     let completion: typeof ReplyCompletion.Type | null = null;
     if (reply && completeThrough) {
       const result = yield* Effect.promise(() =>
-        setThreadArchived(
-          env.DB,
-          completeThrough,
-          true,
-          reply.originalId,
-        ).catch(() => {
+        setThreadArchived(env.DB, completeThrough, true, {
+          anchorId: reply.originalId,
+        }).catch(() => {
           console.warn("Could not mark replied conversation done");
           return "missing" as const;
         }),

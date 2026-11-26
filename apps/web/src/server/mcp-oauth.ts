@@ -18,6 +18,7 @@ import {
   isCodexMetadataId,
   mailReadScope,
   mailSendScope,
+  mailTriageScope,
   McpGrant,
   McpGrantId,
   McpGrantList,
@@ -42,6 +43,7 @@ export const ReadTasks = OAuthScope.make(tasksReadScope);
 export const WriteTasks = OAuthScope.make(tasksWriteScope);
 export const ReadMail = OAuthScope.make(mailReadScope);
 export const SendMail = OAuthScope.make(mailSendScope);
+export const TriageMail = OAuthScope.make(mailTriageScope);
 export const ReadFiles = OAuthScope.make(filesReadScope);
 export const ReadContacts = OAuthScope.make(contactsReadScope);
 export const defaultMcpScopes = [
@@ -56,6 +58,7 @@ const supportedMcpScopes = [
   ReadFiles,
   ReadContacts,
   SendMail,
+  TriageMail,
 ] as const;
 export type McpScope = (typeof supportedMcpScopes)[number];
 export const mcpOAuth = OAuthServer.make("mcp", {

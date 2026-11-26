@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/server";
 import { Effect, Schema } from "effect";
 import {
   InboxAttachment,
+  InboxMessageId,
   MailFolder,
   MailMessageId,
   MailReadFilter,
@@ -77,6 +78,7 @@ const summaryFields = {
 const ConversationSummary = Schema.Struct({
   ...summaryFields,
   matchingMessageId: MailMessageId,
+  latestIncomingId: Schema.NullOr(InboxMessageId),
   matchingMessageAt: Schema.Number,
   lastMessageAt: Schema.Number,
   messageCount: Schema.Int,
@@ -100,6 +102,7 @@ const ThreadPage = Schema.Struct({
   messages: Schema.Array(
     Schema.Struct({ ...MessageSummary.fields, preview: Schema.String }),
   ),
+  latestIncomingId: Schema.NullOr(InboxMessageId),
   nextCursor: Schema.NullOr(Schema.String),
 });
 const MessageResult = Schema.Struct({
@@ -197,7 +200,10 @@ export const registerMailTools = (
     timestamp,
     unread,
     people,
-  }: NonNullable<Awaited<ReturnType<typeof readIndexedMailMessage>>>) => ({
+  }: Omit<
+    NonNullable<Awaited<ReturnType<typeof readIndexedMailMessage>>>,
+    "latestIncomingId"
+  >) => ({
     id,
     folder,
     subject,
@@ -275,6 +281,7 @@ export const registerMailTools = (
         return result({
           conversations: rows.slice(0, limit).map((row) => ({
             matchingMessageId: row.id,
+            latestIncomingId: row.latestIncomingId,
             matchingMessageAt: row.timestamp,
             subject: row.subject,
             participants: participants(row.people),
@@ -304,8 +311,8 @@ export const registerMailTools = (
         const page = conversationCursor(cursor, "all");
         if (!page) return toolFailure("Invalid mail cursor.");
         const store = await ownedMailStore();
-        if (!(await readIndexedMailMessage(store.DB, messageId)))
-          return toolFailure("Mail message not found.");
+        const anchor = await readIndexedMailMessage(store.DB, messageId);
+        if (!anchor) return toolFailure("Mail message not found.");
         const rows = await readIndexedThreadPage(
           store.DB,
           messageId,
@@ -328,7 +335,11 @@ export const registerMailTools = (
             { concurrency: 2 },
           ),
         );
-        return result({ messages, nextCursor: nextCursor(rows, limit) });
+        return result({
+          messages,
+          latestIncomingId: anchor.latestIncomingId,
+          nextCursor: nextCursor(rows, limit),
+        });
       }),
   );
   server.registerTool(

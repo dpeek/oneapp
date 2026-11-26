@@ -89,6 +89,7 @@ import {
   filesReadScope,
   mailReadScope,
   mailSendScope,
+  mailTriageScope,
   McpGrantList,
   mcpGrantsPath,
   tasksReadScope,
@@ -3566,6 +3567,7 @@ it("issues MCP link scopes and exposes only the tools a grant authorises", async
         filesReadScope,
         contactsReadScope,
         mailSendScope,
+        mailTriageScope,
       ],
     });
   }
@@ -3632,6 +3634,156 @@ it("issues MCP link scopes and exposes only the tools a grant authorises", async
   });
   expect(await refresh.json()).toMatchObject({ error: "invalid_grant" });
   expect(await listGrants()).toHaveLength(2);
+});
+
+it("applies scoped MCP mail triage and publishes only changed mailbox states", async () => {
+  using sqlite = new Database(":memory:");
+  const publish = vi.fn(async () => {});
+  const getByName = vi.fn(() => ({ publish }));
+  const { request, call, connect, names, useTool, db, origin, session } =
+    await setupMcp(sqlite, {
+      INBOX_UPDATES: { getByName } as unknown as WorkerEnv["INBOX_UPDATES"],
+    });
+  sqlite.exec(`
+    INSERT INTO accounts (id, active, security_revision) VALUES ('other-owner', 1, '1');
+    INSERT INTO mailboxes (id, owner_account_id, name) VALUES ('foreign', 'other-owner', 'Foreign');
+  `);
+  const key = (n: number) =>
+    `0-8199999999990-00000000-0000-4000-8000-00000000000${n}.eml`;
+  const original = key(1);
+  const latest = key(2);
+  const trashed = key(3);
+  const foreign = key(4);
+  const mail = {
+    folder: "inbox" as const,
+    from: "sender@example.net",
+    to: email,
+    subject: "Triage fixture",
+    messageIds: ["<triage@example.net>"],
+    unread: true,
+  };
+  await indexMail(db, { ...mail, id: original, timestamp: 1000 });
+  await indexMail(db, { ...mail, id: trashed, timestamp: 3000 });
+  sqlite.run("UPDATE mail_index_messages SET deleted = 1 WHERE id = ?", [
+    trashed,
+  ]);
+  await indexMail(mailDatabase(db, "foreign"), {
+    ...mail,
+    id: foreign,
+    timestamp: 4000,
+  });
+
+  const defaults = (await connect()).access_token;
+  const read = (await connect([mailReadScope])).access_token;
+  const triage = (await connect([mailTriageScope])).access_token;
+  expect(await names(triage)).toEqual(["set_mail_archived", "set_mail_read"]);
+  expect(await names(read)).toEqual([
+    "get_mail_message",
+    "get_mail_thread",
+    "search_mail",
+  ]);
+  const operations = [
+    { name: "set_mail_read", args: { messageId: original, read: true } },
+    {
+      name: "set_mail_archived",
+      args: { latestIncomingId: original, archived: true },
+    },
+  ];
+  for (const { name, args } of operations) {
+    for (const token of [read, defaults])
+      expect((await useTool(token, name, args)).error).toBeDefined();
+    expect(
+      (
+        await request("/mcp", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name, arguments: args },
+          }),
+        })
+      ).status,
+    ).toBe(401);
+  }
+  for (const id of [trashed, foreign, key(5)]) {
+    for (const [name, args] of [
+      ["set_mail_read", { messageId: id, read: true }],
+      ["set_mail_archived", { latestIncomingId: id, archived: false }],
+    ] as const) {
+      expect((await useTool(triage, name, args)).result).toMatchObject({
+        isError: true,
+        content: [{ type: "text", text: "Mail message not found." }],
+      });
+    }
+  }
+  expect(publish).not.toHaveBeenCalled();
+
+  const readState = (value: boolean) =>
+    useTool(triage, "set_mail_read", { messageId: original, read: value });
+  const archive = (id: string, archived: boolean) =>
+    useTool(triage, "set_mail_archived", { latestIncomingId: id, archived });
+  const url = origin + mailMessageLink(original);
+  const unreadCount = async () =>
+    (await call(inboxUnreadPath, undefined, session)).json();
+  expect(await unreadCount()).toEqual({ unreadCount: 1 });
+  for (const value of [true, true, false]) {
+    expect((await readState(value)).result?.structuredContent).toEqual({
+      messageId: original,
+      read: value,
+      url,
+    });
+    expect(await unreadCount()).toEqual({ unreadCount: value ? 0 : 1 });
+  }
+  for (const value of [true, true, false]) {
+    expect((await archive(original, value)).result?.structuredContent).toEqual({
+      latestIncomingId: original,
+      archived: value,
+      url,
+    });
+    expect(await unreadCount()).toEqual({ unreadCount: value ? 0 : 1 });
+  }
+  expect(publish).toHaveBeenCalledTimes(4);
+  expect(getByName.mock.calls).toEqual(
+    Array.from({ length: 4 }, () => ["personal"]),
+  );
+
+  await indexMail(
+    db,
+    { ...mail, id: latest, timestamp: 2000 },
+    { reopensArchive: true },
+  );
+  const conflict = {
+    isError: true,
+    content: [
+      {
+        type: "text",
+        text: "Mail triage conflict. Review the newest incoming message before retrying.",
+      },
+    ],
+  };
+  expect((await archive(original, true)).result).toMatchObject(conflict);
+  expect((await archive(original, false)).result).toMatchObject(conflict);
+  expect(await unreadCount()).toEqual({ unreadCount: 2 });
+  expect((await archive(latest, true)).result?.structuredContent).toMatchObject(
+    {
+      latestIncomingId: latest,
+      archived: true,
+    },
+  );
+  expect((await archive(original, true)).result).toMatchObject(conflict);
+  expect(await unreadCount()).toEqual({ unreadCount: 0 });
+  expect(publish).toHaveBeenCalledTimes(5);
+
+  sqlite.run("DELETE FROM mail_conversations WHERE mailbox_id = 'personal'");
+  sqlite.run("UPDATE mailboxes SET owner_account_id = ? WHERE id = ?", [
+    "other-owner",
+    "personal",
+  ]);
+  expect((await readState(true)).result?.isError).toBe(true);
+  expect((await archive(latest, false)).result?.isError).toBe(true);
+  expect(publish).toHaveBeenCalledTimes(5);
 });
 
 it("sends and threads mail with a separate MCP grant and a durable request ID", async () => {
@@ -4460,7 +4612,9 @@ it("finds older archived replies and cites scoped mail in a task without marking
   };
   const page = await search(filters);
   expect(page).toMatchObject({
-    conversations: [{ matchingMessageId: other, messageCount: 1 }],
+    conversations: [
+      { matchingMessageId: other, latestIncomingId: null, messageCount: 1 },
+    ],
     nextCursor: expect.any(String),
     indexCoverage: "incomplete",
   });
@@ -4468,6 +4622,7 @@ it("finds older archived replies and cites scoped mail in a task without marking
     conversations: [
       {
         matchingMessageId: reply,
+        latestIncomingId: closeout,
         messageCount: 3,
         archived: true,
         unreadCount: 1,
@@ -4515,6 +4670,7 @@ it("finds older archived replies and cites scoped mail in a task without marking
   const first = await thread({ limit: 1 });
   expect(first).toMatchObject({
     messages: [{ id: original, folder: "inbox", unread: true }],
+    latestIncomingId: closeout,
     nextCursor: expect.any(String),
   });
   expect(await thread({ cursor: first.nextCursor })).toMatchObject({

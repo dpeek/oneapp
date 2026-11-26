@@ -7,6 +7,7 @@ import {
   restoreMail,
   listTrash,
   collectMailTrash,
+  emptyMailTrash,
   mailRetentionMs,
 } from "./mail-trash.ts";
 import {
@@ -577,7 +578,7 @@ it("preserves conversation item identity and tags through replies, merges and Tr
   expect(items()).toEqual([merged]);
   expect(await restoreMail(DB, bridge.id)).toBe(true);
   expect(items()).toEqual([merged]);
-  await removeIndexedMail(DB, "inbox", first.id);
+  await removeIndexedMail(DB, [{ folder: "inbox", id: first.id }]);
   expect(items()[0]).toMatchObject({
     id: merged!.id,
     title: "Other subject",
@@ -585,7 +586,7 @@ it("preserves conversation item identity and tags through replies, merges and Tr
     updated: 40,
   });
   for (const mail of [second, reply, bridge])
-    await removeIndexedMail(DB, "inbox", mail.id);
+    await removeIndexedMail(DB, [{ folder: "inbox", id: mail.id }]);
   await indexMail(DB, bridge);
   expect(items()).toEqual([]);
   expect(sqlite.query("SELECT id FROM items").all()).toEqual([]);
@@ -608,7 +609,7 @@ it("makes concurrent retries idempotent and preserves subsequent user changes an
   expect(
     sqlite.query("SELECT unread, archived FROM mail_index_messages").get(),
   ).toEqual({ unread: 1, archived: 0 });
-  await removeIndexedMail(store.DB, "inbox", left.id);
+  await removeIndexedMail(store.DB, [{ folder: "inbox", id: left.id }]);
   store.inbox.objects.delete(left.id);
   expect((await ingestRawMail(store, metadata, raw())).status).toBe("skipped");
   expect(store.inbox.objects.size).toBe(0);
@@ -954,6 +955,65 @@ it("isolates identical imported messages, conversations, preferences and complet
   expect(await personal.INBOX_MESSAGES.head(first.id)).toBeNull();
   expect(await work.INBOX_MESSAGES.head(first.id)).not.toBeNull();
   expect((await readThread(work.DB, first.id)).messages).toHaveLength(2);
+});
+
+it("empties all trash pages, purges message content, and resumes interrupted cleanup", async () => {
+  using sqlite = new Database(":memory:");
+  const store = await setup(sqlite);
+  sqlite.exec("PRAGMA foreign_keys = ON");
+  const active = await ingestRawMail(store, metadata, raw("active"));
+  const trashed = [];
+  for (let i = 0; i < 101; i++) {
+    const folder = i === 100 ? "sent" : "inbox";
+    const { id } = await ingestRawMail(
+      store,
+      {
+        ...metadata,
+        folder,
+        source: { ...metadata.source, uid: metadata.source.uid + i + 1 },
+      },
+      raw(`trashed-${i}`, i === 0 ? "active" : ""),
+    );
+    await trashMail(store.DB, id);
+    trashed.push({ id, folder });
+  }
+  expect((await listTrash(store.DB)).cursor).not.toBeNull();
+  const sent = trashed.at(-1)!;
+  expect(
+    await attachmentResponse(store.SENT_MESSAGES, sent.id, 0, false),
+  ).toBeInstanceOf(Response);
+
+  store.failNextBatch();
+  await expect(emptyMailTrash(store)).rejects.toThrow("D1 failure");
+  expect(await restoreMail(store.DB, sent.id)).toBe(false);
+  await emptyMailTrash(store);
+  await emptyMailTrash(store);
+
+  expect((await listTrash(store.DB)).messages).toEqual([]);
+  expect(await store.SENT_MESSAGES.head(sent.id)).toBeNull();
+  expect(
+    await attachmentResponse(store.SENT_MESSAGES, sent.id, 0, false),
+  ).toBeNull();
+  expect([...store.inbox.objects.keys()]).toEqual([active.id]);
+  expect(
+    (await readThread(store.DB, active.id)).messages.map(({ id }) => id),
+  ).toEqual([active.id]);
+  expect(sqlite.query("SELECT message_id FROM mail_body_text").all()).toEqual([
+    { message_id: active.id },
+  ]);
+  expect(
+    sqlite.query("SELECT DISTINCT message_id FROM mail_body_terms").all(),
+  ).toEqual([{ message_id: active.id }]);
+  expect(
+    sqlite.query("SELECT thread_id FROM mail_conversations").all(),
+  ).toEqual([{ thread_id: active.id }]);
+  expect(
+    sqlite
+      .query(
+        "SELECT count(*) AS n FROM mail_index_messages WHERE deleted <> 0 AND (subject <> '' OR deleted_at IS NOT NULL OR trash_batch IS NOT NULL)",
+      )
+      .get(),
+  ).toEqual({ n: 0 });
 });
 
 it("scopes index rebuilds and scan checkpoints to each mailbox storage namespace", async () => {

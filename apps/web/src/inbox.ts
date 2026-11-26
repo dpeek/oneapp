@@ -1,8 +1,10 @@
 import {
+  alert,
   avatarGroup,
   backIcon,
   button,
   buttonClassName,
+  Dialog,
   DropdownMenu,
   ellipsisIcon,
   item,
@@ -153,6 +155,7 @@ const messageMenu = DropdownMenu.create<MessageAction>();
 const rowMenu = ItemActionMenu.create<RowAction>();
 const rowActions = ItemActionMenu.init("mail-row-actions");
 const newEmailButtonId = "mail-new-email";
+const emptyTrashDialogId = "mail-empty-trash";
 
 export const Model = Schema.Struct({
   folder: MailboxView,
@@ -211,6 +214,9 @@ export const Model = Schema.Struct({
       conversationView: Schema.optionalKey(MailboxView),
     }),
   ),
+  emptyTrashDialog: Dialog.Model,
+  emptyTrashRequest: Schema.NullOr(Schema.String),
+  emptyTrashError: Schema.NullOr(Schema.String),
   archiveRequest: Schema.NullOr(ArchiveRequest),
   senderRuleRequest: Schema.NullOr(SenderRuleRequest),
   compose: Compose.Model,
@@ -253,6 +259,9 @@ export const initial: Model = {
   attachmentPreview: Attachments.initial,
   attachmentPopover: Popover.init({ id: "mail-attachments" }),
   deleteRequest: null,
+  emptyTrashDialog: Dialog.init({ id: emptyTrashDialogId }),
+  emptyTrashRequest: null,
+  emptyTrashError: null,
   archiveRequest: null,
   senderRuleRequest: null,
   compose: Compose.initial,
@@ -297,6 +306,10 @@ export const Message = defineMessageUnion({
     conversation: Schema.optionalKey(TrashedConversation),
   },
   DeleteFailed: { request: Schema.String },
+  GotEmptyTrashDialogMessage: { message: Dialog.Message },
+  ConfirmedEmptyTrash: {},
+  EmptiedTrash: { request: Schema.String },
+  EmptyTrashFailed: { request: Schema.String },
   GotConversationMenuMessage: { message: DropdownMenu.Message },
   GotMessageMenuMessage: { message: DropdownMenu.Message },
   GotRowMenuMessage: { message: ItemActionMenu.Message },
@@ -350,6 +363,22 @@ const foldFilters = Update.foldChild({
   toParentMessage: toFiltersMessage,
   foldOutMessage: () => (model) => ({ model }),
 });
+
+const toEmptyTrashDialogMessage = (message: typeof Dialog.Message.Type) =>
+  Message.GotEmptyTrashDialogMessage({ message });
+
+const foldEmptyTrashDialog = Update.foldChild({
+  update: Dialog.update,
+  read: (model: Model) => Option.some(model.emptyTrashDialog),
+  write: (model, emptyTrashDialog) => ({ ...model, emptyTrashDialog }),
+  toParentMessage: toEmptyTrashDialogMessage,
+  foldOutMessage: () => (model) => ({ model }),
+});
+
+const canEmptyTrash = (model: Model) =>
+  model.folder === "trash" &&
+  model.selected === null &&
+  Boolean(model.list?.messages.length || model.emptyTrashError);
 
 export const OutMessage = defineMessageUnion({
   Notify: { notification: Notification },
@@ -801,6 +830,29 @@ const DeleteEntry = Command.define("DeleteInboxEntry", {
         : Message.DeleteFailed({ request });
     }).pipe(
       Effect.catch(() => Effect.succeed(Message.DeleteFailed({ request }))),
+    ),
+});
+
+const EmptyTrash = Command.define("EmptyMailTrash", {
+  args: { request: Schema.String },
+  messages: [
+    Message.EmptiedTrash,
+    Message.EmptyTrashFailed,
+    Message.SessionExpired,
+  ],
+  execute: ({ request }) =>
+    Effect.tryPromise(async (signal) => {
+      const response = await fetch(trashApiPath, {
+        method: "DELETE",
+        headers: { "x-effect-auth-csrf": "1" },
+        signal,
+      });
+      if (response.status === 401) return Message.SessionExpired({ request });
+      return response.status === 204
+        ? Message.EmptiedTrash({ request })
+        : Message.EmptyTrashFailed({ request });
+    }).pipe(
+      Effect.catch(() => Effect.succeed(Message.EmptyTrashFailed({ request }))),
     ),
 });
 
@@ -1369,6 +1421,8 @@ const transition = (model: Model, message: Message): Result =>
               recovery: model.recovery,
               quickReply: model.quickReply,
               deleteRequest: model.deleteRequest,
+              emptyTrashRequest: model.emptyTrashRequest,
+              emptyTrashError: model.emptyTrashError,
               archiveRequest: model.archiveRequest,
               senderRuleRequest: model.senderRuleRequest,
               sender: model.sender,
@@ -1388,6 +1442,7 @@ const transition = (model: Model, message: Message): Result =>
               conversationMenu: initial.conversationMenu,
               messageMenu: initial.messageMenu,
               rowActions,
+              emptyTrashDialog: initial.emptyTrashDialog,
               middleRevealed: false,
               active: id ? { id, folder: messageFolder(id) } : null,
               thread: null,
@@ -1874,6 +1929,84 @@ const transition = (model: Model, message: Message): Result =>
                 "Could not confirm the deletion. Check Trash before trying again.",
             },
           ),
+    GotEmptyTrashDialogMessage: ({ message }) => {
+      if (
+        (message._tag === "RequestedOpen" &&
+          (!canEmptyTrash(model) || model.emptyTrashRequest)) ||
+        (message._tag === "RequestedClose" && model.emptyTrashRequest)
+      )
+        return { model };
+      const result = foldEmptyTrashDialog(model, message);
+      return message._tag === "CompletedCloseDialog" &&
+        model.folder === "trash" &&
+        !canEmptyTrash(model)
+        ? {
+            ...result,
+            commands: [
+              ...(result.commands ?? []),
+              RecoverRowFocus({ folder: "trash", neighborId: null }),
+            ],
+          }
+        : result;
+    },
+    ConfirmedEmptyTrash: () => {
+      if (!model.emptyTrashDialog.isOpen || model.emptyTrashRequest)
+        return { model };
+      const request = crypto.randomUUID();
+      return {
+        model: { ...model, emptyTrashRequest: request, emptyTrashError: null },
+        commands: [EmptyTrash({ request })],
+      };
+    },
+    EmptiedTrash: ({ request }) => {
+      if (request !== model.emptyTrashRequest) return { model };
+      const next = { ...model, emptyTrashRequest: null, emptyTrashError: null };
+      const closed = foldEmptyTrashDialog(
+        next,
+        Dialog.Message.RequestedClose(),
+      );
+      const refreshed =
+        model.folder === "trash"
+          ? loadList(
+              {
+                ...closed.model,
+                rowActions,
+                list: model.list && {
+                  ...model.list,
+                  messages: [],
+                  cursor: null,
+                },
+                listRequest: null,
+              },
+              null,
+            )
+          : { model: closed.model };
+      return notify(
+        {
+          model: refreshed.model,
+          commands: [...(closed.commands ?? []), ...(refreshed.commands ?? [])],
+        },
+        {
+          key: "mail-empty-trash",
+          variant: "Success",
+          title: "Trash emptied.",
+        },
+      );
+    },
+    EmptyTrashFailed: ({ request }) => {
+      if (request !== model.emptyTrashRequest) return { model };
+      const error = "Could not finish emptying Trash. Try again.";
+      const result = {
+        model: { ...model, emptyTrashRequest: null, emptyTrashError: error },
+      };
+      return model.emptyTrashDialog.isOpen
+        ? result
+        : notify(result, {
+            key: "mail-empty-trash",
+            variant: "Error",
+            title: error,
+          });
+    },
     LoadedList: ({ request, page }) => {
       if (request !== model.listRequest?.id) return { model };
       const { cursor } = model.listRequest;
@@ -2312,6 +2445,62 @@ const filteredEmpty = (h: HtmlBuilder<Message>) =>
     ],
   );
 
+const emptyTrashDialog = (model: Model, h: HtmlBuilder<Message>) => {
+  const pending = model.emptyTrashRequest !== null;
+  return Dialog.view(
+    {
+      model: model.emptyTrashDialog,
+      title: "Empty Trash?",
+      alertDescription:
+        "All messages in Trash and their attachments will be permanently deleted.",
+      toParentMessage: toEmptyTrashDialogMessage,
+      content: (initialFocus) =>
+        h.div(
+          [],
+          [
+            alert(
+              {
+                message: model.emptyTrashError,
+                severity: "error",
+                announcement: "alert",
+              },
+              h,
+            ),
+            Dialog.footer(
+              [
+                button(
+                  {
+                    variant: "outline",
+                    disabled: pending,
+                    attributes: initialFocus,
+                    onClick: toEmptyTrashDialogMessage(
+                      Dialog.Message.RequestedClose(),
+                    ),
+                    children: ["Cancel"],
+                  },
+                  h,
+                ),
+                button(
+                  {
+                    variant: "destructive",
+                    disabled: pending,
+                    focusableWhenDisabled: true,
+                    attributes: [h.AriaBusy(pending)],
+                    onClick: Message.ConfirmedEmptyTrash(),
+                    children: [pending ? "Emptying Trash…" : "Empty trash"],
+                  },
+                  h,
+                ),
+              ],
+              h,
+            ),
+          ],
+        ),
+    },
+    h,
+  );
+};
+
 const listView = (model: Model, h: HtmlBuilder<Message>) => {
   const now = Date.now();
   const { list, listRequest, listError, folder, selected } = model;
@@ -2398,6 +2587,9 @@ const listView = (model: Model, h: HtmlBuilder<Message>) => {
               ]),
         ],
       ),
+      ...(folder === "trash" && selected === null
+        ? [emptyTrashDialog(model, h)]
+        : []),
     ],
   );
 };
@@ -3221,16 +3413,34 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
             ),
           ],
           controls:
-            model.selected === null && supportsMailFilters(model.folder)
+            model.selected === null && model.folder === "trash"
               ? [
-                  h.submodel({
-                    slotId: "inbox-filters",
-                    model: model.filters,
-                    view: Filters.view,
-                    toParentMessage: toFiltersMessage,
-                  }),
+                  button(
+                    {
+                      size: "sm",
+                      variant: "outline",
+                      dialogId: emptyTrashDialogId,
+                      disabled:
+                        !canEmptyTrash(model) ||
+                        model.emptyTrashRequest !== null,
+                      onClick: toEmptyTrashDialogMessage(
+                        Dialog.Message.RequestedOpen(),
+                      ),
+                      children: ["Empty trash"],
+                    },
+                    h,
+                  ),
                 ]
-              : undefined,
+              : model.selected === null && supportsMailFilters(model.folder)
+                ? [
+                    h.submodel({
+                      slotId: "inbox-filters",
+                      model: model.filters,
+                      view: Filters.view,
+                      toParentMessage: toFiltersMessage,
+                    }),
+                  ]
+                : undefined,
           viewControls:
             model.selected === null && isInboxView(model.folder)
               ? [inboxPrioritySwitch(model.folder, h)]

@@ -32,7 +32,7 @@ import { enqueueMailPush, pushLifetimeMs } from "./push-store.ts";
 import {
   indexConversationItem,
   mergeConversationItems,
-  removeConversationItem,
+  removeConversationItems,
 } from "./mail-conversation-items.ts";
 
 export type IndexedMail = ConversationMessage & {
@@ -207,26 +207,31 @@ export const indexMail = async (
 
 export const removeIndexedMail = async (
   db: MailDatabase,
-  folder: MailFolder,
-  id: string,
+  messages: readonly { folder: MailFolder; id: string }[],
 ) => {
+  const mailbox = mailboxSql(db);
+  const ids = JSON.stringify(messages.map(({ id }) => id));
   // Retain the opaque ID to prevent an in-flight R2 scan from recreating this row.
   await db.batch([
     db
       .prepare(
-        `DELETE FROM mail_body_text WHERE mailbox_id = ${mailboxSql(db)} AND message_id = ?`,
+        `DELETE FROM mail_body_text
+         WHERE mailbox_id = ${mailbox} AND message_id IN (SELECT value FROM json_each(?))`,
       )
-      .bind(id),
+      .bind(ids),
     db
       .prepare(
         `
       INSERT INTO mail_index_messages (mailbox_id, id, thread_id, folder, sender, recipient, subject, timestamp, deleted)
-      VALUES (${mailboxSql(db)}, ?1, ?1, ?2, '', '', '', 0, 1)
-      ON CONFLICT(mailbox_id, id) DO UPDATE SET sender = '', recipient = '', envelope_recipient = NULL, subject = '', timestamp = 0, deleted = 1, deleted_at = NULL, unread = 0, people = NULL, body_preview = NULL
+      SELECT ${mailbox}, value ->> 'id', value ->> 'id', value ->> 'folder', '', '', '', 0, 1
+      FROM json_each(?) WHERE true
+      ON CONFLICT(mailbox_id, id) DO UPDATE SET sender = '', recipient = '', envelope_recipient = NULL,
+        subject = '', timestamp = 0, deleted = 1, deleted_at = NULL, trash_batch = NULL,
+        unread = 0, archived = 0, people = NULL, list_mail = NULL, body_preview = NULL, body_indexed = 0
     `,
       )
-      .bind(id, folder),
-    ...removeConversationItem(db, id),
+      .bind(JSON.stringify(messages)),
+    ...removeConversationItems(db, ids),
   ]);
 };
 

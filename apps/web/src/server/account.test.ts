@@ -8024,6 +8024,9 @@ it("sends binary attachments to multiple recipients and retains downloadable Sen
         copies.set(id, json);
         return {};
       },
+      delete: async (ids: string[]) => {
+        for (const id of ids) copies.delete(id);
+      },
       get: async (id: string) => {
         const json = copies.get(id);
         return json
@@ -8120,6 +8123,27 @@ it("sends binary attachments to multiple recipients and retains downloadable Sen
   expect((await call(`${trashPath}/restore`, {}, session)).status).toBe(204);
   expect((await call(`${path}?trash=1`, undefined, session)).status).toBe(404);
   expect((await call(path, undefined, session)).status).toBe(200);
+  const headers = {
+    cookie: session,
+    origin: "https://oneapp.example",
+    "x-effect-auth-csrf": "1",
+  };
+  expect(
+    (await request(mailMessageApi("sent", id), { method: "DELETE", headers }))
+      .status,
+  ).toBe(204);
+  const empty = (headers?: HeadersInit) =>
+    request(`${inboxApiPath}/trash`, { method: "DELETE", headers });
+  expect((await empty()).status).toBe(401);
+  expect(
+    (await empty({ cookie: session, origin: "https://other.example" })).status,
+  ).toBe(403);
+  expect(copies.has(id)).toBe(true);
+  expect((await empty(headers)).status).toBe(204);
+  expect(copies.has(id)).toBe(false);
+  expect((await call(trashPath, undefined, session)).status).toBe(404);
+  expect((await call(`${path}?trash=1`, undefined, session)).status).toBe(404);
+  expect((await call(`${trashPath}/restore`, {}, session)).status).toBe(404);
 });
 
 it("uses the oldest unread sender for conversation avatars, then the latest incoming sender", async () => {

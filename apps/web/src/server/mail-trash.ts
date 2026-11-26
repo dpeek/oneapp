@@ -4,6 +4,8 @@ import { removeIndexedMail } from "./mail-index.ts";
 import type { DeletedMailCursor, MailFolder } from "../inbox-contract.ts";
 
 export const mailRetentionMs = 30 * 24 * 60 * 60 * 1000;
+const purgeBatchSize = 100;
+type TrashedMessage = { id: string; folder: MailFolder };
 type Store = {
   DB: MailDatabase;
   INBOX_MESSAGES: R2Bucket;
@@ -128,24 +130,39 @@ export const listTrash = async (
   };
 };
 
+const messageBucket = (env: Store, folder: MailFolder) =>
+  folder === "sent" ? env.SENT_MESSAGES : env.INBOX_MESSAGES;
+
+const purgeMail = async (env: Store, messages: TrashedMessage[]) => {
+  await Promise.all(
+    (["inbox", "sent"] as const).map(async (folder) => {
+      const ids = messages
+        .filter((message) => message.folder === folder)
+        .map(({ id }) => id);
+      if (!ids.length) return;
+      // Attachments are embedded in these R2 objects.
+      await messageBucket(env, folder).delete(ids);
+    }),
+  );
+  await removeIndexedMail(env.DB, messages);
+};
+
 export const collectMailTrash = async (env: Store, now = Date.now()) => {
   // Claim expired rows atomically. Restore cannot race an R2 deletion; failed
   // object deletions retain their claim and are retried on the next cron run.
   const { results } = await env.DB.prepare(
     `UPDATE mail_index_messages SET deleted = 2
     WHERE mailbox_id = ${mailboxSql(env.DB)} AND id IN (SELECT id FROM mail_index_messages WHERE mailbox_id = ${mailboxSql(env.DB)} AND
-      ((deleted = 1 AND deleted_at <= ?) OR deleted = 2) LIMIT 100)
+      ((deleted = 1 AND deleted_at <= ?) OR deleted = 2) LIMIT ?)
     RETURNING id, folder`,
   )
-    .bind(now - mailRetentionMs)
-    .all<{ id: string; folder: MailFolder }>();
+    .bind(now - mailRetentionMs, purgeBatchSize)
+    .all<TrashedMessage>();
   let failures = 0;
-  for (const { id, folder } of results) {
+  for (const message of results) {
     try {
-      await (folder === "sent" ? env.SENT_MESSAGES : env.INBOX_MESSAGES).delete(
-        id,
-      );
-      await removeIndexedMail(env.DB, folder, id);
+      await messageBucket(env, message.folder).delete(message.id);
+      await removeIndexedMail(env.DB, [message]);
     } catch {
       failures++;
     }
@@ -154,4 +171,24 @@ export const collectMailTrash = async (env: Store, now = Date.now()) => {
     throw new Error(
       `Could not permanently delete ${failures} expired messages; cleanup will retry.`,
     );
+};
+
+export const emptyMailTrash = async (env: Store) => {
+  const mailbox = mailboxSql(env.DB);
+  // Claim the whole Trash before touching R2. Rows that were already purged
+  // have no deleted_at. Restore only operates on rows that are still in Trash.
+  await env.DB.prepare(
+    `UPDATE mail_index_messages SET deleted = 2
+     WHERE mailbox_id = ${mailbox} AND deleted = 1 AND deleted_at IS NOT NULL`,
+  ).run();
+  for (;;) {
+    const { results } = await env.DB.prepare(
+      `SELECT id, folder FROM mail_index_messages
+       WHERE mailbox_id = ${mailbox} AND deleted = 2 LIMIT ?`,
+    )
+      .bind(purgeBatchSize)
+      .all<TrashedMessage>();
+    if (!results.length) return;
+    await purgeMail(env, results);
+  }
 };

@@ -57,6 +57,7 @@ import {
   restoreMail,
   restoreTrashBatch,
   listTrash,
+  emptyMailTrash,
 } from "./mail-trash.ts";
 import { mailPreview } from "./mail-preview.ts";
 import {
@@ -967,8 +968,34 @@ export const inboxRoutes = (
   });
   const recoveryRoutes = Layer.mergeAll(
     HttpRouter.add(
+      "DELETE",
+      trashApiPath,
+      Effect.gen(function* () {
+        if (!(yield* requireInboxOwner))
+          return yield* jsonError(403, "Access denied");
+        return yield* http.protect(
+          Effect.gen(function* () {
+            yield* Effect.tryPromise(() => emptyMailTrash(env)).pipe(
+              Effect.ensuring(Effect.sync(() => defer(notifyInbox(env)))),
+            );
+            return HttpServerResponse.empty({
+              status: 204,
+              headers: privateHeaders,
+            });
+          }),
+        );
+      }).pipe(
+        Effect.catchTags({
+          ...inboxErrors,
+          HookDenied: () => jsonError(403, "Request not allowed"),
+          UnknownError: () =>
+            jsonError(503, "Could not finish emptying Trash. Try again."),
+        }),
+      ),
+    ),
+    HttpRouter.add(
       "GET",
-      `${inboxApiPath}/trash`,
+      trashApiPath,
       Effect.gen(function* () {
         if (!(yield* requireInboxOwner))
           return yield* jsonError(403, "Access denied");

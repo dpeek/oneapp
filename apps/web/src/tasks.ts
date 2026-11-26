@@ -89,7 +89,12 @@ const Operation = Schema.Union([
   }),
 ]);
 type Operation = typeof Operation.Type;
-export const FilterCategory = Schema.Literals(["status", "priority", "tags"]);
+export const FilterCategory = Schema.Literals([
+  "status",
+  "priority",
+  "assignee",
+  "tags",
+]);
 export const filterOptionsId = "task-filter-options";
 export const creationDialogId = "task-create-dialog";
 export const creationTitleId = "task-create-title-input";
@@ -221,6 +226,7 @@ export const Message = defineMessageUnion({
   ClosedFilterCategory: {},
   ToggledStatusFilter: { value: TaskStatus },
   ToggledPriorityFilter: { value: TaskPriority },
+  ToggledAssigneeFilter: { value: TaskAssignee },
   GotFilterTagsMessage: { message: MultiCombobox.Message },
   ClearedFilters: {},
   GotSortMenuMessage: { message: DropdownMenu.SingleSelect.Message },
@@ -1249,6 +1255,15 @@ const transition = (
           filters: {
             ...model.filters,
             priorities: toggleFilter(model.filters.priorities, value),
+          },
+        },
+      }),
+      ToggledAssigneeFilter: ({ value }) => ({
+        model: {
+          ...model,
+          filters: {
+            ...model.filters,
+            assignees: toggleFilter(model.filters.assignees, value),
           },
         },
       }),

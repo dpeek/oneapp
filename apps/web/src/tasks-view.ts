@@ -176,7 +176,12 @@ const latestRunDetails = (
     ],
   );
 };
-const filterLabels = { status: "Status", priority: "Priority", tags: "Tags" };
+const filterLabels = {
+  status: "Status",
+  priority: "Priority",
+  assignee: "Assignee",
+  tags: "Tags",
+};
 const taskListLabel = "All tasks";
 const taskDateTimeFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -391,6 +396,18 @@ const taskFilterOptions = (
             label,
             checked: filters.priorities.includes(priority),
             message: Message.ToggledPriorityFilter({ value: priority }),
+          },
+          h,
+        );
+      }),
+    assignee: () =>
+      assigneeOptions.map(({ value, label }) => {
+        const assignee = value || null;
+        return filterChoice(
+          {
+            label,
+            checked: filters.assignees.includes(assignee),
+            message: Message.ToggledAssigneeFilter({ value: assignee }),
           },
           h,
         );

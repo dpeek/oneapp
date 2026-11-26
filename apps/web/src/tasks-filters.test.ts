@@ -31,13 +31,20 @@ it("matches any selected value within each task filter and requires every catego
   const filters = {
     statuses: ["not-started", "in-progress", "completed"] as const,
     priorities: [null, "high"] as const,
+    assignees: ["owner", null] as const,
     tagIds: [alpha, beta],
   };
-  expect(taskFilterCount(filters)).toBe(7);
+  expect(taskFilterCount(filters)).toBe(9);
   expect(matchesTaskFilters(task, filters)).toBe(true);
   expect(
     matchesTaskFilters(
-      { ...task, status: "not-started", priority: null, tagIds: [alpha] },
+      {
+        ...task,
+        status: "not-started",
+        priority: null,
+        assignee: "owner",
+        tagIds: [alpha],
+      },
       filters,
     ),
   ).toBe(true);
@@ -45,20 +52,33 @@ it("matches any selected value within each task filter and requires every catego
     false,
   );
   expect(matchesTaskFilters({ ...task, priority: "low" }, filters)).toBe(false);
+  expect(matchesTaskFilters({ ...task, assignee: "oru" }, filters)).toBe(false);
   expect(matchesTaskFilters({ ...task, tagIds: [gamma] }, filters)).toBe(false);
   expect(matchesTaskFilters({ ...task, status: "completed" }, filters)).toBe(
     true,
   );
 });
 
-it("defaults to the three active statuses with no priority or tag selections", () => {
+it("defaults to the three active statuses with no other selections", () => {
   expect(
     taskStatuses.filter((status) =>
       matchesTaskFilters({ ...task, status }, defaultFilters),
     ),
   ).toEqual(["not-started", "in-progress", "in-review"]);
   expect(defaultFilters.priorities).toEqual([]);
+  expect(defaultFilters.assignees).toEqual([]);
   expect(defaultFilters.tagIds).toEqual([]);
+});
+
+it("can add and remove an unassigned filter alongside a named assignee", () => {
+  const assignees = toggleFilter(["oru" as const], null);
+  const filters = { ...emptyFilters, assignees };
+  expect(matchesTaskFilters(task, filters)).toBe(true);
+  expect(matchesTaskFilters({ ...task, assignee: "oru" }, filters)).toBe(true);
+  expect(matchesTaskFilters({ ...task, assignee: "owner" }, filters)).toBe(
+    false,
+  );
+  expect(toggleFilter(assignees, null)).toEqual(["oru"]);
 });
 
 it("can select either closed status by itself", () => {

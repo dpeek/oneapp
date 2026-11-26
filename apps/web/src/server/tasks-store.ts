@@ -32,6 +32,25 @@ const taskOrder = "ORDER BY i.updated_at DESC, i.id DESC";
 const taskStatement = (db: D1Database, account: string, id: string) =>
   db.prepare(`${taskProjection} AND i.id = ?2`).bind(account, id);
 
+const versionStatement = (db: D1Database, account: string) =>
+  db
+    .prepare("SELECT version FROM task_changes WHERE account_id = ?")
+    .bind(account);
+
+const recordTaskChange = (
+  db: D1Database,
+  account: string,
+  id: string,
+  revision: string,
+) =>
+  db
+    .prepare(
+      `INSERT INTO task_changes (account_id, version)
+       SELECT ?1, 1 WHERE ${claimed}
+       ON CONFLICT (account_id) DO UPDATE SET version = version + 1`,
+    )
+    .bind(account, id, revision);
+
 const decodeTask = <T extends TaskRow<TaskSummary>>({
   tagIds,
   ...fields
@@ -45,14 +64,23 @@ export const getTask = async (db: D1Database, account: string, id: string) => {
   return task ? decodeTask(task) : null;
 };
 
+export const taskVersion = async (db: D1Database, account: string) =>
+  (await versionStatement(db, account).first<number>("version")) ?? 0;
+
 export const taskIndex = async (db: D1Database, account: string) => {
-  const [taskRows, tagRows] = await db.batch<TaskRow | Tag>([
+  const [taskRows, tagRows, versionRows] = await db.batch<
+    TaskRow | Tag | { version: number }
+  >([
     db.prepare(`${taskProjection} ${taskOrder}`).bind(account),
     tagCatalog(db, account),
+    versionStatement(db, account),
   ]);
   return {
     tasks: (taskRows!.results as TaskRow[]).map(decodeTask),
     tags: tagRows!.results as Tag[],
+    version:
+      (versionRows!.results[0] as { version: number } | undefined)?.version ??
+      0,
   };
 };
 
@@ -125,7 +153,7 @@ export const createTask = async (
 ) => {
   const revision = crypto.randomUUID();
   const ids = JSON.stringify([...new Set(tagIds)]);
-  const [, , , task] = await db.batch<TaskRow>([
+  const [, , , , task] = await db.batch<TaskRow>([
     db
       .prepare(
         `INSERT INTO items (account_id, id, kind, title, revision, created_at, updated_at)
@@ -140,10 +168,14 @@ export const createTask = async (
       )
       .bind(account, id, revision, description, status, priority, dueOn),
     insertTags(db, account, id, revision, ids),
+    recordTaskChange(db, account, id, revision),
     taskStatement(db, account, id),
   ]);
   const row = task!.results[0];
-  return row ? decodeTask(row) : null;
+  return {
+    changed: row?.revision === revision,
+    task: row ? decodeTask(row) : null,
+  };
 };
 
 export const updateTask = async (
@@ -155,7 +187,7 @@ export const updateTask = async (
 ) => {
   const revision = crypto.randomUUID();
   const tagIds = JSON.stringify([...new Set(input.tagIds)]);
-  const [item, , , , task] = await db.batch<TaskRow>([
+  const [item, , , , , task] = await db.batch<TaskRow>([
     db
       .prepare(
         `UPDATE items SET title = ?4, revision = ?5, updated_at = ?6
@@ -180,6 +212,7 @@ export const updateTask = async (
       ),
     deleteTags(db, account, id, revision),
     insertTags(db, account, id, revision, tagIds),
+    recordTaskChange(db, account, id, revision),
     taskStatement(db, account, id),
   ]);
   const row = task!.results[0];

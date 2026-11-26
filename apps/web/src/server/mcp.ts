@@ -34,6 +34,7 @@ const createServer = (
   bucket: R2Bucket,
   sql: SqlClient.SqlClient,
   scopes: readonly McpScope[],
+  onTaskChange: (account: string) => void,
 ) => {
   const run = Effect.runPromiseWith(Context.make(SqlClient.SqlClient, sql));
   const server = new McpServer({ name: appName, version: "1.0.0" });
@@ -116,7 +117,7 @@ const createServer = (
         ),
     );
   }
-  registerTaskTools(server, origin, ownerId, db, bucket, scopes);
+  registerTaskTools(server, origin, ownerId, db, bucket, scopes, onTaskChange);
   return server;
 };
 
@@ -133,7 +134,12 @@ const advertiseScopes = HttpRouter.middleware((effect) =>
   }),
 );
 
-export const mcpRoutes = (origin: string, db: D1Database, bucket: R2Bucket) =>
+export const mcpRoutes = (
+  origin: string,
+  db: D1Database,
+  bucket: R2Bucket,
+  onTaskChange: (account: string) => void,
+) =>
   HttpRouter.add(
     "*",
     "/mcp",
@@ -162,6 +168,7 @@ export const mcpRoutes = (origin: string, db: D1Database, bucket: R2Bucket) =>
             bucket,
             sql,
             access.scopes,
+            onTaskChange,
           ),
         {
           maxRequestBodySize:

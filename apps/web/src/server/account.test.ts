@@ -40,7 +40,14 @@ import {
   taskAttachmentApi,
   taskAttachmentsApi,
 } from "../task-attachment-contract.ts";
-import { Task, taskApi, TaskIndex, tasksApi } from "../tasks-contract.ts";
+import {
+  Task,
+  taskApi,
+  TaskIndex,
+  tasksApi,
+  tasksChanged,
+  TaskSnapshot,
+} from "../tasks-contract.ts";
 import {
   allMailApiPath,
   archiveApiPath,
@@ -3371,6 +3378,75 @@ it("uses scoped MCP tools to read and edit the same tasks and tags as the web ap
   });
   expect(unknownTag.result?.isError).toBe(true);
   expect(sqlite.query("SELECT id FROM items").all()).toHaveLength(2);
+});
+
+it("publishes committed task changes and lets the browser recover a missed signal", async () => {
+  using sqlite = new Database(":memory:");
+  const published: Array<{ change: string; version: number }> = [];
+  let drop = false;
+  const { call, session, connect, useTool } = await setupMcp(sqlite, {
+    INBOX_UPDATES: {
+      getByName: () => ({
+        publish: async (change: string) => {
+          const row = sqlite
+            .query<{ version: number }, []>("SELECT version FROM task_changes")
+            .get();
+          if (!drop && row) published.push({ change, version: row.version });
+        },
+      }),
+    } as unknown as WorkerEnv["INBOX_UPDATES"],
+  });
+  const read = (since?: number) =>
+    call(
+      since === undefined ? tasksApi : `${tasksApi}?since=${since}`,
+      undefined,
+      session,
+    );
+  const snapshot = async (response: Response) =>
+    Schema.decodeUnknownSync(TaskSnapshot)(await response.json());
+  expect((await snapshot(await read())).version).toBe(0);
+  expect((await read(0)).status).toBe(204);
+  const id = crypto.randomUUID();
+  const token = (await connect([tasksWriteScope])).access_token;
+  const input = { requestId: id, title: "Live task" };
+  const created = await useTool(token, "create_task", input);
+  const receipt = created.result?.structuredContent as { revision: string };
+  expect(published).toEqual([{ change: tasksChanged, version: 1 }]);
+  expect(await snapshot(await read(0))).toMatchObject({
+    version: 1,
+    tasks: [{ id, title: input.title }],
+  });
+
+  drop = true;
+  const edit = { id, revision: receipt.revision, title: "Updated remotely" };
+  const updated = await useTool(token, "update_task", edit);
+  expect(updated.result?.isError).toBeFalsy();
+  expect(published).toHaveLength(1);
+  const recovered = await snapshot(await read(1));
+  expect(recovered).toMatchObject({
+    version: 2,
+    tasks: [{ id, title: edit.title }],
+  });
+  expect((await read(2)).status).toBe(204);
+  expect((await call(`${tasksApi}?since=2`)).status).toBe(401);
+
+  drop = false;
+  await useTool(token, "create_task", input);
+  const stale = await useTool(token, "update_task", edit);
+  expect(stale.result?.isError).toBe(true);
+  expect((await read(2)).status).toBe(204);
+  expect(published).toHaveLength(1);
+
+  const browserTask = await call(
+    tasksApi,
+    {
+      id: crypto.randomUUID(),
+      title: "Added in the browser",
+    },
+    session,
+  );
+  expect(browserTask.status).toBe(201);
+  expect(published.at(-1)).toEqual({ change: tasksChanged, version: 3 });
 });
 
 it("stores the validated theme for the authenticated account across sessions", async () => {

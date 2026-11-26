@@ -28,7 +28,7 @@ import {
   taskIconPaths,
 } from "@orumai/ui";
 import * as Client from "@yielded/auth/Client";
-import { Effect, Option, Schema, Stream } from "effect";
+import { Effect, Option, Schedule, Schema, Stream } from "effect";
 import {
   Command,
   Navigation,
@@ -93,6 +93,7 @@ import {
 import { vaultPath } from "./vault-setup-contract.ts";
 import * as VaultSetup from "./vault-setup.ts";
 import { screenHeader, workspace, workspaceDrawerMedia } from "./workspace.ts";
+import { changes as workspaceChanges } from "./workspace-changes.ts";
 
 type Page = typeof AppNavigation.Page.Type;
 const pageFor = (url: Url.Url): Page => {
@@ -816,14 +817,42 @@ const subscriptions = Subscription.make<Model, Message>()((entry) => ({
           : Stream.empty,
     },
   ),
-  inbox: entry(
+  workspaceChanges: entry(
     { active: Schema.Boolean },
     {
       modelToDependencies: (model) => ({
         active: model.account !== null && !isApproval(model),
       }),
       dependenciesToStream: ({ active }) =>
-        active ? Inbox.changes.pipe(Stream.map(toInboxMessage)) : Stream.empty,
+        active
+          ? workspaceChanges.pipe(
+              Stream.map((area) =>
+                area === "inbox"
+                  ? toInboxMessage(Inbox.Message.LiveChanged())
+                  : toTasksMessage(Tasks.Message.RefreshRequested()),
+              ),
+            )
+          : Stream.empty,
+    },
+  ),
+  taskVersion: entry(
+    { active: Schema.Boolean },
+    {
+      modelToDependencies: (model) => ({
+        active:
+          model.account !== null &&
+          !isApproval(model) &&
+          model.page === "tasks",
+      }),
+      dependenciesToStream: ({ active }) =>
+        active
+          ? Stream.fromSchedule(Schedule.spaced("30 seconds")).pipe(
+              Stream.filter(() => document.visibilityState === "visible"),
+              Stream.map(() =>
+                toTasksMessage(Tasks.Message.RefreshRequested()),
+              ),
+            )
+          : Stream.empty,
     },
   ),
 }));
@@ -1385,7 +1414,10 @@ const update = (
       };
     },
     GotCalendarMessage: ({ message }) => foldCalendar(model, message),
-    GotTasksMessage: ({ message }) => foldTasks(model, message),
+    GotTasksMessage: ({ message }) =>
+      message._tag === "RefreshRequested" && model.page !== "tasks"
+        ? { model }
+        : foldTasks(model, message),
     GotFilesMessage: ({ message }) => foldFiles(model, message),
     OpenedCreationMenu: () =>
       model.account &&

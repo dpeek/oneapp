@@ -14,7 +14,13 @@ import { TaskCreate, tasksApi, TaskUpdate } from "../tasks-contract.ts";
 import { jsonError, privateHeaders, readFileName } from "./api-response.ts";
 import { AppAuth, ownerId, type authHttp } from "./auth.ts";
 import { createTag, removeTag, renameTag, tagCatalog } from "./items-store.ts";
-import { createTask, getTask, taskIndex, updateTask } from "./tasks-store.ts";
+import {
+  createTask,
+  getTask,
+  taskIndex,
+  taskVersion,
+  updateTask,
+} from "./tasks-store.ts";
 import { detectFilePreviewType } from "./file-preview-type.ts";
 import {
   createTaskAttachment,
@@ -40,6 +46,7 @@ export const tasksRoutes = (
   http: ReturnType<typeof authHttp>,
   { DB: db, FILE_UPLOADS: bucket }: Pick<WorkerEnv, "DB" | "FILE_UPLOADS">,
   defer: (work: Promise<unknown>) => void,
+  onTaskChange: (account: string) => void,
 ) => {
   const authenticated = <E, R>(
     handler: (
@@ -197,9 +204,23 @@ export const tasksRoutes = (
       tasksApi,
       handle(
         authenticated((account) =>
-          Effect.tryPromise(() => taskIndex(db, account)).pipe(
-            Effect.flatMap(json),
-          ),
+          Effect.gen(function* () {
+            const { since } = yield* HttpServerRequest.ParsedSearchParams;
+            if (typeof since === "string") {
+              const version = yield* Effect.tryPromise(() =>
+                taskVersion(db, account),
+              );
+              if (since === String(version))
+                return HttpServerResponse.empty({
+                  status: 204,
+                  headers: privateHeaders,
+                });
+            }
+            const index = yield* Effect.tryPromise(() =>
+              taskIndex(db, account),
+            );
+            return yield* json(index);
+          }),
         ),
       ),
     ),
@@ -217,9 +238,10 @@ export const tasksRoutes = (
                   "Check the task title, due date and other fields.",
                 );
               const now = yield* Clock.currentTimeMillis;
-              const task = yield* Effect.tryPromise(() =>
+              const { task, changed } = yield* Effect.tryPromise(() =>
                 createTask(db, account, input.value, now),
               );
+              if (changed) onTaskChange(account);
               return yield* task
                 ? json(task, 201)
                 : jsonError(409, "Could not create the task.");
@@ -249,7 +271,10 @@ export const tasksRoutes = (
                 updateTask(db, account, id, input.value, now),
               );
               if (!result.task) return yield* jsonError(404, "Task not found.");
-              if (result.changed) return yield* json(result.task);
+              if (result.changed) {
+                onTaskChange(account);
+                return yield* json(result.task);
+              }
               if (result.task.revision !== input.value.revision)
                 return yield* json(result.task, 409);
               return yield* jsonError(400, "One or more tags are unavailable.");

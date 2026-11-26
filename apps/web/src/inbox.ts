@@ -51,11 +51,9 @@ import {
   type ConversationSummary,
   conversationsApiPath,
   folderPath,
-  inboxChanged,
   inboxComposeLimits,
   InboxEntry,
   MailRemoteImages,
-  inboxEventsPath,
   InboxMessageId,
   inboxOriginalApi,
   inboxReadApi,
@@ -452,55 +450,6 @@ const foldQuickReply = Update.foldChild({
   write: (model, quickReply) => ({ ...model, quickReply }),
   toParentMessage: toQuickReplyMessage,
 });
-
-export const changes = Stream.callback<Message>(
-  (queue) =>
-    Effect.acquireRelease(
-      Effect.sync(() => {
-        const url = new URL(inboxEventsPath, window.location.href);
-        url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-        let stopped = false;
-        let socket: WebSocket | undefined;
-        let retry: number | undefined;
-        let delay = 1000;
-        const changed = () => {
-          if (!stopped) Queue.offerUnsafe(queue, Message.LiveChanged());
-        };
-        const connect = () => {
-          const connection = new WebSocket(url);
-          socket = connection;
-          connection.onopen = () => {
-            delay = 1000;
-            changed();
-          };
-          connection.onmessage = (event) => {
-            if (event.data === inboxChanged) changed();
-          };
-          connection.onclose = (event) => {
-            if (stopped) return;
-            if (event.code === 1008) changed();
-            retry = window.setTimeout(connect, delay);
-            delay = Math.min(delay * 2, 30_000);
-          };
-        };
-        const resumed = () => {
-          if (document.visibilityState !== "hidden") changed();
-        };
-        document.addEventListener("visibilitychange", resumed);
-        window.addEventListener("online", resumed);
-        connect();
-        return () => {
-          document.removeEventListener("visibilitychange", resumed);
-          window.removeEventListener("online", resumed);
-          stopped = true;
-          window.clearTimeout(retry);
-          socket?.close();
-        };
-      }),
-      (stop) => Effect.sync(stop),
-    ).pipe(Effect.andThen(Effect.never)),
-  { bufferSize: 1, strategy: "sliding" },
-);
 
 export const closeFolderSheet = () =>
   Message.GotFolderSheetMessage({ message: Sheet.Message.RequestedClose() });

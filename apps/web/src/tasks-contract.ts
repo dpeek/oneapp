@@ -3,6 +3,7 @@ import { ItemId, ItemTagIds, itemTagLimit, Tag } from "./items-contract.ts";
 
 export const tasksPath = "/tasks";
 export const tasksApi = "/api/tasks";
+export const tasksChanged = "tasks.changed";
 export const taskPath = (id: string) => `${tasksPath}/${id}`;
 export const taskApi = (id: string) => `${tasksApi}/${id}` as const;
 
@@ -83,4 +84,8 @@ export type Task = typeof Task.Type;
 export const TaskIndex = Schema.Struct({
   tasks: Schema.Array(Task),
   tags: Schema.Array(Tag),
+});
+export const TaskSnapshot = Schema.Struct({
+  ...TaskIndex.fields,
+  version: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
 });

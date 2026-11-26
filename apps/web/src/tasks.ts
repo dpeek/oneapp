@@ -17,9 +17,9 @@ import {
   Task,
   taskApi,
   TaskCreate,
-  TaskIndex,
   TaskPriority,
   TaskRoute,
+  TaskSnapshot,
   TaskStatus,
   TaskUpdate,
   tasksApi,
@@ -80,7 +80,7 @@ const Field = Schema.Literals([
 ]);
 
 export const Model = Schema.Struct({
-  index: Schema.NullOr(TaskIndex),
+  index: Schema.NullOr(TaskSnapshot),
   folderSheet: Sheet.Model,
   selectedId: Schema.NullOr(ItemId),
   editor: Schema.NullOr(Editor),
@@ -95,6 +95,8 @@ export const Model = Schema.Struct({
   request: Schema.NullOr(
     Schema.Struct({ id: Schema.String, operation: Operation }),
   ),
+  refreshRequest: Schema.NullOr(Schema.String),
+  refreshPending: Schema.Boolean,
   error: Schema.NullOr(
     Schema.Struct({
       message: Schema.String,
@@ -114,6 +116,8 @@ export const initial: Model = {
   filters: defaultFilters,
   sort: "updated",
   request: null,
+  refreshRequest: null,
+  refreshPending: false,
   error: null,
 };
 
@@ -123,6 +127,14 @@ export const Message = defineMessageUnion({
   GotAttachmentsMessage: { message: Attachments.Message },
   FocusUpdated: {},
   Retried: {},
+  RefreshRequested: {},
+  RefreshCompleted: {
+    check: Schema.String,
+    result: Schema.Union([
+      TaskSnapshot,
+      Schema.Literals(["unchanged", "expired"]),
+    ]),
+  },
   OpenedCreate: { preserveView: Schema.Boolean },
   ClosedCreate: {},
   Created: {},
@@ -142,7 +154,7 @@ export const Message = defineMessageUnion({
   RemovedTag: { id: ItemId },
   Saved: {},
   Discarded: {},
-  Loaded: { request: Schema.String, index: TaskIndex },
+  Loaded: { request: Schema.String, index: TaskSnapshot },
   TaskCreated: { request: Schema.String, task: Task },
   TaskSaved: { request: Schema.String, task: Task, conflict: Schema.Boolean },
   TagCreated: { request: Schema.String, tag: Tag },
@@ -330,7 +342,7 @@ const Request = Command.define("RequestTasks", {
     Effect.tryPromise(async (signal) => {
       switch (operation._tag) {
         case "Load": {
-          const result = await requestJson(signal, TaskIndex, tasksApi);
+          const result = await requestJson(signal, TaskSnapshot, tasksApi);
           if (result) return Message.Loaded({ request, index: result.value });
           break;
         }
@@ -388,6 +400,30 @@ const Request = Command.define("RequestTasks", {
     ),
 });
 
+const CheckVersion = Command.define("CheckTaskVersion", {
+  args: { check: Schema.String, version: TaskSnapshot.fields.version },
+  messages: [Message.RefreshCompleted],
+  execute: ({ check, version }) =>
+    Effect.tryPromise(async (signal) => {
+      const response = await fetch(`${tasksApi}?since=${version}`, {
+        signal,
+        cache: "no-store",
+      });
+      if (response.status === 401)
+        return Message.RefreshCompleted({ check, result: "expired" });
+      if (response.status === 204 || !response.ok)
+        return Message.RefreshCompleted({ check, result: "unchanged" });
+      const result = Schema.decodeUnknownSync(TaskSnapshot)(
+        await response.json(),
+      );
+      return Message.RefreshCompleted({ check, result });
+    }).pipe(
+      Effect.orElseSucceed(() =>
+        Message.RefreshCompleted({ check, result: "unchanged" }),
+      ),
+    ),
+});
+
 const isCreationWrite = (model: Model, operation: Operation | undefined) =>
   operation?._tag === "Create" ||
   (operation?._tag === "AddTag" && operation.id === model.creation?.draft.id);
@@ -402,6 +438,9 @@ const start = (
     model: {
       ...model,
       request: { id, operation },
+      // A read started before this operation may return after the write settles.
+      refreshRequest: null,
+      refreshPending: model.refreshPending || model.refreshRequest !== null,
       error: isCreationWrite(model, operation) ? model.error : null,
     },
     commands: [Request({ request: id, operation })],
@@ -513,7 +552,36 @@ const replaceTask = (model: Model, task: Task): Model => ({
   request: null,
 });
 
-export const update = (
+const applyIndex = (model: Model, index: typeof TaskSnapshot.Type): Model => {
+  const next = { ...model, index };
+  const task = selectedTask(next);
+  const previous = selectedTask(model);
+  const availableTags = new Set(index.tags.map(({ id }) => id));
+  const editor = model.editor;
+  return {
+    ...next,
+    filters: {
+      ...model.filters,
+      tagIds: model.filters.tagIds.filter((id) => availableTags.has(id)),
+    },
+    editor:
+      previous &&
+      editor &&
+      (task?.revision === previous.revision ||
+        editor.draft.revision !== previous.revision ||
+        hasEdits(editor.draft, previous))
+        ? {
+            ...editor,
+            draft: {
+              ...editor.draft,
+              tagIds: editor.draft.tagIds.filter((id) => availableTags.has(id)),
+            },
+          }
+        : task && makeEditor(toDraft(task)),
+  };
+};
+
+const transition = (
   model: Model,
   message: Message,
 ): Update.ReturnWithOutMessage<Model, Message, OutMessage> => {
@@ -567,6 +635,21 @@ export const update = (
           ? { model }
           : foldAttachments(model, message),
       FocusUpdated: () => ({ model }),
+      RefreshRequested: () => ({
+        model:
+          model.index || model.request?.operation._tag === "Load"
+            ? { ...model, refreshPending: true }
+            : model,
+      }),
+      RefreshCompleted: ({ check, result }) => {
+        if (check !== model.refreshRequest) return { model };
+        const next = { ...model, refreshRequest: null };
+        if (result === "expired")
+          return { model: next, outMessage: OutMessage.SessionExpired() };
+        return {
+          model: result === "unchanged" ? next : applyIndex(next, result),
+        };
+      },
       Retried: () => {
         const result = start(model, { _tag: "Load" });
         return result.commands
@@ -777,36 +860,9 @@ export const update = (
           },
         };
       },
-      Loaded: ({ index }) => {
-        const next = { ...model, index, request: null };
-        const task = selectedTask(next);
-        const previous = selectedTask(model);
-        const availableTags = new Set(index.tags.map(({ id }) => id));
-        const editor = model.editor;
-        return {
-          model: {
-            ...next,
-            filters: {
-              ...model.filters,
-              tagIds: model.filters.tagIds.filter((id) =>
-                availableTags.has(id),
-              ),
-            },
-            editor:
-              previous && editor && hasEdits(editor.draft, previous)
-                ? {
-                    ...editor,
-                    draft: {
-                      ...editor.draft,
-                      tagIds: editor.draft.tagIds.filter((id) =>
-                        availableTags.has(id),
-                      ),
-                    },
-                  }
-                : task && makeEditor(toDraft(task)),
-          },
-        };
-      },
+      Loaded: ({ index }) => ({
+        model: applyIndex({ ...model, request: null }, index),
+      }),
       TaskCreated: ({ task }) => {
         const next = replaceTask(model, task);
         if (model.creation?.draft.id !== task.id) return { model: next };
@@ -920,4 +976,27 @@ export const update = (
       }),
     },
   );
+};
+
+export const update = (model: Model, message: Message) => {
+  const result = transition(model, message);
+  const next = result.model;
+  if (
+    !next.refreshPending ||
+    !next.index ||
+    next.request ||
+    next.refreshRequest ||
+    result.outMessage?._tag === "SessionExpired"
+  )
+    return result;
+
+  const check = crypto.randomUUID();
+  return {
+    ...result,
+    model: { ...next, refreshRequest: check, refreshPending: false },
+    commands: [
+      ...(result.commands ?? []),
+      CheckVersion({ check, version: next.index.version }),
+    ],
+  };
 };

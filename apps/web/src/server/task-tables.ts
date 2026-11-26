@@ -15,6 +15,14 @@ import {
 } from "../tasks-contract.ts";
 import type { TaskAttachment } from "../task-attachment-contract.ts";
 import { items } from "./item-tables.ts";
+import { accounts } from "./database.ts";
+
+export const taskChanges = sqliteTable("task_changes", {
+  accountId: text("account_id")
+    .primaryKey()
+    .references(() => accounts.id, { onDelete: "cascade" }),
+  version: integer().notNull(),
+});
 
 export const tasks = sqliteTable(
   "tasks",

@@ -6,6 +6,7 @@ import type {
 import resvgModule from "@resvg/resvg-wasm/index_bg.wasm";
 import { DurableObject } from "cloudflare:workers";
 import { inboxChanged } from "../inbox-contract.ts";
+import { tasksChanged } from "../tasks-contract.ts";
 
 import { createSvgRasterizer } from "./bitwarden/website-icon-svg.ts";
 import { inboxSessionHeaders, type InboxSocketSession } from "./inbox.ts";
@@ -45,7 +46,9 @@ export class InboxUpdates extends DurableObject<{ DB: D1Database }> {
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
 
-  async publish() {
+  async publish(
+    change: typeof inboxChanged | typeof tasksChanged = inboxChanged,
+  ) {
     const clients = this.ctx.getWebSockets().map((socket) => ({
       socket,
       session: socket.deserializeAttachment() as InboxSocketSession | null,
@@ -86,7 +89,7 @@ export class InboxUpdates extends DurableObject<{ DB: D1Database }> {
           session.mailboxId === mailboxId &&
           active.get(session.sessionId) === session.securityRevision
         )
-          socket.send(inboxChanged);
+          socket.send(change);
         else socket.close(1008, "Session ended");
       } catch {
         // A peer can disconnect while the broadcast is in flight.

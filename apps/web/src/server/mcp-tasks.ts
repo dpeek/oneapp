@@ -100,6 +100,7 @@ export const registerTaskTools = (
   db: D1Database,
   bucket: R2Bucket,
   scopes: readonly McpScope[],
+  onTaskChange: (account: string) => void,
 ) => {
   const url = (id: string) => new URL(taskPath(id), origin).href;
   const receipt = ({ id, revision }: Task) =>
@@ -215,12 +216,13 @@ export const registerTaskTools = (
       },
       ({ requestId, ...fields }) =>
         runTool("Could not create the task.", async () => {
-          const task = await createTask(
+          const { task, changed } = await createTask(
             db,
             account,
             { ...fields, id: requestId ?? crypto.randomUUID() },
             Date.now(),
           );
+          if (changed) onTaskChange(account);
           return task
             ? receipt(task)
             : toolFailure(
@@ -267,7 +269,10 @@ export const registerTaskTools = (
             Date.now(),
           );
           if (!update.task) return toolFailure("Task not found.");
-          if (update.changed) return receipt(update.task);
+          if (update.changed) {
+            onTaskChange(account);
+            return receipt(update.task);
+          }
           if (update.task.revision !== revision) return stale();
           return toolFailure("One or more tag IDs are unavailable.");
         }),

@@ -28,6 +28,7 @@ import {
 } from "effect/http";
 import { accountPath } from "../account-contract.ts";
 import { inboxEventsPath } from "../inbox-contract.ts";
+import { tasksChanged } from "../tasks-contract.ts";
 import {
   forgotPasswordPage,
   passwordResetPath,
@@ -215,6 +216,20 @@ export default {
     const defer = (work: Promise<unknown>) => {
       if (context) context.waitUntil(work);
       else void work;
+    };
+    const notifyTasks = (account: string) => {
+      if (account !== ownerId || !env.INBOX_UPDATES) return;
+      defer(
+        (async () => {
+          try {
+            await env.INBOX_UPDATES.getByName(defaultMailboxId).publish(
+              tasksChanged,
+            );
+          } catch {
+            console.warn("Could not notify Tasks subscribers");
+          }
+        })(),
+      );
     };
     if (path.startsWith("/icons/"))
       return bitwardenIcon(request, url, env, defer, rasterizeSvg);
@@ -450,7 +465,7 @@ export default {
         health,
         mcpOAuth.routes,
         mcpLoginRoute,
-        mcpRoutes(env.APP_ORIGIN, env.DB, env.FILE_UPLOADS),
+        mcpRoutes(env.APP_ORIGIN, env.DB, env.FILE_UPLOADS, notifyTasks),
         Layer.mergeAll(
           accountRoutes(http, {
             enabled: emailTransport !== disabledEmail,
@@ -470,7 +485,7 @@ export default {
           mailImportRoutes(env, defer),
           peopleRoutes(http, env, defer),
           calendarRoutes(http, env),
-          tasksRoutes(http, env, defer),
+          tasksRoutes(http, env, defer, notifyTasks),
           filesRoutes(http, env),
           vaultSetupRoutes(http, env.DB),
           vaultItemRoutes(http, env.DB),

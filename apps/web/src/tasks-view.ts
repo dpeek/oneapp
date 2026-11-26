@@ -569,21 +569,17 @@ const taskFields = (
           ),
           h,
         ),
-        ...(!creation
-          ? [
-              nativeSelect(
-                {
-                  label: "Assignee",
-                  options: assigneeOptions,
-                  value: draft.assignee ?? "",
-                  disabled: busy,
-                  onChange: (value) =>
-                    Message.EditedField({ field: "assignee", value }),
-                },
-                h,
-              ),
-            ]
-          : []),
+        nativeSelect(
+          {
+            label: "Assignee",
+            options: assigneeOptions,
+            value: draft.assignee ?? "",
+            disabled: busy,
+            onChange: (value) =>
+              Message.EditedField({ field: "assignee", value }),
+          },
+          h,
+        ),
       ],
     ),
     field(

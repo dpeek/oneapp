@@ -167,6 +167,7 @@ export const createTask = async (
     priority = null,
     dueOn = null,
     tagIds = [],
+    assignee = author,
   }: typeof TaskCreate.Type,
   now: number,
 ) => {
@@ -183,7 +184,7 @@ export const createTask = async (
     db
       .prepare(
         `INSERT INTO tasks (account_id, item_id, description, status, priority, due_on, author, assignee)
-         SELECT ?1, ?2, ?4, ?5, ?6, ?7, ?8, ?8 WHERE ${claimed}`,
+         SELECT ?1, ?2, ?4, ?5, ?6, ?7, ?8, ?9 WHERE ${claimed}`,
       )
       .bind(
         account,
@@ -194,6 +195,7 @@ export const createTask = async (
         priority,
         dueOn,
         author,
+        assignee,
       ),
     insertTags(db, account, id, revision, ids),
     recordTaskChange(db, account, id, revision),

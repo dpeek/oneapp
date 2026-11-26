@@ -781,11 +781,7 @@ const transition = (
       }),
       Created: () => {
         if (model.request || !model.creation || !model.index) return { model };
-        const {
-          revision: _,
-          assignee: _assignee,
-          ...fields
-        } = model.creation.draft;
+        const { revision: _, ...fields } = model.creation.draft;
         const input = { ...fields, title: fields.title.trim() };
         if (!Schema.is(TaskCreate)(input))
           return {

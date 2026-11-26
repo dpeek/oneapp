@@ -79,6 +79,7 @@ export const TaskCreate = Schema.Struct({
   priority: Schema.optional(TaskPriority),
   dueOn: Schema.optional(TaskFields.fields.dueOn),
   tagIds: Schema.optional(TaskFields.fields.tagIds),
+  assignee: Schema.optionalKey(TaskAssignee),
 });
 export const TaskUpdate = Schema.Struct({
   ...TaskFields.fields,

@@ -85,6 +85,7 @@ import {
 import { workspaceEventsPath } from "../workspace-change-contract.ts";
 import {
   codexClientId,
+  contactsReadScope,
   filesReadScope,
   mailReadScope,
   McpGrantList,
@@ -97,6 +98,7 @@ import {
   resetPasswordPage,
 } from "../password-recovery-contract.ts";
 import {
+  contactPath,
   peopleApiPath,
   personApiPath,
   personLookupPath,
@@ -3557,7 +3559,12 @@ it("issues MCP link scopes and exposes only the tools a grant authorises", async
     mcpOAuth.paths.metadata,
   ]) {
     expect(await (await request(path, {})).json()).toMatchObject({
-      scopes_supported: [...defaultMcpScopes, mailReadScope, filesReadScope],
+      scopes_supported: [
+        ...defaultMcpScopes,
+        mailReadScope,
+        filesReadScope,
+        contactsReadScope,
+      ],
     });
   }
 
@@ -3839,6 +3846,204 @@ it("searches account files and reads bounded content with only the Files scope",
     contentStatus: "too_large",
   });
   expect(buffer).not.toHaveBeenCalled();
+});
+
+it("searches live contacts and filters mail conversations only with both grants", async () => {
+  using sqlite = new Database(":memory:");
+  const mailbox = "owner@billing.acme.com";
+  const { call, request, connect, names, useTool, db, origin, session } =
+    await setupMcp(sqlite, { INBOX_EMAIL_ADDRESS: mailbox });
+  const create = async (draft: object): Promise<Person> => {
+    const response = await call(peopleApiPath, draft, session);
+    expect(response.status).toBe(201);
+    return response.json();
+  };
+  const person = await create({
+    name: "Alice Rivera",
+    addresses: ["alice+quotes@example.net", "alice@billing.acme.com"],
+  });
+  const parent = await create({
+    kind: "company",
+    name: "Acme",
+    addresses: [],
+    domains: ["acme.com"],
+  });
+  const company = await create({
+    kind: "company",
+    name: "Acme",
+    addresses: ["sales@example.org"],
+    domains: ["billing.acme.com"],
+  });
+  const contactsToken = (await connect([contactsReadScope])).access_token;
+  const mailToken = (await connect([mailReadScope])).access_token;
+  const both = (await connect([contactsReadScope, mailReadScope])).access_token;
+  expect(await names(contactsToken)).toEqual(["search_contacts"]);
+  expect(await names(mailToken)).toEqual([
+    "get_mail_message",
+    "get_mail_thread",
+    "search_mail",
+  ]);
+  expect(await names(both)).toEqual([
+    "get_mail_message",
+    "get_mail_thread",
+    "search_contacts",
+    "search_mail",
+  ]);
+  const invoke = async (token: string, name: string, args: object) => {
+    const { result, error } = await useTool(token, name, args);
+    expect(error).toBeUndefined();
+    expect(result?.isError, JSON.stringify(result?.content)).toBeFalsy();
+    return result?.structuredContent;
+  };
+  const lookup = (args: object) =>
+    invoke(contactsToken, "search_contacts", args) as Promise<{
+      contacts: { id: string }[];
+      nextOffset: number | null;
+    }>;
+  const alice = await lookup({ query: " RIVERA ", kind: "person" });
+  expect(alice).toEqual({
+    contacts: [
+      {
+        id: person.id,
+        kind: "person",
+        name: person.name,
+        addresses: person.addresses,
+        domains: [],
+        url: origin + contactPath(person.id),
+      },
+    ],
+    nextOffset: null,
+  });
+  expect(await lookup({ query: " ALICE@BILLING.ACME.COM " })).toEqual(alice);
+  expect(await lookup({ query: "alice+quotes@example.net" })).toEqual(alice);
+  expect(await lookup({ query: mailbox })).toEqual({
+    contacts: [],
+    nextOffset: null,
+  });
+  expect(
+    sqlite.query("SELECT id FROM people WHERE account_id = 'owner'").get(),
+  ).toBeNull();
+  const billing = await lookup({
+    query: " EU.BILLING.ACME.COM. ",
+    kind: "company",
+  });
+  expect(billing).toEqual({
+    contacts: [
+      {
+        id: company.id,
+        kind: "company",
+        name: company.name,
+        addresses: company.addresses,
+        domains: company.domains,
+        url: origin + contactPath(company.id),
+      },
+    ],
+    nextOffset: null,
+  });
+  expect(await lookup({ query: "ar@eu.billing.acme.com" })).toEqual(billing);
+  expect(await lookup({ query: "notacme.com" })).toEqual({
+    contacts: [],
+    nextOffset: null,
+  });
+  const byName = { query: "acme", kind: "company", limit: 1 };
+  const sorted = [parent.id, company.id].sort();
+  expect(await lookup(byName)).toMatchObject({
+    contacts: [{ id: sorted[0] }],
+    nextOffset: 1,
+  });
+  expect(await lookup({ ...byName, offset: 1 })).toMatchObject({
+    contacts: [{ id: sorted[1] }],
+    nextOffset: null,
+  });
+
+  const index = async (
+    timestamp: number,
+    from: string,
+    messageIds: string[] = [],
+    legacy = false,
+  ) => {
+    const id = `0-8199999999990-00000000-0000-4000-8000-${String(timestamp).padStart(12, "0")}.eml`;
+    await indexMail(db, {
+      id,
+      folder: "inbox",
+      from,
+      to: mailbox,
+      subject: "Quote discussion",
+      timestamp,
+      messageIds,
+      ...(legacy ? {} : { people: mailPeople(() => undefined, from, mailbox) }),
+    });
+    return id;
+  };
+  const thread = ["<quote@example.net>"];
+  const alias = await index(1, "alice+quotes@example.net", thread);
+  const explicitCompany = await index(2, "Sales <sales@example.org>", [], true);
+  const reply = await index(3, "quotes@eu.billing.acme.com", thread);
+  await index(4, "No match <outsider@example.net>", [], true);
+  await index(5, "quotes@notbilling.acme.com");
+  const personIds = [alice.contacts[0]!.id];
+  const companyIds = [billing.contacts[0]!.id];
+  for (const args of [{ personIds }, { companyIds }, { personIds, companyIds }])
+    expect(
+      (await useTool(mailToken, "search_mail", args)).result,
+    ).toMatchObject({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: "Filtering by contact ID requires contacts:read and mail:read.",
+        },
+      ],
+    });
+  const search = (args: object, token = both) =>
+    invoke(token, "search_mail", args) as Promise<{
+      conversations: { matchingMessageId: string }[];
+      nextCursor: string | null;
+    }>;
+  const exact = await search(
+    { participantEmail: "alice+quotes@example.net" },
+    mailToken,
+  );
+  expect(exact.conversations).toMatchObject([{ matchingMessageId: alias }]);
+  expect(exact.conversations[0]).not.toHaveProperty("profiles");
+  expect((await search({ personIds })).conversations).toMatchObject([
+    { matchingMessageId: reply },
+  ]);
+  const first = await search({ companyIds, limit: 1 });
+  expect(first).toMatchObject({
+    conversations: [{ matchingMessageId: reply }],
+    nextCursor: expect.any(String),
+  });
+  expect(
+    await search({ companyIds, limit: 1, cursor: first.nextCursor }),
+  ).toMatchObject({
+    conversations: [{ matchingMessageId: explicitCompany }],
+    nextCursor: null,
+  });
+  expect((await search({ personIds, companyIds })).conversations).toMatchObject(
+    [{ matchingMessageId: reply }],
+  );
+  expect((await search({ personIds: companyIds })).conversations).toEqual([]);
+
+  for (const contact of [person, company]) {
+    const deleted = await request(personApiPath(contact.id), {
+      method: "DELETE",
+      headers: {
+        cookie: session,
+        origin,
+        "content-type": "application/json",
+        "x-effect-auth-csrf": "1",
+      },
+      body: JSON.stringify({ revision: contact.revision }),
+    });
+    expect(deleted.status).toBe(200);
+  }
+  expect((await lookup({ query: "Rivera" })).contacts).toEqual([]);
+  expect((await lookup({ query: "billing.acme.com" })).contacts).toMatchObject([
+    { id: parent.id },
+  ]);
+  expect((await search({ personIds })).conversations).toEqual([]);
+  expect((await search({ companyIds })).conversations).toEqual([]);
 });
 
 it("finds older archived replies and cites scoped mail in a task without marking it read", async () => {

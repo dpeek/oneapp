@@ -8,6 +8,7 @@ export const tasksReadScope = "tasks:read";
 export const tasksWriteScope = "tasks:write";
 export const mailReadScope = "mail:read";
 export const filesReadScope = "files:read";
+export const contactsReadScope = "contacts:read";
 export const codexClientId = "oneapp-codex";
 export const codexMetadataOrigin = "https://chatgpt.com";
 export const isCodexMetadataId = (id: string) =>

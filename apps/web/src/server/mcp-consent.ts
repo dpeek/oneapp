@@ -3,6 +3,7 @@ import { linksReadScope, linksWriteScope } from "@orumai/core/links";
 import { OAuthServer } from "@yielded/auth";
 import { Effect, Layer } from "effect";
 import {
+  contactsReadScope,
   filesReadScope,
   mailReadScope,
   tasksReadScope,
@@ -19,6 +20,7 @@ const scopeLabels = new Map<string, string>([
   ],
   [mailReadScope, "Search and read your mail and attachment details"],
   [filesReadScope, "Search and read your uploaded files and their tags"],
+  [contactsReadScope, "Search and read your contacts and company details"],
 ]);
 
 const escapeHtml = (value: string) =>

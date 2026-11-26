@@ -1,8 +1,10 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { Schema } from "effect";
+import { isCompanyDomain, normalizeCompanyDomain } from "../company-domains.ts";
 import {
   normalizePersonEmail,
   PersonEmail,
+  type ContactKind,
   type Person,
   type PersonMatch,
 } from "../people-contract.ts";
@@ -24,6 +26,9 @@ type PersonRow = {
 const fields = `p.id, p.account_id AS accountId, p.name, p.photo, p.revision, p.kind,
   (SELECT json_group_array(domain ORDER BY position) FROM company_domains WHERE company_id = p.id) AS domains,
   (SELECT email FROM person_addresses WHERE person_id = p.id ORDER BY email LIMIT 1) AS iconEmail`;
+const fieldsWithAddresses = `${fields},
+  (SELECT json_group_array(email ORDER BY email) FROM person_addresses WHERE person_id = p.id) AS emails`;
+type PersonWithEmails = PersonRow & { emails: string };
 
 export const managedPersonAddresses = async (
   db: PeopleDb,
@@ -122,17 +127,14 @@ export const listPeople = async (
   managed: string[],
   ids?: readonly string[],
 ) => {
-  await ensureSelf(db);
+  if (!ids) await ensureSelf(db);
   const { results } = await db
     .prepare(
-      `SELECT ${fields},
-         json_group_array(a.email ORDER BY a.email) FILTER (WHERE a.email IS NOT NULL) AS emails
-       FROM people p LEFT JOIN person_addresses a ON a.person_id = p.id
-       ${ids ? "WHERE p.id IN (SELECT value FROM json_each(?))" : ""}
-       GROUP BY p.id`,
+      `SELECT ${fieldsWithAddresses} FROM people p
+       ${ids ? "WHERE p.id IN (SELECT value FROM json_each(?))" : ""}`,
     )
     .bind(...(ids ? [JSON.stringify(ids)] : []))
-    .all<PersonRow & { emails: string }>();
+    .all<PersonWithEmails>();
   return results.map((row) =>
     withAddresses(row, JSON.parse(row.emails), managed),
   );
@@ -153,10 +155,30 @@ export const readProfile = async (
 export const readSelfProfile = async (db: PeopleDb, managed: string[]) =>
   describe(db, await ensureSelf(db), managed);
 
+// Walk whole DNS labels from the most specific hostname to its parents.
+const domainCandidates = (hostname: string) => {
+  const labels = normalizeCompanyDomain(hostname).split(".");
+  return labels.slice(0, -1).map((_, offset) => labels.slice(offset).join("."));
+};
+
+const companiesByDomain = async (db: PeopleDb, domains: string[]) => {
+  const { results } = await db
+    .prepare(
+      `SELECT d.domain, ${fields}
+       FROM company_domains d JOIN people p ON p.id = d.company_id
+       WHERE p.kind = 'company'
+         AND d.domain IN (SELECT value FROM json_each(?))`,
+    )
+    .bind(JSON.stringify(domains))
+    .all<PersonRow & { domain: string }>();
+  return new Map(results.map((row) => [row.domain, summary(row)]));
+};
+
 export const matchPeople = async (
   db: PeopleDb,
   addresses: string[],
   managed: string[],
+  { createSelf = true } = {},
 ): Promise<PersonMatch[]> => {
   const emails = [
     ...new Set(addresses.map(normalizePersonEmail).filter(Boolean)),
@@ -173,34 +195,29 @@ export const matchPeople = async (
   const matches = new Map(results.map((row) => [row.email, summary(row)]));
   const selfEmails = emails.filter((email) => managed.includes(email));
   if (selfEmails.length) {
-    const self = summary(await ensureSelf(db));
-    for (const email of selfEmails) matches.set(email, self);
+    const row = await (createSelf ? ensureSelf(db) : findSelf(db));
+    for (const email of selfEmails) {
+      if (row) matches.set(email, summary(row));
+      else matches.delete(email);
+    }
   }
 
   const domainsByEmail = new Map<string, string[]>();
   for (const email of emails) {
-    if (matches.has(email) || !isPersonEmail(email)) continue;
-    const labels = email.slice(email.lastIndexOf("@") + 1).split(".");
-    // Walk whole DNS labels from the most specific hostname to its parent domains.
+    if (
+      matches.has(email) ||
+      selfEmails.includes(email) ||
+      !isPersonEmail(email)
+    )
+      continue;
     domainsByEmail.set(
       email,
-      labels.slice(0, -1).map((_, offset) => labels.slice(offset).join(".")),
+      domainCandidates(email.slice(email.lastIndexOf("@") + 1)),
     );
   }
   if (domainsByEmail.size) {
     const domains = [...new Set([...domainsByEmail.values()].flat())];
-    const { results: companies } = await db
-      .prepare(
-        `SELECT d.domain, ${fields}
-         FROM company_domains d JOIN people p ON p.id = d.company_id
-         WHERE p.kind = 'company'
-           AND d.domain IN (SELECT value FROM json_each(?))`,
-      )
-      .bind(JSON.stringify(domains))
-      .all<PersonRow & { domain: string }>();
-    const byDomain = new Map(
-      companies.map((row) => [row.domain, summary(row)]),
-    );
+    const byDomain = await companiesByDomain(db, domains);
     for (const [email, candidates] of domainsByEmail) {
       const company = candidates
         .map((domain) => byDomain.get(domain))
@@ -209,6 +226,50 @@ export const matchPeople = async (
     }
   }
   return [...matches].map(([email, person]) => ({ email, person }));
+};
+
+export const searchPeople = async (
+  db: PeopleDb,
+  managed: string[],
+  {
+    query,
+    kind,
+    limit,
+    offset,
+  }: {
+    query: string;
+    kind?: ContactKind;
+    limit: number;
+    offset: number;
+  },
+) => {
+  let matchedId: string | null = null;
+  const email = normalizePersonEmail(query);
+  if (isPersonEmail(email)) {
+    const [match] = await matchPeople(db, [email], managed, {
+      createSelf: false,
+    });
+    matchedId = match?.person.id ?? null;
+  } else if (isCompanyDomain(query)) {
+    const candidates = domainCandidates(query);
+    const companies = await companiesByDomain(db, candidates);
+    matchedId =
+      candidates.map((domain) => companies.get(domain)).find(Boolean)?.id ??
+      null;
+  }
+  const { results } = await db
+    .prepare(
+      `SELECT ${fieldsWithAddresses} FROM people p
+       WHERE (?1 IS NULL OR p.kind = ?1)
+         AND (?2 = '' OR instr(lower(p.name), lower(?2)) > 0 OR p.id = ?3)
+       ORDER BY (p.id IS ?3) DESC, p.name COLLATE NOCASE, p.id
+       LIMIT ?4 OFFSET ?5`,
+    )
+    .bind(kind ?? null, query, matchedId, limit, offset)
+    .all<PersonWithEmails>();
+  return results.map((row) =>
+    withAddresses(row, JSON.parse(row.emails), managed),
+  );
 };
 
 export const writeProfile = async (

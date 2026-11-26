@@ -4,7 +4,7 @@ import { normalizePersonEmail } from "../people-contract.ts";
 import type { MailDatabase } from "./mailbox.ts";
 import { listPeople, managedPersonAddresses } from "./people-store.ts";
 
-type ContactFilters = {
+export type ContactFilters = {
   people?: ReadonlySet<string>;
   companies?: {
     emails: ReadonlySet<string>;
@@ -15,7 +15,7 @@ type ContactFilters = {
 
 export const resolveContactFilters = async (
   db: MailDatabase,
-  { people, companies }: MailFilters,
+  { people, companies }: Pick<MailFilters, "people" | "companies">,
   mailboxAddresses: readonly string[],
 ): Promise<ContactFilters> => {
   if (!people.length && !companies.length) return {};
@@ -95,14 +95,16 @@ export const contactFilterQuery = ({ people, companies }: ContactFilters) => {
       json(companies.domains),
     );
   }
+  // Older rows have just the raw sender/recipient fields until their
+  // formatted addresses are rebuilt. Pass those threads on to the parser.
+  const hasLegacyMembers = conditions.length
+    ? `EXISTS (SELECT 1 FROM mail_index_messages member WHERE ${members} AND member.people IS NULL)`
+    : "";
   return {
-    // Older rows can have just the raw sender/recipient fields until their
-    // formatted addresses are rebuilt. Pass those threads on to the MIME parser.
-    where: conditions.length
-      ? `AND ((${conditions.join(" AND ")}) OR EXISTS (
-          SELECT 1 FROM mail_index_messages member WHERE ${members} AND member.people IS NULL
-        ))`
+    where: hasLegacyMembers
+      ? `AND ((${conditions.join(" AND ")}) OR ${hasLegacyMembers})`
       : "",
+    hasLegacyMembers,
     values,
   };
 };

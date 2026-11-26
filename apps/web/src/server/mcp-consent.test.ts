@@ -2,6 +2,7 @@ import { expect, it } from "@effect/vitest";
 import { linksReadScope, linksWriteScope } from "@orumai/core/links";
 import { Schema } from "@yielded/auth";
 import {
+  contactsReadScope,
   filesReadScope,
   tasksReadScope,
   tasksWriteScope,
@@ -21,6 +22,7 @@ it("escapes consent metadata and preserves the approval form", () => {
       tasksReadScope,
       tasksWriteScope,
       filesReadScope,
+      contactsReadScope,
       "<custom>",
     ],
     redirectUri: "http://127.0.0.1:55162/callback",
@@ -35,6 +37,7 @@ it("escapes consent metadata and preserves the approval form", () => {
   expect(html).toContain("Save and delete your links");
   expect(html).toContain("Read your tasks, screenshots, and tags");
   expect(html).toContain("Search and read your uploaded files and their tags");
+  expect(html).toContain("Search and read your contacts and company details");
   expect(html).toContain(
     "Create, edit, and delete your tasks and create reusable tags",
   );

@@ -21,6 +21,7 @@ import {
   withSenderAppearances,
 } from "./mail-sender-appearance.ts";
 import {
+  type ContactFilters,
   contactFilterQuery,
   matchesContactFilters,
   resolveContactFilters,
@@ -355,6 +356,7 @@ type MailSearch = {
   status: MailFilters["status"];
   subjectWords: string[];
   participantEmail: string | null;
+  contacts: ContactFilters;
   fromInclusive: number | null;
   toExclusive: number | null;
   cursor: MailCursor;
@@ -383,9 +385,16 @@ export const searchIndexedMail = async (
   db: MailDatabase,
   query: MailSearch,
 ) => {
+  const { people, companies } = query.contacts;
+  if (
+    people?.size === 0 ||
+    (companies?.emails.size === 0 && companies.domains.size === 0)
+  )
+    return [];
+  const contact = contactFilterQuery(query.contacts);
   const inThread = (alias: string) =>
     `${alias}.mailbox_id = m.mailbox_id AND ${alias}.thread_id = m.thread_id AND ${alias}.deleted = 0`;
-  const matches = (alias: "m" | "newer") => `
+  const matchesMessage = (alias: "m" | "newer") => `
     (?3 IS NULL OR ${alias}.timestamp >= ?3)
     AND (?4 IS NULL OR ${alias}.timestamp < ?4)
     AND NOT EXISTS (
@@ -410,14 +419,23 @@ export const searchIndexedMail = async (
     inbox: `AND incoming.archived = 0 AND ${incomingPriority} = 'signal'`,
     noise: `AND incoming.archived = 0 AND ${incomingPriority} = 'noise'`,
   };
-  const { results } = await db
-    .prepare(
-      `
+  const statement = db.prepare(
+    `
+      WITH page_size(size) AS (VALUES (?7))
       SELECT ${indexedMessageFields}, coalesce(incoming.archived, 0) AS archived,
         (SELECT count(*) ${unreadMembers}) AS unreadCount,
         (SELECT count(*) FROM mail_index_messages member WHERE ${inThread("member")}) AS messageCount,
         (SELECT member.timestamp FROM mail_index_messages member WHERE ${inThread("member")}
-          ORDER BY member.timestamp DESC, member.id DESC LIMIT 1) AS lastMessageAt
+          ORDER BY member.timestamp DESC, member.id DESC LIMIT 1) AS lastMessageAt,
+        ${
+          contact.hasLegacyMembers
+            ? `CASE WHEN ${contact.hasLegacyMembers} THEN (
+            SELECT json_group_array(json_object(
+              'from', member.sender, 'to', member.recipient, 'people', member.people
+            )) FROM mail_index_messages member WHERE ${inThread("member")}
+          ) END`
+            : "NULL"
+        } AS legacyMembers
       FROM mail_index_messages m
       LEFT JOIN mail_index_messages incoming ON incoming.mailbox_id = m.mailbox_id AND incoming.id = (
         SELECT member.id FROM mail_index_messages member
@@ -426,35 +444,67 @@ export const searchIndexedMail = async (
       )
       WHERE m.mailbox_id = ${mailboxSql(db)} AND m.deleted = 0
         AND (?5 IS NULL OR (m.timestamp, m.id) < (?5, ?6))
-        AND ${matches("m")}
+        AND ${matchesMessage("m")}
         AND NOT EXISTS (
           SELECT 1 FROM mail_index_messages newer
           WHERE ${inThread("newer")} AND (newer.timestamp, newer.id) > (m.timestamp, m.id)
-            AND ${matches("newer")}
+            AND ${matchesMessage("newer")}
         )
         ${viewFilters[query.view]}
         ${query.status === "all" ? "" : `AND ${query.status === "read" ? "NOT " : ""}EXISTS (SELECT 1 ${unreadMembers})`}
-      ORDER BY m.timestamp DESC, m.id DESC LIMIT ?7
+        ${contact.where}
+      ORDER BY m.timestamp DESC, m.id DESC LIMIT (SELECT size FROM page_size)
     `,
-    )
-    .bind(
-      JSON.stringify(query.subjectWords),
-      query.participantEmail,
-      query.fromInclusive,
-      query.toExclusive,
-      query.cursor.timestamp,
-      query.cursor.id,
-      query.limit,
-    )
-    .all<
-      IndexedThreadMember & {
-        archived: number;
-        unreadCount: number;
-        messageCount: number;
-        lastMessageAt: number;
+  );
+  const readPage = (cursor: MailCursor, limit: number) =>
+    statement
+      .bind(
+        JSON.stringify(query.subjectWords),
+        query.participantEmail,
+        query.fromInclusive,
+        query.toExclusive,
+        cursor.timestamp,
+        cursor.id,
+        limit,
+        ...contact.values,
+      )
+      .all<
+        IndexedThreadMember & {
+          archived: number;
+          unreadCount: number;
+          messageCount: number;
+          lastMessageAt: number;
+          legacyMembers: string | null;
+        }
+      >();
+  const matches = [];
+  let cursor = query.cursor;
+  let limit = query.limit;
+  while (matches.length < query.limit) {
+    const { results } = await readPage(cursor, limit);
+    for (const { legacyMembers, ...row } of results) {
+      if (legacyMembers) {
+        const members = JSON.parse(legacyMembers) as Pick<
+          IndexedThreadMember,
+          "from" | "to" | "people"
+        >[];
+        if (
+          !matchesContactFilters(
+            query.contacts,
+            members.flatMap((member) => withPeople(member).people.members),
+          )
+        )
+          continue;
       }
-    >();
-  return results.map(presentMessage);
+      matches.push(presentMessage(row));
+      if (matches.length === query.limit) break;
+    }
+    const last = results.at(-1);
+    if (!last || results.length < limit) break;
+    cursor = { timestamp: last.timestamp, id: last.id };
+    limit = 100;
+  }
+  return matches;
 };
 
 export const readIndexedMailMessage = async (db: MailDatabase, id: string) => {

@@ -9,6 +9,7 @@ import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import type { WorkspaceActor } from "../tasks-contract.ts";
 import type { NotifyItemChange } from "../workspace-change-contract.ts";
 import { jsonError, privateHeaders } from "./api-response.ts";
+import { ownerId as directoryOwnerId } from "./auth.ts";
 import {
   insufficientCliScopeResponse,
   invalidTokenResponse,
@@ -16,11 +17,13 @@ import {
 } from "./cli-tokens.ts";
 import { deleteSavedLink, insertSavedLink, listSavedLinks } from "./links.ts";
 import { defaultMailboxId, requireMailbox, scopeMailStore } from "./mailbox.ts";
+import { registerContactTools } from "./mcp-contacts.ts";
 import { registerFileTools } from "./mcp-files.ts";
 import { registerMailTools } from "./mcp-mail.ts";
 import {
   defaultMcpScopes,
   type McpScope,
+  ReadContacts,
   ReadFiles,
   ReadLinks,
   ReadMail,
@@ -43,7 +46,12 @@ const DeletedLink = Schema.Struct({ id: LinkId });
 
 type McpEnv = Pick<
   WorkerEnv,
-  "APP_ORIGIN" | "DB" | "FILE_UPLOADS" | "INBOX_MESSAGES" | "SENT_MESSAGES"
+  | "APP_ORIGIN"
+  | "DB"
+  | "FILE_UPLOADS"
+  | "INBOX_MESSAGES"
+  | "SENT_MESSAGES"
+  | "INBOX_EMAIL_ADDRESS"
 >;
 const createServer = (
   env: McpEnv,
@@ -54,6 +62,10 @@ const createServer = (
 ) => {
   const { APP_ORIGIN: origin, DB: db, FILE_UPLOADS: bucket } = env;
   const ownerId = actor.accountId;
+  const canReadContacts =
+    actor.kind === "owner" &&
+    ownerId === directoryOwnerId &&
+    scopes.includes(ReadContacts);
   const run = Effect.runPromiseWith(Context.make(SqlClient.SqlClient, sql));
   const server = new McpServer({ name: appName, version: "1.0.0" });
   if (scopes.includes(WriteLinks)) {
@@ -146,18 +158,25 @@ const createServer = (
   );
   if (actor.kind === "owner" && scopes.includes(ReadFiles))
     registerFileTools(server, origin, ownerId, db, bucket);
+  if (canReadContacts)
+    registerContactTools(server, origin, db, env.INBOX_EMAIL_ADDRESS);
   if (actor.kind === "owner" && scopes.includes(ReadMail)) {
-    registerMailTools(server, origin, async () => {
-      const { id } = await requireMailbox(db, defaultMailboxId, ownerId);
-      return scopeMailStore(
-        {
-          DB: db,
-          INBOX_MESSAGES: env.INBOX_MESSAGES,
-          SENT_MESSAGES: env.SENT_MESSAGES,
-        },
-        id,
-      );
-    });
+    registerMailTools(
+      server,
+      origin,
+      async () => {
+        const { id } = await requireMailbox(db, defaultMailboxId, ownerId);
+        return scopeMailStore(
+          {
+            DB: db,
+            INBOX_MESSAGES: env.INBOX_MESSAGES,
+            SENT_MESSAGES: env.SENT_MESSAGES,
+          },
+          id,
+        );
+      },
+      canReadContacts,
+    );
   }
   if (actor.kind === "oru")
     registerTaskRunnerTools(server, actor, db, notifyItemChange);

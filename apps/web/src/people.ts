@@ -5,11 +5,12 @@ import {
   Dialog,
   field,
   input,
+  ItemActionMenu,
   nativeSelect,
   Sheet,
 } from "@orumai/ui";
 import { Effect, Option, Schema } from "effect";
-import { Command, Submodel, Update } from "foldkit";
+import { Command, Render, Submodel, Update } from "foldkit";
 import { focus } from "foldkit/dom";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
@@ -29,7 +30,6 @@ import {
   personLookupPath,
   PersonLookup,
   personNameLimit,
-  contactPath,
   type PersonSummary,
   profilePhotoSize,
   restoreContactPath,
@@ -44,6 +44,12 @@ import { workspaceDrawerMedia } from "./workspace.ts";
 export const dialogId = "person-profile-dialog";
 const formId = "person-profile-form";
 const profileNameSelector = `#${formId} input[name="name"]`;
+export const contactActionsId = "contact-actions";
+export const addContactButtonId = "add-contact";
+export const contactActionMenu = ItemActionMenu.create<
+  "open" | "edit" | "delete"
+>();
+const closedActions = ItemActionMenu.init(contactActionsId);
 
 export const Model = Schema.Struct({
   self: Schema.NullOr(Person),
@@ -64,6 +70,7 @@ export const Model = Schema.Struct({
     folderSheet: Sheet.Model,
     selected: ContactsRoute.fields.id,
     records: Schema.NullOr(PeopleList.fields.people),
+    actions: ItemActionMenu.Model,
     listRequest: Schema.NullOr(Schema.String),
     listFailed: Schema.Boolean,
     edit: Schema.NullOr(Person),
@@ -101,6 +108,7 @@ export const initial: Model = {
     folderSheet: Sheet.init({ id: "contact-folders" }),
     selected: null,
     records: null,
+    actions: closedActions,
     listRequest: null,
     listFailed: false,
     edit: null,
@@ -139,6 +147,8 @@ export const Message = defineMessageUnion({
   RetriedDirectory: {},
   LoadedDirectory: { request: Schema.String, ...PeopleList.fields },
   DirectoryFailed: { request: Schema.String },
+  GotActionMenu: { message: ItemActionMenu.Message },
+  UnmountedDirectory: {},
   EditedRecord: {},
   CanceledEdit: {},
   SubmittedEdit: {},
@@ -154,6 +164,7 @@ export const Message = defineMessageUnion({
 });
 type Message = typeof Message.Type;
 export const OutMessage = defineMessageUnion({
+  OpenContact: { id: PersonId },
   Notify: { notification: Notification },
   DismissNotification: { key: Schema.String },
 });
@@ -196,7 +207,28 @@ export const displayName = (person: Person) =>
   person.name ||
   (person.self ? "Your profile" : primaryEmail(person) || "Unnamed contact");
 
+type Directory = Model["directory"];
+const names = new Intl.Collator(undefined, { sensitivity: "base" });
+export const directoryContacts = (directory: Directory, section: ContactKind) =>
+  (directory.records ?? [])
+    .filter(({ kind }) => (kind ?? "person") === section)
+    .sort(
+      (first, second) =>
+        names.compare(displayName(first), displayName(second)) ||
+        names.compare(primaryEmail(first), primaryEmail(second)),
+    );
+
+export const canEditContact = (directory: Directory, person: Person) =>
+  !directory.edit &&
+  !directory.editRequest &&
+  !directory.listRequest &&
+  directory.deletion?.id !== person.id;
+
+export const canDeleteContact = (directory: Directory, person: Person) =>
+  !person.self && !directory.deletion && canEditContact(directory, person);
+
 const editFormId = "person-directory-edit";
+export const detailEditButtonId = "edit-contact";
 const decodeError = Schema.decodeUnknownOption(
   Schema.Struct({ error: Schema.String }),
 );
@@ -319,18 +351,45 @@ const MutateContact = Command.define("MutateContact", {
 });
 
 const FocusDirectory = Command.define("FocusPeopleDirectory", {
-  args: { id: PersonId },
+  args: { id: Schema.NullOr(PersonId), recover: Schema.Boolean },
   messages: [Message.Mounted],
-  execute: ({ id }) => {
-    const list = ".people-workspace:not([data-panel]) .people-list";
-    return focus(`${list} [href="${contactPath(id)}"]`, {
-      preventScroll: true,
-    }).pipe(
-      Effect.catch(() => focus(list, { preventScroll: true })),
-      Effect.ignore,
-      Effect.as(Message.Mounted()),
-    );
-  },
+  execute: ({ id, recover }) =>
+    Render.afterCommit.pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          const list = document.querySelector<HTMLElement>(
+            ".people-workspace:not([data-panel]) .people-list",
+          );
+          if (list && (!recover || document.activeElement === document.body)) {
+            const trigger =
+              recover && id
+                ? document.getElementById(
+                    ItemActionMenu.triggerId(contactActionsId, id),
+                  )
+                : null;
+            const link = id
+              ? document.getElementById(
+                  ItemActionMenu.rowLinkId(contactActionsId, id),
+                )
+              : null;
+            const target = trigger?.getClientRects().length
+              ? trigger
+              : (link ?? document.getElementById(addContactButtonId) ?? list);
+            target.focus({ preventScroll: !recover });
+          }
+          return Message.Mounted();
+        }),
+      ),
+    ),
+});
+
+const FocusDirectoryEdit = Command.define("FocusPeopleDirectoryEdit", {
+  args: { editing: Schema.Boolean },
+  messages: [Message.Mounted],
+  execute: ({ editing }) =>
+    focus(
+      editing ? `#${editFormId} input[name="name"]` : `#${detailEditButtonId}`,
+    ).pipe(Effect.ignore, Effect.as(Message.Mounted())),
 });
 
 const photoTypes = ["image/jpeg", "image/png", "image/webp"];
@@ -494,6 +553,83 @@ const loadDirectory = (model: Model): Update.Return<Model, Message> => {
   };
 };
 
+const editContact = (
+  model: Model,
+  person: Person,
+): Update.ReturnWithOutMessage<Model, Message, OutMessage> => {
+  if (!canEditContact(model.directory, person)) return { model };
+  return {
+    model: {
+      ...model,
+      directory: { ...model.directory, edit: person, editError: null },
+    },
+    ...(model.directory.selected === person.id
+      ? { commands: [FocusDirectoryEdit({ editing: true })] }
+      : { outMessage: OutMessage.OpenContact({ id: person.id }) }),
+  };
+};
+
+const deleteContact = (
+  model: Model,
+  person: Person,
+): Update.Return<Model, Message> => {
+  if (!canDeleteContact(model.directory, person)) return { model };
+  const request = crypto.randomUUID();
+  return {
+    model: {
+      ...model,
+      directory: {
+        ...model.directory,
+        deletion: {
+          request,
+          id: person.id,
+          name: displayName(person),
+          kind: person.kind ?? "person",
+        },
+      },
+    },
+    commands: [
+      MutateContact({
+        request,
+        mutation: ContactMutation.Delete({
+          id: person.id,
+          revision: person.revision,
+        }),
+      }),
+    ],
+  };
+};
+
+export const toContactActionMessage = (message: ItemActionMenu.Message) =>
+  Message.GotActionMenu({ message });
+
+const foldContactActions = Update.foldChild({
+  update: contactActionMenu.update,
+  read: (model: Model) => Option.some(model.directory.actions),
+  write: (model, actions) => ({
+    ...model,
+    directory: { ...model.directory, actions },
+  }),
+  toParentMessage: toContactActionMessage,
+  foldOutMessage:
+    ({ key, action }): Update.StepWithOutMessage<Model, Message, OutMessage> =>
+    (model) => {
+      const person = model.directory.records?.find(({ id }) => id === key);
+      if (!person) return { model };
+      switch (action) {
+        case "open":
+          return {
+            model,
+            outMessage: OutMessage.OpenContact({ id: person.id }),
+          };
+        case "edit":
+          return editContact(model, person);
+        case "delete":
+          return deleteContact(model, person);
+      }
+    },
+});
+
 export const update = (
   model: Model,
   message: Message,
@@ -628,7 +764,14 @@ export const update = (
         };
         return {
           ...(editing
-            ? { model: next }
+            ? {
+                model: next,
+                ...(directoryVisible &&
+                directory.selected === person.id &&
+                directory.edit?.id === person.id
+                  ? { commands: [FocusDirectoryEdit({ editing: false })] }
+                  : {}),
+              }
             : foldDialog(next, Dialog.Message.RequestedClose())),
           outMessage: OutMessage.DismissNotification({
             key: notificationKey(person.id),
@@ -692,12 +835,15 @@ export const update = (
       },
       SessionExpired: () => ({ model }),
       VisitedDirectory: ({ id, refresh }) => {
+        const edit =
+          !refresh && directory.edit?.id === id ? directory.edit : null;
         const next = {
           ...model,
           directory: {
             ...directory,
             selected: id,
-            edit: null,
+            actions: closedActions,
+            edit,
             editError: null,
           },
         };
@@ -705,13 +851,15 @@ export const update = (
           refresh || (directory.records === null && !directory.listRequest)
             ? loadDirectory(next)
             : { model: next };
-        return id === null && directory.selected && !refresh
+        const focusTarget = edit
+          ? FocusDirectoryEdit({ editing: true })
+          : id === null && directory.selected && !refresh
+            ? FocusDirectory({ id: directory.selected, recover: false })
+            : null;
+        return focusTarget
           ? {
               ...result,
-              commands: [
-                ...(result.commands ?? []),
-                FocusDirectory({ id: directory.selected }),
-              ],
+              commands: [...(result.commands ?? []), focusTarget],
             }
           : result;
       },
@@ -722,7 +870,16 @@ export const update = (
           : {
               model: {
                 ...model,
-                directory: { ...directory, records: people, listRequest: null },
+                directory: {
+                  ...directory,
+                  records: people,
+                  listRequest: null,
+                  actions: people.some(
+                    ({ id }) => id === directory.actions.row?.key,
+                  )
+                    ? directory.actions
+                    : closedActions,
+                },
               },
             },
       DirectoryFailed: ({ request }) =>
@@ -738,24 +895,21 @@ export const update = (
                 },
               },
             },
+      GotActionMenu: ({ message }) =>
+        directoryVisible ? foldContactActions(model, message) : { model },
+      UnmountedDirectory: () => ({
+        model: {
+          ...model,
+          directory: { ...directory, actions: closedActions },
+        },
+      }),
       EditedRecord: () => {
-        const edit = directory.records?.find(
+        const person = directory.records?.find(
           ({ id }) => id === directory.selected,
         );
-        if (
-          !edit ||
-          directory.edit ||
-          directory.editRequest ||
-          directory.deletion?.id === edit.id ||
-          directory.listRequest
-        )
-          return { model };
-        return {
-          model: {
-            ...model,
-            directory: { ...directory, edit, editError: null },
-          },
-        };
+        return directoryVisible && person
+          ? editContact(model, person)
+          : { model };
       },
       CanceledEdit: () =>
         directory.editRequest
@@ -765,6 +919,7 @@ export const update = (
                 ...model,
                 directory: { ...directory, edit: null, editError: null },
               },
+              commands: [FocusDirectoryEdit({ editing: false })],
             },
       SubmittedEdit: () => {
         if (!directory.edit || directory.editRequest) return { model };
@@ -788,57 +943,45 @@ export const update = (
         const person = directory.records?.find(
           ({ id }) => id === directory.selected,
         );
-        if (
-          !directoryVisible ||
-          !person ||
-          person.self ||
-          directory.edit ||
-          directory.editRequest ||
-          directory.deletion ||
-          directory.listRequest
-        )
-          return { model };
-        const request = crypto.randomUUID();
-        return {
-          model: {
-            ...model,
-            directory: {
-              ...directory,
-              deletion: {
-                request,
-                id: person.id,
-                name: displayName(person),
-                kind: person.kind ?? "person",
-              },
-            },
-          },
-          commands: [
-            MutateContact({
-              request,
-              mutation: ContactMutation.Delete({
-                id: person.id,
-                revision: person.revision,
-              }),
-            }),
-          ],
-        };
+        return directoryVisible && person
+          ? deleteContact(model, person)
+          : { model };
       },
       DeletedRecord: ({ request, receipt }) => {
         const deletion = directory.deletion;
         if (request !== deletion?.request) return { model };
-        const { id, name } = deletion;
+        const { id, name, kind } = deletion;
         const records =
           directory.records?.filter((person) => person.id !== id) ?? null;
+        const sectionRecords = directoryContacts(directory, kind);
+        const deletedIndex = sectionRecords.findIndex(
+          (person) => person.id === id,
+        );
+        const neighbor =
+          sectionRecords[deletedIndex + 1] ?? sectionRecords[deletedIndex - 1];
         return {
           model: {
             ...model,
             directory: {
               ...directory,
               records,
+              actions:
+                directory.actions.row?.key === id
+                  ? closedActions
+                  : directory.actions,
               listRequest: records ? null : directory.listRequest,
               deletion: null,
             },
           },
+          ...(directoryVisible &&
+          directory.selected === null &&
+          deletedIndex >= 0
+            ? {
+                commands: [
+                  FocusDirectory({ id: neighbor?.id ?? null, recover: true }),
+                ],
+              }
+            : {}),
           outMessage: OutMessage.Notify({
             notification: {
               key: deletionKey(id),

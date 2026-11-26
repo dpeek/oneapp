@@ -1,6 +1,7 @@
 import {
   button,
   item,
+  ItemActionMenu,
   itemGroup,
   navigationLinks,
   outlineIcon,
@@ -20,7 +21,14 @@ import {
   type Person,
 } from "./people-contract.ts";
 import {
+  addContactButtonId,
+  canDeleteContact,
+  canEditContact,
+  contactActionMenu,
+  contactActionsId,
+  detailEditButtonId,
   dialogId,
+  directoryContacts,
   displayName,
   editForm,
   Message,
@@ -28,6 +36,7 @@ import {
   primaryEmail,
   profileAvatar,
   profileHeader,
+  toContactActionMessage,
 } from "./people.ts";
 import { screenHeader, screenHeaderBack, workspace } from "./workspace.ts";
 
@@ -35,7 +44,6 @@ type DirectoryMessage = typeof Message.Type;
 type Directory = (typeof Model.Type)["directory"];
 
 const sectionLabels = { person: "People", company: "Companies" };
-const names = new Intl.Collator(undefined, { sensitivity: "base" });
 
 const directoryNavigation = (
   section: ContactKind,
@@ -86,13 +94,40 @@ const loadError = (label: string, h: HtmlBuilder<DirectoryMessage>) =>
 
 const personItem = (
   person: Person,
-  selected: Directory["selected"],
+  directory: Directory,
   h: HtmlBuilder<DirectoryMessage>,
 ) => {
   const name = displayName(person);
   const email = primaryEmail(person);
   const subtitle =
     person.kind === "company" ? (person.domains?.[0] ?? email) : email;
+  const items = [
+    {
+      action: "open",
+      label: "Open",
+      icon: outlineIcon(h, ["M5 12h14m-6-6 6 6-6 6"]),
+      disabled: false,
+    },
+    {
+      action: "edit",
+      label: "Edit",
+      icon: outlineIcon(h, [
+        "m4 16 11-11a2.8 2.8 0 0 1 4 4L8 20H4v-4zm9-9 4 4",
+      ]),
+      disabled: !canEditContact(directory, person),
+    },
+    ...(person.self
+      ? []
+      : ([
+          {
+            action: "delete",
+            label: "Delete",
+            icon: outlineIcon(h, trashIconPaths),
+            disabled: !canDeleteContact(directory, person),
+            destructive: true,
+          },
+        ] as const)),
+  ] as const;
   return item(
     {
       key: person.id,
@@ -103,7 +138,31 @@ const personItem = (
       media: profileAvatar(h, person, email, {
         imageMounted: Message.Mounted(),
       }),
-      linkAttributes: selected === person.id ? [h.AriaCurrent("page")] : [],
+      attributes: ItemActionMenu.rowAttributes(
+        person.id,
+        toContactActionMessage,
+        h,
+      ),
+      linkAttributes: [
+        ...ItemActionMenu.rowLinkAttributes(
+          contactActionsId,
+          person.id,
+          items,
+          toContactActionMessage,
+          h,
+        ),
+        ...(directory.selected === person.id ? [h.AriaCurrent("page")] : []),
+      ],
+      action: contactActionMenu.view(
+        {
+          model: directory.actions,
+          rowKey: person.id,
+          label: `Actions for ${name}`,
+          items,
+          toParentMessage: toContactActionMessage,
+        },
+        h,
+      ),
     },
     h,
   );
@@ -116,13 +175,7 @@ const listView = (
 ) => {
   const label = sectionLabels[section];
   const labelLower = label.toLowerCase();
-  const records = (directory.records ?? [])
-    .filter(({ kind }) => (kind ?? "person") === section)
-    .sort(
-      (first, second) =>
-        names.compare(displayName(first), displayName(second)) ||
-        names.compare(primaryEmail(first), primaryEmail(second)),
-    );
+  const records = directoryContacts(directory, section);
   const loadingRecords =
     directory.listRequest || (!directory.records && !directory.listFailed);
   return h.section(
@@ -131,6 +184,7 @@ const listView = (
       h.AriaLabel(label),
       h.Inert(directory.selected !== null),
       h.Tabindex(-1),
+      h.OnUnmount(Message.UnmountedDirectory()),
     ],
     [
       h.div(
@@ -142,9 +196,7 @@ const listView = (
           ...(records.length
             ? [
                 itemGroup(
-                  records.map((person) =>
-                    personItem(person, directory.selected, h),
-                  ),
+                  records.map((person) => personItem(person, directory, h)),
                   h,
                 ),
               ]
@@ -190,8 +242,8 @@ const detailView = (
   directory: Directory,
   h: HtmlBuilder<DirectoryMessage>,
 ) => {
-  const { records, edit, editRequest, editError, deletion, listRequest } =
-    directory;
+  const { records, editRequest, editError } = directory;
+  const edit = directory.edit?.id === selected ? directory.edit : null;
   const content = person
     ? [
         ...(editError ? [h.p([h.Role("alert")], [editError])] : []),
@@ -208,10 +260,8 @@ const detailView = (
                 button(
                   {
                     size: "sm",
-                    disabled:
-                      editRequest !== null ||
-                      listRequest !== null ||
-                      deletion?.id === person.id,
+                    attributes: [h.Id(detailEditButtonId)],
+                    disabled: !canEditContact(directory, person),
                     onClick: Message.EditedRecord(),
                     children: ["Edit"],
                   },
@@ -226,10 +276,7 @@ const detailView = (
                           size: "icon-sm",
                           ariaLabel: "Delete contact",
                           attributes: [h.Title("Delete contact")],
-                          disabled:
-                            editRequest !== null ||
-                            listRequest !== null ||
-                            deletion !== null,
+                          disabled: !canDeleteContact(directory, person),
                           onClick: Message.RequestedDelete(),
                           children: [outlineIcon(h, trashIconPaths)],
                         },
@@ -262,7 +309,7 @@ const detailView = (
       h.Class("workspace-detail people-detail"),
       h.AriaLabel("Contact details"),
       h.Tabindex(-1),
-      h.OnMount(FocusDetail()),
+      ...(edit ? [] : [h.OnMount(FocusDetail())]),
     ],
     [h.div([h.Class("people-detail-content")], content)],
   );
@@ -322,6 +369,7 @@ export const view = Submodel.defineView<
             : button(
                 {
                   size: "sm",
+                  attributes: [h.Id(addContactButtonId)],
                   ariaLabel: `Add ${contactLabel.toLowerCase()}`,
                   dialogId,
                   onClick: Message.Created({ kind: section }),

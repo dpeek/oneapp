@@ -4,13 +4,19 @@ vi.mock("@orumai/ui", async () => {
   const { Dialog } = await import(
     import.meta.resolve("@foldkit/ui", import.meta.resolve("@orumai/ui"))
   );
+  const itemActionMenu =
+    await import("../../../packages/ui/src/item-action-menu-state.ts");
   return {
     Dialog,
+    ItemActionMenu: {
+      ...itemActionMenu,
+      create: () => ({ update: itemActionMenu.createUpdate() }),
+    },
     Sheet: Dialog,
     Toast: await import("../../../packages/ui/src/toast-state.ts"),
   };
 });
-import { Dialog } from "@orumai/ui";
+import { Dialog, ItemActionMenu } from "@orumai/ui";
 import * as People from "./people.ts";
 import * as Clients from "./connected-clients.ts";
 import * as Notifications from "./notifications.ts";
@@ -53,6 +59,55 @@ const edit = () => {
   );
   return People.update(opened.model, People.Message.SubmittedEdit());
 };
+
+it("edits or deletes the contact whose row menu was opened while another contact is selected", () => {
+  const model = {
+    ...People.initial,
+    directory: {
+      ...People.initial.directory,
+      selected: other.id,
+      records: [person, other],
+    },
+  };
+  const menu = (message: ItemActionMenu.Message) =>
+    People.Message.GotActionMenu({ message });
+  const opened = People.update(
+    model,
+    menu(
+      ItemActionMenu.Message.OpenedFromRow({
+        key: person.id,
+        firstEnabledIndex: 0,
+      }),
+    ),
+  ).model;
+  const select = (item: "edit" | "delete", index: number) =>
+    People.update(
+      opened,
+      menu(
+        ItemActionMenu.Message.GotMenu({
+          key: person.id,
+          message: { _tag: "SelectedItem", index, item },
+        }),
+      ),
+    );
+
+  const editing = select("edit", 1);
+  expect(editing.outMessage).toEqual(
+    People.OutMessage.OpenContact({ id: person.id }),
+  );
+  const visited = People.update(
+    editing.model,
+    People.Message.VisitedDirectory({ id: person.id, refresh: false }),
+  );
+  expect(visited.model.directory.edit).toEqual(person);
+
+  const deleting = select("delete", 2);
+  expect(deleting.model.directory.deletion?.id).toBe(person.id);
+  expect(deleting.model.directory.selected).toBe(other.id);
+  expect(deleting.commands?.at(-1)?.args).toMatchObject({
+    mutation: { _tag: "Delete", id: person.id, revision: person.revision },
+  });
+});
 const revoke = () =>
   Clients.update(clients(), Clients.Message.RequestedRevocation(connection));
 const applyOutcome = (

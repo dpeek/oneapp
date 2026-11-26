@@ -6,6 +6,7 @@ import {
   filesIconPaths,
   input,
   item,
+  ItemActionMenu,
   itemGroup,
   outlineIcon,
   plusIcon,
@@ -26,9 +27,13 @@ import {
   type StoredFile,
 } from "./files-contract.ts";
 import {
+  fileActionMenu,
+  fileActionsId,
   filterOptionsId,
+  matchesFileFilter,
   Message,
   selectedFile,
+  toActionMenuMessage,
   toFilterPopoverMessage,
   uploadInputId,
   type Model,
@@ -59,6 +64,9 @@ const RenderPdf = Mount.define("RenderFilePdf", {
     }).pipe(Effect.catch(() => Effect.succeed(Message.PreviewFailed({ id })))),
 });
 
+const downloadIcon = (h: HtmlBuilder<Message>) =>
+  outlineIcon(h, ["M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"]);
+
 const downloadLink = (file: StoredFile, h: HtmlBuilder<Message>) =>
   h.a(
     [
@@ -67,7 +75,7 @@ const downloadLink = (file: StoredFile, h: HtmlBuilder<Message>) =>
       h.Class(buttonClassName({ variant: "outline", size: "sm" })),
       h.DataAttribute("slot", "button"),
     ],
-    [outlineIcon(h, ["M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"]), "Download"],
+    [downloadIcon(h), "Download"],
   );
 
 const fileDetail = (
@@ -226,13 +234,76 @@ const fileFilters = (
     h,
   );
 
+const fileRow = (
+  file: StoredFile,
+  model: Model,
+  tagMap: ReadonlyMap<string, string>,
+  h: HtmlBuilder<Message>,
+) => {
+  const items = [
+    {
+      action: "open",
+      label: "Open",
+      icon: outlineIcon(h, filesIconPaths),
+      disabled: false,
+    },
+    {
+      action: "download",
+      label: "Download",
+      icon: downloadIcon(h),
+      disabled: false,
+    },
+  ] as const;
+  return item(
+    {
+      key: file.id,
+      href: filePath(file.id),
+      title: file.name,
+      attributes: ItemActionMenu.rowAttributes(file.id, toActionMenuMessage, h),
+      linkAttributes: [
+        ...ItemActionMenu.rowLinkAttributes(
+          fileActionsId,
+          file.id,
+          items,
+          toActionMenuMessage,
+          h,
+        ),
+        ...(model.selectedId === file.id ? [h.AriaCurrent("page")] : []),
+      ],
+      description: h.div(
+        [h.Class("file-row-metadata")],
+        [
+          h.span([], [fileSize(file.size)]),
+          ...file.tagIds.flatMap((id) => {
+            const name = tagMap.get(id);
+            return name
+              ? [h.span([h.Key(id), h.Class("task-tag")], [name])]
+              : [];
+          }),
+        ],
+      ),
+      action: fileActionMenu.view(
+        {
+          model: model.actions,
+          rowKey: file.id,
+          label: `Actions for ${file.name}`,
+          items,
+          toParentMessage: toActionMenuMessage,
+        },
+        h,
+      ),
+    },
+    h,
+  );
+};
+
 const fileList = (
   model: Model,
   tags: readonly Tag[],
   h: HtmlBuilder<Message>,
 ) => {
-  const files = (model.index?.files ?? []).filter(
-    ({ tagIds }) => !model.tagFilter || tagIds.includes(model.tagFilter),
+  const files = (model.index?.files ?? []).filter((file) =>
+    matchesFileFilter(file, model.tagFilter),
   );
   const tagMap = new Map(tags.map((tag) => [tag.id, tag.name]));
   const hasFiles = !!model.index?.files.length;
@@ -243,7 +314,11 @@ const fileList = (
         ? "No files match this tag"
         : "No files uploaded";
   return h.section(
-    [h.Class("workspace-list file-list"), h.AriaLabel("File list")],
+    [
+      h.Class("workspace-list file-list"),
+      h.AriaLabel("File list"),
+      h.OnUnmount(Message.Unmounted()),
+    ],
     [
       visuallyHiddenStatus(emptyTitle, h),
       h.div(
@@ -251,37 +326,7 @@ const fileList = (
         files.length
           ? [
               itemGroup(
-                files.map((file) =>
-                  item(
-                    {
-                      key: file.id,
-                      href: filePath(file.id),
-                      title: file.name,
-                      linkAttributes:
-                        model.selectedId === file.id
-                          ? [h.AriaCurrent("page")]
-                          : [],
-                      description: h.div(
-                        [h.Class("file-row-metadata")],
-                        [
-                          h.span([], [fileSize(file.size)]),
-                          ...file.tagIds.flatMap((id) => {
-                            const name = tagMap.get(id);
-                            return name
-                              ? [
-                                  h.span(
-                                    [h.Key(id), h.Class("task-tag")],
-                                    [name],
-                                  ),
-                                ]
-                              : [];
-                          }),
-                        ],
-                      ),
-                    },
-                    h,
-                  ),
-                ),
+                files.map((file) => fileRow(file, model, tagMap, h)),
                 h,
               ),
             ]

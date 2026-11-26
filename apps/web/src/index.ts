@@ -71,6 +71,7 @@ import { forgotPasswordPage } from "./password-recovery-contract.ts";
 import * as People from "./people.ts";
 import {
   ContactsRoute,
+  contactPath,
   contactsListPath,
   contactsRouteFor,
 } from "./people-contract.ts";
@@ -284,8 +285,15 @@ const foldPeople = (parent: Model, message: typeof People.Message.Type) =>
       model.account ? Option.some(model.people) : Option.none(),
     write: (model, people) => ({ ...model, people }),
     toParentMessage: toPeopleMessage,
-    foldOutMessage: (out: People.OutMessage) => (model) =>
-      applyNotification(model, out),
+    foldOutMessage: (out: People.OutMessage) => (model) => {
+      if (out._tag !== "OpenContact") return applyNotification(model, out);
+      return model.peopleRoute?.id === out.id
+        ? { model }
+        : {
+            model,
+            commands: [Navigate({ href: contactPath(out.id), mode: "push" })],
+          };
+    },
   })(parent, message);
 const toConnectedClientsMessage = (
   message: typeof ConnectedClients.Message.Type,

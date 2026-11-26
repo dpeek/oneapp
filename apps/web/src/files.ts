@@ -1,10 +1,11 @@
-import { Popover, Tokenizer } from "@orumai/ui";
+import { ItemActionMenu, Popover, Tokenizer } from "@orumai/ui";
 import { Effect, Option, Schema } from "effect";
-import { Command, Update } from "foldkit";
+import { Command, Dom, Update } from "foldkit";
 import { focus } from "foldkit/dom";
 import { defineMessageUnion } from "foldkit/message";
 import {
   fileApi,
+  fileContentApi,
   FileIndex,
   FileName,
   fileNameHeader,
@@ -25,6 +26,9 @@ import { checkIndex } from "./workspace-changes.ts";
 
 export const uploadInputId = "files-upload";
 export const createUploadInputId = "create-file-upload";
+export const fileActionsId = "file-actions";
+export const fileActionMenu = ItemActionMenu.create<"open" | "download">();
+const closedActions = ItemActionMenu.init(fileActionsId);
 const UploadSource = Schema.Literals(["header", "create"]);
 
 export const openUploadPicker = () => {
@@ -54,6 +58,7 @@ export const Model = Schema.Struct({
   index: Schema.NullOr(FileIndex),
   selectedId: Schema.NullOr(ItemId),
   tagFilter: Schema.NullOr(ItemId),
+  actions: ItemActionMenu.Model,
   filterPopover: Popover.Model,
   tagOptionsOpen: Schema.Boolean,
   tagPicker: Tokenizer.Model,
@@ -69,6 +74,7 @@ export const initial: Model = {
   index: null,
   selectedId: null,
   tagFilter: null,
+  actions: closedActions,
   ...closedFilterMenu,
   tagPicker: tagPicker(),
   previewFailed: false,
@@ -89,6 +95,9 @@ export const Message = defineMessageUnion({
     ]),
   },
   FocusUpdated: {},
+  GotActionMenu: { message: ItemActionMenu.Message },
+  Unmounted: {},
+  ActivatedFileAction: {},
   PickedFile: { source: UploadSource, selected: Schema.Boolean },
   GotFilterPopoverMessage: { message: Popover.Message },
   OpenedTagFilterOptions: { focusOptions: Schema.Boolean },
@@ -117,6 +126,28 @@ export const OutMessage = defineMessageUnion({
   SessionExpired: {},
 });
 export type OutMessage = typeof OutMessage.Type;
+
+const OpenFileRow = Command.define("OpenFileRow", {
+  args: { id: ItemId },
+  messages: [Message.ActivatedFileAction],
+  execute: ({ id }) =>
+    Dom.clickElement(
+      `#${CSS.escape(ItemActionMenu.rowLinkId(fileActionsId, id))}`,
+    ).pipe(Effect.ignore, Effect.as(Message.ActivatedFileAction())),
+});
+
+const DownloadFileRow = Command.define("DownloadFileRow", {
+  args: { id: ItemId, name: FileName },
+  messages: [Message.ActivatedFileAction],
+  execute: ({ id, name }) =>
+    Effect.sync(() => {
+      const link = document.createElement("a");
+      link.href = fileContentApi(id, "download");
+      link.download = name;
+      link.click();
+      return Message.ActivatedFileAction();
+    }),
+});
 
 const writeJson = (method: "POST" | "PUT", value: unknown): RequestInit => ({
   method,
@@ -261,6 +292,35 @@ const CheckVersion = Command.define("CheckFileVersion", {
 export const selectedFile = (model: Model) =>
   model.index?.files.find(({ id }) => id === model.selectedId) ?? null;
 
+export const matchesFileFilter = (
+  file: StoredFile,
+  tagFilter: Model["tagFilter"],
+) => tagFilter === null || file.tagIds.includes(tagFilter);
+
+export const toActionMenuMessage = (message: ItemActionMenu.Message) =>
+  Message.GotActionMenu({ message });
+
+const foldActionMenu = Update.foldChild({
+  update: fileActionMenu.update,
+  read: (model: Model) => Option.some(model.actions),
+  write: (model, actions) => ({ ...model, actions }),
+  toParentMessage: toActionMenuMessage,
+  foldOutMessage:
+    ({ key, action }): Update.Step<Model, Message> =>
+    (model) => {
+      const file = model.index?.files.find(({ id }) => id === key);
+      if (!file || !matchesFileFilter(file, model.tagFilter)) return { model };
+      return {
+        model,
+        commands: [
+          action === "open"
+            ? OpenFileRow({ id: file.id })
+            : DownloadFileRow({ id: file.id, name: file.name }),
+        ],
+      };
+    },
+});
+
 const start = (model: Model, operation: Operation) => {
   if (model.request) return { model };
   const id = crypto.randomUUID();
@@ -314,7 +374,7 @@ const transition = (
       Opened: ({ id, refresh }) => {
         const current =
           refresh || id !== model.selectedId
-            ? { ...model, ...closedFilterMenu }
+            ? { ...model, ...closedFilterMenu, actions: closedActions }
             : model;
         const next =
           id === current.selectedId
@@ -351,6 +411,9 @@ const transition = (
         };
       },
       FocusUpdated: () => ({ model }),
+      GotActionMenu: ({ message }) => foldActionMenu(model, message),
+      Unmounted: () => ({ model: { ...model, actions: closedActions } }),
+      ActivatedFileAction: () => ({ model }),
       PickedFile: ({ source, selected }) =>
         selected ? start(model, { _tag: "Upload", source }) : { model },
       GotFilterPopoverMessage: ({ message }) =>
@@ -510,7 +573,19 @@ const transition = (
 };
 
 export const update = (model: Model, message: Message) => {
-  const result = transition(model, message);
+  const transitionResult = transition(model, message);
+  const { actions, index, tagFilter } = transitionResult.model;
+  const key = actions.row?.key;
+  const result =
+    key &&
+    !index?.files.some(
+      (file) => file.id === key && matchesFileFilter(file, tagFilter),
+    )
+      ? {
+          ...transitionResult,
+          model: { ...transitionResult.model, actions: closedActions },
+        }
+      : transitionResult;
   const next = result.model;
   if (
     !next.refreshPending ||

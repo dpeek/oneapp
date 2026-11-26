@@ -1,13 +1,14 @@
 import {
   Dialog,
   DropdownMenu,
+  ItemActionMenu,
   MultiCombobox,
   Popover,
   Sheet,
   Tokenizer,
 } from "@orumai/ui";
 import { Effect, Option, Schema } from "effect";
-import { Command, Update } from "foldkit";
+import { Command, Render, Update } from "foldkit";
 import { focus } from "foldkit/dom";
 import { defineMessageUnion } from "foldkit/message";
 import { ItemId, Tag, TagCreate, tagsApi } from "./items-contract.ts";
@@ -33,6 +34,7 @@ import {
   defaultFilters,
   emptyFilters,
   Filters,
+  matchesTaskFilters,
   toggleFilter,
 } from "./tasks-filters.ts";
 
@@ -59,7 +61,11 @@ const Creation = Schema.Struct({
 const Operation = Schema.Union([
   Schema.TaggedStruct("Load", {}),
   Schema.TaggedStruct("Create", { input: TaskCreate }),
-  Schema.TaggedStruct("Save", { id: ItemId, input: TaskUpdate }),
+  Schema.TaggedStruct("Save", {
+    id: ItemId,
+    input: TaskUpdate,
+    rowFocus: Schema.NullOr(Schema.Literals(["link", "trigger"])),
+  }),
   Schema.TaggedStruct("Delete", { id: ItemId, input: TaskDelete }),
   Schema.TaggedStruct("AddTag", { id: ItemId, input: TagCreate }),
 ]);
@@ -69,6 +75,7 @@ export const filterOptionsId = "task-filter-options";
 export const creationDialogId = "task-create-dialog";
 export const creationTitleId = "task-create-title-input";
 export const creationSubmitId = "task-create-submit";
+export const addTaskButtonId = "add-task";
 export const deleteDialogId = "task-delete-dialog";
 export const deleteConflictMessage =
   "The task changed. Close this dialog and review the latest task before deleting it.";
@@ -77,7 +84,18 @@ const filterTags = MultiCombobox.init("task-filter-tags");
 const closedFilterOptions = { filterCategory: null, filterTags };
 const Sort = Schema.Literals(["updated", "priority", "due"]);
 const sortMenu = DropdownMenu.SingleSelect.init({ id: "task-sort" });
-const closedTaskMenus = { filterPopover, ...closedFilterOptions, sortMenu };
+const rowActions = ItemActionMenu.init("task-row-actions");
+type RowAction =
+  | "open"
+  | `status:${Task["status"]}`
+  | `priority:${NonNullable<Task["priority"]> | ""}`;
+export const taskActionMenu = ItemActionMenu.create<RowAction>();
+const closedTaskMenus = {
+  filterPopover,
+  ...closedFilterOptions,
+  sortMenu,
+  rowActions,
+};
 export const taskSortMenu =
   DropdownMenu.SingleSelect.create<typeof Sort.Type>();
 const Field = Schema.Literals([
@@ -112,6 +130,7 @@ export const Model = Schema.Struct({
   filters: Filters,
   sort: Sort,
   sortMenu: DropdownMenu.SingleSelect.Model,
+  rowActions: ItemActionMenu.Model,
   request: Schema.NullOr(
     Schema.Struct({ id: Schema.String, operation: Operation }),
   ),
@@ -176,6 +195,7 @@ export const Message = defineMessageUnion({
   GotFilterTagsMessage: { message: MultiCombobox.Message },
   ClearedFilters: {},
   GotSortMenuMessage: { message: DropdownMenu.SingleSelect.Message },
+  GotRowActionMessage: { message: ItemActionMenu.Message },
   GotTagPickerMessage: { id: ItemId, message: Tokenizer.Message },
   RemovedTag: { id: ItemId },
   Saved: {},
@@ -322,6 +342,39 @@ const FocusList = Command.define("FocusTaskList", {
       Effect.as(Message.FocusUpdated()),
     );
   },
+});
+
+const RecoverTaskRowFocus = Command.define("RecoverTaskRowFocus", {
+  args: { rowId: Schema.NullOr(ItemId), preferLink: Schema.Boolean },
+  messages: [Message.FocusUpdated],
+  execute: ({ rowId, preferLink }) =>
+    Render.afterCommit.pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          if (document.activeElement === document.body) {
+            const trigger =
+              rowId && !preferLink
+                ? document.getElementById(
+                    ItemActionMenu.triggerId(rowActions.id, rowId),
+                  )
+                : null;
+            const link = rowId
+              ? document.getElementById(
+                  ItemActionMenu.rowLinkId(rowActions.id, rowId),
+                )
+              : null;
+            const addButton = document.querySelector<HTMLButtonElement>(
+              `.tasks-workspace:not([data-panel]) #${addTaskButtonId}`,
+            );
+            (trigger?.getClientRects().length
+              ? trigger
+              : (link ?? addButton)
+            )?.focus();
+          }
+          return Message.FocusUpdated();
+        }),
+      ),
+    ),
 });
 
 const FocusCreateSubmit = Command.define("FocusTaskCreateSubmit", {
@@ -503,6 +556,28 @@ const start = (
 export const selectedTask = (model: Model) =>
   model.index?.tasks.find((task) => task.id === model.selectedId) ?? null;
 
+const priorityRank = { "": 0, low: 1, medium: 2, high: 3, urgent: 4 };
+export const visibleTasks = ({ index, filters, sort }: Model) =>
+  (index?.tasks ?? [])
+    .filter((task) => matchesTaskFilters(task, filters))
+    .sort((left, right) => {
+      if (sort === "priority") {
+        const order =
+          priorityRank[right.priority ?? ""] -
+          priorityRank[left.priority ?? ""];
+        if (order) return order;
+      }
+      if (sort === "due") {
+        const order = (left.dueOn ?? "9999-99-99").localeCompare(
+          right.dueOn ?? "9999-99-99",
+        );
+        if (order) return order;
+      }
+      return (
+        right.updatedAt - left.updatedAt || right.id.localeCompare(left.id)
+      );
+    });
+
 export const writingCreation = (model: Model) =>
   isCreationWrite(model, model.request?.operation);
 
@@ -571,6 +646,45 @@ const editField = (
       return { ...draft, [field]: value };
   }
 };
+
+export const toRowActionMessage = (
+  message: typeof ItemActionMenu.Message.Type,
+) => Message.GotRowActionMessage({ message });
+
+const foldRowAction = Update.foldChild({
+  update: taskActionMenu.update,
+  read: (model: Model) => Option.some(model.rowActions),
+  write: (model, rowActions) => ({ ...model, rowActions }),
+  toParentMessage: toRowActionMessage,
+  foldOutMessage:
+    ({
+      key,
+      action,
+      returnToRow,
+    }): Update.StepWithOutMessage<Model, Message, OutMessage> =>
+    (model) => {
+      const task = model.index?.tasks.find(({ id }) => id === key);
+      if (!task || !matchesTaskFilters(task, model.filters)) return { model };
+      if (action === "open")
+        return { model, outMessage: OutMessage.OpenTask({ id: task.id }) };
+      if (model.request) return { model };
+
+      const value = action.slice(action.indexOf(":") + 1);
+      const { id, ...fields } = editField(
+        toDraft(task),
+        action.startsWith("status:") ? "status" : "priority",
+        value,
+      );
+      if (fields.status === task.status && fields.priority === task.priority)
+        return { model };
+      return start(model, {
+        _tag: "Save",
+        id,
+        input: { ...fields, revision: task.revision },
+        rowFocus: returnToRow ? "link" : "trigger",
+      });
+    },
+});
 
 const attach = (draft: Draft, id: string): Draft =>
   draft.tagIds.includes(id) || draft.tagIds.length >= taskTagLimit
@@ -859,6 +973,10 @@ const transition = (
           : { model: cleared, commands: [FocusFilterTrigger()] };
       },
       GotSortMenuMessage: ({ message }) => foldSortMenu(model, message),
+      GotRowActionMessage: ({ message }) =>
+        model.selectedId === null && model.creation === null
+          ? foldRowAction(model, message)
+          : { model },
       GotTagPickerMessage: ({ id, message }) => {
         const editor =
           model.creation?.draft.id === id ? model.creation : model.editor;
@@ -936,7 +1054,7 @@ const transition = (
               },
             },
           };
-        return start(model, { _tag: "Save", id, input });
+        return start(model, { _tag: "Save", id, input, rowFocus: null });
       },
       Discarded: () => {
         const task = selectedTask(model);
@@ -1050,34 +1168,41 @@ const transition = (
         };
       },
       TaskSaved: ({ task, conflict }) => {
-        const next = replaceTask(model, task);
-        if (task.id !== model.selectedId)
-          return {
-            model: {
-              ...next,
-              error: conflict
-                ? {
-                    message: "The task changed. Try again.",
-                    announcedInCreation: false,
-                  }
-                : null,
-            },
-          };
+        const operation = model.request?.operation;
+        const rowFocus = operation?._tag === "Save" ? operation.rowFocus : null;
+        const isSelected = task.id === model.selectedId;
+        const next: Model = {
+          ...replaceTask(model, task),
+          editor:
+            isSelected && model.editor && (!conflict || rowFocus)
+              ? { ...model.editor, draft: toDraft(task) }
+              : model.editor,
+          error: conflict
+            ? {
+                message:
+                  isSelected && !rowFocus
+                    ? "This task changed elsewhere. Reload the saved task before editing again."
+                    : "The task changed. Try again.",
+                announcedInCreation: false,
+              }
+            : null,
+        };
+        if (!rowFocus || model.selectedId !== null) return { model: next };
+        const index = visibleTasks(model).findIndex(({ id }) => id === task.id);
+        if (index < 0) return { model: next };
+
+        const stillVisible = matchesTaskFilters(task, model.filters);
+        const remaining = stillVisible ? [] : visibleTasks(next);
         return {
-          model: {
-            ...next,
-            editor:
-              conflict || !model.editor
-                ? model.editor
-                : { ...model.editor, draft: toDraft(task) },
-            error: conflict
-              ? {
-                  message:
-                    "This task changed elsewhere. Reload the saved task before editing again.",
-                  announcedInCreation: false,
-                }
-              : null,
-          },
+          model: next,
+          commands: [
+            RecoverTaskRowFocus({
+              rowId: stillVisible
+                ? task.id
+                : ((remaining[index] ?? remaining.at(-1))?.id ?? null),
+              preferLink: stillVisible && rowFocus === "link",
+            }),
+          ],
         };
       },
       TagCreated: ({ tag }) => {
@@ -1157,7 +1282,18 @@ const transition = (
 };
 
 export const update = (model: Model, message: Message) => {
-  const result = transition(model, message);
+  let result = transition(model, message);
+  const { row } = result.model.rowActions;
+  if (
+    row &&
+    (result.model.index !== model.index ||
+      result.model.filters !== model.filters) &&
+    !result.model.index?.tasks.some(
+      (task) =>
+        task.id === row.key && matchesTaskFilters(task, result.model.filters),
+    )
+  )
+    result = { ...result, model: { ...result.model, rowActions } };
   const next = result.model;
   if (
     !next.refreshPending ||

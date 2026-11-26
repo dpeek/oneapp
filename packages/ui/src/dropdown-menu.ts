@@ -47,6 +47,12 @@ const styles = stylex.create({
     gap: "0.5rem",
     overflowWrap: "anywhere",
   },
+  heading: {
+    padding: "0.25rem 0.5rem",
+    color: controls.mutedForeground,
+    fontSize: "0.75rem",
+    fontWeight: 500,
+  },
   check: { display: "inline-flex", inlineSize: "1rem", flexShrink: 0 },
   active: { backgroundColor: controls.hover },
   disabled: { opacity: 0.5, cursor: "default" },
@@ -62,6 +68,7 @@ export type Item<Action extends string> = Readonly<{
   action: Action;
   label: string;
   icon: Html;
+  group?: string;
   disabled?: boolean;
   destructive?: boolean;
 }>;
@@ -144,7 +151,16 @@ export const create = <Action extends string>() => {
           ...(props.separateDestructive
             ? {
                 itemGroupKey: (_action: Action, index: number) =>
-                  props.items[index]?.destructive ? "destructive" : "ordinary",
+                  props.items[index]?.destructive
+                    ? "destructive"
+                    : (props.items[index]?.group ?? "ordinary"),
+                groupToHeading: (group: string) =>
+                  group === "ordinary" || group === "destructive"
+                    ? undefined
+                    : {
+                        className: stylex.props(styles.heading).className,
+                        content: h.span([], [group]),
+                      },
                 separatorClassName: stylex.props(styles.separator).className,
               }
             : {}),

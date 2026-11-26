@@ -65,12 +65,28 @@
   inline-size: 9rem;
 }
 
-.task-table th:last-child {
+.task-table th.task-updated-cell {
   inline-size: 12rem;
 }
 
-.task-table :is(th, td):last-child {
+.task-table .task-updated-cell {
   text-align: end;
+}
+
+.task-table .task-actions-cell {
+  inline-size: 0;
+  padding: 0;
+}
+
+.task-actions-cell > div {
+  position: relative;
+  z-index: 1;
+}
+
+@media (any-pointer: coarse) {
+  .task-table .task-actions-cell {
+    inline-size: 3rem;
+  }
 }
 
 .task-row {
@@ -83,7 +99,7 @@
   border-end-start-radius: var(--control-radius);
 }
 
-.task-row > td:last-child {
+.task-row > .task-updated-cell {
   border-start-end-radius: var(--control-radius);
   border-end-end-radius: var(--control-radius);
 }
@@ -231,7 +247,7 @@
     inline-size: 2rem;
   }
 
-  .task-table :is(th, td):last-child {
+  .task-table .task-updated-cell {
     display: none;
   }
 
@@ -253,6 +269,19 @@
     overflow: hidden;
     clip-path: inset(50%);
     white-space: nowrap;
+  }
+}
+
+@media (any-pointer: coarse) {
+  .task-row > .task-actions-cell {
+    border-start-end-radius: var(--control-radius);
+    border-end-end-radius: var(--control-radius);
+  }
+
+  .task-row > .task-updated-cell,
+  .task-row > td:nth-child(5) {
+    border-start-end-radius: 0;
+    border-end-end-radius: 0;
   }
 }
 

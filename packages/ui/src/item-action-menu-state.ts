@@ -56,7 +56,7 @@ export const createUpdate = <Action extends string>() => {
   ): Update.ReturnWithOutMessage<
     Model,
     Message,
-    { key: string; action: Action }
+    { key: string; action: Action; returnToRow: boolean }
   > => {
     if (message._tag === "RestoredRowFocus") return { model };
     const { key } = message;
@@ -111,7 +111,13 @@ export const createUpdate = <Action extends string>() => {
           ? [...commands, RestoreRowFocus({ id: rowLinkId(model.id, key) })]
           : commands,
       ...(result.outMessage
-        ? { outMessage: { key, action: result.outMessage.value } }
+        ? {
+            outMessage: {
+              key,
+              action: result.outMessage.value,
+              returnToRow: row.returnToRow,
+            },
+          }
         : {}),
     };
   };

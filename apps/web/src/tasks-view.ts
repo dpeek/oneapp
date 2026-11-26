@@ -9,10 +9,12 @@ import {
   clockIconPaths,
   cloudIconPaths,
   Dialog,
+  DropdownMenu,
   empty,
   field,
   flameIconPaths,
   input,
+  ItemActionMenu,
   MultiCombobox,
   navigationLinks,
   nativeSelect,
@@ -49,9 +51,10 @@ import {
   taskTagLimit,
   taskTitleLimit,
 } from "./tasks-contract.ts";
-import { matchesTaskFilters, taskFilterCount } from "./tasks-filters.ts";
+import { taskFilterCount } from "./tasks-filters.ts";
 import {
   FilterCategory,
+  addTaskButtonId,
   creationDialogId,
   creationSubmitId,
   creationTitleId,
@@ -62,14 +65,17 @@ import {
   Message,
   selectedTask,
   tagSearch,
+  taskActionMenu,
   taskSortMenu,
   toFilterPopoverMessage,
   toFilterTagsMessage,
   toAttachmentsMessage,
   toDeleteDialogMessage,
   toFolderSheetMessage,
+  toRowActionMessage,
   toSortMenuMessage,
   writingCreation,
+  visibleTasks,
   type Editor,
   type Model,
 } from "./tasks.ts";
@@ -188,7 +194,6 @@ const latestRunDetails = (
     ],
   );
 };
-const priorityRank = { "": 0, low: 1, medium: 2, high: 3, urgent: 4 };
 const statusOptions = taskStatuses.map((value) => ({
   value,
   label: taskStatusDisplay[value].label,
@@ -209,27 +214,6 @@ const taskDateTimeFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeStyle: "short",
 });
-const sortedTasks = (tasks: readonly Task[], model: Model) =>
-  tasks
-    .filter((task) => matchesTaskFilters(task, model.filters))
-    .sort((left, right) => {
-      if (model.sort === "priority") {
-        const order =
-          priorityRank[right.priority ?? ""] -
-          priorityRank[left.priority ?? ""];
-        if (order) return order;
-      }
-      if (model.sort === "due") {
-        const order = (left.dueOn ?? "9999-99-99").localeCompare(
-          right.dueOn ?? "9999-99-99",
-        );
-        if (order) return order;
-      }
-      return (
-        right.updatedAt - left.updatedAt || right.id.localeCompare(left.id)
-      );
-    });
-
 const taskTimestamp = (value: number, h: HtmlBuilder<Message>) =>
   h.time(
     [h.Datetime(new Date(value).toISOString())],
@@ -255,6 +239,7 @@ const taskRowValue = (
 
 const taskRow = (
   task: Task,
+  model: Model,
   tags: ReadonlyMap<string, Tag>,
   { owner, ownerEmail }: ViewInputs,
   now: number,
@@ -264,6 +249,42 @@ const taskRow = (
   const { status, priority, assignee } = task;
   const statusDisplay = taskStatusDisplay[status];
   const priorityDisplay = taskPriorityDisplay[priority ?? ""];
+  const choice = <Action extends string>(
+    action: Action,
+    group: string,
+    display: TaskRowValue,
+    current: boolean,
+  ): DropdownMenu.Item<Action> => ({
+    action,
+    group,
+    label: current ? `${display.label} (current)` : display.label,
+    icon: outlineIcon(h, display.icon),
+    disabled: current || model.request !== null,
+  });
+  const items = [
+    {
+      action: "open",
+      label: "Open",
+      icon: outlineIcon(h, taskIconPaths),
+      disabled: false,
+    } as const,
+    ...taskStatuses.map((value) =>
+      choice(
+        `status:${value}` as const,
+        "Status",
+        taskStatusDisplay[value],
+        status === value,
+      ),
+    ),
+    ...[null, ...taskPriorities].map((value) =>
+      choice(
+        `priority:${value ?? ""}` as const,
+        "Priority",
+        taskPriorityDisplay[value ?? ""],
+        priority === value,
+      ),
+    ),
+  ];
   const imageMounted = Message.CompletedAssigneeAvatarImageMount();
   const assigneeAvatar =
     assignee === "owner"
@@ -281,7 +302,11 @@ const taskRow = (
           h,
         );
   return h.tr(
-    [h.Key(task.id), h.Class("task-row")],
+    [
+      h.Key(task.id),
+      h.Class("task-row"),
+      ...ItemActionMenu.rowAttributes(task.id, toRowActionMessage, h),
+    ],
     [
       h.td(
         [h.Class("task-activity-cell")],
@@ -300,6 +325,13 @@ const taskRow = (
                   h.Class("task-row-link"),
                   h.Href(taskPath(task.id)),
                   h.DataAttribute("task-id", task.id),
+                  ...ItemActionMenu.rowLinkAttributes(
+                    model.rowActions.id,
+                    task.id,
+                    items,
+                    toRowActionMessage,
+                    h,
+                  ),
                   ...(Number.isFinite(new Date(task.updatedAt).getTime())
                     ? [
                         h.Title(
@@ -341,7 +373,22 @@ const taskRow = (
         assignee ?? "",
         h,
       ),
-      h.td([], [timestamp(task.updatedAt, now, h)]),
+      h.td([h.Class("task-updated-cell")], [timestamp(task.updatedAt, now, h)]),
+      h.td(
+        [h.Class("task-actions-cell")],
+        [
+          taskActionMenu.view(
+            {
+              model: model.rowActions,
+              rowKey: task.id,
+              label: `Actions for ${task.title}`,
+              items,
+              toParentMessage: toRowActionMessage,
+            },
+            h,
+          ),
+        ],
+      ),
     ],
   );
 };
@@ -457,9 +504,25 @@ const taskTable = (
                 [h.Key("Activity"), h.Scope("col"), h.AriaLabel("Activity")],
                 [],
               ),
-              ...["Task", "Status", "Priority", "Assignee", "Updated"].map(
-                (label) =>
-                  h.th([h.Key(label), h.Scope("col")], [h.span([], [label])]),
+              ...["Task", "Status", "Priority", "Assignee"].map((label) =>
+                h.th([h.Key(label), h.Scope("col")], [h.span([], [label])]),
+              ),
+              h.th(
+                [
+                  h.Key("Updated"),
+                  h.Scope("col"),
+                  h.Class("task-updated-cell"),
+                ],
+                ["Updated"],
+              ),
+              h.th(
+                [
+                  h.Key("Actions"),
+                  h.Scope("col"),
+                  h.AriaLabel("Actions"),
+                  h.Class("task-actions-cell"),
+                ],
+                [],
               ),
             ],
           ),
@@ -476,7 +539,8 @@ const taskPlaceholders = (h: HtmlBuilder<Message>) =>
       [
         h.td([], []),
         h.td([], [skeleton(index % 2 ? "md" : "lg", h)]),
-        h.td([], [skeleton("md", h)]),
+        h.td([h.Class("task-updated-cell")], [skeleton("md", h)]),
+        h.td([h.Class("task-actions-cell")], []),
         h.td([], [skeleton("sm", h)]),
         h.td([], [skeleton("sm", h)]),
         h.td([], [skeleton("md", h)]),
@@ -491,7 +555,7 @@ const taskList = (
   h: HtmlBuilder<Message>,
 ) => {
   const allTasks = model.index?.tasks ?? [];
-  const tasks = sortedTasks(allTasks, model);
+  const tasks = visibleTasks(model);
   const loading = !model.index && model.request?.operation._tag === "Load";
   const tagMap = new Map(tags.map((tag) => [tag.id, tag]));
   const emptyTitle =
@@ -505,7 +569,7 @@ const taskList = (
     const now = Date.now();
     results = taskTable(
       tasks.map((task) =>
-        taskRow(task, tagMap, viewInputs, now, model.runActivityTime, h),
+        taskRow(task, model, tagMap, viewInputs, now, model.runActivityTime, h),
       ),
       false,
       h,
@@ -999,6 +1063,7 @@ export const view = Submodel.defineView(function tasksView(
     {
       size: "sm",
       ariaLabel: "Add task",
+      attributes: [h.Id(addTaskButtonId)],
       disabled: model.request !== null || !model.index,
       dialogId: creationDialogId,
       onClick: Message.OpenedCreate({ preserveView: false }),

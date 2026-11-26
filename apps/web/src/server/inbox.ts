@@ -138,18 +138,6 @@ type InboxEnv = Pick<
 } & MailSenderBindings;
 type InboxBucket = InboxEnv["INBOX_MESSAGES"];
 
-export const inboxSessionHeaders = {
-  id: "x-oneapp-inbox-session-id",
-  revision: "x-oneapp-inbox-security-revision",
-  mailbox: "x-oneapp-inbox-mailbox",
-};
-
-export type InboxSocketSession = {
-  sessionId: string;
-  securityRevision: string;
-  mailboxId: string;
-};
-
 const isInboxMessageId = Schema.is(InboxMessageId);
 const isMailMessageId = Schema.is(MailMessageId);
 const headerLimit = 64 * 1024;

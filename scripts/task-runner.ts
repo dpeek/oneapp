@@ -10,13 +10,13 @@ import { Effect, Redacted, Schema } from "effect";
 import { mkdir, open, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { setTimeout } from "node:timers/promises";
 import { parseArgs } from "node:util";
 import { watchDeployments } from "./task-runner/deployments.ts";
 import { githubRepository, productionChecks } from "./task-runner/github.ts";
 import { TaskQueue } from "./task-runner/queue.ts";
 import { gitOrigin, resolveBunCache, runNext } from "./task-runner/run.ts";
 import { configureBrowser, resolveBrowser } from "./task-runner/settings.ts";
+import { watchTaskQueue } from "./task-runner/watch-queue.ts";
 
 const usage = `Usage: bun --no-env-file run tasks:runner [--server <origin>] [--once | --dry-run]
        bun --no-env-file run tasks:runner --login [--no-browser] [--server <origin>]
@@ -142,39 +142,35 @@ async function main() {
         await queue.close();
       }
     };
+    const run = () =>
+      withQueue((queue) =>
+        runNext(queue, {
+          origin,
+          source,
+          remote,
+          repository,
+          directory,
+          signal,
+          browser,
+          bunCache,
+        }),
+      );
     const implement = async () => {
-      while (!signal.aborted) {
-        let pushed = false;
-        try {
-          pushed = Boolean(
-            await withQueue((queue) =>
-              runNext(queue, {
-                origin,
-                source,
-                remote,
-                repository,
-                directory,
-                signal,
-                browser,
-                bunCache,
-              }),
-            ),
-          );
-        } catch (error) {
-          if (signal.aborted) return;
-          if (values.once) throw error;
-          console.error(error instanceof Error ? error.message : String(error));
-        }
-        if (values.once) return;
-        if (!pushed)
-          await setTimeout(60_000, undefined, { signal }).catch((error) => {
-            if (!signal.aborted) throw error;
-          });
+      if (signal.aborted) return false;
+      try {
+        return Boolean(await run());
+      } catch (error) {
+        if (signal.aborted) return false;
+        if (values.once) throw error;
+        console.error(error instanceof Error ? error.message : String(error));
+        return false;
       }
     };
-    const implementations = implement().finally(() =>
-      implementationFinished.abort(),
-    );
+    const implementations = (
+      values.once
+        ? implement()
+        : watchTaskQueue({ origin, token, signal, check: implement })
+    ).finally(() => implementationFinished.abort());
     const deployments = watchDeployments({
       directory,
       origin,

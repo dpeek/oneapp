@@ -1,9 +1,13 @@
 import type { filesChanged } from "./files-contract.ts";
 import type { inboxChanged } from "./inbox-contract.ts";
-import type { tagsChanged } from "./items-contract.ts";
-import type { tasksChanged } from "./tasks-contract.ts";
+import { tagsChanged } from "./items-contract.ts";
+import { tasksChanged } from "./tasks-contract.ts";
 
 export const workspaceEventsPath = "/api/workspace/events";
+export const taskRunnerEventsPath = `${workspaceEventsPath}/tasks`;
+
+export const isTaskQueueChange = (change: unknown) =>
+  change === tasksChanged || change === tagsChanged;
 
 export type ItemChange =
   typeof filesChanged | typeof tagsChanged | typeof tasksChanged;

@@ -17,7 +17,7 @@ import {
 } from "./mailbox.ts";
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import type { ForwardableEmailMessage } from "@cloudflare/workers-types";
-import { cliLoginPath } from "@orumai/core/cli-auth";
+import { cliLoginPath, taskRunnerScope } from "@orumai/core/cli-auth";
 import { EmailDelivery } from "@yielded/auth";
 import { ProofDispatchScheduler } from "@yielded/auth/Proofs";
 import { Effect, Layer, Redacted } from "effect";
@@ -29,6 +29,7 @@ import {
 } from "effect/http";
 import { accountPath } from "../account-contract.ts";
 import {
+  taskRunnerEventsPath,
   workspaceEventsPath,
   type NotifyItemChange,
 } from "../workspace-change-contract.ts";
@@ -46,13 +47,12 @@ import { bitwardenFetch, isBitwardenPath } from "./bitwarden/routes.ts";
 import type { RasterizeSvg } from "./bitwarden/website-icon-svg.ts";
 import { privateHeaders } from "./api-response.ts";
 import { cliLoginRoutes } from "./cli-login.ts";
-import { cliTokenRoutes } from "./cli-tokens.ts";
+import { cliTokenRoutes, requireCliScope } from "./cli-tokens.ts";
 import { authDependencies, databaseLayer } from "./database.ts";
 import { emailChangeRoutes } from "./email-change.ts";
 import { extensionAccessRoutes } from "./extension-access.ts";
 import {
   inboxRoutes,
-  inboxSessionHeaders,
   inboxSubject,
   recoverIncomingMail,
   syncMailIndex,
@@ -86,6 +86,10 @@ import { vaultAttachmentRoutes } from "./vault/web-attachments.ts";
 import { vaultManagementRoutes } from "./vault/management.ts";
 import { vaultItemRoutes } from "./vault/items.ts";
 import { vaultSetupRoutes } from "./vault/setup.ts";
+import {
+  inboxSessionHeaders,
+  runnerSocketTokenHeader,
+} from "./workspace-events.ts";
 
 const health = HttpRouter.add(
   "GET",
@@ -369,7 +373,7 @@ export default {
         ),
       );
     };
-    if (path === workspaceEventsPath) {
+    if (path === workspaceEventsPath || path === taskRunnerEventsPath) {
       if (request.method !== "GET")
         return new Response(null, {
           status: 405,
@@ -377,9 +381,41 @@ export default {
         });
       if (request.headers.get("upgrade")?.toLowerCase() !== "websocket")
         return new Response(null, { status: 426, headers: privateHeaders });
-      if (request.headers.get("origin") !== new URL(env.APP_ORIGIN).origin)
+      if (
+        path === workspaceEventsPath &&
+        request.headers.get("origin") !== new URL(env.APP_ORIGIN).origin
+      )
         return new Response(null, { status: 403, headers: privateHeaders });
       try {
+        if (path === taskRunnerEventsPath) {
+          const token = await Effect.runPromise(
+            requireCliScope(taskRunnerScope).pipe(
+              Effect.catchTags({
+                InvalidCliToken: () => Effect.succeed(401 as const),
+                InsufficientCliScope: () => Effect.succeed(403 as const),
+              }),
+              Effect.provideService(
+                HttpServerRequest.HttpServerRequest,
+                HttpServerRequest.fromWeb(request),
+              ),
+              Effect.provide(database),
+            ),
+          );
+          if (typeof token === "number" || token.ownerId !== ownerId)
+            return new Response(null, {
+              status: typeof token === "number" ? token : 403,
+              headers: privateHeaders,
+            });
+          return await env.INBOX_UPDATES.getByName(defaultMailboxId).fetch(
+            request.url,
+            {
+              headers: {
+                upgrade: "websocket",
+                [runnerSocketTokenHeader]: token.id,
+              },
+            },
+          );
+        }
         const session = await verifyBrowserSession();
         if (!session)
           return new Response(null, { status: 401, headers: privateHeaders });

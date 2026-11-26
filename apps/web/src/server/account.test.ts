@@ -68,6 +68,7 @@ import {
   conversationArchiveApi,
   conversationsApiPath,
   inboxApiPath,
+  inboxChanged,
   inboxAttachmentApi,
   inboxAttachmentPreviewApi,
   inboxMessageApi,
@@ -90,7 +91,10 @@ import {
   trashBatchRestoreApi,
   TrashedConversation,
 } from "../inbox-contract.ts";
-import { workspaceEventsPath } from "../workspace-change-contract.ts";
+import {
+  taskRunnerEventsPath,
+  workspaceEventsPath,
+} from "../workspace-change-contract.ts";
 import {
   calendarReadScope,
   codexClientId,
@@ -145,6 +149,11 @@ import { ensureOwner } from "./provision-owner.ts";
 import { mcpOAuth } from "./mcp-oauth.ts";
 import { mailPeople } from "./mail-people.ts";
 import worker from "./worker.ts";
+import {
+  publishWorkspaceChange,
+  runnerSocketTokenHeader,
+  socketSession,
+} from "./workspace-events.ts";
 import {
   collectMailTrash,
   mailRetentionMs,
@@ -2281,6 +2290,126 @@ it("only upgrades workspace sockets for a same-origin owner session", async () =
   expect(forwarded.get("x-oneapp-inbox-security-revision")).toBe(
     session?.revision,
   );
+});
+
+it("scopes runner sockets to Tasks and rechecks credentials before delivery", async () => {
+  using sqlite = new Database(":memory:");
+  const accept = vi.fn(
+    async (_url: string, _init: RequestInit) =>
+      new Response(null, { status: 204 }),
+  );
+  const { env, request, signIn, cookies } = await setup(sqlite, {
+    INBOX_UPDATES: {
+      getByName: () => ({ fetch: accept }),
+    } as WorkerEnv["INBOX_UPDATES"],
+  });
+  const issue = (scopes: readonly string[]) => {
+    const id = crypto.randomUUID();
+    const token = `one_${Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url")}`;
+    sqlite.run(
+      `INSERT INTO cli_tokens (id, label, owner_id, digest, created_at, scopes)
+       SELECT ?, 'Runner socket fixture', id, ?, ?, ? FROM accounts`,
+      [
+        id,
+        Bun.CryptoHasher.hash("sha256", token, "hex"),
+        Date.now(),
+        JSON.stringify(scopes),
+      ],
+    );
+    return { id, token };
+  };
+  const sessionCookie = cookies(await signIn(password));
+  const runner = issue(taskRunnerScopes);
+  const expiring = issue(taskRunnerScopes);
+  const links = issue(cliLinkScopes);
+  const connect = (token?: string) =>
+    request(taskRunnerEventsPath, {
+      headers: {
+        upgrade: "websocket",
+        cookie: sessionCookie,
+        [runnerSocketTokenHeader]: runner.id,
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+    });
+  expect((await connect()).status).toBe(401);
+  expect((await connect("invalid")).status).toBe(401);
+  expect((await connect(links.token)).status).toBe(403);
+  expect(accept).not.toHaveBeenCalled();
+
+  const socket = () => {
+    const headers = new Headers(accept.mock.lastCall?.[1].headers);
+    expect(headers.has("authorization")).toBe(false);
+    expect(headers.has("cookie")).toBe(false);
+    return {
+      readyState: WebSocket.OPEN,
+      deserializeAttachment: () => socketSession(headers),
+      send: vi.fn(),
+      close: vi.fn(),
+    };
+  };
+  expect((await connect(runner.token)).status).toBe(204);
+  const validClient = socket();
+  expect(validClient.deserializeAttachment()).toEqual({
+    runnerTokenId: runner.id,
+  });
+  expect((await connect(expiring.token)).status).toBe(204);
+  const expiringClient = socket();
+  expect(expiringClient.deserializeAttachment()).toEqual({
+    runnerTokenId: expiring.id,
+  });
+  expect(
+    (
+      await request(workspaceEventsPath, {
+        headers: {
+          upgrade: "websocket",
+          origin: env.APP_ORIGIN,
+          cookie: sessionCookie,
+          [runnerSocketTokenHeader]: runner.id,
+        },
+      })
+    ).status,
+  ).toBe(204);
+  const browserClient = socket();
+  const clients = [validClient, expiringClient, browserClient];
+  for (const change of [
+    inboxChanged,
+    filesChanged,
+    tasksChanged,
+    tagsChanged,
+  ] as const)
+    await publishWorkspaceChange(env.DB, clients, change);
+  expect(browserClient.send.mock.calls).toEqual([
+    [inboxChanged],
+    [filesChanged],
+    [tasksChanged],
+    [tagsChanged],
+  ]);
+  expect(validClient.send.mock.calls).toEqual([[tasksChanged], [tagsChanged]]);
+  expect(expiringClient.send.mock.calls).toEqual([
+    [tasksChanged],
+    [tagsChanged],
+  ]);
+
+  sqlite.run("UPDATE cli_tokens SET expires_at = ? WHERE id = ?", [
+    Date.now() - 1,
+    expiring.id,
+  ]);
+  expect(
+    (
+      await request(`${cliTokensPath}/current`, {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${runner.token}` },
+      })
+    ).status,
+  ).toBe(204);
+  expect((await connect(runner.token)).status).toBe(401);
+  expect((await connect(expiring.token)).status).toBe(401);
+  await publishWorkspaceChange(env.DB, clients, tasksChanged);
+  expect(validClient.close).toHaveBeenCalledWith(1008, "Session ended");
+  expect(expiringClient.close).toHaveBeenCalledWith(1008, "Session ended");
+  expect(validClient.send).toHaveBeenCalledTimes(2);
+  expect(expiringClient.send).toHaveBeenCalledTimes(2);
+  expect(browserClient.send).toHaveBeenCalledTimes(5);
 });
 
 it("serves received attachments privately and previews only supported media", async () => {

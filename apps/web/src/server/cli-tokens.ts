@@ -17,6 +17,10 @@ const isTokenSecret = Schema.is(CliTokenSecret);
 const decodeScopes = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Array(CliScope)),
 );
+export const hasCliScope = (stored: string, scope: typeof CliScope.Type) => {
+  const scopes = decodeScopes(stored);
+  return scopes._tag === "Some" && scopes.value.includes(scope);
+};
 const digestToken = Effect.fnUntraced(function* (secret: string) {
   const bytes = new TextEncoder().encode(secret);
   const digest = yield* Effect.promise(() =>
@@ -60,8 +64,7 @@ export const requireCliScope = Effect.fnUntraced(function* (
   scope: typeof CliScope.Type,
 ) {
   const token = yield* requireCliToken;
-  const scopes = decodeScopes(token.scopes);
-  if (scopes._tag === "None" || !scopes.value.includes(scope))
+  if (!hasCliScope(token.scopes, scope))
     return yield* new InsufficientCliScope({ scope });
   return token;
 });

@@ -416,14 +416,25 @@ orumai-vault-reader {
   block-size: 2rem;
 }
 
+.vault-item-icon > [data-slot="avatar"] {
+  inline-size: 100%;
+  block-size: 100%;
+}
+
 .vault-item-icon [data-slot="avatar-fallback"] svg {
   display: block;
   inline-size: var(--vault-icon-size);
   block-size: var(--vault-icon-size);
 }
 
-.vault-item-icon > [data-slot="avatar-image"] {
+.vault-item-icon [data-slot="avatar-image"] {
   padding: var(--vault-icon-inset);
+}
+
+@media not (any-pointer: coarse) {
+  .vault-row-menu:not(:has([data-open])) {
+    display: none;
+  }
 }
 
 .vault-items input {

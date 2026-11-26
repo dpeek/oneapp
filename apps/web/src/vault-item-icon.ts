@@ -59,6 +59,16 @@ export const vaultFolderPaths = [
 ] as const;
 export const vaultFolderIcon = () => vaultIcon(vaultFolderPaths);
 
+export const vaultItemIconSrc = (
+  type: ItemType,
+  hostname?: string,
+  company?: PersonSummary,
+) =>
+  type === 1
+    ? (contactImage(company).src ??
+      (hostname ? websiteIconPath(hostname) : null))
+    : null;
+
 export const vaultItemIcon = (
   type: ItemType,
   hostname?: string,
@@ -67,11 +77,7 @@ export const vaultItemIcon = (
   const element = createAvatar({
     variant: "square",
     fallback: vaultIcon(vaultItemPaths[type]),
-    src:
-      type === 1
-        ? (contactImage(company).src ??
-          (hostname ? websiteIconPath(hostname) : null))
-        : null,
+    src: vaultItemIconSrc(type, hostname, company),
   });
   element.classList.add("vault-item-icon");
   return element;

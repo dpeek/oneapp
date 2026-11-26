@@ -301,7 +301,7 @@ const taskTable = (
           h.tr(
             [],
             ["Task", "Status", "Priority", "Updated"].map((label) =>
-              h.th([h.Key(label), h.Scope("col")], [label]),
+              h.th([h.Key(label), h.Scope("col")], [h.span([], [label])]),
             ),
           ),
         ],

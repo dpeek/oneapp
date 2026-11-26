@@ -67,7 +67,7 @@ export const requireCliScope = Effect.fnUntraced(function* (
 });
 
 export const insufficientCliScopeResponse = ({ scope }: InsufficientCliScope) =>
-  jsonError(403, `CLI token requires ${scope}. Run one auth login again.`);
+  jsonError(403, `CLI token requires ${scope}. Run oru auth login again.`);
 
 export const invalidTokenResponse = () =>
   jsonError(401, "CLI token is invalid, expired, or revoked");

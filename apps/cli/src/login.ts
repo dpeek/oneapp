@@ -31,7 +31,7 @@ const openBrowser = (url: string) =>
 
 const approvalExpired = () =>
   new CliError({
-    message: "The login request expired. Run one auth login again.",
+    message: "The login request expired. Run oru auth login again.",
   });
 
 export const browserLogin = Effect.fnUntraced(function* (

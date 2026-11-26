@@ -26,7 +26,7 @@
       "name": "@orumai/cli",
       "version": "0.0.0",
       "bin": {
-        "one": "./src/index.ts",
+        "oru": "./src/index.ts",
       },
       "dependencies": {
         "@effect/platform-bun": "~4.1.0",

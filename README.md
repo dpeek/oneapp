@@ -186,7 +186,7 @@ bun apps/cli/src/index.ts auth login --mail-import --server https://app.dpeek.co
 bun run mail:import --snapshot .mail-snapshots/icloud --server https://app.dpeek.com --mailbox personal
 ```
 
-The browser approval grants `mail:import` for 24 hours. This permission allows importing originals, reading import receipts, and completing eligible imported conversations in mailboxes owned by the signed-in owner. It grants no Links access; ordinary Links CLI credentials grant no import access. Login replaces the CLI's saved credential for that server. Use `one auth logout` (or `bun apps/cli/src/index.ts auth logout`) after importing to revoke it. An expired credential can be replaced with another import login before resuming. Automation may supply `ONEAPP_IMPORT_TOKEN` through the environment instead of the CLI credential store; do not put tokens in command arguments or commit them.
+The browser approval grants `mail:import` for 24 hours. This permission allows importing originals, reading import receipts, and completing eligible imported conversations in mailboxes owned by the signed-in owner. It grants no Links access; ordinary Links CLI credentials grant no import access. Login replaces the CLI's saved credential for that server. Use `oru auth logout` (or `bun apps/cli/src/index.ts auth logout`) after importing to revoke it. An expired credential can be replaced with another import login before resuming. Automation may supply `ONEAPP_IMPORT_TOKEN` through the environment instead of the CLI credential store; do not put tokens in command arguments or commit them.
 
 The runner validates every original checksum before contacting the destination. HTTPS is required except for loopback development URLs, redirects are rejected, and the server verifies explicit mailbox ownership. The first request pins the snapshot, checksums, mapping and expected message metadata to an immutable server-side plan. Each upload must match that plan's size and checksum. The adapter currently supports 25 MiB per message, 5,000 selected messages, and a 1 MiB plan; unsupported snapshots stop before uploading.
 
@@ -208,7 +208,7 @@ The personal mailbox retains its original R2 keys, including legacy timestamp ke
 
 | Workspace        | Run or build                                                                                                                                                                       |
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apps/cli`       | `bun run --filter @orumai/cli dev` runs from source. The build produces `apps/cli/dist/one` for the current platform.                                                              |
+| `apps/cli`       | `bun run --filter @orumai/cli dev` runs from source. The build produces `apps/cli/dist/oru` for the current platform.                                                              |
 | `apps/web`       | `bun run --filter @orumai/web dev` starts the local web app. The static build goes to `apps/web/dist`.                                                                             |
 | `apps/extension` | `bun run --filter @orumai/extension build` builds the popup and manifest. In `chrome://extensions`, enable Developer mode and load `apps/extension/dist` as an unpacked extension. |
 | `apps/apple`     | `bun run apple:dev` builds and opens the macOS app.                                                                                                                                |
@@ -325,30 +325,30 @@ After a schema change, generate a migration with `bun run db:generate --name <ch
 
 ## CLI
 
-After installing workspace dependencies, run `bun link` from the CLI package directory to put `one` on your PATH. The link runs the TypeScript source directly with Bun. For a standalone binary, run `bun run --filter @orumai/cli build`.
+After installing workspace dependencies, run `bun link` from the CLI package directory to put `oru` on your PATH. The link runs the TypeScript source directly with Bun. For a standalone binary, run `bun run --filter @orumai/cli build`.
 
 ```sh
 cd apps/cli
 bun link
-one auth login
-one links add https://example.com/
-one links list
-one links list --ids
-one links delete <id>
-one auth logout
+oru auth login
+oru links add https://example.com/
+oru links list
+oru links list --ids
+oru links delete <id>
+oru auth logout
 ```
 
-`one auth login` defaults to `https://app.dpeek.com`. Pass `--server <url>` for a different deployment.
+`oru auth login` defaults to `https://app.dpeek.com`. Pass `--server <url>` for a different deployment.
 
-Run `one auth login` to start sign-in. The CLI opens a browser approval page and waits for your decision. Check that the code on the page matches your terminal, then choose **Connect CLI**. The request expires after five minutes. Use `--no-browser` to print the approval link for use on another device and `--name <label>` to name this device.
+Run `oru auth login` to start sign-in. The CLI opens a browser approval page and waits for your decision. Check that the code on the page matches your terminal, then choose **Connect CLI**. The request expires after five minutes. Use `--no-browser` to print the approval link for use on another device and `--name <label>` to name this device.
 
-New CLI tokens grant `links:read` to list links and `links:write` to save and delete links. Older CLI tokens issued without delete access are revoked by the scope migration. Run `one auth login` to reconnect. The CLI stores the token in your OS credential store via `Bun.secrets`, keyed by server origin. Logout revokes the active token, and you can revoke any device’s token from the web app.
+New CLI tokens grant `links:read` to list links and `links:write` to save and delete links. Older CLI tokens issued without delete access are revoked by the scope migration. Run `oru auth login` to reconnect. The CLI stores the token in your OS credential store via `Bun.secrets`, keyed by server origin. Logout revokes the active token, and you can revoke any device’s token from the web app.
 
 ## Chrome extension
 
 Run `bun run --filter @orumai/extension build`. In Chrome, open `chrome://extensions`, turn on **Developer mode**, and choose **Load unpacked**. Select the `apps/extension/dist` directory.
 
-Open Orumai from the Chrome toolbar and select **Connect to Orumai**. Approve the connection in the Orumai tab, signing in first if needed. On the page you want to keep, open the extension and select **Save this tab**. Saved links appear in the web app and in `one links list`.
+Open Orumai from the Chrome toolbar and select **Connect to Orumai**. Approve the connection in the Orumai tab, signing in first if needed. On the page you want to keep, open the extension and select **Save this tab**. Saved links appear in the web app and in `oru links list`.
 
 New extension credentials only allow saving links and stay active until revoked. Use **Disconnect** in Chrome or **Settings → Clients** in the web app to revoke one. Credentials issued under the previous 30-day policy keep their original expiry.
 
@@ -390,7 +390,7 @@ bun --no-env-file run tasks:runner --dry-run
 bun --no-env-file run tasks:runner --once
 ```
 
-Approve the runner in your browser. `--login --no-browser` prints the approval URL for a machine without a browser. The runner stores its task credential in the OS credential store, separately from `one auth login`. A service can also supply an approved credential as `ORUMAI_RUNNER_TOKEN` through its secret store. Revoke the credential under **Settings → Clients**. Use `--server <origin>` on each command to work against a different Orumai server.
+Approve the runner in your browser. `--login --no-browser` prints the approval URL for a machine without a browser. The runner stores its task credential in the OS credential store, separately from `oru auth login`. A service can also supply an approved credential as `ORUMAI_RUNNER_TOKEN` through its secret store. Revoke the credential under **Settings → Clients**. Use `--server <origin>` on each command to work against a different Orumai server.
 
 Add the `ready` tag to a **Not started** task to opt it in. **Dry run** prints the next eligible task without claiming it. **Once** attempts one task and waits for pending deployments. Omit `--once` to keep running. The runner picks up the next eligible task after a push and polls every minute when idle. Each claimed task gets a fresh clone of `origin/main` and runs Codex with GPT-6.2 Sol at high reasoning effort. The runner runs type checks, tests, and builds before pushing to `origin/main`, which triggers the configured Cloudflare deployment.
 

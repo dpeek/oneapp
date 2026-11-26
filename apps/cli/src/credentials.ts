@@ -49,12 +49,12 @@ export const credentials = Effect.gen(function* () {
     catch: () =>
       new CliError({
         message:
-          "Could not read the Orumai server setting. Run one auth login again.",
+          "Could not read the Orumai server setting. Run oru auth login again.",
       }),
   });
   if (!origin)
     return yield* new CliError({
-      message: "Run one auth login first.",
+      message: "Run oru auth login first.",
     });
 
   const token = yield* Effect.tryPromise({
@@ -66,7 +66,7 @@ export const credentials = Effect.gen(function* () {
   });
   if (!isToken(token))
     return yield* new CliError({
-      message: "No CLI token is saved. Run one auth login again.",
+      message: "No CLI token is saved. Run oru auth login again.",
     });
   return { origin, token: Redacted.make(token) };
 });
@@ -107,7 +107,7 @@ export const storeCredentials = Effect.fnUntraced(function* (
       } catch {
         throw new CliError({
           message:
-            "The token was saved, but the server setting could not be updated. Run one auth login again.",
+            "The token was saved, but the server setting could not be updated. Run oru auth login again.",
         });
       }
     },

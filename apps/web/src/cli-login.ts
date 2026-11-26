@@ -38,7 +38,7 @@ type Message = typeof Message.Type;
 
 const failure = (error: string) => Effect.succeed(Message.Failed({ error }));
 const unavailable =
-  "This CLI login request is no longer available. Run one auth login again.";
+  "This CLI login request is no longer available. Run oru auth login again.";
 
 const Load = Command.define("LoadCliLogin", {
   args: { id: CliLoginId },

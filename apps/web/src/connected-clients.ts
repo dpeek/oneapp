@@ -294,7 +294,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
     [
       h.p(
         [h.Id("cli-access"), h.Class("account-hint")],
-        ["Run ", h.code([], ["one auth login"]), " to connect a CLI device."],
+        ["Run ", h.code([], ["oru auth login"]), " to connect a CLI device."],
       ),
       ...(model.connections === null
         ? [

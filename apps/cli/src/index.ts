@@ -113,7 +113,7 @@ const list = Command.make(
   {
     ids: Flag.Boolean("ids").pipe(
       Flag.withDefault(false),
-      Flag.withDescription("Include the ID used by one links delete"),
+      Flag.withDescription("Include the ID used by oru links delete"),
     ),
   },
   Effect.fnUntraced(function* ({ ids }) {
@@ -142,7 +142,7 @@ const deleteLink = Command.make(
     if (response.status === 403)
       return yield* new CliError({
         message:
-          "Run one auth login again to grant permission to delete links.",
+          "Run oru auth login again to grant permission to delete links.",
       });
     yield* requireSuccess(response);
     yield* Console.log(`Deleted ${id}`);
@@ -158,7 +158,7 @@ const links = Command.make("links").pipe(
   Command.withSubcommands([add, list, deleteLink]),
 );
 
-Command.make("one").pipe(
+Command.make("oru").pipe(
   Command.withDescription(appName),
   Command.withSubcommands([auth, links]),
   Command.run({ version }),

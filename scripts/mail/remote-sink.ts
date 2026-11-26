@@ -84,7 +84,7 @@ export const openRemoteMailSink = async (
   if (!secret) {
     const saved = await Effect.runPromise(credentials).catch(() => {
       throw new MailSampleError(
-        "Sign in with one auth login --mail-import --server <origin> first.",
+        "Sign in with oru auth login --mail-import --server <origin> first.",
       );
     });
     if (saved.origin !== origin)
@@ -95,7 +95,7 @@ export const openRemoteMailSink = async (
   }
   if (!Schema.is(CliTokenSecret)(secret))
     throw new MailSampleError(
-      "Invalid import credential. Sign in with one auth login --mail-import.",
+      "Invalid import credential. Sign in with oru auth login --mail-import.",
     );
   const base = `${mailImportPath}/${encodeURIComponent(mailboxId)}`;
   const request = async <A>(
@@ -139,7 +139,7 @@ export const openRemoteMailSink = async (
         await response.body?.cancel();
         if (response.status === 401 || response.status === 403)
           throw new MailSampleError(
-            "Import access is missing, expired or revoked. Run one auth login --mail-import for this server, then resume.",
+            "Import access is missing, expired or revoked. Run oru auth login --mail-import for this server, then resume.",
           );
         throw new MailSampleError(
           `Import server returned HTTP ${response.status}. Import stopped; rerun with the same snapshot and mapping after resolving the error.`,

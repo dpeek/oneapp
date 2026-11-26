@@ -27,7 +27,7 @@ export const requireSuccess = Effect.fnUntraced(function* (response: Response) {
   if (response.status === 401) {
     return yield* new CliError({
       message:
-        "The CLI token is invalid, expired, or revoked. Run one auth login again.",
+        "The CLI token is invalid, expired, or revoked. Run oru auth login again.",
     });
   }
   if (!response.ok)

@@ -73,6 +73,21 @@ focus treatment as part of that migration.
   focus for a control group that implements the full toolbar keyboard pattern
   and keeps arrow keys inside nested menus while they're in use.
 
+## Item action menus
+
+- Compose [ItemActionMenu](src/item-action-menu.ts) with Item. Use one menu
+  model per list, pass each row's stable key to the ellipsis and context
+  bindings, and resolve the selected key against the current records.
+- Keep the row's primary link and its labeled ellipsis separate. The
+  ellipsis stays visible on touch, and its space is reserved on desktop
+  where hover or focus reveals it. Right-click opens the same Foldkit menu
+  at the pointer. Shift+F10 or the Menu key on the row link opens it at the
+  ellipsis. [Crease Context Menu](https://github.com/Potti1234/creaseui/blob/b11a974af28917ae6fea67cbf9ade89d8a3c464c/src/stylex/context-menu.ts) ·
+  [Crease More Menu](https://creaseui.com/docs/components/more-menu)
+- Put destructive actions last. Use the menu's focus return when the row
+  survives. After deleting the row, move lost focus to the next row's
+  ellipsis, the previous row's ellipsis, or the list's primary entry control.
+
 ## Dialogs and feedback
 
 - Use the shared Dialog pattern for modal forms and Crease Command for searchable

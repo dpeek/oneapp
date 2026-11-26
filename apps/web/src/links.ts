@@ -8,13 +8,14 @@ import {
   field,
   input,
   item,
+  ItemActionMenu,
   itemGroup,
   outlineIcon,
   plusIcon,
   trashIconPaths,
 } from "@orumai/ui";
-import { Effect, Schema } from "effect";
-import { Command, Mount, Submodel, type Update } from "foldkit";
+import { Effect, Option, Schema } from "effect";
+import { Command, Dom, Mount, Render, Submodel, Update } from "foldkit";
 import type { ChildAttribute, HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import {
@@ -29,7 +30,32 @@ import { screenHeader } from "./workspace.ts";
 
 export const creationUrlId = "create-link-url";
 const creationErrorId = `${creationUrlId}-error`;
+const linkInputId = "link-url";
+const actionsId = "saved-link-actions";
 const invalidUrl = "Enter a valid HTTP or HTTPS URL without credentials.";
+const actions = [
+  {
+    action: "open",
+    label: "Open link",
+    icon: (h: HtmlBuilder<Message>) =>
+      outlineIcon(h, [
+        "M13 5h6v6m0-6-9 9m7-1v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h5",
+      ]),
+  },
+  {
+    action: "copy",
+    label: "Copy URL",
+    icon: (h: HtmlBuilder<Message>) =>
+      outlineIcon(h, ["M9 9h10v10H9zM15 9V5H5v10h4"]),
+  },
+  {
+    action: "delete",
+    label: "Delete saved link",
+    icon: (h: HtmlBuilder<Message>) => outlineIcon(h, trashIconPaths),
+    destructive: true,
+  },
+] as const;
+const actionMenu = ItemActionMenu.create<(typeof actions)[number]["action"]>();
 const LinkDraft = Schema.Struct({
   url: Schema.String,
   validationError: Schema.NullOr(Schema.String),
@@ -37,6 +63,7 @@ const LinkDraft = Schema.Struct({
 
 export const Model = Schema.Struct({
   records: Schema.NullOr(LinkList),
+  actions: ItemActionMenu.Model,
   ...LinkDraft.fields,
   creation: Schema.NullOr(
     Schema.Struct({
@@ -56,6 +83,7 @@ export const Model = Schema.Struct({
 export type Model = typeof Model.Type;
 export const initial: Model = {
   records: null,
+  actions: ItemActionMenu.init(actionsId),
   url: "",
   creation: null,
   request: null,
@@ -72,6 +100,11 @@ export const Message = defineMessageUnion({
   SubmittedCreate: {},
   ClosedCreate: {},
   RequestedDeletion: { id: Schema.String },
+  GotActionMenu: { message: ItemActionMenu.Message },
+  UnmountedLinks: {},
+  OpenedSavedLink: {},
+  CopiedUrl: { copied: Schema.Boolean },
+  RecoveredDeletedLinkFocus: {},
   Loaded: { request: Schema.String, links: LinkList },
   Saved: { request: Schema.String, link: Link },
   Deleted: { request: Schema.String, id: Schema.String },
@@ -149,6 +182,40 @@ const Delete = Command.define("DeleteLink", {
       ),
     ),
 });
+const OpenSavedLink = Command.define("OpenSavedLink", {
+  args: { id: Schema.String },
+  messages: [Message.OpenedSavedLink],
+  execute: ({ id }) =>
+    Dom.clickElement(
+      `#${CSS.escape(ItemActionMenu.rowLinkId(actionsId, id))}`,
+    ).pipe(Effect.ignore, Effect.as(Message.OpenedSavedLink())),
+});
+const CopyUrl = Command.define("CopySavedLinkUrl", {
+  args: { url: Schema.String },
+  messages: [Message.CopiedUrl],
+  execute: ({ url }) =>
+    Effect.tryPromise(() => navigator.clipboard.writeText(url)).pipe(
+      Effect.match({
+        onSuccess: () => Message.CopiedUrl({ copied: true }),
+        onFailure: () => Message.CopiedUrl({ copied: false }),
+      }),
+    ),
+});
+const RecoverDeletedLinkFocus = Command.define("RecoverDeletedLinkFocus", {
+  args: { id: Schema.String },
+  messages: [Message.RecoveredDeletedLinkFocus],
+  execute: ({ id }) =>
+    Render.afterCommit.pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          // A pending delete may finish after the user has moved focus elsewhere.
+          if (document.activeElement === document.body)
+            document.getElementById(id)?.focus();
+          return Message.RecoveredDeletedLinkFocus();
+        }),
+      ),
+    ),
+});
 const FocusLinkInput = Mount.define("FocusLinkInput", {
   messages: [Message.FocusedLinkInput],
   execute: ({ element }) =>
@@ -208,6 +275,40 @@ const withSavedLink = (records: Model["records"], link: typeof Link.Type) =>
     (a, b) => b.savedAt - a.savedAt || b.id.localeCompare(a.id),
   );
 
+const toActionMenuMessage = (message: typeof ItemActionMenu.Message.Type) =>
+  Message.GotActionMenu({ message });
+
+const requestDeletion = (
+  model: Model,
+  id: string,
+): Update.Return<Model, Message> => {
+  if (model.request || !model.records?.some((link) => link.id === id))
+    return { model };
+  const request = crypto.randomUUID();
+  return {
+    model: { ...model, request: { id: request, kind: "delete", linkId: id } },
+    commands: [Delete({ request, id })],
+  };
+};
+
+const updateActionMenu = Update.foldChild({
+  update: actionMenu.update,
+  read: (model: Model) => Option.some(model.actions),
+  write: (model, actions) => ({ ...model, actions }),
+  toParentMessage: toActionMenuMessage,
+  foldOutMessage:
+    ({ key, action }): Update.Step<Model, Message> =>
+    (model) => {
+      const link = model.records?.find(({ id }) => id === key);
+      if (!link) return { model };
+      if (action === "open")
+        return { model, commands: [OpenSavedLink({ id: key })] };
+      if (action === "copy")
+        return { model, commands: [CopyUrl({ url: link.url })] };
+      return requestDeletion(model, key);
+    },
+});
+
 export const update = (
   model: Model,
   message: Message,
@@ -248,18 +349,28 @@ export const update = (
       ClosedCreate: () => ({
         model: writingCreation(model) ? model : { ...model, creation: null },
       }),
-      RequestedDeletion: ({ id }) => {
-        if (model.request || !model.records?.some((link) => link.id === id))
-          return { model };
-        const request = crypto.randomUUID();
-        return {
-          model: {
-            ...model,
-            request: { id: request, kind: "delete", linkId: id },
-          },
-          commands: [Delete({ request, id })],
-        };
-      },
+      RequestedDeletion: ({ id }) => requestDeletion(model, id),
+      GotActionMenu: ({ message }) => updateActionMenu(model, message),
+      UnmountedLinks: () => ({ model: { ...model, actions: initial.actions } }),
+      OpenedSavedLink: () => ({ model }),
+      CopiedUrl: ({ copied }) => ({
+        model,
+        outMessage: copied
+          ? OutMessage.Notify({
+              notification: {
+                key: "links-copy",
+                variant: "Success",
+                title: "Copied URL.",
+                durationMs: 3000,
+              },
+            })
+          : notification(
+              "links-copy",
+              "Error",
+              "Could not copy the URL. Try again.",
+            ),
+      }),
+      RecoveredDeletedLinkFocus: () => ({ model }),
       Loaded: ({ links }) =>
         model.request?.kind === "load"
           ? {
@@ -289,20 +400,33 @@ export const update = (
               outMessage: OutMessage.DismissNotification({ key: "links-save" }),
             };
       },
-      Deleted: ({ id }) =>
-        model.request?.kind === "delete" && model.request.linkId === id
-          ? {
-              model: {
-                ...model,
-                records:
-                  model.records?.filter((link) => link.id !== id) ?? null,
-                request: null,
-              },
-              outMessage: OutMessage.DismissNotification({
-                key: "links-delete",
-              }),
-            }
-          : { model },
+      Deleted: ({ id }) => {
+        if (model.request?.kind !== "delete" || model.request.linkId !== id)
+          return { model };
+        const index = model.records?.findIndex((link) => link.id === id) ?? -1;
+        const neighbor =
+          model.records?.[index + 1] ?? model.records?.[index - 1];
+        return {
+          model: {
+            ...model,
+            records: model.records?.filter((link) => link.id !== id) ?? null,
+            request: null,
+            actions:
+              model.actions.row?.key === id ? initial.actions : model.actions,
+          },
+          commands:
+            index < 0
+              ? []
+              : [
+                  RecoverDeletedLinkFocus({
+                    id: neighbor
+                      ? ItemActionMenu.triggerId(actionsId, neighbor.id)
+                      : linkInputId,
+                  }),
+                ],
+          outMessage: OutMessage.DismissNotification({ key: "links-delete" }),
+        };
+      },
       Failed: ({ error }) => {
         const kind = model.request?.kind;
         const next = { ...model, request: null };
@@ -438,12 +562,57 @@ const savedLinkAvatar = (url: string, h: HtmlBuilder<Message>) => {
   );
 };
 
+const savedLinkRow = (
+  link: typeof Link.Type,
+  model: Model,
+  deleteDisabled: boolean,
+  h: HtmlBuilder<Message>,
+) => {
+  const items = actions.map(({ icon, ...action }) => ({
+    ...action,
+    icon: icon(h),
+    disabled: action.action === "delete" && deleteDisabled,
+  }));
+  return item(
+    {
+      key: link.id,
+      href: link.url,
+      target: "_blank",
+      media: savedLinkAvatar(link.url, h),
+      title: link.url.replace(/^https?:\/\//i, ""),
+      description: h.time(
+        [h.Datetime(new Date(link.savedAt).toISOString())],
+        [savedAtFormat.format(link.savedAt)],
+      ),
+      attributes: ItemActionMenu.rowAttributes(link.id, toActionMenuMessage, h),
+      linkAttributes: ItemActionMenu.rowLinkAttributes(
+        actionsId,
+        link.id,
+        items,
+        toActionMenuMessage,
+        h,
+      ),
+      action: actionMenu.view(
+        {
+          model: model.actions,
+          rowKey: link.id,
+          label: `Actions for ${link.url}`,
+          items,
+          toParentMessage: toActionMenuMessage,
+        },
+        h,
+      ),
+    },
+    h,
+  );
+};
+
 type ViewInputs = { disabled: boolean; creationDialogId: string };
 
 export const view = Submodel.defineView<Model, Message, ViewInputs>(
   (model, { disabled, creationDialogId }, h) =>
     h.section(
-      [h.Class("links")],
+      [h.Class("links"), h.OnUnmount(Message.UnmountedLinks())],
       [
         screenHeader(
           {
@@ -482,7 +651,7 @@ export const view = Submodel.defineView<Model, Message, ViewInputs>(
                     [
                       input(
                         [
-                          h.Id("link-url"),
+                          h.Id(linkInputId),
                           h.Type("text"),
                           h.InputMode("url"),
                           h.Autocapitalize("off"),
@@ -543,31 +712,10 @@ export const view = Submodel.defineView<Model, Message, ViewInputs>(
                 ? h.p([], ["No saved links yet."])
                 : itemGroup(
                     model.records.map((link) =>
-                      item(
-                        {
-                          key: link.id,
-                          href: link.url,
-                          target: "_blank",
-                          media: savedLinkAvatar(link.url, h),
-                          title: link.url.replace(/^https?:\/\//i, ""),
-                          description: h.time(
-                            [h.Datetime(new Date(link.savedAt).toISOString())],
-                            [savedAtFormat.format(link.savedAt)],
-                          ),
-                          action: button(
-                            {
-                              variant: "ghost",
-                              size: "icon",
-                              ariaLabel: `Delete ${link.url}`,
-                              disabled: disabled || model.request !== null,
-                              onClick: Message.RequestedDeletion({
-                                id: link.id,
-                              }),
-                              children: [outlineIcon(h, trashIconPaths)],
-                            },
-                            h,
-                          ),
-                        },
+                      savedLinkRow(
+                        link,
+                        model,
+                        disabled || model.request !== null,
                         h,
                       ),
                     ),

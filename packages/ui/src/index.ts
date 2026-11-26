@@ -64,6 +64,7 @@ export {
   itemDisclosure,
   itemGroup,
 } from "./item.ts";
+export * as ItemActionMenu from "./item-action-menu.ts";
 export { marker } from "./marker.ts";
 export * as MultiCombobox from "./multi-combobox.ts";
 export { createNativeSelect, nativeSelect } from "./native-select.ts";

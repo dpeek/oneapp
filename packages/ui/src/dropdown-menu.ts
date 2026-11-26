@@ -1,7 +1,12 @@
 import { Listbox, Menu } from "@foldkit/ui";
 import * as stylex from "@stylexjs/stylex";
 import { Option } from "effect";
-import { childAttributes, type Html, type HtmlBuilder } from "foldkit/html";
+import {
+  childAttributes,
+  type Attribute,
+  type Html,
+  type HtmlBuilder,
+} from "foldkit/html";
 import { buttonClassName } from "./button.ts";
 import { outlineIcon } from "./icons.ts";
 import { controls } from "./tokens.stylex.ts";
@@ -46,6 +51,11 @@ const styles = stylex.create({
   active: { backgroundColor: controls.hover },
   disabled: { opacity: 0.5, cursor: "default" },
   destructive: { color: "light-dark(#a42020, #ff9797)" },
+  separator: {
+    blockSize: 1,
+    marginBlock: "0.25rem",
+    backgroundColor: controls.border,
+  },
 });
 
 export type Item<Action extends string> = Readonly<{
@@ -67,9 +77,14 @@ export const create = <Action extends string>() => {
         label: string;
         trigger: Html;
         triggerVariant?: "primary" | "ghost";
+        triggerSize?: "icon";
+        triggerClassName?: string;
         placement?: "top-start" | "bottom-start" | "bottom-end";
         disabled?: boolean;
         items: ReadonlyArray<Item<Action>>;
+        itemClassName?: string;
+        itemsAttributes?: ReadonlyArray<Attribute<ParentMessage>>;
+        separateDestructive?: boolean;
         toParentMessage: (message: typeof Message.Type) => ParentMessage;
       },
       h: HtmlBuilder<ParentMessage>,
@@ -85,13 +100,15 @@ export const create = <Action extends string>() => {
           itemToConfig: (action, { isActive, isDisabled }) => {
             const item = props.items.find((item) => item.action === action)!;
             return {
-              className:
+              className: [
                 stylex.props(
                   styles.item,
                   isActive && styles.active,
                   isDisabled && styles.disabled,
                   item.destructive && styles.destructive,
-                ).className ?? "",
+                ).className,
+                props.itemClassName,
+              ].join(" "),
               content: h.span(
                 [h.Class(stylex.props(styles.label).className ?? "")],
                 [item.icon, item.label],
@@ -107,19 +124,30 @@ export const create = <Action extends string>() => {
                 ? { variant: "primary", size: "sm" }
                 : props.triggerVariant === "ghost"
                   ? { variant: "ghost", size: "sm" }
-                  : { variant: "ghost", size: "icon-sm" },
+                  : { variant: "ghost", size: props.triggerSize ?? "icon-sm" },
             ),
             props.triggerVariant === "primary"
               ? ""
               : stylex.props(styles.openGhostTrigger).className,
+            props.triggerClassName,
           ].join(" "),
           buttonAttributes: childAttributes([
             h.DataAttribute("slot", "button"),
           ]),
           isButtonDisabled: props.disabled,
           itemsClassName: stylex.props(styles.panel).className ?? "",
+          itemsAttributes: props.itemsAttributes
+            ? childAttributes(props.itemsAttributes)
+            : [],
           backdropClassName: stylex.props(styles.backdrop).className ?? "",
           anchor: { placement: props.placement ?? "bottom-start", gap: 4 },
+          ...(props.separateDestructive
+            ? {
+                itemGroupKey: (_action: Action, index: number) =>
+                  props.items[index]?.destructive ? "destructive" : "ordinary",
+                separatorClassName: stylex.props(styles.separator).className,
+              }
+            : {}),
           ariaLabel: props.label,
         },
         toParentMessage: props.toParentMessage,

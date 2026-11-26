@@ -157,6 +157,7 @@ type ItemProps<Message> = Readonly<{
   title: string;
   description?: Html;
   action?: Html;
+  attributes?: ReadonlyArray<Attribute<Message>>;
   linkAttributes?: ReadonlyArray<Attribute<Message>>;
 }>;
 
@@ -237,6 +238,7 @@ export const item = <Message>(
       h.DataAttribute("slot", "item"),
       h.DataAttribute("variant", variant),
       h.Class(itemClassName(variant)),
+      ...(props.attributes ?? []),
     ],
     [
       body,

@@ -1,9 +1,17 @@
 import { expect, it } from "@effect/vitest";
 import { Option, Schema } from "effect";
 import { vi } from "vitest";
-vi.mock("@orumai/ui", async () => ({
-  Toast: await import("../../../packages/ui/src/toast-state.ts"),
-}));
+vi.mock("@orumai/ui", async () => {
+  const state =
+    await import("../../../packages/ui/src/item-action-menu-state.ts");
+  return {
+    ItemActionMenu: {
+      ...state,
+      create: () => ({ update: state.createUpdate() }),
+    },
+    Toast: await import("../../../packages/ui/src/toast-state.ts"),
+  };
+});
 import * as Toast from "../../../packages/ui/src/toast-state.ts";
 import * as Notifications from "./notifications.ts";
 import * as Links from "./links.ts";

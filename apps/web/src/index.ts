@@ -1531,9 +1531,7 @@ const update = (
     GotCreationMenuMessage: ({ message }) => foldCreationMenu(model, message),
     GotLinksMessage: ({ message }) =>
       model.pending &&
-      ["Submitted", "SubmittedCreate", "RequestedDeletion", "Retried"].includes(
-        message._tag,
-      )
+      ["SubmittedCreate", "RequestedDeletion", "Retried"].includes(message._tag)
         ? { model }
         : foldLinks(model, message),
     GotNotificationMessage: ({ message }) =>

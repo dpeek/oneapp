@@ -1396,12 +1396,6 @@ button {
   gap: 1rem;
 }
 
-.links [data-slot="button-group"] > input {
-  flex: 1;
-  min-inline-size: 0;
-  min-block-size: 2.75rem;
-}
-
 .inbox-status {
   margin: 0;
   padding: 0.75rem;

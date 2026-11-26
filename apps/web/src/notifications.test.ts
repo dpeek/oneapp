@@ -1,5 +1,5 @@
 import { expect, it } from "@effect/vitest";
-import { Option, Schema } from "effect";
+import { Schema } from "effect";
 import { vi } from "vitest";
 vi.mock("@orumai/ui", async () => {
   const state =
@@ -18,8 +18,13 @@ import * as Links from "./links.ts";
 
 const link = { id: "link-one", url: "https://example.com", savedAt: 1 };
 const ready = (): Links.Model => ({ ...Links.initial, records: [link] });
+const editedCreation = (url: string) =>
+  Links.update(
+    Links.update(ready(), Links.Message.OpenedCreate()).model,
+    Links.Message.EditedCreateUrl({ url }),
+  ).model;
 const submitting = () =>
-  Links.update({ ...ready(), url: "example.org" }, Links.Message.Submitted());
+  Links.update(editedCreation("example.org"), Links.Message.SubmittedCreate());
 const applyOutcome = (
   out: Links.OutMessage | undefined,
   model = Notifications.init(),
@@ -33,10 +38,12 @@ const applyOutcome = (
 
 it("keeps validation and load failures inline without emitting a toast", () => {
   const invalid = Links.update(
-    { ...ready(), url: "javascript:alert(1)" },
-    Links.Message.Submitted(),
+    editedCreation("javascript:alert(1)"),
+    Links.Message.SubmittedCreate(),
   );
-  expect(invalid.model.validationError).toContain("valid HTTP or HTTPS URL");
+  expect(invalid.model.creation?.validationError).toContain(
+    "valid HTTP or HTTPS URL",
+  );
   expect(invalid.outMessage).toBeUndefined();
   expect(invalid.commands).toBeUndefined();
   const loading = Links.update(Links.initial, Links.Message.Requested());
@@ -54,56 +61,26 @@ it("keeps validation and load failures inline without emitting a toast", () => {
   ).toHaveLength(1);
 });
 
-it("updates the list on save without adding a success toast", () => {
+it("preserves the dialog draft and shows save failures without emitting a toast", () => {
   const saving = submitting();
-  expect(saving.commands?.[0]?.args).toMatchObject({
-    url: "https://example.org",
-  });
-  const message = Links.Message.Saved({
-    request: saving.model.request!.id,
-    link: { ...link, id: "link-two", savedAt: 2 },
-  });
-  const saved = Links.update(saving.model, message);
-  expect(saved.model.records?.map(({ id }) => id)).toEqual([
-    "link-two",
-    "link-one",
-  ]);
-  expect(saved.model.url).toBe("");
-  const notifications = applyOutcome(saved.outMessage);
-  expect(notifications.model.toast.entries).toEqual([]);
-  expect(notifications.commands).toBeUndefined();
-  expect(Links.update(saved.model, message).outMessage).toBeUndefined();
-});
-
-it("preserves the draft on failure and silently dismisses the error after a successful retry", () => {
-  const saving = submitting();
+  const error = "Could not confirm the save. Reload to check your links.";
   const failure = Links.update(
     saving.model,
-    Links.Message.Failed({
-      request: saving.model.request!.id,
-      error: "Could not confirm the save. Reload to check your links.",
-    }),
+    Links.Message.Failed({ request: saving.model.request!.id, error }),
   );
-  expect(failure.model.url).toBe("example.org");
-  expect(failure.model.validationError).toBeNull();
-  const notifications = applyOutcome(failure.outMessage).model;
-  const id = notifications.toast.entries[0]!.id;
-  expect(Option.isNone(notifications.toast.entries[0]!.maybeDuration)).toBe(
-    true,
-  );
-  const retry = Links.update(failure.model, Links.Message.Submitted());
+  expect(failure.model.creation).toEqual({
+    url: "example.org",
+    validationError: null,
+    saveError: error,
+  });
+  expect(failure.outMessage).toBeUndefined();
+  const retry = Links.update(failure.model, Links.Message.SubmittedCreate());
+  expect(retry.model.creation?.saveError).toBeNull();
   const saved = Links.update(
     retry.model,
     Links.Message.Saved({ request: retry.model.request!.id, link }),
   );
-  const success = applyOutcome(saved.outMessage, notifications).model;
-  expect(success.toast.entries).toHaveLength(1);
-  expect(success.toast.entries[0]?.id).toBe(id);
-  expect(success.toast.entries[0]?.animation.transitionState).toBe(
-    "LeaveStart",
-  );
-  expect(success.toast.entries[0]?.payload.variant).toBe("Error");
-  expect(success.keys).toEqual({});
+  expect(saved.model.creation).toBeNull();
 });
 
 it("retains a link on delete failure and only removes the matching target", () => {
@@ -176,7 +153,7 @@ it("ignores stale successes, failures, loads, and expired sessions", () => {
 it("does not start duplicate mutations while a request is running", () => {
   const { model } = submitting();
   for (const message of [
-    Links.Message.Submitted(),
+    Links.Message.SubmittedCreate(),
     Links.Message.RequestedDeletion({ id: link.id }),
     Links.Message.Retried(),
   ]) {

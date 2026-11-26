@@ -3,7 +3,6 @@ import {
   alert,
   avatar,
   button,
-  buttonGroup,
   Dialog,
   field,
   input,
@@ -15,7 +14,7 @@ import {
   trashIconPaths,
 } from "@orumai/ui";
 import { Effect, Option, Schema } from "effect";
-import { Command, Dom, Mount, Render, Submodel, Update } from "foldkit";
+import { Command, Dom, Render, Submodel, Update } from "foldkit";
 import type { ChildAttribute, HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import {
@@ -30,7 +29,7 @@ import { screenHeader } from "./workspace.ts";
 
 export const creationUrlId = "create-link-url";
 const creationErrorId = `${creationUrlId}-error`;
-const linkInputId = "link-url";
+const createLinkButtonId = "create-link-button";
 const actionsId = "saved-link-actions";
 const invalidUrl = "Enter a valid HTTP or HTTPS URL without credentials.";
 const actions = [
@@ -56,25 +55,20 @@ const actions = [
   },
 ] as const;
 const actionMenu = ItemActionMenu.create<(typeof actions)[number]["action"]>();
-const LinkDraft = Schema.Struct({
-  url: Schema.String,
-  validationError: Schema.NullOr(Schema.String),
-});
-
 export const Model = Schema.Struct({
   records: Schema.NullOr(LinkList),
   actions: ItemActionMenu.Model,
-  ...LinkDraft.fields,
   creation: Schema.NullOr(
     Schema.Struct({
-      ...LinkDraft.fields,
+      url: Schema.String,
+      validationError: Schema.NullOr(Schema.String),
       saveError: Schema.NullOr(Schema.String),
     }),
   ),
   request: Schema.NullOr(
     Schema.Struct({
       id: Schema.String,
-      kind: Schema.Literals(["load", "save", "create", "delete"]),
+      kind: Schema.Literals(["load", "create", "delete"]),
       linkId: Schema.NullOr(Schema.String),
     }),
   ),
@@ -84,17 +78,13 @@ export type Model = typeof Model.Type;
 export const initial: Model = {
   records: null,
   actions: ItemActionMenu.init(actionsId),
-  url: "",
   creation: null,
   request: null,
-  validationError: null,
   loadError: null,
 };
 export const Message = defineMessageUnion({
   Requested: {},
   Retried: {},
-  EditedUrl: { url: Schema.String },
-  Submitted: {},
   OpenedCreate: {},
   EditedCreateUrl: { url: Schema.String },
   SubmittedCreate: {},
@@ -110,7 +100,6 @@ export const Message = defineMessageUnion({
   Deleted: { request: Schema.String, id: Schema.String },
   Failed: { request: Schema.String, error: Schema.String },
   SessionExpired: { request: Schema.String },
-  FocusedLinkInput: {},
   CompletedLinkAvatarImageMount: {},
 });
 export type Message = typeof Message.Type;
@@ -211,7 +200,7 @@ const RecoverDeletedLinkFocus = Command.define("RecoverDeletedLinkFocus", {
           // A pending delete may finish after the user has moved focus elsewhere.
           if (document.activeElement === document.body) {
             if (neighborId === null) {
-              document.getElementById(linkInputId)?.focus();
+              document.getElementById(createLinkButtonId)?.focus();
             } else {
               const trigger = document.getElementById(
                 ItemActionMenu.triggerId(actionsId, neighborId),
@@ -228,15 +217,6 @@ const RecoverDeletedLinkFocus = Command.define("RecoverDeletedLinkFocus", {
         }),
       ),
     ),
-});
-const FocusLinkInput = Mount.define("FocusLinkInput", {
-  messages: [Message.FocusedLinkInput],
-  execute: ({ element }) =>
-    Effect.sync(() => {
-      if (element instanceof HTMLInputElement)
-        element.focus({ preventScroll: true });
-      return Message.FocusedLinkInput();
-    }),
 });
 const savedAtFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -262,22 +242,21 @@ const notification = (
 
 const writingCreation = (model: Model) => model.request?.kind === "create";
 
-const submit = (model: Model, kind: "create" | "save") => {
-  const draft = kind === "create" ? model.creation : model;
-  if (!draft || model.request) return { model };
-  const link = parseLinkInput(draft.url);
-  const validationError = link ? null : invalidUrl;
-  const next =
-    kind === "create" && model.creation
-      ? {
-          ...model,
-          creation: { ...model.creation, validationError, saveError: null },
-        }
-      : { ...model, validationError };
+const submitCreation = (model: Model): Update.Return<Model, Message> => {
+  if (!model.creation || model.request) return { model };
+  const link = parseLinkInput(model.creation.url);
+  const next = {
+    ...model,
+    creation: {
+      ...model.creation,
+      validationError: link ? null : invalidUrl,
+      saveError: null,
+    },
+  };
   if (!link) return { model: next };
   const request = crypto.randomUUID();
   return {
-    model: { ...next, request: { id: request, kind, linkId: null } },
+    model: { ...next, request: { id: request, kind: "create", linkId: null } },
     commands: [Save({ request, ...link })],
   };
 };
@@ -334,12 +313,6 @@ export const update = (
     {
       Requested: () => (model.records === null ? load(model) : { model }),
       Retried: () => load(model),
-      EditedUrl: ({ url }) =>
-        model.request
-          ? { model }
-          : { model: { ...model, url, validationError: null } },
-      Submitted: () =>
-        model.records === null ? { model } : submit(model, "save"),
       OpenedCreate: () => ({
         model:
           model.creation || writingCreation(model)
@@ -358,7 +331,7 @@ export const update = (
                 creation: { ...model.creation, url, validationError: null },
               },
       }),
-      SubmittedCreate: () => submit(model, "create"),
+      SubmittedCreate: () => submitCreation(model),
       ClosedCreate: () => ({
         model: writingCreation(model) ? model : { ...model, creation: null },
       }),
@@ -395,24 +368,18 @@ export const update = (
               },
             }
           : { model },
-      Saved: ({ link }) => {
-        const kind = model.request?.kind;
-        if (kind !== "save" && kind !== "create") return { model };
-        const next = {
-          ...model,
-          records: withSavedLink(model.records, link),
-          request: null,
-        };
-        return kind === "create"
+      Saved: ({ link }) =>
+        writingCreation(model)
           ? {
-              model: { ...next, creation: null },
+              model: {
+                ...model,
+                records: withSavedLink(model.records, link),
+                creation: null,
+                request: null,
+              },
               outMessage: OutMessage.Created(),
             }
-          : {
-              model: { ...next, url: "" },
-              outMessage: OutMessage.DismissNotification({ key: "links-save" }),
-            };
-      },
+          : { model },
       Deleted: ({ id }) => {
         if (model.request?.kind !== "delete" || model.request.linkId !== id)
           return { model };
@@ -449,20 +416,17 @@ export const update = (
               creation: { ...model.creation, saveError: error },
             },
           };
-        return {
-          model: next,
-          outMessage: notification(
-            kind === "delete" ? "links-delete" : "links-save",
-            "Error",
-            error,
-          ),
-        };
+        return kind === "delete"
+          ? {
+              model: next,
+              outMessage: notification("links-delete", "Error", error),
+            }
+          : { model: next };
       },
       SessionExpired: () => ({
         model: initial,
         outMessage: OutMessage.SessionExpired(),
       }),
-      FocusedLinkInput: () => ({ model }),
       CompletedLinkAvatarImageMount: () => ({ model }),
     },
   );
@@ -631,6 +595,7 @@ export const view = Submodel.defineView<Model, Message, ViewInputs>(
             primaryAction: button(
               {
                 size: "sm",
+                attributes: [h.Id(createLinkButtonId)],
                 ariaLabel: "Save link",
                 dialogId: creationDialogId,
                 disabled:
@@ -641,6 +606,12 @@ export const view = Submodel.defineView<Model, Message, ViewInputs>(
               },
               h,
             ),
+            feedback: [
+              h.p(
+                [h.Class("workspace-header-progress"), h.Role("status")],
+                [model.request?.kind === "delete" ? "Deleting link…" : ""],
+              ),
+            ],
           },
           h,
         ),
@@ -655,70 +626,6 @@ export const view = Submodel.defineView<Model, Message, ViewInputs>(
                   ),
             ]
           : [
-              h.form(
-                [h.Method("post"), h.OnSubmit(Message.Submitted())],
-                [
-                  buttonGroup(
-                    [
-                      input(
-                        [
-                          h.Id(linkInputId),
-                          h.Type("text"),
-                          h.InputMode("url"),
-                          h.Autocapitalize("off"),
-                          h.Spellcheck(false),
-                          h.AriaLabel("Link URL"),
-                          h.AriaInvalid(model.validationError !== null),
-                          ...(model.validationError
-                            ? [h.AriaDescribedBy("link-url-error")]
-                            : []),
-                          h.Placeholder("Paste a URL"),
-                          h.EnterKeyHint("done"),
-                          h.Required(true),
-                          h.Value(model.url),
-                          h.Readonly(disabled || model.request !== null),
-                          h.OnMount(FocusLinkInput()),
-                          h.OnInput((url) => Message.EditedUrl({ url })),
-                        ],
-                        h,
-                      ),
-                      button(
-                        {
-                          type: "submit",
-                          variant: "outline",
-                          size: "icon",
-                          ariaLabel: "Save link",
-                          disabled:
-                            disabled ||
-                            model.request !== null ||
-                            !parseLinkInput(model.url),
-                          children: [plusIcon(h, "18")],
-                        },
-                        h,
-                      ),
-                    ],
-                    h,
-                  ),
-                  ...(model.validationError
-                    ? [
-                        h.p(
-                          [h.Id("link-url-error"), h.Role("alert")],
-                          [model.validationError],
-                        ),
-                      ]
-                    : []),
-                  h.p(
-                    [h.Role("status")],
-                    [
-                      model.request?.kind === "delete"
-                        ? "Deleting link…"
-                        : disabled || model.request !== null
-                          ? "Saving…"
-                          : "",
-                    ],
-                  ),
-                ],
-              ),
               model.records.length === 0
                 ? h.p([], ["No saved links yet."])
                 : itemGroup(

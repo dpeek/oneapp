@@ -41,19 +41,19 @@ it("saves from an unloaded screen and still loads the full link list on first vi
   expect(update(saved, Message.Requested()).commands).toHaveLength(1);
 });
 
-it("updates a loaded list without clearing the separate Links form draft", () => {
+it("updates a loaded list and closes the dialog after saving", () => {
   const older = { id: "older-link", url: "https://example.org", savedAt: 1 };
-  const { model: pending } = submittedCreation({
+  const { model: pending, commands } = submittedCreation({
     ...initial,
     records: [older],
-    url: "unsaved.example.org",
   });
-  const { model: saved } = update(
-    pending,
-    Message.Saved({ request: pending.request!.id, link }),
-  );
+  expect(commands?.[0]?.args).toMatchObject({ url: link.url });
+  const message = Message.Saved({ request: pending.request!.id, link });
+  const { model: saved, outMessage } = update(pending, message);
   expect(saved.records).toEqual([link, older]);
-  expect(saved.url).toBe("unsaved.example.org");
+  expect(saved.creation).toBeNull();
+  expect(outMessage?._tag).toBe("Created");
+  expect(update(saved, message).outMessage).toBeUndefined();
 });
 
 it("deletes the open menu's link after reordering and focuses the surviving neighbor", () => {

@@ -22,6 +22,10 @@ export const taskIconPaths = [
   "m3 16 2 2 4-4m2 3h10",
 ] as const;
 
+export const cloudIconPaths = [
+  "M6 18a4 4 0 1 1 .7-7.94A6 6 0 0 1 18.46 11H19a3.5 3.5 0 0 1 0 7Z",
+] as const;
+
 // Lucide icons. See THIRD_PARTY_NOTICES.md.
 const circleIconPath = "M22 12a10 10 0 1 0-20 0 10 10 0 1 0 20 0Z";
 export const circleDashedIconPaths = [

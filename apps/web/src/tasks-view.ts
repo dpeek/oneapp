@@ -6,6 +6,7 @@ import {
   circleDotDashedIconPaths,
   circleXIconPaths,
   clockIconPaths,
+  cloudIconPaths,
   Dialog,
   empty,
   field,
@@ -88,12 +89,21 @@ const taskPriorityDisplay = {
   high: { label: "High", icon: signalHighIconPaths },
   urgent: { label: "Urgent", icon: flameIconPaths },
 } satisfies Record<NonNullable<Task["priority"]> | "", TaskRowValue>;
-const runPhaseLabels = {
-  setup: "Setting up",
-  implementation: "Agent working",
-  checks: "Running checks",
-  deployment: "Waiting for deploy",
-} satisfies Record<Exclude<TaskRun["phase"], "finished">, string>;
+const runPhaseDisplay = {
+  setup: {
+    label: "Setting up",
+    icon: ["M5 3v5m0 4v9M12 3v10m0 4v4m7-18v3m0 4v11M2 8h6m1 9h6m1-11h6"],
+  },
+  implementation: {
+    label: "Agent working",
+    icon: ["m8 6-6 6 6 6m8-12 6 6-6 6"],
+  },
+  checks: { label: "Running checks", icon: taskIconPaths },
+  deployment: {
+    label: "Waiting for deploy",
+    icon: ["M12 16V4m-4 4 4-4 4 4M4 16v4h16v-4"],
+  },
+} satisfies Record<Exclude<TaskRun["phase"], "finished">, TaskRowValue>;
 const runOutcomeLabels = {
   deployed: "Deployed",
   "setup-failed": "Setup failed",
@@ -103,23 +113,42 @@ const runOutcomeLabels = {
   interrupted: "Run interrupted",
 } satisfies Record<NonNullable<TaskRun["outcome"]> | "interrupted", string>;
 
-const runActivity = (run: TaskRun, now: number, h: HtmlBuilder<Message>) => {
+const runActivity = (
+  run: TaskRun,
+  now: number,
+  variant: "indicator" | "detail",
+  h: HtmlBuilder<Message>,
+) => {
   const outcome = isTaskRunInterrupted(run, now) ? "interrupted" : run.outcome;
-  if (outcome)
+  const { phase } = run;
+  const display = outcome
+    ? {
+        label: runOutcomeLabels[outcome],
+        icon: outcome === "deployed" ? cloudIconPaths : circleXIconPaths,
+      }
+    : phase === "finished"
+      ? null
+      : runPhaseDisplay[phase];
+  if (!display) return h.empty;
+
+  const { label, icon } = display;
+  const activity = outcome
+    ? h.DataAttribute("outcome", outcome)
+    : h.DataAttribute("activity", phase);
+  if (variant === "indicator")
     return h.span(
-      [h.Class("task-row-value"), h.DataAttribute("outcome", outcome)],
       [
-        outlineIcon(
-          h,
-          outcome === "deployed" ? circleCheckIconPaths : circleXIconPaths,
-        ),
-        h.span([], [runOutcomeLabels[outcome]]),
+        h.Class("task-row-value task-activity-indicator"),
+        activity,
+        h.Title(label),
+        h.Role("img"),
+        h.AriaLabel(label),
       ],
+      outcome ? [outlineIcon(h, icon)] : [spinnerIcon(h), outlineIcon(h, icon)],
     );
-  if (run.phase === "finished") return h.empty;
   return h.span(
-    [h.Class("task-row-value"), h.DataAttribute("activity", run.phase)],
-    [spinnerIcon(h, 16), h.span([], [runPhaseLabels[run.phase]])],
+    [h.Class("task-row-value"), activity],
+    [outcome ? outlineIcon(h, icon) : spinnerIcon(h, 16), h.span([], [label])],
   );
 };
 
@@ -137,7 +166,7 @@ const latestRunDetails = (
     [h.Class("task-latest-run"), h.AriaLabel("Latest run")],
     [
       h.h2([], ["Latest run"]),
-      h.div([h.Role("status")], [runActivity(run, now, h)]),
+      h.div([h.Role("status")], [runActivity(run, now, "detail", h)]),
       ...(run.summary ? [h.p([], [run.summary])] : []),
       ...(reason ? [h.p([], [reason])] : []),
       ...(run.deploymentUrl
@@ -233,6 +262,12 @@ const taskRow = (
     [h.Key(task.id), h.Class("task-row")],
     [
       h.td(
+        [h.Class("task-activity-cell")],
+        task.latestRun
+          ? [runActivity(task.latestRun, runActivityTime, "indicator", h)]
+          : [],
+      ),
+      h.td(
         [],
         [
           h.div(
@@ -264,10 +299,6 @@ const taskRow = (
         ],
       ),
       taskRowValue(taskStatusDisplay[task.status], "status", task.status, h),
-      h.td(
-        [h.Class("task-activity-cell")],
-        task.latestRun ? [runActivity(task.latestRun, runActivityTime, h)] : [],
-      ),
       taskRowValue(
         taskPriorityDisplay[task.priority ?? ""],
         "priority",
@@ -386,15 +417,15 @@ const taskTable = (
           h.tr(
             [],
             [
-              "Task",
-              "Status",
-              "Activity",
-              "Priority",
-              "Assignee",
-              "Updated",
-            ].map((label) =>
-              h.th([h.Key(label), h.Scope("col")], [h.span([], [label])]),
-            ),
+              h.th(
+                [h.Key("Activity"), h.Scope("col"), h.AriaLabel("Activity")],
+                [],
+              ),
+              ...["Task", "Status", "Priority", "Assignee", "Updated"].map(
+                (label) =>
+                  h.th([h.Key(label), h.Scope("col")], [h.span([], [label])]),
+              ),
+            ],
           ),
         ],
       ),
@@ -407,8 +438,8 @@ const taskPlaceholders = (h: HtmlBuilder<Message>) =>
     h.tr(
       [h.Key(String(index))],
       [
+        h.td([], []),
         h.td([], [skeleton(index % 2 ? "md" : "lg", h)]),
-        h.td([], [skeleton("md", h)]),
         h.td([], [skeleton("md", h)]),
         h.td([], [skeleton("sm", h)]),
         h.td([], [skeleton("sm", h)]),

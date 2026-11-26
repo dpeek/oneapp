@@ -41,6 +41,7 @@ export {
   circleDotDashedIconPaths,
   circleXIconPaths,
   clockIconPaths,
+  cloudIconPaths,
   ellipsisIcon,
   filesIconPaths,
   flameIconPaths,

@@ -20,7 +20,7 @@ import {
   readFileName,
 } from "./api-response.ts";
 import { AppAuth, ownerId, type authHttp } from "./auth.ts";
-import { detectFilePreviewType } from "./file-preview-type.ts";
+import { detectFilePreviewType } from "../file-preview-type.ts";
 import {
   createFile,
   fileIndex,

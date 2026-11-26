@@ -13,6 +13,7 @@ import { fileNameHeader } from "../files-contract.ts";
 import {
   TaskAttachmentMediaType,
   taskAttachmentApi,
+  taskAttachmentIdHeader,
   taskAttachmentLimit,
   taskAttachmentLimitMiB,
   taskAttachmentsApi,
@@ -38,7 +39,7 @@ import {
   taskVersion,
   updateTask,
 } from "./tasks-store.ts";
-import { detectFilePreviewType } from "./file-preview-type.ts";
+import { detectFilePreviewType } from "../file-preview-type.ts";
 import {
   createTaskAttachment,
   listTaskAttachments,
@@ -138,6 +139,9 @@ export const tasksRoutes = (
     attachmentRoute("POST", attachmentsPath, (account, taskId) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
+        const id = request.headers[taskAttachmentIdHeader];
+        if (id !== undefined && !isId(id))
+          return yield* jsonError(400, "Invalid screenshot ID.");
         const name = readFileName(request.headers[fileNameHeader]);
         if (!name)
           return yield* jsonError(400, "Rename the screenshot and try again.");
@@ -170,6 +174,7 @@ export const tasksRoutes = (
             { name, mediaType },
             body.value,
             now,
+            id,
           ),
         );
         return yield* attachment

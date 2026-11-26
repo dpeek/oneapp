@@ -1530,7 +1530,7 @@ const update = (
       if (message._tag === "RequestedClose") {
         switch (creationEditor(model)) {
           case "task":
-            return foldTasks(model, Tasks.Message.ClosedCreate());
+            return foldTasks(model, Tasks.Message.DismissedCreate());
           case "event":
             return foldCalendar(model, Calendar.Message.ClosedEventEditor());
           case "link":
@@ -2161,8 +2161,9 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
           {
             model: model.creationDialog,
             title: menu || !editor ? "Create" : creationEditors[editor].title,
-            padded: menu === null,
-            showHeader: menu === null,
+            size: editor === "task" ? "extra-wide" : undefined,
+            padded: menu === null && editor !== "task",
+            showHeader: menu === null && editor !== "task",
             showCloseButton: false,
             content: (initialFocus) => {
               if (menu)
@@ -2196,7 +2197,11 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
                     slotId: "task-creation",
                     view: taskCreateView,
                     model: model.tasks,
-                    viewInputs: initialFocus,
+                    viewInputs: {
+                      initialFocus,
+                      owner: model.people.self,
+                      ownerEmail: model.account?.email ?? "",
+                    },
                     toParentMessage: toTasksMessage,
                   });
                 case "link":

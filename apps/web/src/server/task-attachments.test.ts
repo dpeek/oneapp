@@ -59,6 +59,7 @@ it("keeps screenshots private by task and retries cleanup after revoking access"
   let failDelete = false;
   const bucket = {
     put: async (key: string, bytes: ArrayBuffer) => {
+      if (blobs.has(key)) return null;
       blobs.set(key, bytes);
       if (losePutResponse) throw new Error("Lost upload response");
       return { key };
@@ -165,4 +166,30 @@ it("keeps screenshots private by task and retries cleanup after revoking access"
   expect(sqlite.query("SELECT * FROM deleted_task_attachments").all()).toEqual(
     [],
   );
+
+  const retryId = crypto.randomUUID();
+  const upload = (at: number) =>
+    createTaskAttachment(
+      db,
+      bucket,
+      "owner",
+      elsewhere,
+      metadata,
+      bytes,
+      at,
+      retryId,
+    );
+  await expect(upload(7_200_007)).rejects.toThrow("Lost upload response");
+  expect(await listTaskAttachments(db, "owner", elsewhere)).toEqual([]);
+  losePutResponse = false;
+  const retried = await Promise.all([upload(7_200_008), upload(7_200_009)]);
+  expect(retried).toEqual([
+    expect.objectContaining({ id: retryId, createdAt: 7_200_007 }),
+    expect.objectContaining({ id: retryId, createdAt: 7_200_007 }),
+  ]);
+  expect(await upload(7_200_010)).toEqual(retried[0]);
+  expect(await listTaskAttachments(db, "owner", elsewhere)).toEqual([
+    retried[0],
+  ]);
+  expect(blobs.size).toBe(1);
 });

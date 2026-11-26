@@ -33,7 +33,7 @@ import {
   tagChoices,
 } from "./task-properties.ts";
 import { type Task, taskPriorities, taskStatuses } from "./tasks-contract.ts";
-import { Message, type Model } from "./tasks.ts";
+import { creationFieldsLocked, Message, type Model } from "./tasks.ts";
 
 export type ViewInputs = { owner: PersonSummary | null; ownerEmail: string };
 export type TaskRowValue = { label: string; icon: readonly string[] };
@@ -152,7 +152,7 @@ const tagLabel = (
 ) => {
   if (!names.length) return "Add tags";
   if (names.length === 1) return names[0]!;
-  if (surface === "detail") {
+  if (surface !== "row") {
     const summary = `${names.length} tags`;
     return names.length === 2 && names.every((name) => name.length <= 10)
       ? h.span(
@@ -176,7 +176,7 @@ const tagLabel = (
 
 export const taskProperty = (
   model: Model,
-  task: Task,
+  task: Pick<Task, "id" | PickerTarget["field"]>,
   field: PickerTarget["field"],
   surface: PickerTarget["surface"],
   tags: readonly Tag[],
@@ -340,8 +340,11 @@ export const taskProperty = (
       model: picker?.popover ?? Popover.init({ id }),
       label,
       triggerLabel: `${label}: ${displayed}`,
+      disabled:
+        surface === "creation" &&
+        (creationFieldsLocked(model) || (field === "tagIds" && !model.index)),
       triggerButton: {
-        variant: surface === "detail" ? "subtle" : "quiet",
+        variant: surface === "row" ? "quiet" : "subtle",
         size: "sm",
       },
       triggerClassName: `task-property-trigger task-property-${field}`,

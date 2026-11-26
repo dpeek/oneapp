@@ -7,7 +7,7 @@ import {
   inboxAttachmentTextPreviewLimit,
 } from "../inbox-contract.ts";
 import { attachmentDisposition, privateHeaders } from "./api-response.ts";
-import { detectFilePreviewType } from "./file-preview-type.ts";
+import { detectFilePreviewType } from "../file-preview-type.ts";
 
 export const receivedMessageLimit = 25 * 1024 * 1024;
 export const mailMimeOptions = {

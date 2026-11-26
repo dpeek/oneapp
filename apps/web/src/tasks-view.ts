@@ -6,21 +6,16 @@ import {
   Dialog,
   DropdownMenu,
   empty,
-  field,
-  input,
   MultiCombobox,
   navigationLinks,
-  nativeSelect,
   outlineIcon,
   plusIcon,
   Sheet,
   skeleton,
   spinnerIcon,
   taskIconPaths,
-  textarea,
   timestamp,
   trashIconPaths,
-  Tokenizer,
   Tooltip,
   visuallyHiddenStatus,
 } from "@orumai/ui";
@@ -29,14 +24,13 @@ import { Mount, Submodel } from "foldkit";
 import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html";
 import * as Attachments from "./task-attachments.ts";
 import { mailMessageLink, mailRouteFor } from "./inbox-contract.ts";
-import { tagNameKey, tagNameLimit, type Tag } from "./items-contract.ts";
+import { tagNameKey, type Tag } from "./items-contract.ts";
 import { isTaskRunInterrupted, type TaskRun } from "./task-run-contract.ts";
 import {
   type Task,
   taskDescriptionLimit,
   taskPath,
   tasksPath,
-  taskTagLimit,
   taskTitleLimit,
 } from "./tasks-contract.ts";
 import { taskFilterCount } from "./tasks-filters.ts";
@@ -45,6 +39,7 @@ import {
   activityTooltip,
   addTaskButtonId,
   creationDialogId,
+  creationFieldsLocked,
   creationSubmitId,
   creationTitleId,
   deleteConflictMessage,
@@ -53,17 +48,16 @@ import {
   editedTask,
   Message,
   selectedTask,
-  tagSearch,
   taskSortMenu,
   toFilterPopoverMessage,
   toFilterTagsMessage,
   toAttachmentsMessage,
+  toDraftScreenshotMessage,
   toDeleteDialogMessage,
   toFolderSheetMessage,
   toSortMenuMessage,
   writingCreation,
   visibleTasks,
-  type Editor,
   type Model,
 } from "./tasks.ts";
 import { filterChoice, filterMenu } from "./filter-menu.ts";
@@ -498,134 +492,6 @@ const taskList = (
   );
 };
 
-const taskFields = (
-  editor: Editor,
-  tags: ReadonlyArray<Tag>,
-  busy: boolean,
-  h: HtmlBuilder<Message>,
-  {
-    creation,
-  }: {
-    creation: {
-      initialFocus: ReadonlyArray<ChildAttribute>;
-      tagsUnavailable: boolean;
-    };
-  },
-) => {
-  const { draft } = editor;
-  const tagsFull = draft.tagIds.length >= taskTagLimit;
-  const search = tagSearch(editor, tags);
-  return [
-    field(
-      "Title",
-      input<Message>(
-        [
-          h.Type("text"),
-          h.Value(draft.title),
-          h.Maxlength(taskTitleLimit),
-          h.Id(creationTitleId),
-          h.Required(true),
-          ...creation.initialFocus,
-          h.Disabled(busy),
-          h.OnInput((value) => Message.EditedField({ field: "title", value })),
-        ],
-        h,
-      ),
-      h,
-    ),
-    h.div(
-      [h.Class("task-fields")],
-      [
-        nativeSelect(
-          {
-            label: "Status",
-            options: statusOptions,
-            value: draft.status,
-            disabled: busy,
-            onChange: (value) =>
-              Message.EditedField({ field: "status", value }),
-          },
-          h,
-        ),
-        nativeSelect(
-          {
-            label: "Priority",
-            options: priorityOptions,
-            value: draft.priority ?? "",
-            disabled: busy,
-            onChange: (value) =>
-              Message.EditedField({ field: "priority", value }),
-          },
-          h,
-        ),
-        field(
-          "Due date",
-          input<Message>(
-            [
-              h.Type("date"),
-              h.Value(draft.dueOn ?? ""),
-              h.Disabled(busy),
-              h.OnInput((value) =>
-                Message.EditedField({ field: "dueOn", value }),
-              ),
-            ],
-            h,
-          ),
-          h,
-        ),
-        nativeSelect(
-          {
-            label: "Assignee",
-            options: assigneeOptions,
-            value: draft.assignee ?? "",
-            disabled: busy,
-            onChange: (value) =>
-              Message.EditedField({ field: "assignee", value }),
-          },
-          h,
-        ),
-      ],
-    ),
-    field(
-      "Description (Markdown)",
-      textarea<Message>(
-        [
-          h.Value(draft.description),
-          h.Maxlength(taskDescriptionLimit),
-          h.Disabled(busy),
-          h.OnInput((value) =>
-            Message.EditedField({ field: "description", value }),
-          ),
-        ],
-        h,
-      ),
-      h,
-    ),
-    Tokenizer.view(
-      {
-        model: editor.tagPicker,
-        label: "Tags",
-        placeholder: "Search or create tags",
-        ...(creation ? { placement: "top-start" } : {}),
-        emptyMessage: "No matching tags",
-        items: search.items,
-        selected: tags.filter(({ id }) => draft.tagIds.includes(id)),
-        maxLength: tagNameLimit,
-        busy: busy || creation.tagsUnavailable,
-        full: tagsFull,
-        description: tagsFull
-          ? `A task can have up to ${taskTagLimit} tags.`
-          : null,
-        error: search.error,
-        toParentMessage: (message) =>
-          Message.GotTagPickerMessage({ id: draft.id, message }),
-        onRemove: (id) => Message.RemovedTag({ id }),
-      },
-      h,
-    ),
-  ];
-};
-
 const sortedTags = (model: Model) =>
   [...(model.index?.tags ?? [])].sort((left, right) =>
     left.name.localeCompare(right.name),
@@ -645,62 +511,123 @@ const retryTasksButton = (h: HtmlBuilder<Message>) =>
 export const createView = Submodel.defineView(
   (
     model: Model,
-    initialFocus: ReadonlyArray<ChildAttribute>,
+    {
+      initialFocus,
+      ...viewInputs
+    }: ViewInputs & { initialFocus: ReadonlyArray<ChildAttribute> },
     h: HtmlBuilder<Message>,
   ) => {
-    const editor = model.creation;
-    if (!editor) return h.empty;
-    const busy =
-      model.request !== null && model.request.operation._tag !== "Load";
+    const creation = model.creation;
+    if (!creation) return h.empty;
+    const { draft, saved, upload, screenshots, validatingScreenshots } =
+      creation;
+    const locked = creationFieldsLocked(model);
     const submitting = model.request?.operation._tag === "Create";
     const loadError = model.index ? null : (model.error?.message ?? null);
+    const status = upload
+      ? `Uploading screenshot ${upload.current} of ${upload.total}…`
+      : validatingScreenshots
+        ? "Checking screenshots…"
+        : null;
     return h.form(
-      [h.Class("task-editor task-create-form"), h.OnSubmit(Message.Created())],
       [
-        alert(
-          {
-            message: editor.error ?? loadError,
-            severity: "error",
-            announcement: "status",
-            action:
-              loadError && !model.request ? retryTasksButton(h) : undefined,
-          },
-          h,
+        h.Class("task-create-form"),
+        h.OnSubmit(
+          saved ? Message.RetriedDraftScreenshots() : Message.Created(),
         ),
-        ...(!model.index && !loadError
-          ? [h.p([h.Role("status")], ["Loading tasks and tags…"])]
-          : []),
-        ...taskFields(editor, sortedTags(model), busy, h, {
-          creation: { initialFocus, tagsUnavailable: !model.index },
-        }),
-        Dialog.footer(
+        h.OnMount(
+          Mount.mapMessage(
+            Attachments.WatchEditor({ taskId: draft.id, draft: true }),
+            toDraftScreenshotMessage,
+          ),
+        ),
+      ],
+      [
+        h.div(
+          [h.Class("task-editor task-create-body")],
           [
-            button(
+            ...taskDocument(model, draft, sortedTags(model), viewInputs, h, {
+              initialFocus,
+              locked,
+              titleEdited: creation.titleEdited,
+            }),
+            Attachments.draftSection(
+              screenshots,
               {
-                variant: "outline",
-                size: "sm",
-                disabled: writingCreation(model),
-                onClick: Message.ClosedCreate(),
-                children: ["Cancel"],
+                locked,
+                status,
+                error: creation.screenshotError,
+                onRemove: (id) => Message.RemovedDraftScreenshot({ id }),
+                toParent: toDraftScreenshotMessage,
               },
               h,
             ),
-            button(
+            alert(
               {
-                type: "submit",
-                size: "sm",
-                attributes: [h.Id(creationSubmitId)],
-                focusableWhenDisabled: submitting,
-                disabled:
-                  model.request !== null ||
-                  !model.index ||
-                  !editor.draft.title.trim(),
-                children: [submitting ? "Adding…" : "Add task"],
+                message: saved
+                  ? upload
+                    ? null
+                    : "Task created. Retry the screenshots listed above or finish without them."
+                  : (creation.error ?? loadError),
+                severity: "error",
+                announcement: "status",
+                action:
+                  loadError && !model.request ? retryTasksButton(h) : undefined,
               },
+              h,
+            ),
+            ...(!model.index && !loadError
+              ? [h.p([h.Role("status")], ["Loading tasks and tags…"])]
+              : []),
+          ],
+        ),
+        h.div(
+          [h.Class("task-create-footer")],
+          [
+            Dialog.footer(
+              [
+                button(
+                  {
+                    variant: "outline",
+                    size: "sm",
+                    disabled: writingCreation(model),
+                    onClick: saved
+                      ? Message.FinishedDraftScreenshots()
+                      : Message.ClosedCreate(),
+                    children: [
+                      saved ? "Finish without remaining files" : "Cancel",
+                    ],
+                  },
+                  h,
+                ),
+                button(
+                  {
+                    type: "submit",
+                    size: "sm",
+                    attributes: [h.Id(creationSubmitId)],
+                    focusableWhenDisabled: submitting || upload !== null,
+                    disabled: saved
+                      ? upload !== null
+                      : model.request !== null ||
+                        !model.index ||
+                        !draft.title.trim() ||
+                        validatingScreenshots > 0,
+                    children: [
+                      saved
+                        ? upload
+                          ? "Uploading…"
+                          : "Retry screenshots"
+                        : submitting
+                          ? "Adding…"
+                          : "Add task",
+                    ],
+                  },
+                  h,
+                ),
+              ],
               h,
             ),
           ],
-          h,
         ),
       ],
     );
@@ -783,17 +710,26 @@ const deleteTaskDialog = (model: Model, h: HtmlBuilder<Message>) => {
   );
 };
 
+type CreationForm = {
+  initialFocus: ReadonlyArray<ChildAttribute>;
+  locked: boolean;
+  titleEdited: boolean;
+};
+
 const taskDocumentField = (
   model: Model,
-  task: Task,
+  task: Pick<Task, "id" | TextField>,
   field: TextField,
   h: HtmlBuilder<Message>,
+  creation?: CreationForm,
 ) => {
   const title = field === "title";
-  const draft = model.edits[task.id]?.text[field];
+  const draft = creation ? undefined : model.edits[task.id]?.text[field];
   const value = draft?.value ?? task[field];
-  const invalid = title && draft !== undefined && !value.trim();
-  const errorId = "task-title-error";
+  const invalid =
+    title && (creation?.titleEdited ?? draft !== undefined) && !value.trim();
+  const errorId = creation ? "task-create-title-error" : "task-title-error";
+  const commitTitle = Message.BlurredText({ id: task.id, field });
   const editor = h.span(
     [h.Class("task-document-input"), h.DataAttribute("value", value)],
     [
@@ -802,7 +738,21 @@ const taskDocumentField = (
         h.AriaLabel(title ? "Task title" : "Description (Markdown)"),
         h.Value(value),
         h.Maxlength(title ? taskTitleLimit : taskDescriptionLimit),
-        h.Placeholder(title ? "Task title" : "Add a description…"),
+        h.Placeholder(
+          title ? (creation ? "New task" : "Task title") : "Add a description…",
+        ),
+        ...(creation
+          ? [
+              h.Readonly(creation.locked),
+              ...(title
+                ? [
+                    h.Id(creationTitleId),
+                    h.Required(true),
+                    ...creation.initialFocus,
+                  ]
+                : []),
+            ]
+          : [h.OnBlur(commitTitle)]),
         ...(invalid ? [h.AriaInvalid(true), h.AriaDescribedBy(errorId)] : []),
         h.OnInput((value) =>
           Message.EditedText({
@@ -811,13 +761,10 @@ const taskDocumentField = (
             value: title ? value.replace(/[\r\n]+/gu, " ") : value,
           }),
         ),
-        h.OnBlur(Message.BlurredText({ id: task.id, field })),
         ...(title
           ? [
               h.OnKeyDownPreventDefault((key) =>
-                key === "Enter"
-                  ? Option.some(Message.BlurredText({ id: task.id, field }))
-                  : Option.none(),
+                key === "Enter" ? Option.some(commitTitle) : Option.none(),
               ),
             ]
           : []),
@@ -825,10 +772,11 @@ const taskDocumentField = (
     ],
   );
   if (!title) return editor;
+  const titleStyle = [h.Class("task-document-title-text")];
   return h.div(
     [h.Class("task-document-title")],
     [
-      h.h1([], [editor]),
+      creation ? h.div(titleStyle, [editor]) : h.h1(titleStyle, [editor]),
       ...(invalid
         ? [
             h.p(
@@ -840,6 +788,38 @@ const taskDocumentField = (
     ],
   );
 };
+
+const taskDocument = (
+  model: Model,
+  task: Pick<Task, "id" | TextField | Property>,
+  tags: readonly Tag[],
+  viewInputs: ViewInputs,
+  h: HtmlBuilder<Message>,
+  creation?: CreationForm,
+) => [
+  h.div(
+    [h.Class("task-document-header")],
+    [
+      taskDocumentField(model, task, "title", h, creation),
+      h.div(
+        [h.Class("task-property-strip")],
+        (["tagIds", "status", "priority", "assignee", "dueOn"] as const).map(
+          (field) =>
+            taskProperty(
+              model,
+              task,
+              field,
+              creation ? "creation" : "detail",
+              tags,
+              viewInputs,
+              h,
+            ),
+        ),
+      ),
+    ],
+  ),
+  taskDocumentField(model, task, "description", h, creation),
+];
 
 const taskMailSources = (description: string, h: HtmlBuilder<Message>) => {
   const origin = window.location.origin;
@@ -964,43 +944,13 @@ const taskDetail = (
                 h.Class("task-editor"),
                 h.OnMount(
                   Mount.mapMessage(
-                    Attachments.WatchEditor({ taskId: task.id }),
+                    Attachments.WatchEditor({ taskId: task.id, draft: false }),
                     toAttachmentsMessage,
                   ),
                 ),
               ],
               [
-                h.div(
-                  [h.Class("task-document-header")],
-                  [
-                    taskDocumentField(model, task, "title", h),
-                    h.div(
-                      [h.Class("task-property-strip")],
-                      [
-                        ...(
-                          [
-                            "tagIds",
-                            "status",
-                            "priority",
-                            "assignee",
-                            "dueOn",
-                          ] as const
-                        ).map((field) =>
-                          taskProperty(
-                            model,
-                            task,
-                            field,
-                            "detail",
-                            tags,
-                            viewInputs,
-                            h,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-                taskDocumentField(model, task, "description", h),
+                ...taskDocument(model, task, tags, viewInputs, h),
                 taskMailSources(task.description, h),
                 Attachments.section(
                   task.id,

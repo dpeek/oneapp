@@ -2,7 +2,6 @@
   --task-editor-width: 44rem;
 }
 
-.task-fields,
 .task-property-strip {
   display: flex;
   flex-wrap: wrap;
@@ -388,11 +387,11 @@
   container: task-document / inline-size;
 }
 
-.task-document-title h1 {
+.task-editor .task-document-title-text {
   margin: 0;
-  font-size: clamp(1.625rem, 3.5vw, 2.25rem);
+  font-size: 1.875rem;
   font-weight: 650;
-  line-height: 1.18;
+  line-height: 1.2;
 }
 
 .task-document-input {
@@ -580,17 +579,27 @@
   overflow-wrap: anywhere;
 }
 
-.task-fields {
-  align-items: end;
-  gap: 0.625rem;
+.task-attachment-error {
+  color: var(--alert-error);
+  font-size: 0.8125rem;
 }
 
-.task-fields [data-slot="native-select"] {
-  min-block-size: 2.25rem;
+.task-create-form {
+  --task-dialog-padding: clamp(1rem, 4vw, 1.5rem);
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  max-block-size: calc(100dvh - 2rem - 2px);
+  min-inline-size: 0;
 }
 
-.task-create-form [data-slot="textarea"] {
-  min-block-size: 5rem;
+.task-create-body {
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: var(--task-dialog-padding);
+}
+
+.task-create-footer {
+  padding: 0 var(--task-dialog-padding) var(--task-dialog-padding);
 }
 
 .task-timestamps {

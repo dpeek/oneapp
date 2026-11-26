@@ -8,6 +8,8 @@ export const taskAttachmentsApi = (taskId: string) =>
 export const taskAttachmentApi = (taskId: string, attachmentId: string) =>
   `${taskAttachmentsApi(taskId)}/${attachmentId}` as const;
 
+export const taskAttachmentIdHeader = "x-task-attachment-id";
+
 export const taskAttachmentLimitMiB = 5;
 export const taskAttachmentLimit = taskAttachmentLimitMiB * 1024 * 1024;
 export const TaskAttachmentMediaType = Schema.Literals([

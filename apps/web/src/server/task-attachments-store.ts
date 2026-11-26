@@ -60,8 +60,8 @@ export const createTaskAttachment = async (
   metadata: Pick<TaskAttachment, "name" | "mediaType">,
   bytes: ArrayBuffer,
   now: number,
+  id: string = crypto.randomUUID(),
 ) => {
-  const id = crypto.randomUUID();
   const size = bytes.byteLength;
   const reserved = await db
     .prepare(
@@ -69,20 +69,38 @@ export const createTaskAttachment = async (
         (account_id, task_id, id, name, media_type, size, created_at, state)
        SELECT account_id, item_id, ?, ?, ?, ?, ?, 'pending'
        FROM tasks WHERE account_id = ? AND item_id = ?
+       ON CONFLICT DO NOTHING
        RETURNING id`,
     )
     .bind(id, metadata.name, metadata.mediaType, size, now, account, taskId)
     .first<{ id: string }>();
-  if (!reserved) return null;
+  if (!reserved) {
+    const existing = await db
+      .prepare(
+        `SELECT ${columns}, state FROM task_attachments
+         WHERE account_id = ? AND task_id = ? AND id = ?`,
+      )
+      .bind(account, taskId, id)
+      .first<TaskAttachment & { state: string }>();
+    if (!existing || existing.state === "removed") return null;
+    if (
+      existing.name !== metadata.name ||
+      existing.mediaType !== metadata.mediaType ||
+      existing.size !== size
+    )
+      throw new Error("Screenshot ID already in use.");
+    if (existing.state === "ready")
+      return getAttachment(db, account, taskId, id);
+  }
 
   const key = taskAttachmentObjectKey(account, taskId, id);
   // Abandoned reservations give the collector an object key even when a put
-  // succeeds but its response is lost. Only ready rows grant access.
-  const stored = await bucket.put(key, bytes, {
+  // succeeds but its response is lost. The conditional put lets a retry
+  // finalize the existing object without overwriting it.
+  await bucket.put(key, bytes, {
     onlyIf: { etagDoesNotMatch: "*" },
     httpMetadata: { contentType: metadata.mediaType },
   });
-  if (!stored) throw new Error("Could not reserve the attachment object.");
   try {
     const saved = await db
       .prepare(
@@ -98,8 +116,7 @@ export const createTaskAttachment = async (
     if (saved) return saved;
     throw error;
   }
-  await bucket.delete(key);
-  return null;
+  return getAttachment(db, account, taskId, id);
 };
 
 export const removeTaskAttachment = (

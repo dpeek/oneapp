@@ -1,7 +1,6 @@
 import {
   alert,
   button,
-  buttonClassName,
   circleCheckIconPaths,
   circleDashedIconPaths,
   circleDotDashedIconPaths,
@@ -35,20 +34,18 @@ import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html";
 import * as Attachments from "./task-attachments.ts";
 import { tagNameKey, tagNameLimit, type Tag } from "./items-contract.ts";
 import {
-  activeTaskStatuses,
   type Task,
   taskDescriptionLimit,
-  taskListPath,
   taskPath,
+  tasksPath,
   taskPriorities,
   taskStatuses,
   taskTagLimit,
   taskTitleLimit,
-  type TaskView,
 } from "./tasks-contract.ts";
 import { matchesTaskFilters, taskFilterCount } from "./tasks-filters.ts";
 import {
-  type FilterCategory,
+  FilterCategory,
   creationDialogId,
   creationSubmitId,
   creationTitleId,
@@ -58,7 +55,6 @@ import {
   selectedTask,
   tagSearch,
   taskSortMenu,
-  tasksInView,
   toFilterPopoverMessage,
   toFilterTagsMessage,
   toAttachmentsMessage,
@@ -93,7 +89,7 @@ const statusOptions = taskStatuses.map((value) => ({
   label: taskStatusDisplay[value].label,
 }));
 const filterLabels = { status: "Status", priority: "Priority", tags: "Tags" };
-const viewLabels = { active: "Active", completed: "Closed" };
+const taskListLabel = "All tasks";
 const priorityOptions = Object.entries(taskPriorityDisplay).map(
   ([value, { label }]) => ({ value, label }),
 );
@@ -103,7 +99,7 @@ const taskDateTimeFormat = new Intl.DateTimeFormat(undefined, {
 });
 const sortedTasks = (tasks: readonly Task[], model: Model) =>
   tasks
-    .filter((task) => matchesTaskFilters(task, model))
+    .filter((task) => matchesTaskFilters(task, model.filters))
     .sort((left, right) => {
       if (model.sort === "priority") {
         const order =
@@ -150,7 +146,6 @@ const taskRowValue = (
 const taskRow = (
   task: Task,
   tags: ReadonlyMap<string, Tag>,
-  view: TaskView,
   now: number,
   h: HtmlBuilder<Message>,
 ) =>
@@ -166,7 +161,7 @@ const taskRow = (
               h.a(
                 [
                   h.Class("task-row-link"),
-                  h.Href(taskPath(task.id, view)),
+                  h.Href(taskPath(task.id)),
                   h.DataAttribute("task-id", task.id),
                   ...(Number.isFinite(new Date(task.updatedAt).getTime())
                     ? [
@@ -208,10 +203,10 @@ const taskFilterOptions = (
   const tagQuery = tagNameKey(filterTags.inputValue);
   const options = {
     status: () =>
-      activeTaskStatuses.map((value) =>
+      statusOptions.map(({ value, label }) =>
         filterChoice(
           {
-            label: taskStatusDisplay[value].label,
+            label,
             checked: filters.statuses.includes(value),
             message: Message.ToggledStatusFilter({ value }),
           },
@@ -251,17 +246,16 @@ const taskFilters = (
   model: Model,
   tags: readonly Tag[],
   h: HtmlBuilder<Message>,
-) => {
-  const categories =
-    model.view === "active"
-      ? (["status", "priority", "tags"] as const)
-      : (["priority", "tags"] as const);
-  return filterMenu(
+) =>
+  filterMenu(
     {
       popover: model.filterPopover,
       category: model.filterCategory,
-      categories: categories.map((id) => ({ id, label: filterLabels[id] })),
-      count: taskFilterCount(model),
+      categories: FilterCategory.literals.map((id) => ({
+        id,
+        label: filterLabels[id],
+      })),
+      count: taskFilterCount(model.filters),
       optionsId: filterOptionsId,
       options: (category) => taskFilterOptions(category, model, tags, h),
       onOpen: (category, focusOptions) =>
@@ -272,7 +266,6 @@ const taskFilters = (
     },
     h,
   );
-};
 
 const taskSort = (model: Model, h: HtmlBuilder<Message>) =>
   taskSortMenu.view(
@@ -292,7 +285,6 @@ const taskSort = (model: Model, h: HtmlBuilder<Message>) =>
   );
 
 const taskTable = (
-  view: TaskView,
   rows: readonly Html[],
   loading: boolean,
   h: HtmlBuilder<Message>,
@@ -300,9 +292,7 @@ const taskTable = (
   h.table(
     [
       h.Class("task-table"),
-      ...(loading
-        ? [h.AriaHidden(true)]
-        : [h.AriaLabel(`${viewLabels[view]} tasks`)]),
+      ...(loading ? [h.AriaHidden(true)] : [h.AriaLabel(taskListLabel)]),
     ],
     [
       h.thead(
@@ -336,35 +326,29 @@ const taskPlaceholders = (h: HtmlBuilder<Message>) =>
 const taskList = (
   model: Model,
   tags: ReadonlyArray<Tag>,
-  viewTasks: readonly Task[],
   h: HtmlBuilder<Message>,
 ) => {
-  const { view } = model;
-  const tasks = sortedTasks(viewTasks, model);
+  const allTasks = model.index?.tasks ?? [];
+  const tasks = sortedTasks(allTasks, model);
   const loading = !model.index && model.request?.operation._tag === "Load";
   const tagMap = new Map(tags.map((tag) => [tag.id, tag]));
   const emptyTitle =
     !model.index || tasks.length
       ? null
-      : viewTasks.length
+      : allTasks.length
         ? "No tasks match these filters"
-        : view === "completed"
-          ? "No closed tasks yet"
-          : model.index.tasks.length
-            ? "No active tasks"
-            : "No tasks yet";
+        : "No tasks yet";
   let results: Html = h.empty;
   if (tasks.length) {
     const now = Date.now();
     results = taskTable(
-      view,
-      tasks.map((task) => taskRow(task, tagMap, view, now, h)),
+      tasks.map((task) => taskRow(task, tagMap, now, h)),
       false,
       h,
     );
-  } else if (loading) results = taskTable(view, taskPlaceholders(h), true, h);
+  } else if (loading) results = taskTable(taskPlaceholders(h), true, h);
   else if (emptyTitle) {
-    const action = viewTasks.length
+    const action = allTasks.length
       ? button(
           {
             variant: "outline",
@@ -374,16 +358,7 @@ const taskList = (
           },
           h,
         )
-      : view === "completed"
-        ? h.a(
-            [
-              h.Href(taskListPath("active")),
-              h.Class(buttonClassName({ variant: "outline", size: "sm" })),
-              h.DataAttribute("slot", "button"),
-            ],
-            ["View active tasks"],
-          )
-        : undefined;
+      : undefined;
     results = empty(
       {
         title: emptyTitle,
@@ -404,7 +379,6 @@ const taskList = (
       visuallyHiddenStatus(emptyTitle, h),
       h.div(
         [
-          h.Key(view),
           h.Class("workspace-results task-table-scroll"),
           ...(tasks.length
             ? [
@@ -749,16 +723,12 @@ const taskDetail = (
   );
 };
 
-const taskNavigation = (view: TaskView, h: HtmlBuilder<Message>) =>
+const taskNavigation = (h: HtmlBuilder<Message>) =>
   navigationLinks(
     {
-      label: "Task views",
+      label: "Task navigation",
       variant: "sidebar",
-      destinations: (["active", "completed"] as const).map((destination) => ({
-        href: taskListPath(destination),
-        label: viewLabels[destination],
-        current: destination === view,
-      })),
+      destinations: [{ href: tasksPath, label: taskListLabel, current: true }],
     },
     h,
   );
@@ -766,7 +736,6 @@ const taskNavigation = (view: TaskView, h: HtmlBuilder<Message>) =>
 export const view = Submodel.defineView<Model, Message>((model, h) => {
   const tags = sortedTags(model);
   const { selectedId, folderSheet } = model;
-  const viewTasks = tasksInView(model);
   const addTask = button(
     {
       size: "sm",
@@ -785,7 +754,6 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
         ? "Refreshing tasks…"
         : "Loading tasks…"
       : null;
-  const backLabel = `Back to ${viewLabels[model.view]}`;
   // The load error stays visible after Add task closes, without announcing again.
   const loadErrorInDialog =
     (!model.index && model.creation) || model.error?.announcedInCreation;
@@ -794,12 +762,12 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
       className: "workspace-stacked tasks-workspace",
       header: screenHeader(
         {
-          title: selectedTask(model)?.title ?? viewLabels[model.view],
+          title: selectedTask(model)?.title ?? taskListLabel,
           navigation: [
             ...(selectedId
               ? [
                   screenHeaderBack(
-                    { href: taskListPath(model.view), label: backLabel },
+                    { href: tasksPath, label: `Back to ${taskListLabel}` },
                     h,
                   ),
                 ]
@@ -812,7 +780,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
                     variant: "ghost",
                     size: "icon-sm",
                     rounded: true,
-                    ariaLabel: "Task views",
+                    ariaLabel: "Task navigation",
                     dialogId: folderSheet.id,
                     onClick: toFolderSheetMessage(
                       Sheet.Message.RequestedOpen(),
@@ -844,15 +812,15 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
         },
         h,
       ),
-      sidebar: taskNavigation(model.view, h),
-      list: taskList(model, tags, viewTasks, h),
+      sidebar: taskNavigation(h),
+      list: taskList(model, tags, h),
       hasSelection: selectedId !== null,
       ...(selectedId ? { detail: taskDetail(selectedId, model, tags, h) } : {}),
       sheet: Sheet.sheet(
         {
           model: folderSheet,
-          title: "Task views",
-          content: taskNavigation(model.view, h),
+          title: "Task navigation",
+          content: taskNavigation(h),
           toParentMessage: toFolderSheetMessage,
         },
         h,

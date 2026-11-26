@@ -4,12 +4,11 @@ import {
   activeTaskStatuses,
   TaskPriority,
   type Task,
-  type TaskView,
+  TaskStatus,
 } from "./tasks-contract.ts";
 
-export const StatusFilter = Schema.Literals(activeTaskStatuses);
 export const Filters = Schema.Struct({
-  statuses: Schema.Array(StatusFilter),
+  statuses: Schema.Array(TaskStatus),
   priorities: Schema.Array(TaskPriority),
   tagIds: Schema.Array(ItemId),
 });
@@ -18,26 +17,24 @@ export const emptyFilters: typeof Filters.Type = {
   priorities: [],
   tagIds: [],
 };
+export const defaultFilters: typeof Filters.Type = {
+  ...emptyFilters,
+  statuses: activeTaskStatuses,
+};
 
 export const toggleFilter = <Value>(values: readonly Value[], value: Value) =>
   values.includes(value)
     ? values.filter((entry) => entry !== value)
     : [...values, value];
 
-type FilterState = { filters: typeof Filters.Type; view: TaskView };
+export const taskFilterCount = ({
+  statuses,
+  priorities,
+  tagIds,
+}: typeof Filters.Type) => statuses.length + priorities.length + tagIds.length;
 
-export const taskFilterCount = ({ filters, view }: FilterState) =>
-  (view === "active" ? filters.statuses.length : 0) +
-  filters.priorities.length +
-  filters.tagIds.length;
-
-export const matchesTaskFilters = (
-  task: Task,
-  { filters, view }: FilterState,
-) =>
-  (view === "completed" ||
-    !filters.statuses.length ||
-    filters.statuses.some((status) => status === task.status)) &&
+export const matchesTaskFilters = (task: Task, filters: typeof Filters.Type) =>
+  (!filters.statuses.length || filters.statuses.includes(task.status)) &&
   (!filters.priorities.length || filters.priorities.includes(task.priority)) &&
   (!filters.tagIds.length ||
     task.tagIds.some((id) => filters.tagIds.includes(id)));

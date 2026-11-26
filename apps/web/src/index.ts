@@ -462,7 +462,7 @@ const foldTaskFeature = Update.foldChild({
             model,
             commands: [
               Navigate({
-                href: taskPath(out.id, model.tasks.view),
+                href: taskPath(out.id),
                 mode: "push",
               }),
             ],
@@ -999,7 +999,6 @@ const update = (
         settingsSection === model.settingsSection &&
         calendarRoute?.id === model.calendarRoute?.id &&
         taskRoute?.id === model.taskRoute?.id &&
-        taskRoute?.view === model.taskRoute?.view &&
         fileRoute?.id === model.fileRoute?.id &&
         mailRoute?.folder === model.mailRoute?.folder &&
         mailRoute?.id === model.mailRoute?.id &&

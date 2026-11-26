@@ -24,12 +24,11 @@ import {
   TaskUpdate,
   tasksApi,
   taskTagLimit,
-  TaskView,
 } from "./tasks-contract.ts";
 import {
+  defaultFilters,
   emptyFilters,
   Filters,
-  StatusFilter,
   toggleFilter,
 } from "./tasks-filters.ts";
 
@@ -82,7 +81,6 @@ const Field = Schema.Literals([
 
 export const Model = Schema.Struct({
   index: Schema.NullOr(TaskIndex),
-  view: TaskView,
   folderSheet: Sheet.Model,
   selectedId: Schema.NullOr(ItemId),
   editor: Schema.NullOr(Editor),
@@ -107,14 +105,13 @@ export const Model = Schema.Struct({
 export type Model = typeof Model.Type;
 export const initial: Model = {
   index: null,
-  view: "active",
   folderSheet: Sheet.init({ id: "task-views" }),
   selectedId: null,
   editor: null,
   attachments: Attachments.initial,
   creation: null,
   ...closedTaskMenus,
-  filters: emptyFilters,
+  filters: defaultFilters,
   sort: "updated",
   request: null,
   error: null,
@@ -136,7 +133,7 @@ export const Message = defineMessageUnion({
     focusOptions: Schema.Boolean,
   },
   ClosedFilterCategory: {},
-  ToggledStatusFilter: { value: StatusFilter },
+  ToggledStatusFilter: { value: TaskStatus },
   ToggledPriorityFilter: { value: TaskPriority },
   GotFilterTagsMessage: { message: MultiCombobox.Message },
   ClearedFilters: {},
@@ -414,13 +411,6 @@ const start = (
 export const selectedTask = (model: Model) =>
   model.index?.tasks.find((task) => task.id === model.selectedId) ?? null;
 
-const activeStatus = Schema.is(StatusFilter);
-
-export const tasksInView = (model: Model) =>
-  (model.index?.tasks ?? []).filter(
-    ({ status }) => activeStatus(status) === (model.view === "active"),
-  );
-
 export const writingCreation = (model: Model) =>
   isCreationWrite(model, model.request?.operation);
 
@@ -532,19 +522,15 @@ export const update = (
   return Message.match<Update.ReturnWithOutMessage<Model, Message, OutMessage>>(
     message,
     {
-      Opened: ({ id, view, refresh }) => {
+      Opened: ({ id, refresh }) => {
         const next =
-          id !== model.selectedId || view !== model.view
+          id !== model.selectedId
             ? {
                 ...model,
                 ...closedTaskMenus,
-                view,
                 selectedId: id,
                 editor: null,
-                attachments:
-                  id === model.selectedId
-                    ? model.attachments
-                    : Attachments.initial,
+                attachments: Attachments.initial,
                 creation: null,
                 error: null,
               }
@@ -564,10 +550,7 @@ export const update = (
           refresh || !opened.index
             ? start(opened, { _tag: "Load" })
             : { model: opened };
-        return !refresh &&
-          id === null &&
-          model.selectedId &&
-          view === model.view
+        return !refresh && id === null && model.selectedId
           ? {
               ...result,
               commands: [

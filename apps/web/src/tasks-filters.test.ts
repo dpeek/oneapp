@@ -1,6 +1,7 @@
 import { expect, it } from "@effect/vitest";
-import type { Task } from "./tasks-contract.ts";
+import { type Task, taskStatuses } from "./tasks-contract.ts";
 import {
+  defaultFilters,
   emptyFilters,
   matchesTaskFilters,
   taskFilterCount,
@@ -24,33 +25,48 @@ const task: Task = {
 };
 
 it("matches any selected value within each task filter and requires every category to match", () => {
-  const model = {
-    view: "active" as const,
-    filters: {
-      statuses: ["not-started", "in-progress"] as const,
-      priorities: [null, "high"] as const,
-      tagIds: [alpha, beta],
-    },
+  const filters = {
+    statuses: ["not-started", "in-progress", "completed"] as const,
+    priorities: [null, "high"] as const,
+    tagIds: [alpha, beta],
   };
-  expect(taskFilterCount(model)).toBe(6);
-  expect(matchesTaskFilters(task, model)).toBe(true);
+  expect(taskFilterCount(filters)).toBe(7);
+  expect(matchesTaskFilters(task, filters)).toBe(true);
   expect(
     matchesTaskFilters(
       { ...task, status: "not-started", priority: null, tagIds: [alpha] },
-      model,
+      filters,
     ),
   ).toBe(true);
-  expect(matchesTaskFilters({ ...task, status: "in-review" }, model)).toBe(
+  expect(matchesTaskFilters({ ...task, status: "in-review" }, filters)).toBe(
     false,
   );
-  expect(matchesTaskFilters({ ...task, priority: "low" }, model)).toBe(false);
-  expect(matchesTaskFilters({ ...task, tagIds: [gamma] }, model)).toBe(false);
-
-  const completed = { ...model, view: "completed" as const };
-  expect(taskFilterCount(completed)).toBe(4);
-  expect(matchesTaskFilters({ ...task, status: "completed" }, completed)).toBe(
+  expect(matchesTaskFilters({ ...task, priority: "low" }, filters)).toBe(false);
+  expect(matchesTaskFilters({ ...task, tagIds: [gamma] }, filters)).toBe(false);
+  expect(matchesTaskFilters({ ...task, status: "completed" }, filters)).toBe(
     true,
   );
+});
+
+it("defaults to the three active statuses with no priority or tag selections", () => {
+  expect(
+    taskStatuses.filter((status) =>
+      matchesTaskFilters({ ...task, status }, defaultFilters),
+    ),
+  ).toEqual(["not-started", "in-progress", "in-review"]);
+  expect(defaultFilters.priorities).toEqual([]);
+  expect(defaultFilters.tagIds).toEqual([]);
+});
+
+it("can select either closed status by itself", () => {
+  for (const selected of ["completed", "canceled"] as const) {
+    const filters = { ...emptyFilters, statuses: [selected] };
+    expect(
+      taskStatuses.filter((status) =>
+        matchesTaskFilters({ ...task, status }, filters),
+      ),
+    ).toEqual([selected]);
+  }
 });
 
 it("toggles Not started without removing other selections", () => {
@@ -60,7 +76,7 @@ it("toggles Not started without removing other selections", () => {
 });
 
 it("allows all tasks through when no values are selected", () => {
-  const model = { view: "active" as const, filters: emptyFilters };
-  expect(taskFilterCount(model)).toBe(0);
-  expect(matchesTaskFilters(task, model)).toBe(true);
+  expect(taskFilterCount(emptyFilters)).toBe(0);
+  for (const status of taskStatuses)
+    expect(matchesTaskFilters({ ...task, status }, emptyFilters)).toBe(true);
 });

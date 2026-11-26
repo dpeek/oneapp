@@ -26,10 +26,7 @@ const styles = stylex.create({
     boxSizing: "border-box",
     borderStyle: "solid",
     borderWidth: 1,
-    borderRadius: {
-      default: controls.pillRadius,
-      ':has([data-slot="tokenizer-remove"])': controls.radius,
-    },
+    borderRadius: controls.radius,
     borderColor: { default: controls.border, ":focus-within": controls.focus },
     boxShadow: {
       ":focus-within": `0 0 0 1px color-mix(in srgb, ${controls.focus} 35%, transparent)`,

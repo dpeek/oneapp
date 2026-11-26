@@ -23,6 +23,10 @@
   --alert-error: light-dark(#ab3723, #ffa693);
 }
 
+[data-slot="button-group"]:has(> [data-slot="input"]) > * {
+  border-radius: var(--control-radius);
+}
+
 [data-slot="button-group"] > :not(:last-child) {
   border-start-end-radius: 0;
   border-end-end-radius: 0;
@@ -40,7 +44,7 @@
 }
 
 [data-slot="button-group"]:has(> [data-slot="input"]:focus-visible) {
-  border-radius: var(--control-pill-radius);
+  border-radius: var(--control-radius);
   outline: 2px solid var(--focus);
   outline-offset: 1px;
 }

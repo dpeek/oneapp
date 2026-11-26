@@ -9,10 +9,7 @@ const styles = stylex.create({
     boxSizing: "border-box",
     borderStyle: "solid",
     borderWidth: 1,
-    borderRadius: {
-      default: controls.radius,
-      ':has(> [data-slot="input-group-control"] input)': controls.pillRadius,
-    },
+    borderRadius: controls.radius,
     borderColor: {
       default: controls.border,
       ':has([data-slot="input-group-control"] :focus-visible)': controls.focus,

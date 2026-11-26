@@ -6,6 +6,7 @@ import {
   Popover,
   Sheet,
   Tokenizer,
+  Tooltip,
 } from "@orumai/ui";
 import { Temporal } from "@js-temporal/polyfill";
 import { Effect, Option, Schema } from "effect";
@@ -153,6 +154,7 @@ export const Model = Schema.Struct({
   refreshRequest: Schema.NullOr(Schema.String),
   refreshPending: Schema.Boolean,
   runActivityTime: Schema.Number,
+  activityTooltips: Schema.Record(ItemId, Tooltip.Model),
   error: Schema.NullOr(
     Schema.Struct({
       message: Schema.String,
@@ -179,6 +181,7 @@ export const initial: Model = {
   refreshRequest: null,
   refreshPending: false,
   runActivityTime: 0,
+  activityTooltips: {},
   error: null,
 };
 
@@ -191,6 +194,8 @@ export const Message = defineMessageUnion({
   Retried: {},
   RefreshRequested: {},
   RunExpired: { at: Schema.Number },
+  GotActivityTooltipMessage: { id: ItemId, message: Tooltip.Message },
+  UnmountedActivityTooltip: { id: ItemId },
   RefreshCompleted: {
     check: Schema.String,
     result: Schema.Union([
@@ -315,6 +320,29 @@ const foldSortMenu = Update.foldChild({
     (model) => ({
       model: Schema.is(Sort)(value) ? { ...model, sort: value } : model,
     }),
+});
+
+const initActivityTooltip = (id: string) =>
+  Tooltip.init({ id: `task-activity-${id}` });
+
+export const activityTooltip = (model: Model, id: string) =>
+  model.activityTooltips[id] ?? initActivityTooltip(id);
+
+const foldActivityTooltip = Update.foldChildAt({
+  update: (model, message: typeof Tooltip.Message.Type) => {
+    const { model: next, commands } = Tooltip.update(model, message);
+    return { model: next, commands };
+  },
+  readAt: (model: Model, id: string) =>
+    findTask(model, id)?.latestRun
+      ? Option.some(activityTooltip(model, id))
+      : Option.none(),
+  writeAt: (model, id, tooltip) => ({
+    ...model,
+    activityTooltips: { ...model.activityTooltips, [id]: tooltip },
+  }),
+  toParentMessage: (id, message) =>
+    Message.GotActivityTooltipMessage({ id, message }),
 });
 
 export const toFilterTagsMessage = (
@@ -1021,6 +1049,22 @@ const transition = (
           runActivityTime: Math.max(model.runActivityTime, at),
         },
       }),
+      GotActivityTooltipMessage: ({ id, message }) =>
+        foldActivityTooltip(model, id, message),
+      UnmountedActivityTooltip: ({ id }) => {
+        const tooltip = model.activityTooltips[id];
+        if (!tooltip) return { model };
+        const activityTooltips = { ...model.activityTooltips };
+        if (findTask(model, id)?.latestRun) {
+          activityTooltips[id] = {
+            ...initActivityTooltip(id),
+            pendingShowVersion: tooltip.pendingShowVersion + 1,
+          };
+        } else {
+          delete activityTooltips[id];
+        }
+        return { model: { ...model, activityTooltips } };
+      },
       RefreshRequested: () => ({
         model:
           model.index || model.request?.operation._tag === "Load"

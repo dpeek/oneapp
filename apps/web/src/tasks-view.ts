@@ -21,6 +21,7 @@ import {
   timestamp,
   trashIconPaths,
   Tokenizer,
+  Tooltip,
   visuallyHiddenStatus,
 } from "@orumai/ui";
 import { Effect, Option } from "effect";
@@ -41,6 +42,7 @@ import {
 import { taskFilterCount } from "./tasks-filters.ts";
 import {
   FilterCategory,
+  activityTooltip,
   addTaskButtonId,
   creationDialogId,
   creationSubmitId,
@@ -74,25 +76,15 @@ import {
   priorityOptions,
   statusOptions,
   taskProperty,
-  type TaskRowValue,
   type ViewInputs,
 } from "./task-properties-view.ts";
 
-const runPhaseDisplay = {
-  setup: {
-    label: "Setting up",
-    icon: ["M5 3v5m0 4v9M12 3v10m0 4v4m7-18v3m0 4v11M2 8h6m1 9h6m1-11h6"],
-  },
-  implementation: {
-    label: "Agent working",
-    icon: ["m8 6-6 6 6 6m8-12 6 6-6 6"],
-  },
-  checks: { label: "Running checks", icon: taskIconPaths },
-  deployment: {
-    label: "Waiting for deploy",
-    icon: ["M12 16V4m-4 4 4-4 4 4M4 16v4h16v-4"],
-  },
-} satisfies Record<Exclude<TaskRun["phase"], "finished">, TaskRowValue>;
+const runPhaseLabels = {
+  setup: "Setting up",
+  implementation: "Agent working",
+  checks: "Running checks",
+  deployment: "Waiting for deploy",
+} satisfies Record<Exclude<TaskRun["phase"], "finished">, string>;
 const runOutcomeLabels = {
   deployed: "Deployed",
   "setup-failed": "Setup failed",
@@ -102,42 +94,59 @@ const runOutcomeLabels = {
   interrupted: "Run interrupted",
 } satisfies Record<NonNullable<TaskRun["outcome"]> | "interrupted", string>;
 
+const runReason = (run: TaskRun, now: number) =>
+  run.reason ??
+  (isTaskRunInterrupted(run, now)
+    ? "The runner stopped reporting activity."
+    : null);
+
 const runActivity = (
   run: TaskRun,
   now: number,
-  variant: "indicator" | "detail",
   h: HtmlBuilder<Message>,
+  row?: { model: Model; taskId: string },
 ) => {
   const outcome = isTaskRunInterrupted(run, now) ? "interrupted" : run.outcome;
   const { phase } = run;
-  const display = outcome
-    ? {
-        label: runOutcomeLabels[outcome],
-        icon: outcome === "deployed" ? cloudIconPaths : circleXIconPaths,
-      }
+  const label = outcome
+    ? runOutcomeLabels[outcome]
     : phase === "finished"
       ? null
-      : runPhaseDisplay[phase];
-  if (!display) return h.empty;
+      : runPhaseLabels[phase];
+  if (!label) return h.empty;
 
-  const { label, icon } = display;
   const activity = outcome
     ? h.DataAttribute("outcome", outcome)
     : h.DataAttribute("activity", phase);
-  if (variant === "indicator")
-    return h.span(
-      [
-        h.Class("task-row-value task-activity-indicator"),
-        activity,
-        h.Title(label),
-        h.Role("img"),
-        h.AriaLabel(label),
-      ],
-      outcome ? [outlineIcon(h, icon)] : [spinnerIcon(h), outlineIcon(h, icon)],
+  const icon = outcome
+    ? outlineIcon(h, outcome === "deployed" ? cloudIconPaths : circleXIconPaths)
+    : spinnerIcon(h, 16);
+  if (row)
+    return Tooltip.tooltip(
+      {
+        model: activityTooltip(row.model, row.taskId),
+        content: [label, runReason(run, now), run.summary]
+          .filter(Boolean)
+          .join(" · "),
+        toParentMessage: (message) =>
+          Message.GotActivityTooltipMessage({ id: row.taskId, message }),
+        renderTrigger: (attributes) =>
+          h.button(
+            [
+              ...attributes,
+              h.Class("task-row-value task-activity-indicator"),
+              activity,
+              h.AriaLabel(label),
+              h.OnUnmount(Message.UnmountedActivityTooltip({ id: row.taskId })),
+            ],
+            [icon],
+          ),
+      },
+      h,
     );
   return h.span(
     [h.Class("task-row-value"), activity],
-    [outcome ? outlineIcon(h, icon) : spinnerIcon(h, 16), h.span([], [label])],
+    [icon, h.span([], [label])],
   );
 };
 
@@ -146,16 +155,12 @@ const latestRunDetails = (
   now: number,
   h: HtmlBuilder<Message>,
 ) => {
-  const reason =
-    run.reason ??
-    (isTaskRunInterrupted(run, now)
-      ? "The runner stopped reporting activity."
-      : null);
+  const reason = runReason(run, now);
   return h.section(
     [h.Class("task-latest-run"), h.AriaLabel("Latest run")],
     [
       h.h2([], ["Latest run"]),
-      h.div([h.Role("status")], [runActivity(run, now, "detail", h)]),
+      h.div([h.Role("status")], [runActivity(run, now, h)]),
       ...(run.summary ? [h.p([], [run.summary])] : []),
       ...(reason ? [h.p([], [reason])] : []),
       ...(run.deploymentUrl
@@ -212,7 +217,12 @@ const taskRow = (
       h.td(
         [h.Class("task-activity-cell")],
         task.latestRun
-          ? [runActivity(task.latestRun, runActivityTime, "indicator", h)]
+          ? [
+              runActivity(task.latestRun, runActivityTime, h, {
+                model,
+                taskId: task.id,
+              }),
+            ]
           : [],
       ),
       h.td(

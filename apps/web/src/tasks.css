@@ -267,18 +267,17 @@
 }
 
 .task-activity-indicator {
-  position: relative;
-  z-index: 1;
-  display: inline-grid;
   inline-size: 1.5rem;
   block-size: 1.5rem;
-  place-items: center;
-  vertical-align: middle;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--control-radius);
+  padding: 0;
+  background: transparent;
 }
 
-.task-activity-indicator > svg {
-  grid-area: 1 / 1;
-  pointer-events: none;
+.task-activity-indicator:focus-visible {
+  outline: 2px solid var(--focus);
 }
 
 .task-row-value[data-status="in-progress"] {
@@ -289,8 +288,12 @@
   --task-row-icon-color: var(--alert-info);
 }
 
-.task-row-value:is([data-status="completed"], [data-outcome="deployed"]) {
+.task-row-value[data-status="completed"] {
   --task-row-icon-color: var(--alert-success);
+}
+
+.task-row-value[data-outcome="deployed"] {
+  --task-row-icon-color: light-dark(#0875ee, #54a9ff);
 }
 
 .task-row-value:is(

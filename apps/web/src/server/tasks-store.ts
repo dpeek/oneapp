@@ -3,8 +3,10 @@ import type { Tag } from "../items-contract.ts";
 import {
   claimed,
   deleteTags,
+  incrementItemVersion,
   insertTags,
   itemTagIdsColumn,
+  itemVersionStatement,
   tagCatalog,
   tagsAreAvailable,
 } from "./items-store.ts";
@@ -41,16 +43,10 @@ const taskStatement = (db: D1Database, account: string, id: string) =>
   db.prepare(`${taskProjection} AND i.id = ?2`).bind(account, id);
 
 const versionStatement = (db: D1Database, account: string) =>
-  db
-    .prepare("SELECT version FROM task_changes WHERE account_id = ?")
-    .bind(account);
+  itemVersionStatement(db, "task", account);
 
 export const incrementTaskVersion = (db: D1Database, condition: string) =>
-  db.prepare(
-    `INSERT INTO task_changes (account_id, version)
-       SELECT ?1, 1 WHERE ${condition}
-       ON CONFLICT (account_id) DO UPDATE SET version = version + 1`,
-  );
+  incrementItemVersion(db, "task", condition);
 
 const recordTaskChange = (
   db: D1Database,

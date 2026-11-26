@@ -2,9 +2,12 @@ import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
 import type { FileTagUpdate, StoredFile } from "../files-contract.ts";
 import type { Tag } from "../items-contract.ts";
 import {
+  claimed,
   deleteTags,
+  incrementItemVersion,
   insertTags,
   itemTagIdsColumn,
+  itemVersionStatement,
   tagCatalog,
   tagsAreAvailable,
 } from "./items-store.ts";
@@ -31,16 +34,28 @@ export const getFile = async (db: D1Database, account: string, id: string) => {
   return row ? decodeFile(row) : null;
 };
 
+const versionStatement = (db: D1Database, account: string) =>
+  itemVersionStatement(db, "file", account);
+
+export const fileVersion = async (db: D1Database, account: string) =>
+  (await versionStatement(db, account).first<number>("version")) ?? 0;
+
 export const fileIndex = async (db: D1Database, account: string) => {
-  const [fileRows, tagRows] = await db.batch<FileRow | Tag>([
+  const [fileRows, tagRows, versionRows] = await db.batch<
+    FileRow | Tag | { version: number }
+  >([
     db
       .prepare(`${fileProjection} ORDER BY i.created_at DESC, i.id DESC`)
       .bind(account),
     tagCatalog(db, account),
+    versionStatement(db, account),
   ]);
   return {
     files: (fileRows!.results as FileRow[]).map(decodeFile),
     tags: tagRows!.results as Tag[],
+    version:
+      (versionRows!.results[0] as { version: number } | undefined)?.version ??
+      0,
   };
 };
 
@@ -74,6 +89,7 @@ export const createFile = async (
          VALUES (?, ?, ?, ?, ?)`,
         )
         .bind(account, id, metadata.mediaType, size, metadata.previewType),
+      incrementItemVersion(db, "file", "changes() = 1").bind(account),
     ]);
   } catch (error) {
     // An interrupted response can leave a committed batch. Check before deleting its bytes.
@@ -94,7 +110,7 @@ export const updateFileTags = async (
 ) => {
   const revision = crypto.randomUUID();
   const tagIds = JSON.stringify([...new Set(input.tagIds)]);
-  const [item, , , file] = await db.batch<FileRow>([
+  const [item, , , , file] = await db.batch<FileRow>([
     db
       .prepare(
         `UPDATE items SET revision = ?4, updated_at = ?5
@@ -105,6 +121,7 @@ export const updateFileTags = async (
       .bind(account, id, input.revision, revision, now, tagIds),
     deleteTags(db, account, id, revision),
     insertTags(db, account, id, revision, tagIds),
+    incrementItemVersion(db, "file", claimed).bind(account, id, revision),
     fileStatement(db, account, id),
   ]);
   const row = file!.results[0];

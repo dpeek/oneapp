@@ -1,8 +1,11 @@
-import { Effect, Queue, Stream } from "effect";
+import { Effect, Queue, Schema, Stream } from "effect";
+import { filesChanged } from "./files-contract.ts";
 import { inboxChanged, inboxEventsPath } from "./inbox-contract.ts";
+import { tagsChanged } from "./items-contract.ts";
 import { tasksChanged } from "./tasks-contract.ts";
+import type { WorkspaceChange } from "./workspace-change-contract.ts";
 
-export const changes = Stream.callback<"inbox" | "tasks">(
+export const changes = Stream.callback<WorkspaceChange>(
   (queue) =>
     Effect.acquireRelease(
       Effect.sync(() => {
@@ -12,12 +15,12 @@ export const changes = Stream.callback<"inbox" | "tasks">(
         let socket: WebSocket | undefined;
         let retry: number | undefined;
         let delay = 1000;
-        const changed = (area: "inbox" | "tasks") => {
-          if (!stopped) Queue.offerUnsafe(queue, area);
+        const changed = (change: WorkspaceChange) => {
+          if (!stopped) Queue.offerUnsafe(queue, change);
         };
         const refresh = () => {
-          changed("inbox");
-          changed("tasks");
+          changed(inboxChanged);
+          changed(tagsChanged);
         };
         const connect = () => {
           const connection = new WebSocket(url);
@@ -26,9 +29,14 @@ export const changes = Stream.callback<"inbox" | "tasks">(
             delay = 1000;
             refresh();
           };
-          connection.onmessage = (event) => {
-            if (event.data === inboxChanged) changed("inbox");
-            if (event.data === tasksChanged) changed("tasks");
+          connection.onmessage = ({ data }) => {
+            if (
+              data === inboxChanged ||
+              data === tasksChanged ||
+              data === filesChanged ||
+              data === tagsChanged
+            )
+              changed(data);
           };
           connection.onclose = (event) => {
             if (stopped) return;
@@ -40,7 +48,7 @@ export const changes = Stream.callback<"inbox" | "tasks">(
         const resumed = () => {
           if (document.visibilityState !== "hidden") refresh();
         };
-        const focused = () => changed("tasks");
+        const focused = () => changed(tagsChanged);
         document.addEventListener("visibilitychange", resumed);
         window.addEventListener("online", resumed);
         window.addEventListener("focus", focused);
@@ -58,3 +66,18 @@ export const changes = Stream.callback<"inbox" | "tasks">(
     ).pipe(Effect.andThen(Effect.never)),
   { bufferSize: 16, strategy: "sliding" },
 );
+
+export const checkIndex = async <A>(
+  path: string,
+  version: number,
+  schema: Schema.Decoder<A>,
+  signal: AbortSignal,
+) => {
+  const response = await fetch(`${path}?since=${version}`, {
+    signal,
+    cache: "no-store",
+  });
+  if (response.status === 401) return "expired";
+  if (response.status === 204 || !response.ok) return "unchanged";
+  return Schema.decodeUnknownSync(schema)(await response.json());
+};

@@ -21,6 +21,7 @@ import {
   tagsApi,
 } from "./items-contract.ts";
 import { createTagPrefix, searchTags } from "./tag-picker.ts";
+import { checkIndex } from "./workspace-changes.ts";
 
 export const uploadInputId = "files-upload";
 export const createUploadInputId = "create-file-upload";
@@ -58,6 +59,8 @@ export const Model = Schema.Struct({
   tagPicker: Tokenizer.Model,
   previewFailed: Schema.Boolean,
   request: Schema.NullOr(Schema.Struct({ id: ItemId, operation: Operation })),
+  refreshRequest: Schema.NullOr(ItemId),
+  refreshPending: Schema.Boolean,
   error: Schema.NullOr(Schema.String),
 });
 export type Model = typeof Model.Type;
@@ -70,11 +73,21 @@ export const initial: Model = {
   tagPicker: tagPicker(),
   previewFailed: false,
   request: null,
+  refreshRequest: null,
+  refreshPending: false,
   error: null,
 };
 export const Message = defineMessageUnion({
   Opened: { id: Schema.NullOr(ItemId), refresh: Schema.Boolean },
   Retried: {},
+  RefreshRequested: {},
+  RefreshCompleted: {
+    check: ItemId,
+    result: Schema.Union([
+      FileIndex,
+      Schema.Literals(["unchanged", "expired"]),
+    ]),
+  },
   FocusUpdated: {},
   PickedFile: { source: UploadSource, selected: Schema.Boolean },
   GotFilterPopoverMessage: { message: Popover.Message },
@@ -231,6 +244,20 @@ const Request = Command.define("RequestFiles", {
     ),
 });
 
+const CheckVersion = Command.define("CheckFileVersion", {
+  args: { check: ItemId, version: FileIndex.fields.version },
+  messages: [Message.RefreshCompleted],
+  execute: ({ check, version }) =>
+    Effect.tryPromise((signal) =>
+      checkIndex(filesApi, version, FileIndex, signal),
+    ).pipe(
+      Effect.map((result) => Message.RefreshCompleted({ check, result })),
+      Effect.orElseSucceed(() =>
+        Message.RefreshCompleted({ check, result: "unchanged" }),
+      ),
+    ),
+});
+
 export const selectedFile = (model: Model) =>
   model.index?.files.find(({ id }) => id === model.selectedId) ?? null;
 
@@ -238,7 +265,14 @@ const start = (model: Model, operation: Operation) => {
   if (model.request) return { model };
   const id = crypto.randomUUID();
   return {
-    model: { ...model, request: { id, operation }, error: null },
+    model: {
+      ...model,
+      request: { id, operation },
+      // Discard a snapshot taken before this operation and check again afterward.
+      refreshRequest: null,
+      refreshPending: model.refreshPending || model.refreshRequest !== null,
+      error: null,
+    },
     commands: [Request({ request: id, operation })],
   };
 };
@@ -260,7 +294,15 @@ const foldFilterPopover = Update.foldChild({
   }),
 });
 
-export const update = (
+const applyIndex = (model: Model, index: typeof FileIndex.Type): Model => ({
+  ...model,
+  index,
+  tagFilter: index.tags.some(({ id }) => id === model.tagFilter)
+    ? model.tagFilter
+    : null,
+});
+
+const transition = (
   model: Model,
   message: Message,
 ): Update.ReturnWithOutMessage<Model, Message, OutMessage> => {
@@ -292,6 +334,21 @@ export const update = (
         return result.commands
           ? { ...result, commands: [FocusRetryTarget(), ...result.commands] }
           : result;
+      },
+      RefreshRequested: () => ({
+        model:
+          model.index || model.request?.operation._tag === "Load"
+            ? { ...model, refreshPending: true }
+            : model,
+      }),
+      RefreshCompleted: ({ check, result }) => {
+        if (check !== model.refreshRequest) return { model };
+        const next = { ...model, refreshRequest: null };
+        if (result === "expired")
+          return { model: next, outMessage: OutMessage.SessionExpired() };
+        return {
+          model: result === "unchanged" ? next : applyIndex(next, result),
+        };
       },
       FocusUpdated: () => ({ model }),
       PickedFile: ({ source, selected }) =>
@@ -395,14 +452,7 @@ export const update = (
           id === model.selectedId ? { ...model, previewFailed: true } : model,
       }),
       Loaded: ({ index }) => ({
-        model: {
-          ...model,
-          index,
-          request: null,
-          tagFilter: index.tags.some(({ id }) => id === model.tagFilter)
-            ? model.tagFilter
-            : null,
-        },
+        model: applyIndex({ ...model, request: null }, index),
       }),
       Uploaded: ({ file }) => {
         const operation = model.request?.operation;
@@ -427,6 +477,7 @@ export const update = (
         model: {
           ...model,
           index: model.index && {
+            ...model.index,
             files: model.index.files.map((entry) =>
               entry.id === file.id ? file : entry,
             ),
@@ -456,4 +507,27 @@ export const update = (
       }),
     },
   );
+};
+
+export const update = (model: Model, message: Message) => {
+  const result = transition(model, message);
+  const next = result.model;
+  if (
+    !next.refreshPending ||
+    !next.index ||
+    next.request ||
+    next.refreshRequest ||
+    result.outMessage?._tag === "SessionExpired"
+  )
+    return result;
+
+  const check = crypto.randomUUID();
+  return {
+    ...result,
+    model: { ...next, refreshRequest: check, refreshPending: false },
+    commands: [
+      ...(result.commands ?? []),
+      CheckVersion({ check, version: next.index.version }),
+    ],
+  };
 };

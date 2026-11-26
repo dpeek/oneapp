@@ -1,7 +1,14 @@
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import { ByteSize, Clock, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
-import { ItemId, Tag, tagApi, TagCreate, tagsApi } from "../items-contract.ts";
+import {
+  ItemId,
+  Tag,
+  tagApi,
+  TagCreate,
+  tagsApi,
+  tagsChanged,
+} from "../items-contract.ts";
 import { fileNameHeader } from "../files-contract.ts";
 import {
   TaskAttachmentMediaType,
@@ -15,8 +22,10 @@ import {
   TaskCreate,
   TaskDelete,
   tasksApi,
+  tasksChanged,
   TaskUpdate,
 } from "../tasks-contract.ts";
+import type { NotifyItemChange } from "../workspace-change-contract.ts";
 import { jsonError, privateHeaders, readFileName } from "./api-response.ts";
 import { AppAuth, ownerId, type authHttp } from "./auth.ts";
 import { createTag, removeTag, renameTag, tagCatalog } from "./items-store.ts";
@@ -53,7 +62,7 @@ export const tasksRoutes = (
   http: ReturnType<typeof authHttp>,
   { DB: db, FILE_UPLOADS: bucket }: Pick<WorkerEnv, "DB" | "FILE_UPLOADS">,
   defer: (work: Promise<unknown>) => void,
-  onTaskChange: (account: string) => void,
+  notifyItemChange: NotifyItemChange,
 ) => {
   const authenticated = <E, R>(
     handler: (
@@ -248,7 +257,7 @@ export const tasksRoutes = (
               const { task, changed } = yield* Effect.tryPromise(() =>
                 createTask(db, account, input.value, now),
               );
-              if (changed) onTaskChange(account);
+              if (changed) notifyItemChange(account, tasksChanged);
               return yield* task
                 ? json(task, 201)
                 : jsonError(409, "Could not create the task.");
@@ -279,7 +288,7 @@ export const tasksRoutes = (
               );
               if (!result.task) return yield* jsonError(404, "Task not found.");
               if (result.changed) {
-                onTaskChange(account);
+                notifyItemChange(account, tasksChanged);
                 return yield* json(result.task);
               }
               if (result.task.revision !== input.value.revision)
@@ -309,7 +318,7 @@ export const tasksRoutes = (
                 return yield* jsonError(404, "Task not found.");
               if (result === "conflict")
                 return yield* jsonError(409, "The task changed. Try again.");
-              onTaskChange(account);
+              notifyItemChange(account, tasksChanged);
               return HttpServerResponse.empty({
                 status: 204,
                 headers: privateHeaders,
@@ -341,12 +350,12 @@ export const tasksRoutes = (
               const input = yield* readInput(TagCreate);
               if (input._tag === "None")
                 return yield* jsonError(400, "Enter a tag name.");
-              const tag = yield* Effect.tryPromise(() =>
+              const created = yield* Effect.tryPromise(() =>
                 createTag(db, account, input.value.name),
               );
-              return yield* tag
-                ? json(tag)
-                : jsonError(400, "Enter a tag name.");
+              if (!created) return yield* jsonError(400, "Enter a tag name.");
+              if (created.changed) notifyItemChange(account, tagsChanged);
+              return yield* json(created.tag);
             }),
           ),
         ),
@@ -375,7 +384,9 @@ export const tasksRoutes = (
                   409,
                   "A tag with this name already exists.",
                 );
-              return yield* tag ? json(tag) : jsonError(404, "Tag not found.");
+              if (!tag) return yield* jsonError(404, "Tag not found.");
+              notifyItemChange(account, tagsChanged);
+              return yield* json(tag);
             }),
           ),
         ),
@@ -395,6 +406,7 @@ export const tasksRoutes = (
                 removeTag(db, account, id),
               );
               if (!removed) return yield* jsonError(404, "Tag not found.");
+              notifyItemChange(account, tagsChanged);
               return HttpServerResponse.empty({
                 status: 204,
                 headers: privateHeaders,

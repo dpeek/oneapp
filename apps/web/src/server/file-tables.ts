@@ -6,7 +6,15 @@ import {
   text,
 } from "drizzle-orm/sqlite-core";
 import type { StoredFile } from "../files-contract.ts";
+import { accounts } from "./database.ts";
 import { items } from "./item-tables.ts";
+
+export const fileChanges = sqliteTable("file_changes", {
+  accountId: text("account_id")
+    .primaryKey()
+    .references(() => accounts.id, { onDelete: "cascade" }),
+  version: integer().notNull(),
+});
 
 export const files = sqliteTable(
   "files",

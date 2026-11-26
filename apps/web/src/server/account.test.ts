@@ -35,9 +35,10 @@ import {
   FileIndex,
   fileNameHeader,
   filesApi,
+  filesChanged,
   StoredFile,
 } from "../files-contract.ts";
-import { Tag, tagApi, tagsApi } from "../items-contract.ts";
+import { Tag, tagApi, tagsApi, tagsChanged } from "../items-contract.ts";
 import {
   TaskAttachment,
   taskAttachmentApi,
@@ -326,7 +327,25 @@ const setup = async (
 
 it("renames shared tags and cascades deletion through tasks and files", async () => {
   using sqlite = new Database(":memory:");
+  const published: Array<{ change: string; tasks: number; files: number }> = [];
+  let dropNotification = false;
   const { env, call, request, signIn, cookies } = await setup(sqlite, {
+    INBOX_UPDATES: {
+      getByName: () => ({
+        publish: async (change: string) => {
+          if (dropNotification) return;
+          const versions = sqlite
+            .query<{ tasks: number; files: number }, []>(
+              `
+            SELECT (SELECT version FROM task_changes) AS tasks,
+                   (SELECT version FROM file_changes) AS files
+          `,
+            )
+            .get()!;
+          published.push({ change, ...versions });
+        },
+      }),
+    } as unknown as WorkerEnv["INBOX_UPDATES"],
     FILE_UPLOADS: {
       put: async (_key: string, bytes: ArrayBuffer) => ({
         size: bytes.byteLength,
@@ -346,10 +365,18 @@ it("renames shared tags and cascades deletion through tasks and files", async ()
       await (await call(tagsApi, { name }, cookie)).json(),
     );
   const list = async () => (await call(tagsApi, undefined, cookie)).json();
+  const read = (path: string, since: number) =>
+    request(`${path}?since=${since}`, { headers: { cookie } });
   expect((await request(tagsApi, {})).status).toBe(401);
   expect(await list()).toEqual([]);
+  expect((await read(filesApi, 0)).status).toBe(204);
   const receipts = await createTag("Receipts");
   const review = await createTag("Review");
+  expect(await createTag("receipts")).toEqual(receipts);
+  expect(published.map(({ change }) => change)).toEqual([
+    tagsChanged,
+    tagsChanged,
+  ]);
   expect(await list()).toEqual([receipts, review]);
 
   const tagIds = [receipts.id, review.id].sort();
@@ -379,6 +406,15 @@ it("renames shared tags and cascades deletion through tasks and files", async ()
     (await write(filePath, "PUT", { revision: uploaded.revision, tagIds }))
       .status,
   ).toBe(200);
+  expect(published.slice(-2)).toEqual([
+    { change: filesChanged, tasks: 3, files: 3 },
+    { change: filesChanged, tasks: 3, files: 4 },
+  ]);
+  expect(
+    (await write(filePath, "PUT", { revision: uploaded.revision, tagIds: [] }))
+      .status,
+  ).toBe(409);
+  expect((await read(filesApi, 4)).status).toBe(204);
 
   const receiptPath = tagApi(receipts.id);
   expect(
@@ -395,6 +431,7 @@ it("renames shared tags and cascades deletion through tasks and files", async ()
   const updated = await write(receiptPath, "PUT", { name: "Expenses" });
   expect(updated.status).toBe(200);
   expect(await updated.json()).toEqual({ ...receipts, name: "Expenses" });
+  expect(published.at(-1)).toEqual({ change: tagsChanged, tasks: 4, files: 5 });
   expect(await list()).toEqual([{ ...receipts, name: "Expenses" }, review]);
   const file = async () =>
     (await request(filePath, { headers: { cookie } })).json();
@@ -418,8 +455,24 @@ it("renames shared tags and cascades deletion through tasks and files", async ()
   ).toBe(404);
   expect((await write(tagApi(foreignTagId), "DELETE")).status).toBe(404);
 
+  expect((await read(tasksApi, 4)).status).toBe(204);
+  expect((await read(filesApi, 5)).status).toBe(204);
+  const delivered = published.length;
+  dropNotification = true;
   expect((await write(receiptPath, "DELETE")).status).toBe(204);
+  dropNotification = false;
   expect((await write(receiptPath, "DELETE")).status).toBe(404);
+  expect(published).toHaveLength(delivered);
+  expect(await (await read(tasksApi, 4)).json()).toMatchObject({
+    version: 5,
+    tags: [review],
+    tasks: [{ id: taskId, tagIds: [review.id] }],
+  });
+  expect(await (await read(filesApi, 5)).json()).toMatchObject({
+    version: 6,
+    tags: [review],
+    files: [{ id: uploaded.id, tagIds: [review.id] }],
+  });
   expect(await list()).toEqual([review]);
   expect(await tasks()).toMatchObject({
     tasks: [{ id: taskId, tagIds: [review.id] }],

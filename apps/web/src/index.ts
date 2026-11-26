@@ -56,6 +56,7 @@ import * as ExtensionAccess from "./extension-access.ts";
 import * as Inbox from "./inbox.ts";
 import {
   folderPath,
+  inboxChanged,
   mailMessagePage,
   MailRoute,
   mailRouteFor,
@@ -83,7 +84,12 @@ import {
 } from "./settings-navigation.ts";
 import * as TagSettings from "./tag-settings.ts";
 import * as Files from "./files.ts";
-import { filePath, FileRoute, fileRouteFor } from "./files-contract.ts";
+import {
+  filesChanged,
+  filePath,
+  FileRoute,
+  fileRouteFor,
+} from "./files-contract.ts";
 import { view as filesView } from "./files-view.ts";
 import * as Tasks from "./tasks.ts";
 import {
@@ -91,6 +97,7 @@ import {
   TaskRoute,
   taskRouteFor,
   tasksPath,
+  tasksChanged,
 } from "./tasks-contract.ts";
 import {
   createView as taskCreateView,
@@ -175,6 +182,7 @@ const Message = defineMessageUnion({
   GotCalendarMessage: { message: Calendar.Message },
   GotTasksMessage: { message: Tasks.Message },
   GotFilesMessage: { message: Files.Message },
+  ItemViewsRefreshRequested: {},
   OpenedCreationMenu: {},
   GotCreationDialogMessage: { message: Dialog.Message },
   FocusedCreationField: {},
@@ -832,31 +840,38 @@ const subscriptions = Subscription.make<Model, Message>()((entry) => ({
       dependenciesToStream: ({ active }) =>
         active
           ? workspaceChanges.pipe(
-              Stream.map((area) =>
-                area === "inbox"
-                  ? toInboxMessage(Inbox.Message.LiveChanged())
-                  : toTasksMessage(Tasks.Message.RefreshRequested()),
-              ),
+              Stream.map((change) => {
+                switch (change) {
+                  case inboxChanged:
+                    return toInboxMessage(Inbox.Message.LiveChanged());
+                  case tasksChanged:
+                    return toTasksMessage(Tasks.Message.RefreshRequested());
+                  case filesChanged:
+                    return toFilesMessage(Files.Message.RefreshRequested());
+                  default:
+                    return Message.ItemViewsRefreshRequested();
+                }
+              }),
             )
           : Stream.empty,
     },
   ),
-  taskVersion: entry(
+  itemVersions: entry(
     { active: Schema.Boolean },
     {
       modelToDependencies: (model) => ({
         active:
           model.account !== null &&
           !isApproval(model) &&
-          model.page === "tasks",
+          (model.page === "tasks" ||
+            model.page === "files" ||
+            model.tasks.creation !== null),
       }),
       dependenciesToStream: ({ active }) =>
         active
           ? Stream.fromSchedule(Schedule.spaced("30 seconds")).pipe(
               Stream.filter(() => document.visibilityState === "visible"),
-              Stream.map(() =>
-                toTasksMessage(Tasks.Message.RefreshRequested()),
-              ),
+              Stream.map(() => Message.ItemViewsRefreshRequested()),
             )
           : Stream.empty,
     },
@@ -1444,10 +1459,22 @@ const update = (
     },
     GotCalendarMessage: ({ message }) => foldCalendar(model, message),
     GotTasksMessage: ({ message }) =>
-      message._tag === "RefreshRequested" && model.page !== "tasks"
+      message._tag === "RefreshRequested" &&
+      model.page !== "tasks" &&
+      !model.tasks.creation
         ? { model }
         : foldTasks(model, message),
-    GotFilesMessage: ({ message }) => foldFiles(model, message),
+    GotFilesMessage: ({ message }) =>
+      message._tag === "RefreshRequested" && model.page !== "files"
+        ? { model }
+        : foldFiles(model, message),
+    ItemViewsRefreshRequested: () =>
+      Update.combine(model, [
+        (current) =>
+          update(current, toTasksMessage(Tasks.Message.RefreshRequested())),
+        (current) =>
+          update(current, toFilesMessage(Files.Message.RefreshRequested())),
+      ]),
     OpenedCreationMenu: () =>
       model.account &&
       !isApproval(model) &&

@@ -6,6 +6,7 @@ import { Link, LinkId, LinkList, SaveLink } from "@orumai/core/links";
 import { Context, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { SqlClient } from "effect/sql";
+import type { NotifyItemChange } from "../workspace-change-contract.ts";
 import { jsonError, privateHeaders } from "./api-response.ts";
 import {
   insufficientCliScopeResponse,
@@ -41,7 +42,7 @@ const createServer = (
   bucket: R2Bucket,
   sql: SqlClient.SqlClient,
   scopes: readonly McpScope[],
-  onTaskChange: (account: string) => void,
+  notifyItemChange: NotifyItemChange,
   runner: boolean,
 ) => {
   const run = Effect.runPromiseWith(Context.make(SqlClient.SqlClient, sql));
@@ -125,8 +126,16 @@ const createServer = (
         ),
     );
   }
-  registerTaskTools(server, origin, ownerId, db, bucket, scopes, onTaskChange);
-  if (runner) registerTaskRunnerTools(server, ownerId, db, onTaskChange);
+  registerTaskTools(
+    server,
+    origin,
+    ownerId,
+    db,
+    bucket,
+    scopes,
+    notifyItemChange,
+  );
+  if (runner) registerTaskRunnerTools(server, ownerId, db, notifyItemChange);
   return server;
 };
 
@@ -147,7 +156,7 @@ export const mcpRoutes = (
   origin: string,
   db: D1Database,
   bucket: R2Bucket,
-  onTaskChange: (account: string) => void,
+  notifyItemChange: NotifyItemChange,
 ) => {
   const handle = <E, R>(
     authorize: Effect.Effect<
@@ -182,7 +191,7 @@ export const mcpRoutes = (
             bucket,
             sql,
             access.scopes,
-            onTaskChange,
+            notifyItemChange,
             runner,
           ),
         {

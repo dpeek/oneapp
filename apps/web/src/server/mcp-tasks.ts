@@ -1,7 +1,7 @@
 import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
 import type { CallToolResult, McpServer } from "@modelcontextprotocol/server";
 import { Schema } from "effect";
-import { ItemId, Tag, TagCreate } from "../items-contract.ts";
+import { ItemId, Tag, TagCreate, tagsChanged } from "../items-contract.ts";
 import { TaskAttachment } from "../task-attachment-contract.ts";
 import { TaskRunClaim, TaskRunUpdate } from "../task-run-contract.ts";
 import {
@@ -11,8 +11,10 @@ import {
   TaskPriority,
   TaskStatus,
   taskPath,
+  tasksChanged,
   taskTagLimit,
 } from "../tasks-contract.ts";
+import type { NotifyItemChange } from "../workspace-change-contract.ts";
 import { createTag, listTags } from "./items-store.ts";
 import { type McpScope, ReadTasks, WriteTasks } from "./mcp-oauth.ts";
 import { pageFields, result, standardSchema, toolFailure } from "./mcp-tool.ts";
@@ -106,7 +108,7 @@ export const registerTaskRunnerTools = (
   server: McpServer,
   account: string,
   db: D1Database,
-  onTaskChange: (account: string) => void,
+  notifyItemChange: NotifyItemChange,
 ) => {
   server.registerTool(
     "claim_task_run",
@@ -122,7 +124,7 @@ export const registerTaskRunnerTools = (
     (input) =>
       runTool("Could not claim the task.", async () => {
         const revision = await claimTaskRun(db, account, input, Date.now());
-        if (revision) onTaskChange(account);
+        if (revision) notifyItemChange(account, tasksChanged);
         return result({ revision });
       }),
   );
@@ -155,7 +157,7 @@ export const registerTaskRunnerTools = (
           update,
           Date.now(),
         );
-        if (status !== "stale") onTaskChange(account);
+        if (status !== "stale") notifyItemChange(account, tasksChanged);
         return result({ status });
       }),
   );
@@ -168,7 +170,7 @@ export const registerTaskTools = (
   db: D1Database,
   bucket: R2Bucket,
   scopes: readonly McpScope[],
-  onTaskChange: (account: string) => void,
+  notifyItemChange: NotifyItemChange,
 ) => {
   const url = (id: string) => new URL(taskPath(id), origin).href;
   const receipt = ({ id, revision }: Task) =>
@@ -290,7 +292,7 @@ export const registerTaskTools = (
             { ...fields, id: requestId ?? crypto.randomUUID() },
             Date.now(),
           );
-          if (changed) onTaskChange(account);
+          if (changed) notifyItemChange(account, tasksChanged);
           return task
             ? receipt(task)
             : toolFailure(
@@ -338,7 +340,7 @@ export const registerTaskTools = (
           );
           if (!update.task) return toolFailure("Task not found.");
           if (update.changed) {
-            onTaskChange(account);
+            notifyItemChange(account, tasksChanged);
             return receipt(update.task);
           }
           if (update.task.revision !== revision) return stale();
@@ -366,7 +368,7 @@ export const registerTaskTools = (
           const deletion = await deleteTask(db, account, id, revision);
           if (deletion === "conflict") return stale();
           if (deletion === "missing") return toolFailure("Task not found.");
-          onTaskChange(account);
+          notifyItemChange(account, tasksChanged);
           return result({ id });
         }),
     );
@@ -386,8 +388,10 @@ export const registerTaskTools = (
       },
       ({ name }) =>
         runTool("Could not create the tag.", async () => {
-          const tag = await createTag(db, account, name);
-          return tag ? result({ tag }) : toolFailure("Enter a valid tag name.");
+          const created = await createTag(db, account, name);
+          if (!created) return toolFailure("Enter a valid tag name.");
+          if (created.changed) notifyItemChange(account, tagsChanged);
+          return result({ tag: created.tag });
         }),
     );
   }

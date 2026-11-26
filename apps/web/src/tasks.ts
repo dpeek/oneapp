@@ -12,6 +12,7 @@ import { focus } from "foldkit/dom";
 import { defineMessageUnion } from "foldkit/message";
 import { ItemId, Tag, TagCreate, tagsApi } from "./items-contract.ts";
 import { createTagPrefix, searchTags } from "./tag-picker.ts";
+import { checkIndex } from "./workspace-changes.ts";
 import * as Attachments from "./task-attachments.ts";
 import {
   defaultTaskStatus,
@@ -462,20 +463,10 @@ const CheckVersion = Command.define("CheckTaskVersion", {
   args: { check: Schema.String, version: TaskSnapshot.fields.version },
   messages: [Message.RefreshCompleted],
   execute: ({ check, version }) =>
-    Effect.tryPromise(async (signal) => {
-      const response = await fetch(`${tasksApi}?since=${version}`, {
-        signal,
-        cache: "no-store",
-      });
-      if (response.status === 401)
-        return Message.RefreshCompleted({ check, result: "expired" });
-      if (response.status === 204 || !response.ok)
-        return Message.RefreshCompleted({ check, result: "unchanged" });
-      const result = Schema.decodeUnknownSync(TaskSnapshot)(
-        await response.json(),
-      );
-      return Message.RefreshCompleted({ check, result });
-    }).pipe(
+    Effect.tryPromise((signal) =>
+      checkIndex(tasksApi, version, TaskSnapshot, signal),
+    ).pipe(
+      Effect.map((result) => Message.RefreshCompleted({ check, result })),
       Effect.orElseSucceed(() =>
         Message.RefreshCompleted({ check, result: "unchanged" }),
       ),
@@ -615,12 +606,18 @@ const applyIndex = (model: Model, index: typeof TaskSnapshot.Type): Model => {
   const task = selectedTask(next);
   const previous = selectedTask(model);
   const availableTags = new Set(index.tags.map(({ id }) => id));
+  const availableTagIds = (ids: readonly string[]) =>
+    ids.filter((id) => availableTags.has(id));
+  const refreshEditorTags = <A extends Editor>(editor: A): A => ({
+    ...editor,
+    draft: { ...editor.draft, tagIds: availableTagIds(editor.draft.tagIds) },
+  });
   const editor = model.editor;
   return {
     ...next,
     filters: {
       ...model.filters,
-      tagIds: model.filters.tagIds.filter((id) => availableTags.has(id)),
+      tagIds: availableTagIds(model.filters.tagIds),
     },
     editor:
       task &&
@@ -629,14 +626,9 @@ const applyIndex = (model: Model, index: typeof TaskSnapshot.Type): Model => {
       (task.revision === previous.revision ||
         editor.draft.revision !== previous.revision ||
         hasEdits(editor.draft, previous))
-        ? {
-            ...editor,
-            draft: {
-              ...editor.draft,
-              tagIds: editor.draft.tagIds.filter((id) => availableTags.has(id)),
-            },
-          }
+        ? refreshEditorTags(editor)
         : task && makeEditor(toDraft(task)),
+    creation: model.creation && refreshEditorTags(model.creation),
   };
 };
 
@@ -751,6 +743,8 @@ const transition = (
           return { model };
         const next = {
           ...model,
+          refreshPending:
+            model.refreshPending || (preserveView && model.index !== null),
           creation: {
             ...makeEditor({
               id: crypto.randomUUID(),

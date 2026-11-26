@@ -28,7 +28,7 @@ import {
 } from "effect/http";
 import { accountPath } from "../account-contract.ts";
 import { inboxEventsPath } from "../inbox-contract.ts";
-import { tasksChanged } from "../tasks-contract.ts";
+import type { NotifyItemChange } from "../workspace-change-contract.ts";
 import {
   forgotPasswordPage,
   passwordResetPath,
@@ -217,16 +217,14 @@ export default {
       if (context) context.waitUntil(work);
       else void work;
     };
-    const notifyTasks = (account: string) => {
+    const notifyItemChange: NotifyItemChange = (account, change) => {
       if (account !== ownerId || !env.INBOX_UPDATES) return;
       defer(
         (async () => {
           try {
-            await env.INBOX_UPDATES.getByName(defaultMailboxId).publish(
-              tasksChanged,
-            );
+            await env.INBOX_UPDATES.getByName(defaultMailboxId).publish(change);
           } catch {
-            console.warn("Could not notify Tasks subscribers");
+            console.warn(`Could not publish ${change}`);
           }
         })(),
       );
@@ -465,7 +463,7 @@ export default {
         health,
         mcpOAuth.routes,
         mcpLoginRoute,
-        mcpRoutes(env.APP_ORIGIN, env.DB, env.FILE_UPLOADS, notifyTasks),
+        mcpRoutes(env.APP_ORIGIN, env.DB, env.FILE_UPLOADS, notifyItemChange),
         Layer.mergeAll(
           accountRoutes(http, {
             enabled: emailTransport !== disabledEmail,
@@ -485,8 +483,8 @@ export default {
           mailImportRoutes(env, defer),
           peopleRoutes(http, env, defer),
           calendarRoutes(http, env),
-          tasksRoutes(http, env, defer, notifyTasks),
-          filesRoutes(http, env),
+          tasksRoutes(http, env, defer, notifyItemChange),
+          filesRoutes(http, env, notifyItemChange),
           vaultSetupRoutes(http, env.DB),
           vaultItemRoutes(http, env.DB),
           vaultManagementRoutes(http, env, defer),

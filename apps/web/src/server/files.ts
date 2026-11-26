@@ -8,9 +8,11 @@ import {
   fileApi,
   fileNameHeader,
   filesApi,
+  filesChanged,
   fileUploadLimit,
 } from "../files-contract.ts";
 import { ItemId } from "../items-contract.ts";
+import type { NotifyItemChange } from "../workspace-change-contract.ts";
 import {
   attachmentDisposition,
   jsonError,
@@ -23,6 +25,7 @@ import {
   createFile,
   fileIndex,
   fileObjectKey,
+  fileVersion,
   getFile,
   updateFileTags,
 } from "./files-store.ts";
@@ -35,6 +38,7 @@ const isId = Schema.is(ItemId);
 export const filesRoutes = (
   http: ReturnType<typeof authHttp>,
   { DB: db, FILE_UPLOADS: bucket }: WorkerEnv,
+  notifyItemChange: NotifyItemChange,
 ) => {
   const authenticated = <E, R>(
     handler: (
@@ -110,9 +114,21 @@ export const filesRoutes = (
 
   return Layer.mergeAll(
     route("GET", filesApi, (account) =>
-      Effect.tryPromise(() => fileIndex(db, account)).pipe(
-        Effect.flatMap(json),
-      ),
+      Effect.gen(function* () {
+        const { since } = yield* HttpServerRequest.ParsedSearchParams;
+        if (typeof since === "string") {
+          const version = yield* Effect.tryPromise(() =>
+            fileVersion(db, account),
+          );
+          if (since === String(version))
+            return HttpServerResponse.empty({
+              status: 204,
+              headers: privateHeaders,
+            });
+        }
+        const index = yield* Effect.tryPromise(() => fileIndex(db, account));
+        return yield* json(index);
+      }),
     ),
     route("GET", fileApi(":id"), (account) =>
       Effect.gen(function* () {
@@ -157,6 +173,7 @@ export const filesRoutes = (
             now,
           ),
         );
+        notifyItemChange(account, filesChanged);
         return yield* json(file, 201);
       }),
     ),
@@ -180,7 +197,10 @@ export const filesRoutes = (
           updateFileTags(db, account, id, input.value, now),
         );
         if (!file) return yield* notFound();
-        if (changed) return yield* json(file);
+        if (changed) {
+          notifyItemChange(account, filesChanged);
+          return yield* json(file);
+        }
         if (file.revision !== input.value.revision)
           return yield* json(file, 409);
         return yield* jsonError(400, "One or more tags are unavailable.");

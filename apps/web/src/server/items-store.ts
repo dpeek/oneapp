@@ -16,6 +16,35 @@ const tagProjection = "SELECT id, name FROM tags WHERE account_id = ?1";
 export const tagCatalog = (db: D1Database, account: string) =>
   db.prepare(`${tagProjection} ORDER BY name_key`).bind(account);
 
+type ItemKind = "task" | "file";
+
+export const itemVersionStatement = (
+  db: D1Database,
+  kind: ItemKind,
+  account: string,
+) =>
+  db
+    .prepare(`SELECT version FROM ${kind}_changes WHERE account_id = ?`)
+    .bind(account);
+
+export const incrementItemVersion = (
+  db: D1Database,
+  kind: ItemKind,
+  condition: string,
+) =>
+  db.prepare(
+    `INSERT INTO ${kind}_changes (account_id, version)
+       SELECT ?1, 1 WHERE ${condition}
+       ON CONFLICT (account_id) DO UPDATE SET version = version + 1`,
+  );
+
+const recordTagChange = (db: D1Database, account: string) => [
+  // changes() reflects the preceding write. The task counter advances exactly
+  // when the tag changed, so it also gates the file counter in the same batch.
+  incrementItemVersion(db, "task", "changes() = 1").bind(account),
+  incrementItemVersion(db, "file", "changes() = 1").bind(account),
+];
+
 export const listTags = async (
   db: D1Database,
   account: string,
@@ -74,20 +103,21 @@ export const createTag = async (
   const name = normalizeTagName(input);
   if (!Schema.is(TagName)(name)) return null;
   const nameKey = tagNameKey(name);
-  const [, tag] = await db.batch<Tag>([
+  const [inserted, , , tag] = await db.batch<Tag>([
     db
       .prepare(
         `INSERT INTO tags (account_id, id, name, name_key) VALUES (?, ?, ?, ?)
          ON CONFLICT (account_id, name_key) DO NOTHING`,
       )
       .bind(account, crypto.randomUUID(), name, nameKey),
+    ...recordTagChange(db, account),
     db
       .prepare(
         "SELECT id, name FROM tags WHERE account_id = ? AND name_key = ?",
       )
       .bind(account, nameKey),
   ]);
-  return tag!.results[0]!;
+  return { tag: tag!.results[0]!, changed: inserted!.meta.changes > 0 };
 };
 
 export const renameTag = async (
@@ -98,7 +128,7 @@ export const renameTag = async (
 ) => {
   const name = normalizeTagName(input);
   if (!Schema.is(TagName)(name)) return "invalid";
-  const [updated, existing] = await db.batch<Tag>([
+  const [updated, , , existing] = await db.batch<Tag>([
     db
       .prepare(
         `UPDATE tags SET name = ?3, name_key = ?4
@@ -109,13 +139,22 @@ export const renameTag = async (
          RETURNING id, name`,
       )
       .bind(account, id, name, tagNameKey(name)),
+    ...recordTagChange(db, account),
     db.prepare(`${tagProjection} AND id = ?2`).bind(account, id),
   ]);
   return updated!.results[0] ?? (existing!.results.length ? "conflict" : null);
 };
 
-export const removeTag = (db: D1Database, account: string, id: string) =>
-  db
-    .prepare("DELETE FROM tags WHERE account_id = ? AND id = ? RETURNING id")
-    .bind(account, id)
-    .first<{ id: string }>();
+export const removeTag = async (
+  db: D1Database,
+  account: string,
+  id: string,
+) => {
+  const [removed] = await db.batch<{ id: string }>([
+    db
+      .prepare("DELETE FROM tags WHERE account_id = ? AND id = ? RETURNING id")
+      .bind(account, id),
+    ...recordTagChange(db, account),
+  ]);
+  return removed!.results[0];
+};

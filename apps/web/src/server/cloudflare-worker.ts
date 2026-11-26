@@ -6,7 +6,7 @@ import type {
 import resvgModule from "@resvg/resvg-wasm/index_bg.wasm";
 import { DurableObject } from "cloudflare:workers";
 import { inboxChanged } from "../inbox-contract.ts";
-import { tasksChanged } from "../tasks-contract.ts";
+import type { WorkspaceChange } from "../workspace-change-contract.ts";
 
 import { createSvgRasterizer } from "./bitwarden/website-icon-svg.ts";
 import { inboxSessionHeaders, type InboxSocketSession } from "./inbox.ts";
@@ -46,9 +46,7 @@ export class InboxUpdates extends DurableObject<{ DB: D1Database }> {
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
 
-  async publish(
-    change: typeof inboxChanged | typeof tasksChanged = inboxChanged,
-  ) {
+  async publish(change: WorkspaceChange = inboxChanged) {
     const clients = this.ctx.getWebSockets().map((socket) => ({
       socket,
       session: socket.deserializeAttachment() as InboxSocketSession | null,

@@ -4,6 +4,7 @@ import { ItemId, ItemTagIds, Tag } from "./items-contract.ts";
 
 export const filesPath = "/files";
 export const filesApi = "/api/files";
+export const filesChanged = "files.changed";
 export const filePath = (id: string) => `${filesPath}/${id}`;
 export const fileApi = (id: string) => `${filesApi}/${id}` as const;
 export const fileContentApi = (id: string, action: "preview" | "download") =>
@@ -44,6 +45,7 @@ export type StoredFile = typeof StoredFile.Type;
 export const FileIndex = Schema.Struct({
   files: Schema.Array(StoredFile),
   tags: Schema.Array(Tag),
+  version: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
 });
 export const FileTagUpdate = Schema.Struct({
   revision: ItemId,

@@ -6,6 +6,7 @@ import { Link, LinkId, LinkList, SaveLink } from "@orumai/core/links";
 import { Context, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { SqlClient } from "effect/sql";
+import type { WorkspaceActor } from "../tasks-contract.ts";
 import type { NotifyItemChange } from "../workspace-change-contract.ts";
 import { jsonError, privateHeaders } from "./api-response.ts";
 import {
@@ -37,14 +38,14 @@ const DeletedLink = Schema.Struct({ id: LinkId });
 
 const createServer = (
   origin: string,
-  ownerId: string,
+  actor: WorkspaceActor,
   db: D1Database,
   bucket: R2Bucket,
   sql: SqlClient.SqlClient,
   scopes: readonly McpScope[],
   notifyItemChange: NotifyItemChange,
-  runner: boolean,
 ) => {
+  const ownerId = actor.accountId;
   const run = Effect.runPromiseWith(Context.make(SqlClient.SqlClient, sql));
   const server = new McpServer({ name: appName, version: "1.0.0" });
   if (scopes.includes(WriteLinks)) {
@@ -129,13 +130,14 @@ const createServer = (
   registerTaskTools(
     server,
     origin,
-    ownerId,
+    actor,
     db,
     bucket,
     scopes,
     notifyItemChange,
   );
-  if (runner) registerTaskRunnerTools(server, ownerId, db, notifyItemChange);
+  if (actor.kind === "oru")
+    registerTaskRunnerTools(server, actor, db, notifyItemChange);
   return server;
 };
 
@@ -164,7 +166,7 @@ export const mcpRoutes = (
       E,
       R
     >,
-    runner = false,
+    kind: WorkspaceActor["kind"],
   ) =>
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
@@ -186,13 +188,12 @@ export const mcpRoutes = (
         () =>
           createServer(
             origin,
-            access.subjectId,
+            { accountId: access.subjectId, kind },
             db,
             bucket,
             sql,
             access.scopes,
             notifyItemChange,
-            runner,
           ),
         {
           maxRequestBodySize:
@@ -218,7 +219,7 @@ export const mcpRoutes = (
     });
 
   return Layer.mergeAll(
-    HttpRouter.add("*", "/mcp", handle(mcpOAuth.CurrentAccess)).pipe(
+    HttpRouter.add("*", "/mcp", handle(mcpOAuth.CurrentAccess, "owner")).pipe(
       Layer.provide(mcpOAuth.middleware([]).combine(advertiseScopes).layer),
     ),
     HttpRouter.add(
@@ -231,7 +232,7 @@ export const mcpRoutes = (
             scopes: [ReadTasks, WriteTasks],
           })),
         ),
-        true,
+        "oru",
       ).pipe(
         Effect.catchTags({
           InvalidCliToken: invalidTokenResponse,

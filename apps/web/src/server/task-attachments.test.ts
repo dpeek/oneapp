@@ -39,14 +39,20 @@ it("keeps screenshots private by task and retries cleanup after revoking access"
   );
   const task = crypto.randomUUID();
   const elsewhere = crypto.randomUUID();
+  const owner = { accountId: "owner", kind: "owner" } as const;
   const created = await createTask(
     db,
-    "owner",
+    owner,
     { id: task, title: "Screenshot task" },
     1,
   );
-  await createTask(db, "owner", { id: elsewhere, title: "Different task" }, 1);
-  await createTask(db, "other", { id: task, title: "Different account" }, 1);
+  await createTask(db, owner, { id: elsewhere, title: "Different task" }, 1);
+  await createTask(
+    db,
+    { ...owner, accountId: "other" },
+    { id: task, title: "Different account" },
+    1,
+  );
 
   const blobs = new Map<string, ArrayBuffer>();
   let losePutResponse = false;

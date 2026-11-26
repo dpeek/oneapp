@@ -40,10 +40,12 @@ export const TaskRun = Schema.Struct({
 });
 export type TaskRun = typeof TaskRun.Type;
 
+export const taskRunClaimSources = ["ready-tag", "assignment"] as const;
 export const TaskRunClaim = Schema.Struct({
   taskId: ItemId,
   revision: ItemId,
   runId: ItemId,
+  source: Schema.optionalKey(Schema.Literals(taskRunClaimSources)),
 });
 export const TaskRunUpdate = Schema.Union([
   Schema.Struct({ phase: Schema.Literal("implementation") }),

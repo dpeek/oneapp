@@ -165,6 +165,13 @@ const taskListLabel = "All tasks";
 const priorityOptions = Object.entries(taskPriorityDisplay).map(
   ([value, { label }]) => ({ value, label }),
 );
+const assigneeLabels = { owner: "Me", oru: "Oru", "": "Unassigned" };
+const assigneeOptions = Object.entries(assigneeLabels).map(
+  ([value, label]) => ({
+    value,
+    label,
+  }),
+);
 const taskDateTimeFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeStyle: "short",
@@ -267,6 +274,7 @@ const taskRow = (
         task.priority ?? "",
         h,
       ),
+      h.td([], [assigneeLabels[task.assignee ?? ""]]),
       h.td([], [timestamp(task.updatedAt, now, h)]),
     ],
   );
@@ -377,7 +385,14 @@ const taskTable = (
         [
           h.tr(
             [],
-            ["Task", "Status", "Activity", "Priority", "Updated"].map((label) =>
+            [
+              "Task",
+              "Status",
+              "Activity",
+              "Priority",
+              "Assignee",
+              "Updated",
+            ].map((label) =>
               h.th([h.Key(label), h.Scope("col")], [h.span([], [label])]),
             ),
           ),
@@ -395,6 +410,7 @@ const taskPlaceholders = (h: HtmlBuilder<Message>) =>
         h.td([], [skeleton(index % 2 ? "md" : "lg", h)]),
         h.td([], [skeleton("md", h)]),
         h.td([], [skeleton("md", h)]),
+        h.td([], [skeleton("sm", h)]),
         h.td([], [skeleton("sm", h)]),
         h.td([], [skeleton("md", h)]),
       ],
@@ -553,6 +569,21 @@ const taskFields = (
           ),
           h,
         ),
+        ...(!creation
+          ? [
+              nativeSelect(
+                {
+                  label: "Assignee",
+                  options: assigneeOptions,
+                  value: draft.assignee ?? "",
+                  disabled: busy,
+                  onChange: (value) =>
+                    Message.EditedField({ field: "assignee", value }),
+                },
+                h,
+              ),
+            ]
+          : []),
       ],
     ),
     field(

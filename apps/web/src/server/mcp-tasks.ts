@@ -6,6 +6,7 @@ import { TaskAttachment } from "../task-attachment-contract.ts";
 import { TaskRunClaim, TaskRunUpdate } from "../task-run-contract.ts";
 import {
   Task,
+  TaskAssignee,
   TaskDate,
   TaskDelete,
   TaskPriority,
@@ -13,6 +14,7 @@ import {
   taskPath,
   tasksChanged,
   taskTagLimit,
+  type WorkspaceActor,
 } from "../tasks-contract.ts";
 import type { NotifyItemChange } from "../workspace-change-contract.ts";
 import { createTag, listTags } from "./items-store.ts";
@@ -47,6 +49,7 @@ const TaskListInput = Schema.Struct({
     Schema.Union([Schema.Literals(["active", "all"]), TaskStatus]),
   ),
   priority: Schema.optional(TaskPriority),
+  assignee: Schema.optionalKey(TaskAssignee),
   tagId: Schema.optional(ItemId),
   dueOnOrAfter: Schema.optional(TaskDate),
   dueOnOrBefore: Schema.optional(TaskDate),
@@ -67,6 +70,7 @@ const TaskResult = Schema.Struct({ task: TaskLink });
 const TaskReceipt = Schema.Struct({
   id: ItemId,
   revision: ItemId,
+  assignee: TaskAssignee,
   url: Schema.String,
 });
 const CreateTask = Schema.Struct({
@@ -82,6 +86,7 @@ const UpdateTask = Schema.Struct({
   ...optionalFields,
   addTagIds: Schema.optional(tagIds),
   removeTagIds: Schema.optional(tagIds),
+  assignee: Schema.optionalKey(TaskAssignee),
 });
 const TagListInput = Schema.Struct({
   ...pageFields,
@@ -106,7 +111,7 @@ const stale = () =>
 
 export const registerTaskRunnerTools = (
   server: McpServer,
-  account: string,
+  actor: WorkspaceActor,
   db: D1Database,
   notifyItemChange: NotifyItemChange,
 ) => {
@@ -115,7 +120,7 @@ export const registerTaskRunnerTools = (
     {
       title: "Claim a task for a runner attempt",
       description:
-        "Claim a ready task at its current revision and start a run.",
+        "Claim a not-started task at the supplied revision. Use source assignment to require an Oru assignee. Omitting source uses the ready tag.",
       inputSchema: standardSchema(TaskRunClaim),
       outputSchema: standardSchema(
         Schema.Struct({ revision: Schema.NullOr(ItemId) }),
@@ -123,8 +128,8 @@ export const registerTaskRunnerTools = (
     },
     (input) =>
       runTool("Could not claim the task.", async () => {
-        const revision = await claimTaskRun(db, account, input, Date.now());
-        if (revision) notifyItemChange(account, tasksChanged);
+        const revision = await claimTaskRun(db, actor, input, Date.now());
+        if (revision) notifyItemChange(actor.accountId, tasksChanged);
         return result({ revision });
       }),
   );
@@ -133,7 +138,7 @@ export const registerTaskRunnerTools = (
     {
       title: "Report task runner activity",
       description:
-        "Report progress, renew the active lease, or record the outcome of the latest runner attempt.",
+        "Report progress, renew the active lease, or record an outcome. A failure returns an unchanged assignment-based claim to the workspace owner.",
       inputSchema: standardSchema(
         Schema.Struct({
           taskId: ItemId,
@@ -151,13 +156,13 @@ export const registerTaskRunnerTools = (
       runTool("Could not update the task run.", async () => {
         const status = await updateTaskRun(
           db,
-          account,
+          actor,
           taskId,
           runId,
           update,
           Date.now(),
         );
-        if (status !== "stale") notifyItemChange(account, tasksChanged);
+        if (status !== "stale") notifyItemChange(actor.accountId, tasksChanged);
         return result({ status });
       }),
   );
@@ -166,22 +171,23 @@ export const registerTaskRunnerTools = (
 export const registerTaskTools = (
   server: McpServer,
   origin: string,
-  account: string,
+  actor: WorkspaceActor,
   db: D1Database,
   bucket: R2Bucket,
   scopes: readonly McpScope[],
   notifyItemChange: NotifyItemChange,
 ) => {
+  const account = actor.accountId;
   const url = (id: string) => new URL(taskPath(id), origin).href;
-  const receipt = ({ id, revision }: Task) =>
-    result({ id, revision, url: url(id) });
+  const receipt = ({ id, revision, assignee }: Task) =>
+    result({ id, revision, assignee, url: url(id) });
   if (scopes.includes(ReadTasks)) {
     server.registerTool(
       "list_tasks",
       {
         title: "List tasks",
         description:
-          "List task summaries by most recently updated. Filter by title query, status, priority, tag ID, or inclusive date-only due bounds (YYYY-MM-DD). Status defaults to active, which excludes completed and canceled tasks. Use all for every status. Use nextOffset to retrieve the next page.",
+          "List task summaries by most recently updated. Filter by title query, status, priority, assignee, tag ID, or inclusive date-only due bounds (YYYY-MM-DD). Use null for unassigned tasks. Status defaults to active, which excludes completed and canceled tasks. Use all for every status. Use nextOffset to retrieve the next page.",
         inputSchema: standardSchema(TaskListInput),
         outputSchema: standardSchema(TaskPage),
         annotations: readOnly,
@@ -275,7 +281,7 @@ export const registerTaskTools = (
       {
         title: "Create a task",
         description:
-          "Create a task with a title and optional Markdown description, status, priority, date-only dueOn (YYYY-MM-DD), and existing tag IDs. New tasks default to not-started. Reuse the same optional UUID requestId to retry this creation safely.",
+          "Create a task with a title and optional Markdown description, status, priority, date-only dueOn (YYYY-MM-DD), and existing tag IDs. New tasks are assigned to their author and default to not-started. Reuse the same optional UUID requestId to retry this creation safely.",
         inputSchema: standardSchema(CreateTask),
         outputSchema: standardSchema(TaskReceipt),
         annotations: {
@@ -288,7 +294,7 @@ export const registerTaskTools = (
         runTool("Could not create the task.", async () => {
           const { task, changed } = await createTask(
             db,
-            account,
+            actor,
             { ...fields, id: requestId ?? crypto.randomUUID() },
             Date.now(),
           );
@@ -305,7 +311,7 @@ export const registerTaskTools = (
       {
         title: "Update a task",
         description:
-          "Edit only the supplied fields. Pass the current revision from list_tasks or get_task. Use null to clear priority or dueOn and an empty string to clear the Markdown description. Set status to completed to complete a task or not-started to reopen it. Add or remove existing tag IDs without replacing other tags.",
+          "Edit only the supplied fields. Pass the current revision from list_tasks or get_task. Use owner or oru to assign the task, null to clear assignee, priority, or dueOn, and an empty string to clear the Markdown description. Set status to completed to complete a task or not-started to reopen it. Add or remove existing tag IDs without replacing other tags.",
         inputSchema: standardSchema(UpdateTask),
         outputSchema: standardSchema(TaskReceipt),
         annotations: {

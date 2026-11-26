@@ -19,6 +19,7 @@ import {
 } from "../task-attachment-contract.ts";
 import {
   taskApi,
+  TaskAssignee,
   TaskCreate,
   TaskDelete,
   tasksApi,
@@ -221,7 +222,12 @@ export const tasksRoutes = (
       handle(
         authenticated((account) =>
           Effect.gen(function* () {
-            const { since } = yield* HttpServerRequest.ParsedSearchParams;
+            const { since, assignee: assigneeParam } =
+              yield* HttpServerRequest.ParsedSearchParams;
+            const assignee =
+              assigneeParam === "unassigned" ? null : assigneeParam;
+            if (assignee !== undefined && !Schema.is(TaskAssignee)(assignee))
+              return yield* jsonError(400, "Choose a valid assignee.");
             if (typeof since === "string") {
               const version = yield* Effect.tryPromise(() =>
                 taskVersion(db, account),
@@ -233,7 +239,7 @@ export const tasksRoutes = (
                 });
             }
             const index = yield* Effect.tryPromise(() =>
-              taskIndex(db, account),
+              taskIndex(db, account, assignee),
             );
             return yield* json(index);
           }),
@@ -255,7 +261,12 @@ export const tasksRoutes = (
                 );
               const now = yield* Clock.currentTimeMillis;
               const { task, changed } = yield* Effect.tryPromise(() =>
-                createTask(db, account, input.value, now),
+                createTask(
+                  db,
+                  { accountId: account, kind: "owner" },
+                  input.value,
+                  now,
+                ),
               );
               if (changed) notifyItemChange(account, tasksChanged);
               return yield* task

@@ -12,7 +12,7 @@
 
 .task-table {
   inline-size: 100%;
-  min-inline-size: 47rem;
+  min-inline-size: 54rem;
   table-layout: fixed;
   border-spacing: 0;
   font-size: 0.875rem;
@@ -53,6 +53,10 @@
 
 .task-table th:nth-child(4) {
   inline-size: 8.25rem;
+}
+
+.task-table th:nth-child(5) {
+  inline-size: 7rem;
 }
 
 .task-table th:last-child {
@@ -163,7 +167,7 @@
   font-weight: 600;
 }
 
-@container task-list (width <= 47rem) {
+@container task-list (width <= 54rem) {
   .task-table {
     min-inline-size: 0;
   }
@@ -180,7 +184,11 @@
     inline-size: clamp(6.5rem, 30cqi, 10rem);
   }
 
-  .task-table :is(th, td):nth-child(3) {
+  .task-table th:nth-child(5) {
+    inline-size: 5.25rem;
+  }
+
+  .task-table :is(th, td):is(:nth-child(3), :nth-child(5)) {
     padding-inline: 0.375rem;
     font-size: 0.75rem;
   }
@@ -198,12 +206,12 @@
     padding-inline-end: 0.375rem;
   }
 
-  .task-row > td:nth-child(4) {
+  .task-row > td:nth-child(5) {
     border-start-end-radius: var(--control-radius);
     border-end-end-radius: var(--control-radius);
   }
 
-  .task-table th:not(:nth-child(3)) > span,
+  .task-table th:not(:nth-child(3), :nth-child(5)) > span,
   .task-row-value-label {
     position: absolute;
     inline-size: 1px;

@@ -54,3 +54,38 @@ it("backfills missing task statuses and preserves attachments with foreign keys 
   db.exec("DELETE FROM items WHERE id = 'legacy'");
   expect(db.query("SELECT id FROM task_attachments").all()).toEqual([]);
 });
+
+it("keeps tasks and ready-tag runs created before assignment support", async () => {
+  using db = new Database(":memory:", { strict: true });
+  const root = new URL("../../drizzle/", import.meta.url).pathname;
+  const files = Array.from(
+    new Bun.Glob("*/migration.sql").scanSync(root),
+  ).sort();
+  const upgrade = files.find((file) => file.includes("_task_assignees/"))!;
+  for (const file of files.filter((file) => file < upgrade))
+    db.exec(await Bun.file(root + file).text());
+
+  db.exec(`
+    PRAGMA foreign_keys = ON;
+    INSERT INTO accounts (id, active, security_revision) VALUES ('owner', 1, '1');
+    INSERT INTO items (account_id, id, kind, title, revision, created_at, updated_at)
+    VALUES ('owner', 'legacy', 'task', 'Legacy task', 'revision', 1, 2);
+    INSERT INTO tasks (account_id, item_id, status) VALUES ('owner', 'legacy', 'in-progress');
+    INSERT INTO task_runs (account_id, task_id, id, claim_revision, phase, started_at, updated_at)
+    VALUES ('owner', 'legacy', 'run', 'revision', 'setup', 2, 2);
+  `);
+  const migration = await Bun.file(root + upgrade).text();
+  db.transaction(() => db.exec(migration))();
+
+  expect(db.query("SELECT status, author, assignee FROM tasks").get()).toEqual({
+    status: "in-progress",
+    author: null,
+    assignee: null,
+  });
+  expect(
+    db.query("SELECT assignment_request_revision FROM task_runs").get(),
+  ).toEqual({
+    assignment_request_revision: null,
+  });
+  expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
+});

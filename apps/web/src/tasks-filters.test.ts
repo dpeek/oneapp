@@ -19,6 +19,8 @@ const task: Task = {
   status: "in-progress",
   priority: "high",
   dueOn: null,
+  author: null,
+  assignee: null,
   tagIds: [beta],
   createdAt: 0,
   updatedAt: 0,

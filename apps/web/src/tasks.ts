@@ -18,6 +18,7 @@ import {
   defaultTaskStatus,
   Task,
   taskApi,
+  TaskAssignee,
   TaskCreate,
   TaskDelete,
   TaskPriority,
@@ -41,6 +42,7 @@ const Draft = Schema.Struct({
   revision: Schema.NullOr(ItemId),
   title: Schema.String,
   dueOn: Schema.NullOr(Schema.String),
+  assignee: TaskAssignee,
 });
 type Draft = typeof Draft.Type;
 const Editor = Schema.Struct({
@@ -84,6 +86,7 @@ const Field = Schema.Literals([
   "status",
   "priority",
   "dueOn",
+  "assignee",
 ]);
 
 export const Model = Schema.Struct({
@@ -510,6 +513,7 @@ const toDraft = ({
   status,
   priority,
   dueOn,
+  assignee,
   tagIds,
 }: Task) => ({
   id,
@@ -519,6 +523,7 @@ const toDraft = ({
   status,
   priority,
   dueOn,
+  assignee,
   tagIds,
 });
 
@@ -539,6 +544,7 @@ export const hasEdits = (draft: Draft, task: Task) =>
   draft.status !== task.status ||
   draft.priority !== task.priority ||
   draft.dueOn !== task.dueOn ||
+  draft.assignee !== task.assignee ||
   draft.tagIds.length !== task.tagIds.length ||
   draft.tagIds.some((id) => !task.tagIds.includes(id));
 
@@ -556,6 +562,10 @@ const editField = (
     }
     case "dueOn":
       return { ...draft, dueOn: value || null };
+    case "assignee": {
+      const assignee = value || null;
+      return Schema.is(TaskAssignee)(assignee) ? { ...draft, assignee } : draft;
+    }
     default:
       return { ...draft, [field]: value };
   }
@@ -754,6 +764,7 @@ const transition = (
               status: defaultTaskStatus,
               priority: null,
               dueOn: null,
+              assignee: "owner",
               tagIds: [],
             }),
             preserveView,
@@ -770,7 +781,11 @@ const transition = (
       }),
       Created: () => {
         if (model.request || !model.creation || !model.index) return { model };
-        const { revision: _, ...fields } = model.creation.draft;
+        const {
+          revision: _,
+          assignee: _assignee,
+          ...fields
+        } = model.creation.draft;
         const input = { ...fields, title: fields.title.trim() };
         if (!Schema.is(TaskCreate)(input))
           return {

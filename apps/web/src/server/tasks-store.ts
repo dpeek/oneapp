@@ -15,6 +15,7 @@ import {
   type Task,
   type TaskCreate,
   type TaskUpdate,
+  type WorkspaceActor,
 } from "../tasks-contract.ts";
 
 type TaskSummary = Omit<Task, "description">;
@@ -25,6 +26,7 @@ type TaskRow<T extends TaskSummary = Task> = Omit<T, "tagIds" | "latestRun"> & {
 const taskColumns = `
   i.id, i.title, i.revision, i.created_at AS createdAt,
     i.updated_at AS updatedAt, t.status, t.priority, t.due_on AS dueOn,
+    t.author, t.assignee,
     CASE WHEN r.id IS NOT NULL THEN json_object(
       'id', r.id, 'phase', r.phase, 'startedAt', r.started_at,
       'updatedAt', r.updated_at, 'expiresAt', r.expires_at,
@@ -74,11 +76,18 @@ export const getTask = async (db: D1Database, account: string, id: string) => {
 export const taskVersion = async (db: D1Database, account: string) =>
   (await versionStatement(db, account).first<number>("version")) ?? 0;
 
-export const taskIndex = async (db: D1Database, account: string) => {
+export const taskIndex = async (
+  db: D1Database,
+  account: string,
+  assignee?: Task["assignee"],
+) => {
+  const filter = assignee === undefined ? "" : "AND t.assignee IS ?2";
   const [taskRows, tagRows, versionRows] = await db.batch<
     TaskRow | Tag | { version: number }
   >([
-    db.prepare(`${taskProjection} ${taskOrder}`).bind(account),
+    db
+      .prepare(`${taskProjection} ${filter} ${taskOrder}`)
+      .bind(...(assignee === undefined ? [account] : [account, assignee])),
     tagCatalog(db, account),
     versionStatement(db, account),
   ]);
@@ -95,6 +104,7 @@ type TaskFilters = {
   query?: string | undefined;
   status?: "active" | "all" | Task["status"] | undefined;
   priority?: Task["priority"] | undefined;
+  assignee?: Task["assignee"] | undefined;
   tagId?: string | undefined;
   dueOnOrAfter?: string | undefined;
   dueOnOrBefore?: string | undefined;
@@ -109,6 +119,7 @@ export const listTasks = async (
     query,
     status = "active",
     priority,
+    assignee,
     tagId,
     dueOnOrAfter,
     dueOnOrBefore,
@@ -127,6 +138,7 @@ export const listTasks = async (
     filters.push("t.status NOT IN ('completed', 'canceled')");
   else if (status !== "all") filter("t.status = ?", status);
   if (priority !== undefined) filter("t.priority IS ?", priority);
+  if (assignee !== undefined) filter("t.assignee IS ?", assignee);
   if (tagId)
     filter(
       "EXISTS (SELECT 1 FROM item_tags WHERE account_id = i.account_id AND item_id = i.id AND tag_id = ?)",
@@ -146,7 +158,7 @@ export const listTasks = async (
 
 export const createTask = async (
   db: D1Database,
-  account: string,
+  { accountId: account, kind: author }: WorkspaceActor,
   {
     id,
     title,
@@ -170,10 +182,19 @@ export const createTask = async (
       .bind(account, id, title, revision, now, ids),
     db
       .prepare(
-        `INSERT INTO tasks (account_id, item_id, description, status, priority, due_on)
-         SELECT ?1, ?2, ?4, ?5, ?6, ?7 WHERE ${claimed}`,
+        `INSERT INTO tasks (account_id, item_id, description, status, priority, due_on, author, assignee)
+         SELECT ?1, ?2, ?4, ?5, ?6, ?7, ?8, ?8 WHERE ${claimed}`,
       )
-      .bind(account, id, revision, description, status, priority, dueOn),
+      .bind(
+        account,
+        id,
+        revision,
+        description,
+        status,
+        priority,
+        dueOn,
+        author,
+      ),
     insertTags(db, account, id, revision, ids),
     recordTaskChange(db, account, id, revision),
     taskStatement(db, account, id),
@@ -205,7 +226,8 @@ export const updateTask = async (
       .bind(account, id, input.revision, input.title, revision, now, tagIds),
     db
       .prepare(
-        `UPDATE tasks SET description = ?4, status = ?5, priority = ?6, due_on = ?7
+        `UPDATE tasks SET description = ?4, status = ?5, priority = ?6, due_on = ?7,
+           assignee = CASE WHEN ?8 THEN ?9 ELSE assignee END
          WHERE account_id = ?1 AND item_id = ?2 AND ${claimed}`,
       )
       .bind(
@@ -216,6 +238,8 @@ export const updateTask = async (
         input.status,
         input.priority,
         input.dueOn,
+        input.assignee !== undefined ? 1 : 0,
+        input.assignee ?? null,
       ),
     deleteTags(db, account, id, revision),
     insertTags(db, account, id, revision, tagIds),

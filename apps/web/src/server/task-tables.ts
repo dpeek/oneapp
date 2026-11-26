@@ -11,6 +11,7 @@ import {
 import {
   defaultTaskStatus,
   taskStatuses,
+  workspaceActorKinds,
   type Task,
 } from "../tasks-contract.ts";
 import type { TaskAttachment } from "../task-attachment-contract.ts";
@@ -34,6 +35,8 @@ export const tasks = sqliteTable(
     status: text({ enum: taskStatuses }).notNull().default(defaultTaskStatus),
     priority: text().$type<Task["priority"]>(),
     dueOn: text("due_on"),
+    author: text({ enum: workspaceActorKinds }),
+    assignee: text({ enum: workspaceActorKinds }),
   },
   (table) => [
     primaryKey({ columns: [table.accountId, table.itemId] }),
@@ -52,6 +55,7 @@ export const taskRuns = sqliteTable(
     taskId: text("task_id").notNull(),
     id: text().notNull(),
     claimRevision: text("claim_revision").notNull(),
+    assignmentRequestRevision: text("assignment_request_revision"),
     phase: text({ enum: taskRunPhases }).notNull(),
     startedAt: integer("started_at").notNull(),
     updatedAt: integer("updated_at").notNull(),

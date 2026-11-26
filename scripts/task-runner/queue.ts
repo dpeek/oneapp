@@ -22,6 +22,8 @@ const TagPage = Schema.Struct({
 const TaskDetails = Schema.Struct({
   task: Schema.Struct({
     ...Task.fields,
+    author: Schema.optionalKey(Task.fields.author),
+    assignee: Schema.optionalKey(Task.fields.assignee),
     attachments: Schema.Array(TaskAttachment),
   }),
 });

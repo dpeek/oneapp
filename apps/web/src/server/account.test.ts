@@ -2945,6 +2945,41 @@ const defaultMcpScopes = [
   tasksWriteScope,
 ];
 
+const mcpRequest = async (
+  request: Awaited<ReturnType<typeof setup>>["request"],
+  path: string,
+  token: string,
+  method: string,
+  params = {},
+) => {
+  const response = await request(path, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      accept: "application/json, text/event-stream",
+      "content-type": "application/json",
+      "mcp-protocol-version": "2025-06-18",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+  });
+  const body = await response.text();
+  expect(response.status, body).toBe(200);
+  const data = response.headers
+    .get("content-type")
+    ?.startsWith("text/event-stream")
+    ? body.match(/^data: (.+)$/m)?.[1]
+    : body;
+  return JSON.parse(data ?? "") as {
+    error?: { message: string };
+    result?: {
+      tools?: { name: string }[];
+      structuredContent?: unknown;
+      content?: CallToolResult["content"];
+      isError?: boolean;
+    };
+  };
+};
+
 it("lets a dedicated runner claim opted-in tasks and report only the latest run over MCP", async () => {
   using sqlite = new Database(":memory:");
   const published: string[] = [];
@@ -2985,6 +3020,9 @@ it("lets a dedicated runner claim opted-in tasks and report only the latest run 
   };
   const runner = await issue(taskRunnerScopes);
   const links = await issue(cliLinkScopes);
+  expect(
+    (await request(taskRunnerMcpPath, { headers: { cookie } })).status,
+  ).toBe(401);
   expect(
     (await request(taskRunnerMcpPath, { headers: links.headers })).status,
   ).toBe(403);
@@ -3167,12 +3205,158 @@ it("lets a dedicated runner claim opted-in tasks and report only the latest run 
     expect(deployed.revision).not.toBe(retryRevision);
     expect(deployed).toMatchObject({
       status: "completed",
+      assignee: "owner",
       latestRun: {
         id: retry,
         outcome: "deployed",
         summary: "Fixed and verified.",
         deploymentUrl,
       },
+    });
+
+    const runnerTool = async (name: string, args: object) => {
+      const reply = await mcpRequest(
+        request,
+        taskRunnerMcpPath,
+        runner.secret,
+        "tools/call",
+        { name, arguments: args },
+      );
+      expect(reply.error).toBeUndefined();
+      expect(reply.result?.isError).toBeFalsy();
+      return reply.result?.structuredContent;
+    };
+    const createAssigned = async (status = "not-started") => {
+      const id = crypto.randomUUID();
+      const result = await runnerTool("create_task", {
+        requestId: id,
+        title: "Oru task",
+        status,
+      });
+      expect(result).toMatchObject({ id, assignee: "oru" });
+      const task = await queue.get(id);
+      expect(task).toMatchObject({ assignee: "oru", author: "oru" });
+      return task;
+    };
+    const claimAssigned = (
+      task: Pick<Task, "id" | "revision">,
+      runId: string,
+    ) =>
+      runnerTool("claim_task_run", {
+        taskId: task.id,
+        revision: task.revision,
+        runId,
+        source: "assignment",
+      });
+    expect(
+      await claimAssigned(
+        await createAssigned("in-review"),
+        crypto.randomUUID(),
+      ),
+    ).toEqual({ revision: null });
+
+    const assigned = await createAssigned();
+    const attempt = crypto.randomUUID();
+    expect(await queue.next()).toBeUndefined();
+    expect(
+      await claimAssigned(
+        { ...assigned, revision: crypto.randomUUID() },
+        attempt,
+      ),
+    ).toEqual({ revision: null });
+    const accepted = await claimAssigned(assigned, attempt);
+    expect(accepted).toEqual({
+      revision: expect.any(String),
+    });
+    expect(await claimAssigned(assigned, attempt)).toEqual(accepted);
+    expect(await claimAssigned(assigned, crypto.randomUUID())).toEqual({
+      revision: null,
+    });
+    const claimedTask = await queue.get(assigned.id);
+    expect(await claimAssigned(claimedTask, attempt)).toEqual({
+      revision: null,
+    });
+    expect(claimedTask).toMatchObject({
+      status: "in-progress",
+      assignee: "oru",
+    });
+    const failure = { phase: "finished", outcome: "setup-failed" } as const;
+    expect(await queue.report(assigned.id, crypto.randomUUID(), failure)).toBe(
+      "stale",
+    );
+    expect(await queue.report(assigned.id, attempt, failure)).toBe("updated");
+    const handedOff = await queue.get(assigned.id);
+    expect(handedOff).toMatchObject({
+      status: "not-started",
+      assignee: "owner",
+      author: "oru",
+      latestRun: { id: attempt, outcome: "setup-failed" },
+    });
+    expect(handedOff.revision).not.toBe(claimedTask.revision);
+    expect(await claimAssigned(handedOff, crypto.randomUUID())).toEqual({
+      revision: null,
+    });
+
+    const reassigned = await createAssigned();
+    const superseded = crypto.randomUUID();
+    expect(await claimAssigned(reassigned, superseded)).toEqual({
+      revision: expect.any(String),
+    });
+    const current = await queue.get(reassigned.id);
+    const edited = await request(taskApi(current.id), {
+      method: "PUT",
+      headers: {
+        cookie,
+        origin: "https://oneapp.example",
+        "content-type": "application/json",
+        "x-effect-auth-csrf": "1",
+      },
+      body: JSON.stringify({
+        ...current,
+        title: "Changed by the owner",
+        assignee: null,
+        status: "in-review",
+      }),
+    });
+    expect(edited.status).toBe(200);
+    const saved = Schema.decodeUnknownSync(Task)(await edited.json());
+    expect(await queue.report(current.id, superseded, failure)).toBe("updated");
+    expect(await queue.get(current.id)).toMatchObject({
+      ...saved,
+      latestRun: expect.objectContaining({
+        id: superseded,
+        outcome: "setup-failed",
+      }),
+    });
+
+    const success = await createAssigned();
+    const successfulRun = crypto.randomUUID();
+    expect(await claimAssigned(success, successfulRun)).toEqual({
+      revision: expect.any(String),
+    });
+    expect(
+      await queue.report(success.id, successfulRun, {
+        phase: "implementation",
+      }),
+    ).toBe("updated");
+    expect(
+      await queue.report(success.id, successfulRun, {
+        phase: "checks",
+        summary: "Verified.",
+      }),
+    ).toBe("updated");
+    expect(
+      await queue.report(success.id, successfulRun, { phase: "deployment" }),
+    ).toBe("updated");
+    expect(
+      await queue.report(success.id, successfulRun, {
+        phase: "finished",
+        outcome: "deployed",
+      }),
+    ).toBe("updated");
+    expect(await queue.get(success.id)).toMatchObject({
+      status: "completed",
+      assignee: "oru",
     });
   } finally {
     await queue.close();
@@ -3273,34 +3457,8 @@ const setupMcp = async (
     return grant;
   };
 
-  const mcp = async (token: string, method: string, params = {}) => {
-    const response = await request("/mcp", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        accept: "application/json, text/event-stream",
-        "content-type": "application/json",
-        "mcp-protocol-version": "2025-06-18",
-      },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-    });
-    const body = await response.text();
-    expect(response.status, body).toBe(200);
-    const data = response.headers
-      .get("content-type")
-      ?.startsWith("text/event-stream")
-      ? body.match(/^data: (.+)$/m)?.[1]
-      : body;
-    return JSON.parse(data ?? "") as {
-      error?: { message: string };
-      result?: {
-        tools?: { name: string }[];
-        structuredContent?: unknown;
-        content?: CallToolResult["content"];
-        isError?: boolean;
-      };
-    };
-  };
+  const mcp = (token: string, method: string, params = {}) =>
+    mcpRequest(request, "/mcp", token, method, params);
   const names = async (token: string) =>
     (await mcp(token, "tools/list")).result?.tools
       ?.map(({ name }) => name)
@@ -3511,6 +3669,7 @@ it("uses scoped MCP tools to read and edit the same tasks and tags as the web ap
   expect(receipt).toEqual({
     id: requestId,
     revision: expect.any(String),
+    assignee: "owner",
     url: `${origin}/tasks/${requestId}`,
   });
   const getTask = async () => {
@@ -3521,6 +3680,8 @@ it("uses scoped MCP tools to read and edit the same tasks and tags as the web ap
   };
   expect(await getTask()).toMatchObject({
     description,
+    author: "owner",
+    assignee: "owner",
     revision: receipt.revision,
     dueOn: creation.dueOn,
   });
@@ -3588,6 +3749,7 @@ it("uses scoped MCP tools to read and edit the same tasks and tags as the web ap
       query: "CHECK",
       status: "in-review",
       priority: "urgent",
+      assignee: "owner",
       tagId: receipts.id,
       dueOnOrAfter: "2028-02-28",
       dueOnOrBefore: "2028-02-29",
@@ -3624,6 +3786,7 @@ it("uses scoped MCP tools to read and edit the same tasks and tags as the web ap
     status: "not-started",
     priority: null,
     dueOn: null,
+    assignee: "oru",
     addTagIds: [finance.id],
     removeTagIds: [receipts.id],
   });
@@ -3638,6 +3801,8 @@ it("uses scoped MCP tools to read and edit the same tasks and tags as the web ap
     status: "not-started",
     priority: null,
     dueOn: null,
+    author: "owner",
+    assignee: "oru",
   });
   expect(persisted.tagIds.toSorted()).toEqual(
     [review.id, finance.id].toSorted(),
@@ -3652,6 +3817,7 @@ it("uses scoped MCP tools to read and edit the same tasks and tags as the web ap
     persisted,
   );
 
+  const { assignee: _assignee, ...currentFields } = persisted;
   const savedInBrowser = await request(taskApi(requestId), {
     method: "PUT",
     headers: {
@@ -3660,7 +3826,7 @@ it("uses scoped MCP tools to read and edit the same tasks and tags as the web ap
       "content-type": "application/json",
       "x-effect-auth-csrf": "1",
     },
-    body: JSON.stringify({ ...persisted, title: "Renamed in the browser" }),
+    body: JSON.stringify({ ...currentFields, title: "Renamed in the browser" }),
   });
   expect(savedInBrowser.status).toBe(200);
   const stale = await useTool(write, "update_task", {
@@ -3672,7 +3838,36 @@ it("uses scoped MCP tools to read and edit the same tasks and tags as the web ap
     isError: true,
     content: [{ text: expect.stringContaining("latest revision") }],
   });
-  expect((await getTask()).title).toBe("Renamed in the browser");
+  const renamed = await getTask();
+  expect(renamed).toMatchObject({
+    title: "Renamed in the browser",
+    assignee: "oru",
+  });
+  const clear = await useTool(write, "update_task", {
+    id: requestId,
+    revision: renamed.revision,
+    assignee: null,
+  });
+  expect(clear.result?.structuredContent).toMatchObject({ assignee: null });
+  expect(
+    (await useTool(read, "list_tasks", { assignee: null })).result
+      ?.structuredContent,
+  ).toMatchObject({
+    tasks: [{ id: requestId, assignee: null, author: "owner" }],
+  });
+  expect(
+    await (
+      await call(`${tasksApi}?assignee=unassigned`, undefined, session)
+    ).json(),
+  ).toMatchObject({
+    tasks: [{ id: requestId, assignee: null, author: "owner" }],
+  });
+  expect(
+    await (await call(`${tasksApi}?assignee=oru`, undefined, session)).json(),
+  ).toMatchObject({ tasks: [] });
+  expect(
+    (await call(`${tasksApi}?assignee=unknown`, undefined, session)).status,
+  ).toBe(400);
 
   const invalid = await useTool(write, "create_task", {
     title: "Bad date",
@@ -3759,10 +3954,8 @@ it("publishes committed task changes and lets the browser recover a missed signa
   );
   expect(browserTask.status).toBe(201);
   expect(published.at(-1)).toEqual({ change: tasksChanged, version: 3 });
-  const browserSaved = (await browserTask.json()) as {
-    id: string;
-    revision: string;
-  };
+  const browserSaved = Schema.decodeUnknownSync(Task)(await browserTask.json());
+  expect(browserSaved).toMatchObject({ author: "owner", assignee: "owner" });
   const headers = {
     cookie: session,
     origin,

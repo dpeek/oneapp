@@ -35,6 +35,15 @@ export const taskStatuses = [
 export const TaskStatus = Schema.Literals(taskStatuses);
 export const taskPriorities = ["low", "medium", "high", "urgent"] as const;
 export const TaskPriority = Schema.NullOr(Schema.Literals(taskPriorities));
+export const workspaceActorKinds = ["owner", "oru"] as const;
+const WorkspaceActorKind = Schema.Literals(workspaceActorKinds);
+export const TaskAssignee = Schema.NullOr(WorkspaceActorKind);
+
+// Actor kinds are identities within a workspace, keyed by the existing account ID.
+export type WorkspaceActor = {
+  accountId: string;
+  kind: typeof WorkspaceActorKind.Type;
+};
 
 export const taskTitleLimit = 200;
 export const taskDescriptionLimit = 20_000;
@@ -74,10 +83,13 @@ export const TaskCreate = Schema.Struct({
 export const TaskUpdate = Schema.Struct({
   ...TaskFields.fields,
   revision: ItemId,
+  assignee: Schema.optionalKey(TaskAssignee),
 });
 export const TaskDelete = Schema.Struct({ revision: ItemId });
 export const Task = Schema.Struct({
   ...TaskUpdate.fields,
+  author: Schema.NullOr(WorkspaceActorKind),
+  assignee: TaskAssignee,
   id: ItemId,
   createdAt: Schema.Number,
   updatedAt: Schema.Number,

@@ -1,9 +1,11 @@
 import { Schema } from "effect";
-import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { taskPath } from "../../apps/web/src/tasks-contract.ts";
 import { withBrowserSession } from "./browser.ts";
+import { savePendingDeployment } from "./deployments.ts";
 import { withDevServer } from "./dev.ts";
+import { recordRunEvent } from "./events.ts";
 import type { TaskQueue } from "./queue.ts";
 
 const AgentResult = Schema.Struct({
@@ -95,6 +97,7 @@ export async function runNext(
     origin: string;
     source: string;
     remote: string;
+    repository: string;
     directory: string;
     signal: AbortSignal;
     browser: string;
@@ -106,26 +109,12 @@ export async function runNext(
   if (task.status !== "not-started" || !task.tagIds.includes(next.tagId))
     return;
 
-  const { origin, directory, source, remote, signal } = settings;
+  const { origin, directory, source, remote, repository, signal } = settings;
   const run = await mkdtemp(join(directory, `${task.id}-`));
   const repo = join(run, "repo");
   const url = new URL(taskPath(task.id), origin).href;
-  const record = async (
-    phase: string,
-    detail: Record<string, unknown> = {},
-  ) => {
-    const event = {
-      at: new Date().toISOString(),
-      taskId: task.id,
-      url,
-      phase,
-      ...detail,
-    };
-    await appendFile(join(run, "run.jsonl"), JSON.stringify(event) + "\n", {
-      mode: 0o600,
-    });
-    console.log(JSON.stringify(event));
-  };
+  const record = (phase: string, detail: Record<string, unknown> = {}) =>
+    recordRunEvent(run, task.id, origin, phase, detail);
   const git = (args: string[], capture = false) =>
     execute(["git", ...args], repo, signal, {
       capture,
@@ -310,6 +299,14 @@ ${JSON.stringify({ id: task.id, title: task.title, description: task.description
         "The task changed after it was claimed. Inspect the checkout before retrying.",
       );
     await record("pushing", { sha });
+    // Journal before pushing so an interrupted push can be reconciled on restart.
+    await savePendingDeployment(directory, run, {
+      taskId: task.id,
+      revision,
+      sha,
+      origin,
+      repository,
+    });
     await git(["push", "origin", `${sha}:refs/heads/main`]);
     await record("pushed", { sha, summary: result.summary });
   } catch (error) {
@@ -319,4 +316,5 @@ ${JSON.stringify({ id: task.id, title: task.title, description: task.description
   }
 
   await rm(repo, { recursive: true, force: true });
+  return true;
 }

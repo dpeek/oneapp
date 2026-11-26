@@ -109,19 +109,37 @@ export class TaskQueue {
   }
 
   async claim(id: string, revision: string) {
+    return this.setStatus(id, revision, "in-progress");
+  }
+
+  async complete(id: string, revision: string) {
+    const current = await this.get(id);
+    if (current.status === "completed") return "completed";
+    if (current.revision !== revision || current.status !== "in-progress")
+      return "changed";
+    return (await this.setStatus(id, revision, "completed"))
+      ? "completed"
+      : "changed";
+  }
+
+  private async setStatus(
+    id: string,
+    revision: string,
+    status: "in-progress" | "completed",
+  ) {
     const result = await this.call("update_task", {
       id,
       revision,
-      status: "in-progress",
+      status,
     });
     if (result.isError) {
       const current = await this.get(id);
       if (current.revision !== revision) return;
-      throw new Error("MCP could not claim the task.");
+      throw new Error(`MCP could not set task status to ${status}.`);
     }
     const receipt = Schema.decodeUnknownSync(Receipt)(result.structuredContent);
     if (receipt.id !== id || receipt.revision === revision)
-      throw new Error("MCP returned an unexpected claim receipt.");
+      throw new Error("MCP returned an unexpected task update receipt.");
     return receipt.revision;
   }
 

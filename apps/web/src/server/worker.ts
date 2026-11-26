@@ -59,6 +59,7 @@ import {
 } from "./inbox.ts";
 import { inboxMessageKey, notifyInbox } from "./mail-delivery.ts";
 import { collectMailTrash } from "./mail-trash.ts";
+import { backfillMailBodies, readStoredMailText } from "./mail-body-index.ts";
 import { indexMail, isMailingList } from "./mail-index.ts";
 import { mailPeople } from "./mail-people.ts";
 import { conversationMessageIds } from "./mail-reply.ts";
@@ -135,6 +136,9 @@ export default {
         notifyIncoming: "1",
       },
     });
+    const bodyText = await readStoredMailText(bucket, "inbox", id).catch(
+      () => undefined,
+    );
     await indexMail(
       db,
       {
@@ -154,6 +158,7 @@ export default {
           message.to,
         ),
         messageIds: conversationMessageIds((name) => message.headers.get(name)),
+        ...(bodyText === undefined ? {} : { bodyText }),
       },
       { reopensArchive: true },
     ).catch(() => console.warn("Could not index incoming email"));
@@ -202,6 +207,9 @@ export default {
         await collectMailTrash(store);
         await syncMailIndex(store, true);
       }
+      await backfillMailBodies(store).catch(() =>
+        console.warn("Could not backfill some mail bodies"),
+      );
     }
     await deliverMailPush(env);
   },

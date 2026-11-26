@@ -2,6 +2,9 @@ import { mailboxSql, type MailDatabase } from "./mailbox.ts";
 import type { R2Bucket } from "@cloudflare/workers-types";
 import { Schema } from "effect";
 import { indexMailStatements } from "./mail-index.ts";
+import { receivedMessageLimit } from "./mail-attachments.ts";
+import { searchableMailText } from "./mail-body-index.ts";
+import { parseMailMime } from "./mail-content.ts";
 import { describeRawMail, parseRawHeaders, rawMailFormat } from "./raw-mail.ts";
 
 import { MailImportMetadata } from "@orumai/core/mail-import";
@@ -40,7 +43,7 @@ export const ingestRawMail = async (
   const hex = sourceId.slice(0, 32);
   const uuid = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   const candidate = `0-${String(9_999_999_999_999 - metadata.timestamp).padStart(13, "0")}-${uuid}${metadata.folder === "inbox" ? ".eml" : ""}`;
-  // Validate before reserving. Large bodies/attachments are not decoded here.
+  // Validate the headers before reserving the import identity.
   const headers = await parseRawHeaders(raw);
   await store.DB.prepare(
     `INSERT OR IGNORE INTO mail_imports
@@ -86,8 +89,11 @@ export const ingestRawMail = async (
   )
     throw new Error("Could not verify the stored original message");
   const mail = describeRawMail(object, headers, initial.folder);
+  const bodyText = searchableMailText(
+    raw.byteLength <= receivedMessageLimit ? await parseMailMime(raw) : null,
+  );
   await store.DB.batch([
-    ...(await indexMailStatements(store.DB, mail)),
+    ...(await indexMailStatements(store.DB, { ...mail, bodyText })),
     store.DB.prepare(
       `UPDATE mail_imports SET completed_at = ? WHERE mailbox_id = ${mailboxSql(store.DB)} AND source_id = ?`,
     ).bind(Date.now(), sourceId),

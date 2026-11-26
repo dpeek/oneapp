@@ -7,6 +7,7 @@ import {
   type ReplyCompletion,
 } from "../inbox-contract.ts";
 import { indexMail, setThreadArchived } from "./mail-index.ts";
+import { searchableMailText } from "./mail-body-index.ts";
 import type { MailDatabase } from "./mailbox.ts";
 import { describeSent, saveSent, type SentReply } from "./sent-mail.ts";
 
@@ -102,7 +103,10 @@ export const sendDraft = Effect.fnUntraced(function* (
     const saved = yield* saveSent(env.SENT_MESSAGES, record);
     if (saved)
       yield* Effect.promise(() =>
-        indexMail(env.DB, describeSent(record)).catch(() => {
+        indexMail(env.DB, {
+          ...describeSent(record),
+          bodyText: searchableMailText(record),
+        }).catch(() => {
           console.warn("Could not index sent email");
         }),
       );

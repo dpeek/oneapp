@@ -29,15 +29,16 @@ export const readableMessage = (
   };
 };
 
+export const parseMailMime = (bytes: ArrayBuffer | Uint8Array) =>
+  PostalMime.parse(bytes, mailMimeOptions).catch(() => null);
+
 export const readMailMime = async (object: R2ObjectBody) => {
   if (object.size > receivedMessageLimit) {
     await object.body.cancel();
     return { status: "tooLarge" } as const;
   }
   const bytes = await object.arrayBuffer();
-  const email = await PostalMime.parse(bytes, mailMimeOptions).catch(
-    () => null,
-  );
+  const email = await parseMailMime(bytes);
   return email
     ? ({ status: "complete", email } as const)
     : ({ status: "unreadable" } as const);

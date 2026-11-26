@@ -1,4 +1,8 @@
-import { ensureDefaultMailbox, mailDatabase } from "./mailbox.ts";
+import {
+  ensureDefaultMailbox,
+  mailDatabase,
+  scopeMailStore,
+} from "./mailbox.ts";
 import { expect, it, vi } from "@effect/vitest";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 import {
@@ -141,7 +145,14 @@ import { ensureOwner } from "./provision-owner.ts";
 import { mcpOAuth } from "./mcp-oauth.ts";
 import { mailPeople } from "./mail-people.ts";
 import worker from "./worker.ts";
-import { collectMailTrash, mailRetentionMs } from "./mail-trash.ts";
+import {
+  collectMailTrash,
+  mailRetentionMs,
+  restoreMail,
+  trashMail,
+} from "./mail-trash.ts";
+import { backfillMailBodies } from "./mail-body-index.ts";
+import { ingestRawMail } from "./mail-import.ts";
 import { collectDeletedContacts } from "./people.ts";
 import { indexMail, setSenderRule } from "./mail-index.ts";
 import { generateVAPIDKeys } from "web-push";
@@ -3448,7 +3459,10 @@ const setupMcp = async (
   sqlite: Database,
   bindings?: Parameters<typeof setup>[1],
 ) => {
-  const { call, request, signIn, cookies, db } = await setup(sqlite, bindings);
+  const { call, request, signIn, cookies, db, env } = await setup(
+    sqlite,
+    bindings,
+  );
   const session = cookies(await signIn(password));
   const origin = "https://oneapp.example";
   const resource = `${origin}/mcp`;
@@ -3539,6 +3553,7 @@ const setupMcp = async (
   return {
     call,
     request,
+    env,
     db,
     session,
     origin,
@@ -4963,6 +4978,316 @@ it("finds older archived replies and cites scoped mail in a task without marking
   expect(index.tasks.find(({ id }) => id === task.id)).toMatchObject({
     description,
   });
+});
+
+it("searches legacy imports, incoming MIME and sent replies by body with the mail read grant", async () => {
+  using sqlite = new Database(":memory:");
+  const mailAddress = "mail@app.example.net";
+  const sender = "sender@example.net";
+  const stored = new Map<
+    string,
+    {
+      bytes: ArrayBuffer;
+      uploaded: Date;
+      customMetadata: Record<string, string>;
+    }
+  >();
+  const object = (id: string) => {
+    const entry = stored.get(id);
+    if (!entry) return null;
+    const content = new Response(entry.bytes);
+    return {
+      ...entry,
+      key: id,
+      size: entry.bytes.byteLength,
+      body: content.body,
+      text: () => content.text(),
+      json: () => content.json(),
+      arrayBuffer: () => content.arrayBuffer(),
+    };
+  };
+  const legacy = Array.from(
+    { length: 9 },
+    (_, index) =>
+      `0-8199999999990-00000000-0000-4000-8000-00000000000${index}.eml`,
+  );
+  let interrupted = true;
+  const inboxGet = vi.fn(async (id: string) => {
+    if (id === legacy[0] && interrupted)
+      throw new Error("R2 temporarily unavailable");
+    return object(id);
+  });
+  const bucket = {
+    head: async (id: string) => object(id),
+    put: async (
+      id: string,
+      body: BodyInit,
+      options: { customMetadata: Record<string, string> },
+    ) => {
+      const entry = {
+        bytes: await new Response(body).arrayBuffer(),
+        customMetadata: options.customMetadata,
+        uploaded: new Date(),
+      };
+      stored.set(id, entry);
+      return object(id);
+    },
+    delete: async (id: string) => {
+      stored.delete(id);
+    },
+  };
+  const { connect, useTool, db, env, origin } = await setupMcp(sqlite, {
+    INBOX_EMAIL_ADDRESS: mailAddress,
+    INBOX_EMAIL_FROM: mailAddress,
+    INBOX_SEND: {
+      send: async () => ({ messageId: "<reply@example.net>" }),
+    } as SendEmail,
+    INBOX_SEND_LIMIT: { limit: async () => ({ success: true }) },
+    INBOX_MESSAGES: {
+      ...bucket,
+      get: inboxGet,
+    } as unknown as WorkerEnv["INBOX_MESSAGES"],
+    SENT_MESSAGES: {
+      ...bucket,
+      get: async (id: string) => object(id),
+    } as unknown as WorkerEnv["SENT_MESSAGES"],
+  });
+  const store = scopeMailStore(env, "personal");
+  const raw = (id: string, type: string, body: string) =>
+    [
+      `From: ${sender}`,
+      `To: ${mailAddress}`,
+      "Subject: Site plan",
+      `Message-ID: <${id}@example.net>`,
+      "MIME-Version: 1.0",
+      `Content-Type: ${type}; charset=utf-8`,
+      "",
+      body,
+    ].join("\r\n");
+  const older = Date.UTC(2022, 0, 1);
+  for (const [index, id] of legacy.entries()) {
+    await bucket.put(
+      id,
+      raw(
+        `legacy-${index}`,
+        "text/plain",
+        index === 0
+          ? "The survey marker is by the old pump."
+          : "Routine status update.",
+      ),
+      { customMetadata: { format: "import-rfc822-v1" } },
+    );
+    await indexMail(db, {
+      id,
+      folder: "inbox",
+      from: sender,
+      to: mailAddress,
+      subject: "Site plan",
+      timestamp: older + index,
+      messageIds: [],
+    });
+  }
+  const imported = await ingestRawMail(
+    store,
+    {
+      source: { account: "fixture", mailbox: "Sent", uid: 1, uidValidity: 1 },
+      folder: "sent",
+      archived: false,
+      timestamp: older + 20,
+      flags: [],
+    },
+    new TextEncoder().encode(
+      raw("imported", "text/html", "<p>Reserved a <b>granite sample</b>.</p>"),
+    ),
+  );
+  let incomingId = "";
+  vi.stubGlobal(
+    "FixedLengthStream",
+    class extends TransformStream {
+      constructor() {
+        super();
+      }
+    },
+  );
+  try {
+    const mime = new Response(
+      raw(
+        "incoming",
+        "text/html",
+        `<p>${"filler ".repeat(5_000)}</p><p>New details on the <b>survey</b> marker.</p>`,
+      ),
+    );
+    await worker.email(
+      {
+        from: sender,
+        to: mailAddress,
+        headers: new Headers({
+          subject: "Site plan",
+          "message-id": "<incoming@example.net>",
+        }),
+        raw: mime.body!,
+        rawSize: Number(mime.headers.get("content-length")),
+        setReject: () => {
+          throw new Error("Local fixture was rejected");
+        },
+      } as unknown as Parameters<typeof worker.email>[0],
+      env,
+    );
+    incomingId = inboxGet.mock.lastCall![0];
+  } finally {
+    vi.unstubAllGlobals();
+  }
+  const read = (await connect([mailReadScope])).access_token;
+  const send = (await connect([mailSendScope])).access_token;
+  const reply = await useTool(send, "reply_mail", {
+    requestId: "body-search-reply",
+    messageId: incomingId,
+    mode: "reply",
+    text: "Rechecked the survey marker. I confirmed the cobalt latch.",
+  });
+  expect(
+    reply.result?.isError,
+    JSON.stringify(reply.result?.content),
+  ).toBeFalsy();
+  const replyId = (reply.result?.structuredContent as { messageId: string })
+    .messageId;
+  const search = async (body: string, filters: object = {}) => {
+    const { result, error } = await useTool(read, "search_mail", {
+      body,
+      ...filters,
+    });
+    expect(error).toBeUndefined();
+    expect(result?.isError, JSON.stringify(result?.content)).toBeFalsy();
+    return result?.structuredContent as {
+      conversations: {
+        matchingMessageId: string;
+        excerpt: string;
+        url: string;
+      }[];
+      nextCursor: string | null;
+      indexCoverage: string;
+    };
+  };
+
+  sqlite.exec(`
+    INSERT INTO mail_index_scans (mailbox_id, folder, scanned_at, ready)
+    VALUES ('personal', 'inbox:list-mail', 1, 1), ('personal', 'sent:people', 1, 1);
+    INSERT INTO accounts (id, active, security_revision) VALUES ('other-owner', 1, '1');
+    INSERT INTO mailboxes (id, owner_account_id, name) VALUES ('foreign', 'other-owner', 'Foreign');
+  `);
+  await indexMail(mailDatabase(db, "foreign"), {
+    id: incomingId,
+    folder: "inbox",
+    from: sender,
+    to: mailAddress,
+    subject: "Site plan",
+    timestamp: Date.now(),
+    messageIds: [],
+    bodyText: "Survey marker beside the foreign keyhole.",
+  });
+  const metadata = await useTool(read, "search_mail", { subject: "site" });
+  expect(metadata.result?.structuredContent).toMatchObject({
+    indexCoverage: "complete",
+  });
+  expect(JSON.stringify(metadata.result?.structuredContent)).not.toContain(
+    '"excerpt"',
+  );
+  expect(
+    (await useTool(read, "search_mail", { body: "..." })).result?.isError,
+  ).toBe(true);
+  inboxGet.mockClear();
+  expect(await search("cobalt latch")).toMatchObject({
+    conversations: [
+      {
+        matchingMessageId: replyId,
+        excerpt: expect.stringContaining("cobalt latch"),
+        url: origin + mailMessageLink(replyId),
+      },
+    ],
+    indexCoverage: "incomplete",
+  });
+  const incoming = await search("SURVEY-marker", {
+    participantEmail: sender,
+    status: "unread",
+    onOrAfter: new Date().toISOString().slice(0, 10),
+  });
+  expect(incoming.conversations).toMatchObject([
+    {
+      matchingMessageId: replyId,
+      excerpt: "Rechecked the survey marker. I confirmed the cobalt latch.",
+      url: origin + mailMessageLink(replyId),
+    },
+  ]);
+  expect(
+    (await search("new details on the survey marker")).conversations,
+  ).toMatchObject([
+    {
+      matchingMessageId: incomingId,
+      excerpt: expect.stringContaining("New details on the survey marker"),
+    },
+  ]);
+  expect(
+    (await search("granite sample", { view: "sent" })).conversations,
+  ).toMatchObject([
+    { matchingMessageId: imported.id, excerpt: "Reserved a granite sample." },
+  ]);
+  expect((await search("foreign keyhole")).conversations).toEqual([]);
+  expect((await search("survey old")).conversations).toEqual([]);
+  expect(inboxGet).not.toHaveBeenCalled();
+
+  await expect(backfillMailBodies(store)).rejects.toThrow("Could not index");
+  expect(inboxGet.mock.calls.map(([id]) => id)).toEqual(legacy.slice(0, 8));
+  expect(await search("old pump")).toMatchObject({
+    conversations: [],
+    indexCoverage: "incomplete",
+  });
+  interrupted = false;
+  inboxGet.mockClear();
+  await backfillMailBodies(store);
+  expect(inboxGet.mock.calls.map(([id]) => id)).toEqual([legacy[0], legacy[8]]);
+  expect(
+    await search("old pump", { subject: "plan", onOrBefore: "2022-01-01" }),
+  ).toMatchObject({
+    conversations: [
+      {
+        matchingMessageId: legacy[0],
+        excerpt: expect.stringContaining("old pump"),
+      },
+    ],
+    indexCoverage: "complete",
+  });
+  const page = await search("survey marker", { limit: 1 });
+  expect(page.conversations).toMatchObject([{ matchingMessageId: replyId }]);
+  expect(page.nextCursor).toBeTruthy();
+  expect(
+    await search("survey marker", { limit: 1, cursor: page.nextCursor }),
+  ).toMatchObject({
+    conversations: [{ matchingMessageId: legacy[0] }],
+    nextCursor: null,
+  });
+
+  await trashMail(db, replyId, 100);
+  expect((await search("cobalt latch")).conversations).toEqual([]);
+  expect(
+    (await search("survey marker")).conversations[0]?.matchingMessageId,
+  ).toBe(incomingId);
+  expect(await restoreMail(db, replyId, 101)).toBe(true);
+  expect(
+    (await search("cobalt latch")).conversations[0]?.matchingMessageId,
+  ).toBe(replyId);
+  await trashMail(db, replyId, 102);
+  await collectMailTrash(store, 102 + mailRetentionMs);
+  expect((await search("cobalt latch")).conversations).toEqual([]);
+  expect(
+    sqlite
+      .query("SELECT 1 FROM mail_body_text WHERE message_id = ?")
+      .get(replyId),
+  ).toBeNull();
+  expect(
+    sqlite
+      .query("SELECT 1 FROM mail_body_terms WHERE message_id = ?")
+      .get(replyId),
+  ).toBeNull();
 });
 
 it("uses scoped MCP tools to read and edit the same tasks and tags as the web app", async () => {

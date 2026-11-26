@@ -17,6 +17,8 @@ export {
   contactDeletions,
 } from "./people-tables.ts";
 export {
+  mailBodyTerms,
+  mailBodyText,
   mailChanges,
   mailConversations,
   mailIndexKeys,

@@ -27,6 +27,7 @@ import {
   resolveContactFilters,
 } from "./mail-conversation-filters.ts";
 import { mailPeople } from "./mail-people.ts";
+import { indexMailBodyStatements, mailBodyExcerpt } from "./mail-body-index.ts";
 import { enqueueMailPush, pushLifetimeMs } from "./push-store.ts";
 import {
   indexConversationItem,
@@ -41,6 +42,7 @@ export type IndexedMail = ConversationMessage & {
   initialArchived?: boolean;
   envelopeRecipient?: string;
   notifyIncoming?: boolean;
+  bodyText?: string;
 };
 
 export const isMailingList = (listId: string | null | undefined) =>
@@ -170,6 +172,9 @@ export const indexMailStatements = async (
         mail.envelopeRecipient ?? null,
       ),
     ...indexConversationItem(db, id),
+    ...(mail.bodyText === undefined
+      ? []
+      : indexMailBodyStatements(db, id, mail.bodyText)),
     // Incoming mail and merges with an active conversation reopen the whole
     // thread. Keep that state even if the new incoming message is later deleted.
     db
@@ -207,6 +212,11 @@ export const removeIndexedMail = async (
 ) => {
   // Retain the opaque ID to prevent an in-flight R2 scan from recreating this row.
   await db.batch([
+    db
+      .prepare(
+        `DELETE FROM mail_body_text WHERE mailbox_id = ${mailboxSql(db)} AND message_id = ?`,
+      )
+      .bind(id),
     db
       .prepare(
         `
@@ -368,6 +378,7 @@ type MailSearch = {
   view: Exclude<MailboxView, "trash">;
   status: MailFilters["status"];
   subjectWords: string[];
+  bodyWords?: string[];
   participantEmail: string | null;
   contacts: ContactFilters;
   fromInclusive: number | null;
@@ -405,6 +416,12 @@ export const searchIndexedMail = async (
   )
     return [];
   const contact = contactFilterQuery(query.contacts);
+  const bodyWords = query.bodyWords;
+  const scope = mailboxSql(db);
+  // Use the longest query term to narrow the phrase check within this mailbox.
+  const anchor = bodyWords?.reduce((longest, word) =>
+    word.length > longest.length ? word : longest,
+  );
   const inThread = (alias: string) =>
     `${alias}.mailbox_id = m.mailbox_id AND ${alias}.thread_id = m.thread_id AND ${alias}.deleted = 0`;
   const matchesMessage = (alias: "m" | "newer") => `
@@ -435,7 +452,18 @@ export const searchIndexedMail = async (
   const statement = db.prepare(
     `
       WITH page_size(size) AS (VALUES (?7))
+      ${
+        bodyWords
+          ? `, body_matches AS MATERIALIZED (
+        SELECT term.message_id
+        FROM mail_body_terms term
+        JOIN mail_body_text body ON body.mailbox_id = term.mailbox_id AND body.message_id = term.message_id
+        WHERE term.mailbox_id = ${scope} AND term.term = ?8 AND instr(body.words, ?9) > 0
+      )`
+          : ""
+      }
       SELECT ${indexedMessageFields}, incoming.id AS latestIncomingId,
+        ${bodyWords ? "body.body" : "NULL"} AS bodyText,
         coalesce(incoming.archived, 0) AS archived,
         (SELECT count(*) ${unreadMembers}) AS unreadCount,
         (SELECT count(*) FROM mail_index_messages member WHERE ${inThread("member")}) AS messageCount,
@@ -451,18 +479,25 @@ export const searchIndexedMail = async (
             : "NULL"
         } AS legacyMembers
       FROM mail_index_messages m
+      ${
+        bodyWords
+          ? `JOIN body_matches matched ON matched.message_id = m.id
+      JOIN mail_body_text body ON body.mailbox_id = m.mailbox_id AND body.message_id = m.id`
+          : ""
+      }
       LEFT JOIN mail_index_messages incoming ON incoming.mailbox_id = m.mailbox_id AND incoming.id = (
         SELECT member.id FROM mail_index_messages member
         WHERE ${inThread("member")} AND member.folder = 'inbox'
         ORDER BY member.timestamp DESC, member.id DESC LIMIT 1
       )
-      WHERE m.mailbox_id = ${mailboxSql(db)} AND m.deleted = 0
+      WHERE m.mailbox_id = ${scope} AND m.deleted = 0
         AND (?5 IS NULL OR (m.timestamp, m.id) < (?5, ?6))
         AND ${matchesMessage("m")}
         AND NOT EXISTS (
           SELECT 1 FROM mail_index_messages newer
           WHERE ${inThread("newer")} AND (newer.timestamp, newer.id) > (m.timestamp, m.id)
             AND ${matchesMessage("newer")}
+            ${bodyWords ? "AND newer.id IN (SELECT message_id FROM body_matches)" : ""}
         )
         ${viewFilters[query.view]}
         ${query.status === "all" ? "" : `AND ${query.status === "read" ? "NOT " : ""}EXISTS (SELECT 1 ${unreadMembers})`}
@@ -480,6 +515,7 @@ export const searchIndexedMail = async (
         cursor.timestamp,
         cursor.id,
         limit,
+        ...(bodyWords ? [anchor!, ` ${bodyWords.join(" ")} `] : []),
         ...contact.values,
       )
       .all<
@@ -490,6 +526,7 @@ export const searchIndexedMail = async (
           messageCount: number;
           lastMessageAt: number;
           legacyMembers: string | null;
+          bodyText: string | null;
         }
       >();
   const matches = [];
@@ -497,7 +534,7 @@ export const searchIndexedMail = async (
   let limit = query.limit;
   while (matches.length < query.limit) {
     const { results } = await readPage(cursor, limit);
-    for (const { legacyMembers, ...row } of results) {
+    for (const { legacyMembers, bodyText, ...row } of results) {
       if (legacyMembers) {
         const members = JSON.parse(legacyMembers) as Pick<
           IndexedThreadMember,
@@ -511,13 +548,21 @@ export const searchIndexedMail = async (
         )
           continue;
       }
-      matches.push(presentMessage(row));
+      matches.push(
+        presentMessage({
+          ...row,
+          excerpt:
+            bodyWords && bodyText
+              ? mailBodyExcerpt(bodyText, bodyWords)
+              : undefined,
+        }),
+      );
       if (matches.length === query.limit) break;
     }
     const last = results.at(-1);
     if (!last || results.length < limit) break;
     cursor = { timestamp: last.timestamp, id: last.id };
-    limit = 100;
+    limit = bodyWords ? 24 : 100;
   }
   return matches;
 };

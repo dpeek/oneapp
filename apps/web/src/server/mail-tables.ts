@@ -63,6 +63,7 @@ export const mailIndexMessages = sqliteTable(
     people: text(),
     listMail: integer("list_mail"),
     bodyPreview: text("body_preview"),
+    bodyIndexed: integer("body_indexed").notNull().default(0),
   },
   (table) => [
     primaryKey({ columns: [table.mailboxId, table.id] }),
@@ -101,6 +102,43 @@ export const mailIndexMessages = sqliteTable(
     index("mail_index_all_thread_date")
       .on(table.mailboxId, table.threadId, table.timestamp, table.id)
       .where(sql`deleted = 0`),
+    index("mail_index_body_pending")
+      .on(table.mailboxId, table.id)
+      .where(sql`deleted = 0 AND body_indexed = 0`),
+  ],
+);
+
+export const mailBodyText = sqliteTable(
+  "mail_body_text",
+  {
+    mailboxId: text("mailbox_id").notNull(),
+    messageId: text("message_id").notNull(),
+    body: text().notNull(),
+    words: text().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.mailboxId, table.messageId] }),
+    foreignKey({
+      columns: [table.mailboxId, table.messageId],
+      foreignColumns: [mailIndexMessages.mailboxId, mailIndexMessages.id],
+    }).onDelete("cascade"),
+  ],
+);
+
+export const mailBodyTerms = sqliteTable(
+  "mail_body_terms",
+  {
+    mailboxId: text("mailbox_id").notNull(),
+    term: text().notNull(),
+    messageId: text("message_id").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.mailboxId, table.term, table.messageId] }),
+    index("mail_body_terms_message").on(table.mailboxId, table.messageId),
+    foreignKey({
+      columns: [table.mailboxId, table.messageId],
+      foreignColumns: [mailBodyText.mailboxId, mailBodyText.messageId],
+    }).onDelete("cascade"),
   ],
 );
 

@@ -25,6 +25,7 @@ import {
   outlineIcon,
   plusIcon,
   Sheet,
+  spinner,
   taskIconPaths,
 } from "@orumai/ui";
 import * as Client from "@yielded/auth/Client";
@@ -1902,22 +1903,27 @@ const approvalView = (model: Model, h: HtmlBuilder<Message>) => {
 };
 
 const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
-  if (model.sessionCheck !== "resolved") {
+  if (model.sessionCheck === "checking") {
+    return {
+      title: appName,
+      body: h.main(
+        [h.Class("session-check-loading")],
+        [spinner("Checking your session…", h)],
+      ),
+    };
+  }
+  if (model.sessionCheck === "failed") {
     return {
       title: appName,
       body: h.main(
         [h.Class("standalone")],
         [
           h.h1([], [appName]),
-          ...(model.sessionCheck === "checking"
-            ? [h.p([h.Role("status")], ["Checking your session…"])]
-            : [
-                h.p([h.Role("alert")], ["Could not check your session."]),
-                h.button(
-                  [h.Type("button"), h.OnClick(Message.RetriedSessionCheck())],
-                  ["Retry"],
-                ),
-              ]),
+          h.p([h.Role("alert")], ["Could not check your session."]),
+          h.button(
+            [h.Type("button"), h.OnClick(Message.RetriedSessionCheck())],
+            ["Retry"],
+          ),
         ],
       ),
     };

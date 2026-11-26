@@ -21,6 +21,12 @@ body {
   background-color: var(--surface);
 }
 
+.session-check-loading {
+  display: grid;
+  min-block-size: 100dvh;
+  place-items: center;
+}
+
 .standalone {
   max-width: 24rem;
   margin: 12vh auto 0;
@@ -89,7 +95,7 @@ dialog .notification-host {
   pointer-events: none;
 }
 
-body:has(.app-shell) {
+body:has(.app-shell, .session-check-loading) {
   margin: 0;
 }
 

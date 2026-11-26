@@ -19,7 +19,7 @@ import {
   withWorkflowServer,
 } from "./workflow.ts";
 
-it.effect("repairs and rebases verified candidates in one session", () =>
+const exerciseWorkflow = () =>
   Effect.promise(async () => {
     const root = await mkdtemp(join(tmpdir(), "orumai-workflow-"));
     const signal = AbortSignal.timeout(15_000);
@@ -343,5 +343,11 @@ it.effect("repairs and rebases verified candidates in one session", () =>
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  }),
+  });
+
+// Let the 15-second subprocess deadline expire before Vitest interrupts cleanup.
+it.effect(
+  "repairs and rebases verified candidates in one session",
+  exerciseWorkflow,
+  20_000,
 );

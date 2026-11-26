@@ -916,14 +916,17 @@ const loadPage = (
         refresh: previousPage !== "calendar",
       }),
     );
-  if (model.taskRoute)
-    return foldTasks(
-      model,
-      Tasks.Message.Opened({
-        ...model.taskRoute,
-        refresh: previousPage !== "tasks",
-      }),
-    );
+  if (model.taskRoute) {
+    const refresh = previousPage !== "tasks";
+    const opened = Tasks.Message.Opened({ ...model.taskRoute, refresh });
+    return Update.combine(model, [
+      (next) => foldTasks(next, opened),
+      (next) =>
+        refresh
+          ? foldPeople(next, People.Message.RequestedSelf())
+          : { model: next },
+    ]);
+  }
   if (model.fileRoute)
     return foldFiles(
       model,
@@ -2066,6 +2069,10 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
                   slotId: "tasks",
                   view: tasksView,
                   model: model.tasks,
+                  viewInputs: {
+                    owner: model.people.self,
+                    ownerEmail: model.account?.email ?? "",
+                  },
                   toParentMessage: toTasksMessage,
                 }),
               files: () =>

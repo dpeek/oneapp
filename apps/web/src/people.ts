@@ -1033,7 +1033,7 @@ export const profileAvatar = <Parent>(
   address: string,
   options: {
     name?: string;
-    size?: "lg";
+    size?: "sm" | "lg";
     imageMounted: Parent;
     kind?: typeof ContactKind.Type;
   },

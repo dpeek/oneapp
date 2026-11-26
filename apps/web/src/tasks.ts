@@ -149,6 +149,7 @@ export const Message = defineMessageUnion({
   Opened: { ...TaskRoute.fields, refresh: Schema.Boolean },
   GotFolderSheetMessage: { message: Sheet.Message },
   GotAttachmentsMessage: { message: Attachments.Message },
+  CompletedAssigneeAvatarImageMount: {},
   FocusUpdated: {},
   Retried: {},
   RefreshRequested: {},
@@ -710,6 +711,7 @@ const transition = (
         message.taskId !== model.selectedId
           ? { model }
           : foldAttachments(model, message),
+      CompletedAssigneeAvatarImageMount: () => ({ model }),
       FocusUpdated: () => ({ model }),
       RunExpired: ({ at }) => ({
         model: {

@@ -62,7 +62,7 @@
 }
 
 .task-table th:nth-child(5) {
-  inline-size: 7rem;
+  inline-size: 9rem;
 }
 
 .task-table th:last-child {
@@ -149,6 +149,28 @@
   color: var(--task-row-icon-color, var(--muted));
 }
 
+.task-row-value[data-assignee] > [data-slot="avatar"] {
+  flex: none;
+}
+
+.task-row-value[data-assignee="oru"] > [data-slot="avatar"] {
+  background: #fff;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.task-assignee-mark {
+  display: block;
+  inline-size: 1rem;
+  block-size: 1rem;
+  background: #000;
+  mask: url("./favicon.svg") center / contain no-repeat;
+}
+
+.task-row-value[data-assignee=""] > [data-slot="avatar"] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--muted);
+}
+
 .task-activity-indicator {
   position: relative;
   z-index: 1;
@@ -206,19 +228,14 @@
   }
 
   .task-table th:nth-child(5) {
-    inline-size: 5.25rem;
-  }
-
-  .task-table :is(th, td):nth-child(5) {
-    padding-inline: 0.375rem;
-    font-size: 0.75rem;
+    inline-size: 2rem;
   }
 
   .task-table :is(th, td):last-child {
     display: none;
   }
 
-  .task-table :is(th, td):is(:nth-child(3), :nth-child(4)) {
+  .task-table :is(th, td):is(:nth-child(3), :nth-child(4), :nth-child(5)) {
     padding-inline: 0.375rem;
     text-align: end;
   }
@@ -228,7 +245,7 @@
     border-end-end-radius: var(--control-radius);
   }
 
-  .task-table th:is(:nth-child(3), :nth-child(4)) > span,
+  .task-table th:is(:nth-child(3), :nth-child(4), :nth-child(5)) > span,
   .task-row-value-label {
     position: absolute;
     inline-size: 1px;

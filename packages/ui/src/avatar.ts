@@ -39,6 +39,12 @@ const styles = stylex.create({
     color: controls.mutedForeground,
   },
   square: { borderRadius: controls.radius },
+  small: {
+    inlineSize: "1.25rem",
+    blockSize: "1.25rem",
+    fontSize: "0.625rem",
+    fontWeight: 600,
+  },
   large: {
     inlineSize: "4rem",
     blockSize: "4rem",
@@ -60,7 +66,7 @@ const styles = stylex.create({
 
 type AvatarAppearance = Readonly<{
   variant?: "round" | "square";
-  size?: "lg";
+  size?: "sm" | "lg";
   fit?: "cover";
 }>;
 
@@ -75,6 +81,7 @@ const avatarClassName = ({ variant, size }: AvatarAppearance) =>
   stylex.props(
     styles.root,
     variant === "square" && styles.square,
+    size === "sm" && styles.small,
     size === "lg" && styles.large,
   ).className ?? "";
 

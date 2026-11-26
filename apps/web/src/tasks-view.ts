@@ -1,5 +1,6 @@
 import {
   alert,
+  avatar,
   button,
   circleCheckIconPaths,
   circleDashedIconPaths,
@@ -35,6 +36,8 @@ import { Mount, Submodel } from "foldkit";
 import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html";
 import * as Attachments from "./task-attachments.ts";
 import { tagNameKey, tagNameLimit, type Tag } from "./items-contract.ts";
+import { profileAvatar } from "./people.ts";
+import type { PersonSummary } from "./people-contract.ts";
 import { isTaskRunInterrupted, type TaskRun } from "./task-run-contract.ts";
 import {
   type Task,
@@ -74,6 +77,7 @@ import { filterChoice, filterMenu } from "./filter-menu.ts";
 import { screenHeader, screenHeaderBack, workspace } from "./workspace.ts";
 
 type TaskRowValue = { label: string; icon: readonly string[] };
+type ViewInputs = { owner: PersonSummary | null; ownerEmail: string };
 
 const taskStatusDisplay = {
   "not-started": { label: "Not started", icon: circleDotDashedIconPaths },
@@ -233,8 +237,9 @@ const taskTimestamp = (value: number, h: HtmlBuilder<Message>) =>
   );
 
 const taskRowValue = (
-  { label, icon }: TaskRowValue,
-  kind: "status" | "priority",
+  label: string,
+  media: Html,
+  kind: "status" | "priority" | "assignee",
   value: string,
   h: HtmlBuilder<Message>,
 ) =>
@@ -243,10 +248,7 @@ const taskRowValue = (
     [
       h.span(
         [h.Class("task-row-value"), h.DataAttribute(kind, value)],
-        [
-          outlineIcon(h, icon),
-          h.span([h.Class("task-row-value-label")], [label]),
-        ],
+        [media, h.span([h.Class("task-row-value-label")], [label])],
       ),
     ],
   );
@@ -254,11 +256,31 @@ const taskRowValue = (
 const taskRow = (
   task: Task,
   tags: ReadonlyMap<string, Tag>,
+  { owner, ownerEmail }: ViewInputs,
   now: number,
   runActivityTime: number,
   h: HtmlBuilder<Message>,
-) =>
-  h.tr(
+) => {
+  const { status, priority, assignee } = task;
+  const statusDisplay = taskStatusDisplay[status];
+  const priorityDisplay = taskPriorityDisplay[priority ?? ""];
+  const imageMounted = Message.CompletedAssigneeAvatarImageMount();
+  const assigneeAvatar =
+    assignee === "owner"
+      ? profileAvatar(h, owner, ownerEmail, { imageMounted, size: "sm" })
+      : avatar(
+          {
+            size: "sm",
+            fallback:
+              assignee === "oru"
+                ? h.span([h.Class("task-assignee-mark")], [])
+                : "",
+            src: null,
+            imageMounted,
+          },
+          h,
+        );
+  return h.tr(
     [h.Key(task.id), h.Class("task-row")],
     [
       h.td(
@@ -298,17 +320,31 @@ const taskRow = (
           ),
         ],
       ),
-      taskRowValue(taskStatusDisplay[task.status], "status", task.status, h),
       taskRowValue(
-        taskPriorityDisplay[task.priority ?? ""],
-        "priority",
-        task.priority ?? "",
+        statusDisplay.label,
+        outlineIcon(h, statusDisplay.icon),
+        "status",
+        status,
         h,
       ),
-      h.td([], [assigneeLabels[task.assignee ?? ""]]),
+      taskRowValue(
+        priorityDisplay.label,
+        outlineIcon(h, priorityDisplay.icon),
+        "priority",
+        priority ?? "",
+        h,
+      ),
+      taskRowValue(
+        assigneeLabels[assignee ?? ""],
+        assigneeAvatar,
+        "assignee",
+        assignee ?? "",
+        h,
+      ),
       h.td([], [timestamp(task.updatedAt, now, h)]),
     ],
   );
+};
 
 const taskFilterOptions = (
   filterCategory: typeof FilterCategory.Type,
@@ -451,6 +487,7 @@ const taskPlaceholders = (h: HtmlBuilder<Message>) =>
 const taskList = (
   model: Model,
   tags: ReadonlyArray<Tag>,
+  viewInputs: ViewInputs,
   h: HtmlBuilder<Message>,
 ) => {
   const allTasks = model.index?.tasks ?? [];
@@ -467,7 +504,9 @@ const taskList = (
   if (tasks.length) {
     const now = Date.now();
     results = taskTable(
-      tasks.map((task) => taskRow(task, tagMap, now, model.runActivityTime, h)),
+      tasks.map((task) =>
+        taskRow(task, tagMap, viewInputs, now, model.runActivityTime, h),
+      ),
       false,
       h,
     );
@@ -949,7 +988,11 @@ const taskNavigation = (h: HtmlBuilder<Message>) =>
     h,
   );
 
-export const view = Submodel.defineView<Model, Message>((model, h) => {
+export const view = Submodel.defineView(function tasksView(
+  model: Model,
+  viewInputs: ViewInputs,
+  h: HtmlBuilder<Message>,
+) {
   const tags = sortedTags(model);
   const { selectedId, folderSheet } = model;
   const addTask = button(
@@ -1027,7 +1070,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
         h,
       ),
       sidebar: taskNavigation(h),
-      list: taskList(model, tags, h),
+      list: taskList(model, tags, viewInputs, h),
       hasSelection: selectedId !== null,
       ...(selectedId ? { detail: taskDetail(selectedId, model, tags, h) } : {}),
       sheet: Sheet.sheet(

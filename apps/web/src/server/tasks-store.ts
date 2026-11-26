@@ -37,19 +37,19 @@ const versionStatement = (db: D1Database, account: string) =>
     .prepare("SELECT version FROM task_changes WHERE account_id = ?")
     .bind(account);
 
+const incrementTaskVersion = (db: D1Database, condition: string) =>
+  db.prepare(
+    `INSERT INTO task_changes (account_id, version)
+       SELECT ?1, 1 WHERE ${condition}
+       ON CONFLICT (account_id) DO UPDATE SET version = version + 1`,
+  );
+
 const recordTaskChange = (
   db: D1Database,
   account: string,
   id: string,
   revision: string,
-) =>
-  db
-    .prepare(
-      `INSERT INTO task_changes (account_id, version)
-       SELECT ?1, 1 WHERE ${claimed}
-       ON CONFLICT (account_id) DO UPDATE SET version = version + 1`,
-    )
-    .bind(account, id, revision);
+) => incrementTaskVersion(db, claimed).bind(account, id, revision);
 
 const decodeTask = <T extends TaskRow<TaskSummary>>({
   tagIds,
@@ -220,4 +220,29 @@ export const updateTask = async (
     changed: item!.meta.changes > 0,
     task: row ? decodeTask(row) : null,
   };
+};
+
+export const deleteTask = async (
+  db: D1Database,
+  account: string,
+  id: string,
+  revision: string,
+) => {
+  const [deleted, , remaining] = await db.batch<{ id: string }>([
+    db
+      .prepare(
+        `DELETE FROM items
+         WHERE account_id = ?1 AND id = ?2 AND revision = ?3 AND kind = 'task'
+           AND EXISTS (SELECT 1 FROM tasks WHERE account_id = ?1 AND item_id = ?2)
+         RETURNING id`,
+      )
+      .bind(account, id, revision),
+    incrementTaskVersion(db, "changes() = 1").bind(account),
+    db.prepare(`SELECT i.id ${taskSource} AND i.id = ?2`).bind(account, id),
+  ]);
+  return deleted!.results.length
+    ? "deleted"
+    : remaining!.results.length
+      ? "conflict"
+      : "missing";
 };

@@ -8,7 +8,10 @@ const scopeLabels = new Map<string, string>([
   [linksReadScope, "Read your saved links"],
   [linksWriteScope, "Save and delete your links"],
   [tasksReadScope, "Read your tasks, screenshots, and tags"],
-  [tasksWriteScope, "Create and edit your tasks and create reusable tags"],
+  [
+    tasksWriteScope,
+    "Create, edit, and delete your tasks and create reusable tags",
+  ],
 ]);
 
 const escapeHtml = (value: string) =>

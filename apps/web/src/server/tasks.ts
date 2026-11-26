@@ -10,12 +10,19 @@ import {
   taskAttachmentLimitMiB,
   taskAttachmentsApi,
 } from "../task-attachment-contract.ts";
-import { TaskCreate, tasksApi, TaskUpdate } from "../tasks-contract.ts";
+import {
+  taskApi,
+  TaskCreate,
+  TaskDelete,
+  tasksApi,
+  TaskUpdate,
+} from "../tasks-contract.ts";
 import { jsonError, privateHeaders, readFileName } from "./api-response.ts";
 import { AppAuth, ownerId, type authHttp } from "./auth.ts";
 import { createTag, removeTag, renameTag, tagCatalog } from "./items-store.ts";
 import {
   createTask,
+  deleteTask,
   getTask,
   taskIndex,
   taskVersion,
@@ -252,7 +259,7 @@ export const tasksRoutes = (
     ),
     HttpRouter.add(
       "PUT",
-      `${tasksApi}/:id`,
+      taskApi(":id"),
       handle(
         http.protect(
           authenticated((account) =>
@@ -278,6 +285,35 @@ export const tasksRoutes = (
               if (result.task.revision !== input.value.revision)
                 return yield* json(result.task, 409);
               return yield* jsonError(400, "One or more tags are unavailable.");
+            }),
+          ),
+        ),
+      ),
+    ),
+    HttpRouter.add(
+      "DELETE",
+      taskApi(":id"),
+      handle(
+        http.protect(
+          authenticated((account) =>
+            Effect.gen(function* () {
+              const { id } = yield* HttpRouter.params;
+              if (!isId(id)) return yield* jsonError(404, "Task not found.");
+              const input = yield* readInput(TaskDelete);
+              if (input._tag === "None")
+                return yield* jsonError(400, "A task revision is required.");
+              const result = yield* Effect.tryPromise(() =>
+                deleteTask(db, account, id, input.value.revision),
+              );
+              if (result === "missing")
+                return yield* jsonError(404, "Task not found.");
+              if (result === "conflict")
+                return yield* jsonError(409, "The task changed. Try again.");
+              onTaskChange(account);
+              return HttpServerResponse.empty({
+                status: 204,
+                headers: privateHeaders,
+              });
             }),
           ),
         ),

@@ -65,5 +65,10 @@ export {
   calendarPushOutbox,
 } from "./calendar-tables.ts";
 export { items, itemTags, tags } from "./item-tables.ts";
-export { tasks, taskAttachments, taskChanges } from "./task-tables.ts";
+export {
+  deletedTaskAttachments,
+  tasks,
+  taskAttachments,
+  taskChanges,
+} from "./task-tables.ts";
 export { files } from "./file-tables.ts";

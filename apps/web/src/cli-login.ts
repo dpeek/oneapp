@@ -158,7 +158,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
                   )
                     ? `Allow ${model.approval.label} to import mail into your mailboxes and mark eligible imported conversations complete for 24 hours. This also allows reading import receipts.`
                     : model.approval.scopes?.[0] === taskRunnerScope
-                      ? `Allow ${model.approval.label} to read tasks, tags, and screenshots, and to create and edit tasks and create tags until you revoke access.`
+                      ? `Allow ${model.approval.label} to read tasks, tags, and screenshots, create, edit, and delete tasks, and create tags until you revoke access.`
                       : `Allow ${model.approval.label} to read, save, and delete links until you revoke access.`,
                 ],
               ),

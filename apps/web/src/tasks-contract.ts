@@ -74,6 +74,7 @@ export const TaskUpdate = Schema.Struct({
   ...TaskFields.fields,
   revision: ItemId,
 });
+export const TaskDelete = Schema.Struct({ revision: ItemId });
 export const Task = Schema.Struct({
   ...TaskUpdate.fields,
   id: ItemId,

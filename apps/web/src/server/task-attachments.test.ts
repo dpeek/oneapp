@@ -10,7 +10,7 @@ import {
   readTaskAttachment,
   removeTaskAttachment,
 } from "./task-attachments-store.ts";
-import { createTask } from "./tasks-store.ts";
+import { createTask, deleteTask } from "./tasks-store.ts";
 
 it("keeps screenshots private by task and retries cleanup after revoking access", async () => {
   using sqlite = new Database(":memory:");
@@ -39,7 +39,12 @@ it("keeps screenshots private by task and retries cleanup after revoking access"
   );
   const task = crypto.randomUUID();
   const elsewhere = crypto.randomUUID();
-  await createTask(db, "owner", { id: task, title: "Screenshot task" }, 1);
+  const created = await createTask(
+    db,
+    "owner",
+    { id: task, title: "Screenshot task" },
+    1,
+  );
   await createTask(db, "owner", { id: elsewhere, title: "Different task" }, 1);
   await createTask(db, "other", { id: task, title: "Different account" }, 1);
 
@@ -116,4 +121,42 @@ it("keeps screenshots private by task and retries cleanup after revoking access"
   await collectTaskAttachments(db, bucket, 3_600_004);
   expect(blobs.size).toBe(0);
   expect(sqlite.query("SELECT * FROM task_attachments").all()).toEqual([]);
+
+  losePutResponse = false;
+  const ready = await createTaskAttachment(
+    db,
+    bucket,
+    "owner",
+    task,
+    metadata,
+    bytes,
+    3_600_005,
+  );
+  losePutResponse = true;
+  await expect(
+    createTaskAttachment(db, bucket, "owner", task, metadata, bytes, 3_600_006),
+  ).rejects.toThrow("Lost upload response");
+  expect(await deleteTask(db, "owner", task, created.task!.revision)).toBe(
+    "deleted",
+  );
+  expect(
+    await readTaskAttachment(db, bucket, "owner", task, ready!.id),
+  ).toBeNull();
+  expect(sqlite.query("SELECT * FROM task_attachments").all()).toEqual([]);
+  failDelete = true;
+  await expect(collectTaskAttachments(db, bucket, 3_600_007)).rejects.toThrow(
+    "Blob store unavailable",
+  );
+  expect(blobs.size).toBe(2);
+  failDelete = false;
+  await collectTaskAttachments(db, bucket, 3_600_007);
+  expect(blobs.has(taskAttachmentObjectKey("owner", task, ready!.id))).toBe(
+    false,
+  );
+  expect(blobs.size).toBe(1);
+  await collectTaskAttachments(db, bucket, 7_200_006);
+  expect(blobs.size).toBe(0);
+  expect(sqlite.query("SELECT * FROM deleted_task_attachments").all()).toEqual(
+    [],
+  );
 });

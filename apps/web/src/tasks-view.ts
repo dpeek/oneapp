@@ -49,6 +49,8 @@ import {
   creationDialogId,
   creationSubmitId,
   creationTitleId,
+  deleteConflictMessage,
+  deleteDialogId,
   filterOptionsId,
   hasEdits,
   Message,
@@ -58,6 +60,7 @@ import {
   toFilterPopoverMessage,
   toFilterTagsMessage,
   toAttachmentsMessage,
+  toDeleteDialogMessage,
   toFolderSheetMessage,
   toSortMenuMessage,
   writingCreation,
@@ -609,6 +612,71 @@ const FocusDetail = Mount.define("FocusTaskDetail", {
     }),
 });
 
+const deleteTaskDialog = (model: Model, h: HtmlBuilder<Message>) => {
+  const { deletion, deleteDialog } = model;
+  const pending = model.request?.operation._tag === "Delete";
+  const task = selectedTask(model);
+  const changed = !!deletion && task?.revision !== deletion.revision;
+  return Dialog.view(
+    {
+      model: deleteDialog,
+      title: "Delete task?",
+      alertDescription: `“${deletion?.title ?? ""}” and its screenshots will be permanently deleted.`,
+      toParentMessage: toDeleteDialogMessage,
+      content: (initialFocus) =>
+        h.div(
+          [],
+          [
+            alert(
+              {
+                message: deletion?.completed
+                  ? null
+                  : (deletion?.error ??
+                    (changed
+                      ? task
+                        ? deleteConflictMessage
+                        : "This task has been deleted."
+                      : null)),
+                severity: "error",
+                announcement: "alert",
+              },
+              h,
+            ),
+            Dialog.footer(
+              [
+                button(
+                  {
+                    variant: "outline",
+                    disabled: pending,
+                    attributes: initialFocus,
+                    onClick: toDeleteDialogMessage(
+                      Dialog.Message.RequestedClose(),
+                    ),
+                    children: ["Cancel"],
+                  },
+                  h,
+                ),
+                button(
+                  {
+                    variant: "destructive",
+                    disabled: pending || changed,
+                    focusableWhenDisabled: pending,
+                    attributes: [h.AriaBusy(pending)],
+                    onClick: Message.ConfirmedDelete(),
+                    children: [pending ? "Deleting…" : "Delete task"],
+                  },
+                  h,
+                ),
+              ],
+              h,
+            ),
+          ],
+        ),
+    },
+    h,
+  );
+};
+
 const taskDetail = (
   id: string,
   model: Model,
@@ -695,6 +763,17 @@ const taskDetail = (
                           ),
                         ]
                       : []),
+                    button(
+                      {
+                        variant: "ghost",
+                        size: "sm",
+                        disabled: busy,
+                        dialogId: deleteDialogId,
+                        onClick: Message.RequestedDelete(),
+                        children: ["Delete task"],
+                      },
+                      h,
+                    ),
                   ],
                 ),
                 h.dl(
@@ -719,6 +798,7 @@ const taskDetail = (
               ],
             ),
           ]),
+      deleteTaskDialog(model, h),
     ],
   );
 };

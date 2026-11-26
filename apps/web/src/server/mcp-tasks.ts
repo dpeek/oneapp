@@ -6,6 +6,7 @@ import { TaskAttachment } from "../task-attachment-contract.ts";
 import {
   Task,
   TaskDate,
+  TaskDelete,
   TaskPriority,
   TaskStatus,
   taskPath,
@@ -14,7 +15,13 @@ import {
 import { createTag, listTags } from "./items-store.ts";
 import { type McpScope, ReadTasks, WriteTasks } from "./mcp-oauth.ts";
 import { pageFields, result, standardSchema, toolFailure } from "./mcp-tool.ts";
-import { createTask, getTask, listTasks, updateTask } from "./tasks-store.ts";
+import {
+  createTask,
+  deleteTask,
+  getTask,
+  listTasks,
+  updateTask,
+} from "./tasks-store.ts";
 import {
   listTaskAttachments,
   readTaskAttachment,
@@ -275,6 +282,31 @@ export const registerTaskTools = (
           }
           if (update.task.revision !== revision) return stale();
           return toolFailure("One or more tag IDs are unavailable.");
+        }),
+    );
+    server.registerTool(
+      "delete_task",
+      {
+        title: "Delete a task",
+        description:
+          "Permanently delete a task and its screenshots. Pass the current revision from list_tasks or get_task.",
+        inputSchema: standardSchema(
+          Schema.Struct({ ...TaskId.fields, ...TaskDelete.fields }),
+        ),
+        outputSchema: standardSchema(TaskId),
+        annotations: {
+          destructiveHint: true,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      ({ id, revision }) =>
+        runTool("Could not delete the task.", async () => {
+          const deletion = await deleteTask(db, account, id, revision);
+          if (deletion === "conflict") return stale();
+          if (deletion === "missing") return toolFailure("Task not found.");
+          onTaskChange(account);
+          return result({ id });
         }),
     );
     server.registerTool(

@@ -3262,6 +3262,7 @@ it("uses scoped MCP tools to read and edit the same tasks and tags as the web ap
     "create_tag",
     "create_task",
     "delete_link",
+    "delete_task",
     "get_task",
     "get_task_attachment",
     "list_links",
@@ -3281,6 +3282,7 @@ it("uses scoped MCP tools to read and edit the same tasks and tags as the web ap
   expect(await names(write)).toEqual([
     "create_tag",
     "create_task",
+    "delete_task",
     "update_task",
   ]);
   expect(
@@ -3506,18 +3508,23 @@ it("publishes committed task changes and lets the browser recover a missed signa
   using sqlite = new Database(":memory:");
   const published: Array<{ change: string; version: number }> = [];
   let drop = false;
-  const { call, session, connect, useTool } = await setupMcp(sqlite, {
-    INBOX_UPDATES: {
-      getByName: () => ({
-        publish: async (change: string) => {
-          const row = sqlite
-            .query<{ version: number }, []>("SELECT version FROM task_changes")
-            .get();
-          if (!drop && row) published.push({ change, version: row.version });
-        },
-      }),
-    } as unknown as WorkerEnv["INBOX_UPDATES"],
-  });
+  const { call, request, origin, session, connect, useTool } = await setupMcp(
+    sqlite,
+    {
+      INBOX_UPDATES: {
+        getByName: () => ({
+          publish: async (change: string) => {
+            const row = sqlite
+              .query<{ version: number }, []>(
+                "SELECT version FROM task_changes",
+              )
+              .get();
+            if (!drop && row) published.push({ change, version: row.version });
+          },
+        }),
+      } as unknown as WorkerEnv["INBOX_UPDATES"],
+    },
+  );
   const read = (since?: number) =>
     call(
       since === undefined ? tasksApi : `${tasksApi}?since=${since}`,
@@ -3569,6 +3576,56 @@ it("publishes committed task changes and lets the browser recover a missed signa
   );
   expect(browserTask.status).toBe(201);
   expect(published.at(-1)).toEqual({ change: tasksChanged, version: 3 });
+  const browserSaved = (await browserTask.json()) as {
+    id: string;
+    revision: string;
+  };
+  const headers = {
+    cookie: session,
+    origin,
+    "content-type": "application/json",
+  };
+  const browserDelete = (csrf: boolean, revision = browserSaved.revision) =>
+    request(taskApi(browserSaved.id), {
+      method: "DELETE",
+      headers: { ...headers, ...(csrf ? { "x-effect-auth-csrf": "1" } : {}) },
+      body: JSON.stringify({ revision }),
+    });
+  expect((await browserDelete(false)).status).toBe(403);
+  expect((await browserDelete(true, crypto.randomUUID())).status).toBe(409);
+  expect((await read(3)).status).toBe(204);
+  expect((await browserDelete(true)).status).toBe(204);
+  expect((await browserDelete(true)).status).toBe(404);
+  expect(published.at(-1)).toEqual({ change: tasksChanged, version: 4 });
+  expect(await snapshot(await read(3))).toMatchObject({
+    version: 4,
+    tasks: [{ id }],
+  });
+
+  const readToken = (await connect([tasksReadScope])).access_token;
+  const { revision } = updated.result?.structuredContent as {
+    revision: string;
+  };
+  expect(
+    (await useTool(readToken, "delete_task", { id, revision })).error,
+  ).toBeDefined();
+  expect(
+    (await useTool(token, "delete_task", { id, revision: receipt.revision }))
+      .result?.isError,
+  ).toBe(true);
+  expect((await read(4)).status).toBe(204);
+  expect(
+    (await useTool(token, "delete_task", { id, revision })).result
+      ?.structuredContent,
+  ).toEqual({ id });
+  expect(
+    (await useTool(token, "delete_task", { id, revision })).result?.isError,
+  ).toBe(true);
+  expect(published.map((event) => event.version)).toEqual([1, 3, 4, 5]);
+  expect(await snapshot(await read(4))).toMatchObject({
+    version: 5,
+    tasks: [],
+  });
 });
 
 it("stores the validated theme for the authenticated account across sessions", async () => {

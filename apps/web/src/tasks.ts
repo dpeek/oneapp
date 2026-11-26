@@ -1,4 +1,5 @@
 import {
+  Dialog,
   DropdownMenu,
   MultiCombobox,
   Popover,
@@ -17,6 +18,7 @@ import {
   Task,
   taskApi,
   TaskCreate,
+  TaskDelete,
   TaskPriority,
   TaskRoute,
   TaskSnapshot,
@@ -55,6 +57,7 @@ const Operation = Schema.Union([
   Schema.TaggedStruct("Load", {}),
   Schema.TaggedStruct("Create", { input: TaskCreate }),
   Schema.TaggedStruct("Save", { id: ItemId, input: TaskUpdate }),
+  Schema.TaggedStruct("Delete", { id: ItemId, input: TaskDelete }),
   Schema.TaggedStruct("AddTag", { id: ItemId, input: TagCreate }),
 ]);
 type Operation = typeof Operation.Type;
@@ -63,6 +66,9 @@ export const filterOptionsId = "task-filter-options";
 export const creationDialogId = "task-create-dialog";
 export const creationTitleId = "task-create-title-input";
 export const creationSubmitId = "task-create-submit";
+export const deleteDialogId = "task-delete-dialog";
+export const deleteConflictMessage =
+  "The task changed. Close this dialog and review the latest task before deleting it.";
 const filterPopover = Popover.init({ id: "task-filters" });
 const filterTags = MultiCombobox.init("task-filter-tags");
 const closedFilterOptions = { filterCategory: null, filterTags };
@@ -86,6 +92,16 @@ export const Model = Schema.Struct({
   editor: Schema.NullOr(Editor),
   attachments: Attachments.Model,
   creation: Schema.NullOr(Creation),
+  deleteDialog: Dialog.Model,
+  deletion: Schema.NullOr(
+    Schema.Struct({
+      id: ItemId,
+      revision: Schema.NullOr(ItemId),
+      title: Schema.String,
+      error: Schema.NullOr(Schema.String),
+      completed: Schema.Boolean,
+    }),
+  ),
   filterPopover: Popover.Model,
   filterCategory: Schema.NullOr(FilterCategory),
   filterTags: MultiCombobox.Model,
@@ -112,6 +128,8 @@ export const initial: Model = {
   editor: null,
   attachments: Attachments.initial,
   creation: null,
+  deleteDialog: Dialog.init({ id: deleteDialogId }),
+  deletion: null,
   ...closedTaskMenus,
   filters: defaultFilters,
   sort: "updated",
@@ -154,9 +172,14 @@ export const Message = defineMessageUnion({
   RemovedTag: { id: ItemId },
   Saved: {},
   Discarded: {},
+  RequestedDelete: {},
+  ConfirmedDelete: {},
+  GotDeleteDialogMessage: { message: Dialog.Message },
   Loaded: { request: Schema.String, index: TaskSnapshot },
   TaskCreated: { request: Schema.String, task: Task },
   TaskSaved: { request: Schema.String, task: Task, conflict: Schema.Boolean },
+  TaskDeleted: { request: Schema.String, id: ItemId },
+  DeleteConflict: { request: Schema.String },
   TagCreated: { request: Schema.String, tag: Tag },
   Failed: { request: Schema.String, error: Schema.String },
   SessionExpired: { request: Schema.String },
@@ -164,6 +187,7 @@ export const Message = defineMessageUnion({
 export type Message = typeof Message.Type;
 export const OutMessage = defineMessageUnion({
   OpenTask: { id: ItemId },
+  OpenList: {},
   SessionExpired: {},
 });
 export type OutMessage = typeof OutMessage.Type;
@@ -193,6 +217,17 @@ const foldFolderSheet = Update.foldChild({
   read: (model: Model) => Option.some(model.folderSheet),
   write: (model, folderSheet) => ({ ...model, folderSheet }),
   toParentMessage: toFolderSheetMessage,
+  foldOutMessage: () => (model) => ({ model }),
+});
+
+export const toDeleteDialogMessage = (message: typeof Dialog.Message.Type) =>
+  Message.GotDeleteDialogMessage({ message });
+
+const foldDeleteDialog = Update.foldChild({
+  update: Dialog.update,
+  read: (model: Model) => Option.some(model.deleteDialog),
+  write: (model, deleteDialog) => ({ ...model, deleteDialog }),
+  toParentMessage: toDeleteDialogMessage,
   foldOutMessage: () => (model) => ({ model }),
 });
 
@@ -334,6 +369,8 @@ const Request = Command.define("RequestTasks", {
     Message.Loaded,
     Message.TaskCreated,
     Message.TaskSaved,
+    Message.TaskDeleted,
+    Message.DeleteConflict,
     Message.TagCreated,
     Message.Failed,
     Message.SessionExpired,
@@ -373,6 +410,23 @@ const Request = Command.define("RequestTasks", {
             });
           break;
         }
+        case "Delete": {
+          const response = await fetch(taskApi(operation.id), {
+            method: "DELETE",
+            signal,
+            headers: {
+              "content-type": "application/json",
+              "x-effect-auth-csrf": "1",
+            },
+            body: JSON.stringify(operation.input),
+          });
+          if (response.status === 401) break;
+          if (response.status === 409)
+            return Message.DeleteConflict({ request });
+          if (response.status === 204 || response.status === 404)
+            return Message.TaskDeleted({ request, id: operation.id });
+          throw new Error("Task deletion failed.");
+        }
         case "AddTag": {
           const result = await requestJson(signal, Tag, tagsApi, {
             method: "POST",
@@ -392,6 +446,7 @@ const Request = Command.define("RequestTasks", {
               Load: "Could not load tasks. Try again.",
               Create: "Could not add the task. Try again.",
               Save: "Could not save the task. Try again.",
+              Delete: "Could not delete the task. Try again.",
               AddTag: "Could not add the tag. Try again.",
             }[operation._tag],
           }),
@@ -565,9 +620,10 @@ const applyIndex = (model: Model, index: typeof TaskSnapshot.Type): Model => {
       tagIds: model.filters.tagIds.filter((id) => availableTags.has(id)),
     },
     editor:
+      task &&
       previous &&
       editor &&
-      (task?.revision === previous.revision ||
+      (task.revision === previous.revision ||
         editor.draft.revision !== previous.revision ||
         hasEdits(editor.draft, previous))
         ? {
@@ -600,6 +656,7 @@ const transition = (
                 editor: null,
                 attachments: Attachments.initial,
                 creation: null,
+                deletion: null,
                 error: null,
               }
             : refresh
@@ -614,19 +671,23 @@ const transition = (
           task && next.editor === null
             ? { ...next, editor: makeEditor(toDraft(task)) }
             : next;
-        const result =
-          refresh || !opened.index
-            ? start(opened, { _tag: "Load" })
-            : { model: opened };
-        return !refresh && id === null && model.selectedId
-          ? {
-              ...result,
-              commands: [
-                ...(result.commands ?? []),
-                FocusList({ id: model.selectedId }),
-              ],
-            }
-          : result;
+        return Update.combine(opened, [
+          (next) =>
+            id !== model.selectedId && next.deleteDialog.isOpen
+              ? foldDeleteDialog(next, Dialog.Message.RequestedClose())
+              : { model: next },
+          (next) =>
+            refresh || !next.index
+              ? start(next, { _tag: "Load" })
+              : { model: next },
+          (next) => ({
+            model: next,
+            commands:
+              !refresh && id === null && model.selectedId
+                ? [FocusList({ id: model.selectedId })]
+                : [],
+          }),
+        ]);
       },
       GotFolderSheetMessage: ({ message }) => foldFolderSheet(model, message),
       GotAttachmentsMessage: ({ message }) =>
@@ -665,6 +726,7 @@ const transition = (
       OpenedCreate: ({ preserveView }) => {
         if (
           model.creation ||
+          model.deletion ||
           (!preserveView && (model.request || !model.index))
         )
           return { model };
@@ -860,6 +922,94 @@ const transition = (
           },
         };
       },
+      RequestedDelete: () => {
+        const task = selectedTask(model);
+        if (!task || model.request || model.creation || model.deletion)
+          return { model };
+        const { id, revision, title } = task;
+        return foldDeleteDialog(
+          {
+            ...model,
+            deletion: { id, revision, title, error: null, completed: false },
+          },
+          Dialog.Message.RequestedOpen(),
+        );
+      },
+      ConfirmedDelete: () => {
+        const { deletion } = model;
+        if (
+          !deletion?.revision ||
+          !model.deleteDialog.isOpen ||
+          model.request ||
+          selectedTask(model)?.revision !== deletion.revision
+        )
+          return { model };
+        return start(
+          { ...model, deletion: { ...deletion, error: null } },
+          {
+            _tag: "Delete",
+            id: deletion.id,
+            input: { revision: deletion.revision },
+          },
+        );
+      },
+      GotDeleteDialogMessage: ({ message }) => {
+        if (
+          message._tag === "RequestedClose" &&
+          model.request?.operation._tag === "Delete"
+        )
+          return { model };
+        const result = foldDeleteDialog(model, message);
+        if (message._tag === "Unmounted" || message._tag === "FailedShowDialog")
+          return { ...result, model: { ...result.model, deletion: null } };
+        if (
+          message._tag !== "CompletedCloseDialog" ||
+          result.model.deleteDialog.isOpen
+        )
+          return result;
+        return {
+          ...result,
+          model: { ...result.model, deletion: null },
+          ...(model.deletion?.completed &&
+          model.deletion.id === model.selectedId
+            ? { outMessage: OutMessage.OpenList() }
+            : {}),
+        };
+      },
+      TaskDeleted: ({ id }) => {
+        const next = {
+          ...model,
+          index: model.index && {
+            ...model.index,
+            tasks: model.index.tasks.filter((task) => task.id !== id),
+          },
+          request: null,
+          refreshPending: true,
+        };
+        return model.deletion?.id === id && model.deleteDialog.isOpen
+          ? foldDeleteDialog(
+              {
+                ...next,
+                editor: null,
+                attachments: Attachments.initial,
+                deletion: { ...model.deletion, completed: true },
+              },
+              Dialog.Message.RequestedClose(),
+            )
+          : { model: next };
+      },
+      DeleteConflict: () => ({
+        model: {
+          ...model,
+          request: null,
+          refreshPending: true,
+          deletion: model.deletion && {
+            ...model.deletion,
+            revision: null,
+            error: deleteConflictMessage,
+          },
+        },
+      }),
       Loaded: ({ index }) => ({
         model: applyIndex({ ...model, request: null }, index),
       }),
@@ -935,6 +1085,8 @@ const transition = (
       Failed: ({ error }) => {
         const operation = model.request?.operation;
         const next = { ...model, request: null };
+        if (operation?._tag === "Delete" && model.deletion)
+          return { model: { ...next, deletion: { ...model.deletion, error } } };
         if (operation?._tag === "Create")
           return {
             model: model.creation

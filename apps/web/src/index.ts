@@ -86,7 +86,12 @@ import * as Files from "./files.ts";
 import { filePath, FileRoute, fileRouteFor } from "./files-contract.ts";
 import { view as filesView } from "./files-view.ts";
 import * as Tasks from "./tasks.ts";
-import { taskPath, TaskRoute, taskRouteFor } from "./tasks-contract.ts";
+import {
+  taskPath,
+  TaskRoute,
+  taskRouteFor,
+  tasksPath,
+} from "./tasks-contract.ts";
 import {
   createView as taskCreateView,
   view as tasksView,
@@ -464,8 +469,8 @@ const foldTaskFeature = Update.foldChild({
             model,
             commands: [
               Navigate({
-                href: taskPath(out.id),
-                mode: "push",
+                href: out._tag === "OpenList" ? tasksPath : taskPath(out.id),
+                mode: out._tag === "OpenList" ? "replace" : "push",
               }),
             ],
           }

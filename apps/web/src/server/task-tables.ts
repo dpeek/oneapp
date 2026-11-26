@@ -67,3 +67,17 @@ export const taskAttachments = sqliteTable(
     index("task_attachments_cleanup").on(table.state, table.createdAt),
   ],
 );
+
+export const deletedTaskAttachments = sqliteTable(
+  "deleted_task_attachments",
+  {
+    accountId: text("account_id").notNull(),
+    taskId: text("task_id").notNull(),
+    id: text().notNull(),
+    deleteAfter: integer("delete_after").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.accountId, table.taskId, table.id] }),
+    index("deleted_task_attachments_due").on(table.deleteAfter),
+  ],
+);

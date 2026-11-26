@@ -141,10 +141,10 @@ export const purgeTaskAttachment = async (
   await deleteRemoved(db, account, taskId, id).run();
 };
 
-export const collectTaskAttachments = async (
+const collectRemovedAttachments = async (
   db: D1Database,
   bucket: R2Bucket,
-  now = Date.now(),
+  now: number,
 ) => {
   const { results } = await db
     .prepare(
@@ -170,3 +170,44 @@ export const collectTaskAttachments = async (
     ),
   );
 };
+
+const collectDeletedTaskAttachments = async (
+  db: D1Database,
+  bucket: R2Bucket,
+  now: number,
+) => {
+  const { results } = await db
+    .prepare(
+      `SELECT account_id AS account, task_id AS taskId, id
+       FROM deleted_task_attachments WHERE delete_after <= ?
+       ORDER BY delete_after LIMIT 100`,
+    )
+    .bind(now)
+    .all<{ account: string; taskId: string; id: string }>();
+  if (!results.length) return;
+  await bucket.delete(
+    results.map(({ account, taskId, id }) =>
+      taskAttachmentObjectKey(account, taskId, id),
+    ),
+  );
+  await db.batch(
+    results.map(({ account, taskId, id }) =>
+      db
+        .prepare(
+          `DELETE FROM deleted_task_attachments
+           WHERE account_id = ? AND task_id = ? AND id = ?`,
+        )
+        .bind(account, taskId, id),
+    ),
+  );
+};
+
+export const collectTaskAttachments = (
+  db: D1Database,
+  bucket: R2Bucket,
+  now = Date.now(),
+) =>
+  Promise.all([
+    collectRemovedAttachments(db, bucket, now),
+    collectDeletedTaskAttachments(db, bucket, now),
+  ]);

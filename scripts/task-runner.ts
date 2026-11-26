@@ -185,6 +185,8 @@ async function main() {
       checks: () => productionChecks(repository, signal),
       complete: (id, revision) =>
         withQueue((queue) => queue.complete(id, revision)),
+      report: (id, runId, update) =>
+        withQueue((queue) => queue.report(id, runId, update)),
     });
     try {
       await Promise.all([implementations, deployments]);

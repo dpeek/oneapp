@@ -16,15 +16,23 @@ import {
 } from "../tasks-contract.ts";
 
 type TaskSummary = Omit<Task, "description">;
-type TaskRow<T extends TaskSummary = Task> = Omit<T, "tagIds"> & {
+type TaskRow<T extends TaskSummary = Task> = Omit<T, "tagIds" | "latestRun"> & {
   tagIds: string;
+  latestRun: string | null;
 };
 const taskColumns = `
   i.id, i.title, i.revision, i.created_at AS createdAt,
     i.updated_at AS updatedAt, t.status, t.priority, t.due_on AS dueOn,
+    CASE WHEN r.id IS NOT NULL THEN json_object(
+      'id', r.id, 'phase', r.phase, 'startedAt', r.started_at,
+      'updatedAt', r.updated_at, 'expiresAt', r.expires_at,
+      'finishedAt', r.finished_at, 'outcome', r.outcome, 'summary', r.summary,
+      'reason', r.reason, 'deploymentUrl', r.deployment_url
+    ) END AS latestRun,
     ${itemTagIdsColumn}`;
 const taskSource = `
   FROM items i JOIN tasks t ON t.account_id = i.account_id AND t.item_id = i.id
+  LEFT JOIN task_runs r ON r.account_id = i.account_id AND r.task_id = i.id
   WHERE i.account_id = ?1 AND i.kind = 'task'`;
 const taskProjection = `SELECT ${taskColumns}, t.description ${taskSource}`;
 const taskOrder = "ORDER BY i.updated_at DESC, i.id DESC";
@@ -37,7 +45,7 @@ const versionStatement = (db: D1Database, account: string) =>
     .prepare("SELECT version FROM task_changes WHERE account_id = ?")
     .bind(account);
 
-const incrementTaskVersion = (db: D1Database, condition: string) =>
+export const incrementTaskVersion = (db: D1Database, condition: string) =>
   db.prepare(
     `INSERT INTO task_changes (account_id, version)
        SELECT ?1, 1 WHERE ${condition}
@@ -53,10 +61,13 @@ const recordTaskChange = (
 
 const decodeTask = <T extends TaskRow<TaskSummary>>({
   tagIds,
+  latestRun,
   ...fields
 }: T) => ({
   ...fields,
   tagIds: JSON.parse(tagIds) as readonly string[],
+  latestRun:
+    latestRun === null ? null : (JSON.parse(latestRun) as Task["latestRun"]),
 });
 
 export const getTask = async (db: D1Database, account: string, id: string) => {

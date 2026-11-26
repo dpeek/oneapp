@@ -113,6 +113,7 @@ export const Model = Schema.Struct({
   ),
   refreshRequest: Schema.NullOr(Schema.String),
   refreshPending: Schema.Boolean,
+  runActivityTime: Schema.Number,
   error: Schema.NullOr(
     Schema.Struct({
       message: Schema.String,
@@ -136,6 +137,7 @@ export const initial: Model = {
   request: null,
   refreshRequest: null,
   refreshPending: false,
+  runActivityTime: 0,
   error: null,
 };
 
@@ -146,6 +148,7 @@ export const Message = defineMessageUnion({
   FocusUpdated: {},
   Retried: {},
   RefreshRequested: {},
+  RunExpired: { at: Schema.Number },
   RefreshCompleted: {
     check: Schema.String,
     result: Schema.Union([
@@ -608,7 +611,7 @@ const replaceTask = (model: Model, task: Task): Model => ({
 });
 
 const applyIndex = (model: Model, index: typeof TaskSnapshot.Type): Model => {
-  const next = { ...model, index };
+  const next = { ...model, index, runActivityTime: Date.now() };
   const task = selectedTask(next);
   const previous = selectedTask(model);
   const availableTags = new Set(index.tags.map(({ id }) => id));
@@ -635,6 +638,16 @@ const applyIndex = (model: Model, index: typeof TaskSnapshot.Type): Model => {
           }
         : task && makeEditor(toDraft(task)),
   };
+};
+
+export const nextRunExpiry = (model: Model) => {
+  let next: number | null = null;
+  for (const { latestRun } of model.index?.tasks ?? []) {
+    const expiresAt = latestRun?.expiresAt;
+    if (expiresAt != null && expiresAt > model.runActivityTime)
+      next = Math.min(next ?? expiresAt, expiresAt);
+  }
+  return next;
 };
 
 const transition = (
@@ -696,6 +709,12 @@ const transition = (
           ? { model }
           : foldAttachments(model, message),
       FocusUpdated: () => ({ model }),
+      RunExpired: ({ at }) => ({
+        model: {
+          ...model,
+          runActivityTime: Math.max(model.runActivityTime, at),
+        },
+      }),
       RefreshRequested: () => ({
         model:
           model.index || model.request?.operation._tag === "Load"

@@ -22,6 +22,7 @@ const task: Task = {
   tagIds: [beta],
   createdAt: 0,
   updatedAt: 0,
+  latestRun: null,
 };
 
 it("matches any selected value within each task filter and requires every category to match", () => {

@@ -26,6 +26,25 @@ const styles = stylex.create({
   },
 });
 
+export const spinnerIcon = <Message>(
+  h: HtmlBuilder<Message>,
+  size = 24,
+): Html =>
+  h.svg(
+    [
+      h.Class(stylex.props(styles.icon).className ?? ""),
+      h.ViewBox("0 0 24 24"),
+      h.Width(String(size)),
+      h.Height(String(size)),
+      h.Fill("none"),
+      h.Stroke("currentColor"),
+      h.StrokeWidth("2"),
+      h.StrokeLinecap("round"),
+      h.AriaHidden(true),
+    ],
+    [h.path([h.D("M21 12a9 9 0 1 1-9-9")], [])],
+  );
+
 export const spinner = <Message>(
   label: string,
   h: HtmlBuilder<Message>,
@@ -33,20 +52,7 @@ export const spinner = <Message>(
   h.span(
     [h.Role("status"), h.DataAttribute("slot", "spinner")],
     [
-      h.svg(
-        [
-          h.Class(stylex.props(styles.icon).className ?? ""),
-          h.ViewBox("0 0 24 24"),
-          h.Width("24"),
-          h.Height("24"),
-          h.Fill("none"),
-          h.Stroke("currentColor"),
-          h.StrokeWidth("2"),
-          h.StrokeLinecap("round"),
-          h.AriaHidden(true),
-        ],
-        [h.path([h.D("M21 12a9 9 0 1 1-9-9")], [])],
-      ),
+      spinnerIcon(h),
       h.span([h.Class(stylex.props(styles.label).className ?? "")], [label]),
     ],
   );

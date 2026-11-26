@@ -861,6 +861,29 @@ const subscriptions = Subscription.make<Model, Message>()((entry) => ({
           : Stream.empty,
     },
   ),
+  taskRunExpiry: entry(
+    { at: Schema.NullOr(Schema.Number) },
+    {
+      modelToDependencies: (model) => ({
+        at:
+          model.page === "tasks" && model.account
+            ? Tasks.nextRunExpiry(model.tasks)
+            : null,
+      }),
+      dependenciesToStream: ({ at }) =>
+        at === null
+          ? Stream.empty
+          : Stream.fromEffect(
+              Effect.sleep(Math.max(0, at - Date.now())).pipe(
+                Effect.map(() =>
+                  toTasksMessage(
+                    Tasks.Message.RunExpired({ at: Math.max(at, Date.now()) }),
+                  ),
+                ),
+              ),
+            ),
+    },
+  ),
 }));
 
 const loadPage = (

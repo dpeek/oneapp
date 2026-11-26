@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { ItemId, ItemTagIds, itemTagLimit, Tag } from "./items-contract.ts";
+import { TaskRun } from "./task-run-contract.ts";
 
 export const tasksPath = "/tasks";
 export const tasksApi = "/api/tasks";
@@ -80,6 +81,7 @@ export const Task = Schema.Struct({
   id: ItemId,
   createdAt: Schema.Number,
   updatedAt: Schema.Number,
+  latestRun: Schema.NullOr(TaskRun),
 });
 export type Task = typeof Task.Type;
 export const TaskIndex = Schema.Struct({

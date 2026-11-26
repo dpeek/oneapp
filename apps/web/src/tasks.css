@@ -12,7 +12,7 @@
 
 .task-table {
   inline-size: 100%;
-  min-inline-size: 39.75rem;
+  min-inline-size: 47rem;
   table-layout: fixed;
   border-spacing: 0;
   font-size: 0.875rem;
@@ -48,6 +48,10 @@
 }
 
 .task-table th:nth-child(3) {
+  inline-size: 12rem;
+}
+
+.task-table th:nth-child(4) {
   inline-size: 8.25rem;
 }
 
@@ -143,11 +147,14 @@
   --task-row-icon-color: var(--alert-info);
 }
 
-.task-row-value[data-status="completed"] {
+.task-row-value:is([data-status="completed"], [data-outcome="deployed"]) {
   --task-row-icon-color: var(--alert-success);
 }
 
-.task-row-value[data-status="canceled"] {
+.task-row-value:is(
+  [data-status="canceled"],
+  [data-outcome]:not([data-outcome="deployed"])
+) {
   --task-row-icon-color: light-dark(#b42332, #ff8d98);
 }
 
@@ -156,7 +163,7 @@
   font-weight: 600;
 }
 
-@container task-list (width <= 40rem) {
+@container task-list (width <= 47rem) {
   .task-table {
     min-inline-size: 0;
   }
@@ -165,15 +172,24 @@
     padding-block: 0;
   }
 
-  .task-table th:is(:nth-child(2), :nth-child(3)) {
+  .task-table th:is(:nth-child(2), :nth-child(4)) {
     inline-size: 1.75rem;
+  }
+
+  .task-table th:nth-child(3) {
+    inline-size: clamp(6.5rem, 30cqi, 10rem);
+  }
+
+  .task-table :is(th, td):nth-child(3) {
+    padding-inline: 0.375rem;
+    font-size: 0.75rem;
   }
 
   .task-table :is(th, td):last-child {
     display: none;
   }
 
-  .task-table :is(th, td):is(:nth-child(2), :nth-child(3)) {
+  .task-table :is(th, td):is(:nth-child(2), :nth-child(4)) {
     padding-inline: 0.375rem;
     text-align: end;
   }
@@ -182,12 +198,12 @@
     padding-inline-end: 0.375rem;
   }
 
-  .task-row > td:nth-child(3) {
+  .task-row > td:nth-child(4) {
     border-start-end-radius: var(--control-radius);
     border-end-end-radius: var(--control-radius);
   }
 
-  .task-table th > span,
+  .task-table th:not(:nth-child(3)) > span,
   .task-row-value-label {
     position: absolute;
     inline-size: 1px;
@@ -225,6 +241,29 @@
 .task-editor {
   display: grid;
   gap: 1rem;
+}
+
+.task-latest-run {
+  display: grid;
+  justify-items: start;
+  gap: 0.375rem;
+  padding-block: 0.75rem;
+  border-block: 1px solid var(--border);
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+
+.task-latest-run :is(h2, p) {
+  margin: 0;
+}
+
+.task-latest-run h2 {
+  font-size: inherit;
+  font-weight: 600;
+}
+
+.task-latest-run p {
+  white-space: pre-wrap;
 }
 
 .task-attachments {

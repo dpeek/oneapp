@@ -22,7 +22,7 @@ import {
   mcpScopes,
   mcpOAuth,
 } from "./mcp-oauth.ts";
-import { registerTaskTools } from "./mcp-tasks.ts";
+import { registerTaskRunnerTools, registerTaskTools } from "./mcp-tasks.ts";
 import { pageFields, result, standardSchema, toolFailure } from "./mcp-tool.ts";
 
 const ListOptions = Schema.Struct(pageFields);
@@ -42,6 +42,7 @@ const createServer = (
   sql: SqlClient.SqlClient,
   scopes: readonly McpScope[],
   onTaskChange: (account: string) => void,
+  runner: boolean,
 ) => {
   const run = Effect.runPromiseWith(Context.make(SqlClient.SqlClient, sql));
   const server = new McpServer({ name: appName, version: "1.0.0" });
@@ -125,6 +126,7 @@ const createServer = (
     );
   }
   registerTaskTools(server, origin, ownerId, db, bucket, scopes, onTaskChange);
+  if (runner) registerTaskRunnerTools(server, ownerId, db, onTaskChange);
   return server;
 };
 
@@ -153,6 +155,7 @@ export const mcpRoutes = (
       E,
       R
     >,
+    runner = false,
   ) =>
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
@@ -180,6 +183,7 @@ export const mcpRoutes = (
             sql,
             access.scopes,
             onTaskChange,
+            runner,
           ),
         {
           maxRequestBodySize:
@@ -218,6 +222,7 @@ export const mcpRoutes = (
             scopes: [ReadTasks, WriteTasks],
           })),
         ),
+        true,
       ).pipe(
         Effect.catchTags({
           InvalidCliToken: invalidTokenResponse,

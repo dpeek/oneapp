@@ -10,11 +10,13 @@ import {
 import { basename, join } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { ItemId } from "../../apps/web/src/items-contract.ts";
+import type { TaskRunUpdate } from "../../apps/web/src/task-run-contract.ts";
 import { recordRunEvent } from "./events.ts";
 import { GitSha, type ProductionDeployment } from "./github.ts";
 
 const Deployment = Schema.Struct({
   taskId: ItemId,
+  runId: Schema.optionalKey(ItemId),
   revision: ItemId,
   sha: GitSha,
   origin: Schema.String,
@@ -60,12 +62,17 @@ export async function watchDeployments(options: {
     taskId: string,
     revision: string,
   ) => Promise<"completed" | "changed">;
+  report: (
+    taskId: string,
+    runId: string,
+    update: TaskRunUpdate,
+  ) => Promise<"updated" | "stale" | "completion-skipped">;
 }) {
   const { directory, origin, repository, signal, implementationFinished } =
     options;
   const pending = join(directory, "deployments");
   const reported = new Map<string, string>();
-  let timedOut = false;
+  let failed = false;
 
   while (!signal.aborted) {
     // Read this before scanning. A finishing implementation can add a file
@@ -88,7 +95,7 @@ export async function watchDeployments(options: {
       );
       if (deployment.origin !== origin || deployment.repository !== repository)
         continue;
-      const { taskId, revision, sha, createdAt } = deployment;
+      const { taskId, runId, revision, sha, createdAt } = deployment;
       const run = join(directory, name.slice(0, -5));
       const record = (phase: string, detail: Record<string, unknown>) =>
         recordRunEvent(run, taskId, origin, phase, { sha, ...detail });
@@ -96,15 +103,29 @@ export async function watchDeployments(options: {
       let reason: string | undefined;
       try {
         production = await check(sha);
-        if (signal.aborted) return;
+      } catch (error) {
+        reason = error instanceof Error ? error.message : String(error);
+      }
+      if (signal.aborted) return;
+      const deploymentUrl = production?.buildUrl ?? undefined;
+      const timeout = Date.now() - createdAt >= deploymentTimeout;
+      try {
         if (production?.conclusion === "success") {
-          const status = await options.complete(taskId, revision);
+          const status = runId
+            ? await options.report(taskId, runId, {
+                phase: "finished",
+                outcome: "deployed",
+                deploymentUrl,
+              })
+            : await options.complete(taskId, revision);
           await record(
-            status === "completed" ? "completed" : "completion-skipped",
+            status === "completed" || status === "updated"
+              ? "completed"
+              : "completion-skipped",
             {
               deployedSha: production.sha,
               buildUrl: production.buildUrl,
-              ...(status === "changed"
+              ...(status !== "completed" && status !== "updated"
                 ? { reason: "The task changed after it was claimed." }
                 : {}),
             },
@@ -115,38 +136,70 @@ export async function watchDeployments(options: {
         }
         if (production?.conclusion)
           reason = `Cloudflare reported ${production.conclusion}.`;
+        if (timeout || (runId && production?.conclusion)) {
+          const status = runId
+            ? await options.report(taskId, runId, {
+                phase: "finished",
+                outcome: "deployment-failed",
+                reason: reason?.slice(0, 2_000),
+                deploymentUrl,
+              })
+            : "updated";
+          if (status === "stale") {
+            await record("deployment-tracking-skipped", {
+              reason: "This run is no longer active.",
+            });
+          } else {
+            await record(timeout ? "deployment-timeout" : "deployment-failed", {
+              reason:
+                reason ??
+                "No successful production deployment after 30 minutes.",
+              buildUrl: deploymentUrl,
+            });
+            failed = true;
+          }
+          await rm(file);
+          reported.delete(name);
+          continue;
+        }
+        if (
+          runId &&
+          (await options.report(taskId, runId, {
+            phase: "heartbeat",
+            activePhase: "deployment",
+            deploymentUrl,
+          })) === "stale"
+        ) {
+          await record("deployment-tracking-skipped", {
+            reason: "This run is no longer active.",
+          });
+          await rm(file);
+          reported.delete(name);
+          continue;
+        }
       } catch (error) {
         if (signal.aborted) return;
         reason = error instanceof Error ? error.message : String(error);
       }
 
-      const buildUrl = production?.buildUrl;
-      if (Date.now() - createdAt >= deploymentTimeout) {
-        await record("deployment-timeout", {
-          reason:
-            reason ?? "No successful production deployment after 30 minutes.",
-          buildUrl,
-        });
-        await rm(file);
-        reported.delete(name);
-        timedOut = true;
-        continue;
-      }
       if (reason && reported.get(name) !== reason) {
         await record(
           production?.conclusion && production.conclusion !== "success"
             ? "deployment-failed"
             : "deployment-waiting",
-          { reason, buildUrl },
+          { reason, buildUrl: deploymentUrl },
         );
         reported.set(name, reason);
       }
-      waiting = true;
+      if (timeout) failed = true;
+      else waiting = true;
     }
 
     if (implementationDone && !waiting) {
-      if (timedOut)
-        throw new Error("A deployment timed out. Check the runner logs.");
+      if (failed)
+        throw new Error(
+          "A production deployment failed. Check the runner logs.",
+        );
       return;
     }
     const wake =

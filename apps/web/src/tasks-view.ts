@@ -21,6 +21,7 @@ import {
   signalLowIconPaths,
   signalMediumIconPaths,
   skeleton,
+  spinnerIcon,
   taskIconPaths,
   textarea,
   timestamp,
@@ -33,6 +34,7 @@ import { Mount, Submodel } from "foldkit";
 import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html";
 import * as Attachments from "./task-attachments.ts";
 import { tagNameKey, tagNameLimit, type Tag } from "./items-contract.ts";
+import { isTaskRunInterrupted, type TaskRun } from "./task-run-contract.ts";
 import {
   type Task,
   taskDescriptionLimit,
@@ -86,6 +88,73 @@ const taskPriorityDisplay = {
   high: { label: "High", icon: signalHighIconPaths },
   urgent: { label: "Urgent", icon: flameIconPaths },
 } satisfies Record<NonNullable<Task["priority"]> | "", TaskRowValue>;
+const runPhaseLabels = {
+  setup: "Setting up",
+  implementation: "Agent working",
+  checks: "Running checks",
+  deployment: "Waiting for deploy",
+} satisfies Record<Exclude<TaskRun["phase"], "finished">, string>;
+const runOutcomeLabels = {
+  deployed: "Deployed",
+  "setup-failed": "Setup failed",
+  "implementation-failed": "Implementation failed",
+  "checks-failed": "Checks failed",
+  "deployment-failed": "Deployment failed",
+  interrupted: "Run interrupted",
+} satisfies Record<NonNullable<TaskRun["outcome"]> | "interrupted", string>;
+
+const runActivity = (run: TaskRun, now: number, h: HtmlBuilder<Message>) => {
+  const outcome = isTaskRunInterrupted(run, now) ? "interrupted" : run.outcome;
+  if (outcome)
+    return h.span(
+      [h.Class("task-row-value"), h.DataAttribute("outcome", outcome)],
+      [
+        outlineIcon(
+          h,
+          outcome === "deployed" ? circleCheckIconPaths : circleXIconPaths,
+        ),
+        h.span([], [runOutcomeLabels[outcome]]),
+      ],
+    );
+  if (run.phase === "finished") return h.empty;
+  return h.span(
+    [h.Class("task-row-value"), h.DataAttribute("activity", run.phase)],
+    [spinnerIcon(h, 16), h.span([], [runPhaseLabels[run.phase]])],
+  );
+};
+
+const latestRunDetails = (
+  run: TaskRun,
+  now: number,
+  h: HtmlBuilder<Message>,
+) => {
+  const reason =
+    run.reason ??
+    (isTaskRunInterrupted(run, now)
+      ? "The runner stopped reporting activity."
+      : null);
+  return h.section(
+    [h.Class("task-latest-run"), h.AriaLabel("Latest run")],
+    [
+      h.h2([], ["Latest run"]),
+      h.div([h.Role("status")], [runActivity(run, now, h)]),
+      ...(run.summary ? [h.p([], [run.summary])] : []),
+      ...(reason ? [h.p([], [reason])] : []),
+      ...(run.deploymentUrl
+        ? [
+            h.a(
+              [
+                h.Href(run.deploymentUrl),
+                h.Target("_blank"),
+                h.Rel("noreferrer"),
+              ],
+              ["View deployment"],
+            ),
+          ]
+        : []),
+    ],
+  );
+};
 const priorityRank = { "": 0, low: 1, medium: 2, high: 3, urgent: 4 };
 const statusOptions = taskStatuses.map((value) => ({
   value,
@@ -150,6 +219,7 @@ const taskRow = (
   task: Task,
   tags: ReadonlyMap<string, Tag>,
   now: number,
+  runActivityTime: number,
   h: HtmlBuilder<Message>,
 ) =>
   h.tr(
@@ -187,6 +257,10 @@ const taskRow = (
         ],
       ),
       taskRowValue(taskStatusDisplay[task.status], "status", task.status, h),
+      h.td(
+        [h.Class("task-activity-cell")],
+        task.latestRun ? [runActivity(task.latestRun, runActivityTime, h)] : [],
+      ),
       taskRowValue(
         taskPriorityDisplay[task.priority ?? ""],
         "priority",
@@ -303,7 +377,7 @@ const taskTable = (
         [
           h.tr(
             [],
-            ["Task", "Status", "Priority", "Updated"].map((label) =>
+            ["Task", "Status", "Activity", "Priority", "Updated"].map((label) =>
               h.th([h.Key(label), h.Scope("col")], [h.span([], [label])]),
             ),
           ),
@@ -319,6 +393,7 @@ const taskPlaceholders = (h: HtmlBuilder<Message>) =>
       [h.Key(String(index))],
       [
         h.td([], [skeleton(index % 2 ? "md" : "lg", h)]),
+        h.td([], [skeleton("md", h)]),
         h.td([], [skeleton("md", h)]),
         h.td([], [skeleton("sm", h)]),
         h.td([], [skeleton("md", h)]),
@@ -345,7 +420,7 @@ const taskList = (
   if (tasks.length) {
     const now = Date.now();
     results = taskTable(
-      tasks.map((task) => taskRow(task, tagMap, now, h)),
+      tasks.map((task) => taskRow(task, tagMap, now, model.runActivityTime, h)),
       false,
       h,
     );
@@ -731,6 +806,9 @@ const taskDetail = (
                     h,
                   ),
                 }),
+                ...(task.latestRun
+                  ? [latestRunDetails(task.latestRun, model.runActivityTime, h)]
+                  : []),
                 h.div(
                   [h.Class("task-actions")],
                   [

@@ -1,6 +1,12 @@
 import { Schema } from "effect";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import { setTimeout } from "node:timers/promises";
+import {
+  taskRunHeartbeatMs,
+  TaskRunSummary,
+  type TaskRunUpdate,
+} from "../../apps/web/src/task-run-contract.ts";
 import { taskPath } from "../../apps/web/src/tasks-contract.ts";
 import { withBrowserSession } from "./browser.ts";
 import { savePendingDeployment } from "./deployments.ts";
@@ -10,7 +16,7 @@ import type { TaskQueue } from "./queue.ts";
 
 const AgentResult = Schema.Struct({
   outcome: Schema.Literals(["implemented", "blocked"]),
-  summary: Schema.String.check(Schema.isMaxLength(2_000)),
+  summary: TaskRunSummary,
 });
 
 // Keep Orumai and deployment credentials out of subprocess environments.
@@ -131,6 +137,7 @@ export async function runNext(
   const { origin, directory, source, remote, repository, signal, bunCache } =
     settings;
   const run = await mkdtemp(join(directory, `${task.id}-`));
+  const runId = crypto.randomUUID();
   const repo = join(run, "repo");
   const url = new URL(taskPath(task.id), origin).href;
   const record = (phase: string, detail: Record<string, unknown> = {}) =>
@@ -144,14 +151,48 @@ export async function runNext(
   const bun = (args: string[]) =>
     execute([process.execPath, ...args], repo, signal, { env: bunEnv });
 
+  let claimed = false;
+  let journaled = false;
+  let summary: string | undefined;
+  let phase: "setup" | "implementation" | "checks" | "deployment" = "setup";
+  const report = (update: TaskRunUpdate) =>
+    queue.report(task.id, runId, update);
+  const advance = async (
+    update: Extract<
+      TaskRunUpdate,
+      { phase: "implementation" | "checks" | "deployment" }
+    >,
+  ) => {
+    if ((await report(update)) === "stale")
+      throw new Error("A newer runner attempt replaced this run.");
+    phase = update.phase;
+  };
+  const stopped = new AbortController();
+  const heartbeatSignal = AbortSignal.any([signal, stopped.signal]);
+  let heartbeat: Promise<void> | undefined;
+
   try {
     await record("claiming");
-    const revision = await queue.claim(task.id, task.revision);
+    const revision = await queue.claim(task.id, task.revision, runId);
     if (!revision) {
       await record("claim-lost");
       return;
     }
-    await record("claimed", { revision });
+    claimed = true;
+    heartbeat = (async () => {
+      while (!heartbeatSignal.aborted) {
+        await setTimeout(taskRunHeartbeatMs, undefined, {
+          signal: heartbeatSignal,
+        }).catch(() => undefined);
+        if (heartbeatSignal.aborted) return;
+        try {
+          await report({ phase: "heartbeat", activePhase: phase });
+        } catch {
+          await record("heartbeat-failed").catch(() => undefined);
+        }
+      }
+    })();
+    await record("claimed", { revision, runId });
     await execute(
       [
         "git",
@@ -201,7 +242,7 @@ The runner has started a fresh local dev server at "$ORUMAI_DEV_URL" and an isol
 
 The runner stops its dev server and browser when this run ends. Track and stop any additional processes you start, even if verification fails. Leave pre-existing processes alone.
 
-Leave your changes in the working tree. The runner handles Git, checks, and task state. Return outcome "implemented" only when the requested change is ready for verification. Return "blocked" with a specific reason if you need clarification or cannot complete it.
+Leave your changes in the working tree. The runner handles Git, checks, and task state. Return outcome "implemented" only when the requested change is ready for verification and briefly summarize what changed and what you verified. Return "blocked" with a specific reason if you need clarification or cannot complete it.
 
 ${JSON.stringify({ id: task.id, title: task.title, description: task.description, url })}`;
     const codexLog = join(run, "codex.jsonl");
@@ -228,6 +269,7 @@ ${JSON.stringify({ id: task.id, title: task.title, description: task.description
             AbortSignal.any([signal, AbortSignal.timeout(35_000)]),
             { capture: true, env },
           );
+          await advance({ phase: "implementation" });
           await record("implementing", {
             log: codexLog,
             devLog,
@@ -274,6 +316,7 @@ ${JSON.stringify({ id: task.id, title: task.title, description: task.description
       await Bun.file(resultPath).json(),
     );
     if (result.outcome === "blocked") throw new Error(result.summary);
+    summary = result.summary;
     if ((await git(["rev-parse", "HEAD"], true)) !== base)
       throw new Error(
         "Codex changed Git HEAD. Inspect the checkout before retrying.",
@@ -283,6 +326,7 @@ ${JSON.stringify({ id: task.id, title: task.title, description: task.description
       throw new Error("Codex produced no changes.");
     const stagedTree = await git(["write-tree"], true);
 
+    await advance({ phase: "checks", summary });
     await record("checking");
     await bun(["install", "--frozen-lockfile"]);
     await bun(["check"]);
@@ -315,21 +359,48 @@ ${JSON.stringify({ id: task.id, title: task.title, description: task.description
       throw new Error(
         "The task changed after it was claimed. Inspect the checkout before retrying.",
       );
+    await advance({ phase: "deployment" });
     await record("pushing", { sha });
     // Journal before pushing so an interrupted push can be reconciled on restart.
     await savePendingDeployment(directory, run, {
       taskId: task.id,
+      runId,
       revision,
       sha,
       origin,
       repository,
     });
+    journaled = true;
+    stopped.abort();
     await git(["push", "origin", `${sha}:refs/heads/main`]);
     await record("pushed", { sha, summary: result.summary });
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
+    const reason =
+      (error instanceof Error ? error.message : String(error)).trim() ||
+      "The runner returned no failure details.";
+    if (journaled) {
+      if (!signal.aborted)
+        await report({
+          phase: "heartbeat",
+          activePhase: "deployment",
+          reason: reason.slice(0, 2_000),
+        }).catch(() => record("outcome-report-failed"));
+      await record("push-unconfirmed", { reason, checkout: repo });
+      return;
+    }
+    if (claimed && !signal.aborted) {
+      await report({
+        phase: "finished",
+        outcome: `${phase}-failed`,
+        reason: reason.slice(0, 2_000),
+        summary,
+      }).catch(() => record("outcome-report-failed"));
+    }
     await record("blocked", { reason, checkout: repo });
     throw error;
+  } finally {
+    stopped.abort();
+    await heartbeat;
   }
 
   await rm(repo, { recursive: true, force: true });

@@ -2892,9 +2892,18 @@ const defaultMcpScopes = [
   tasksWriteScope,
 ];
 
-it("lets a dedicated runner claim only opted-in tasks over MCP and revokes its access", async () => {
+it("lets a dedicated runner claim opted-in tasks and report only the latest run over MCP", async () => {
   using sqlite = new Database(":memory:");
-  const { call, request, signIn, cookies } = await setup(sqlite);
+  const published: string[] = [];
+  const { call, request, signIn, cookies } = await setup(sqlite, {
+    INBOX_UPDATES: {
+      getByName: () => ({
+        publish: async (change: string) => {
+          published.push(change);
+        },
+      }),
+    } as unknown as WorkerEnv["INBOX_UPDATES"],
+  });
   const cookie = cookies(await signIn(password));
   const issue = async (
     scopes: typeof cliLinkScopes | typeof taskRunnerScopes,
@@ -2983,14 +2992,135 @@ it("lets a dedicated runner claim only opted-in tasks over MCP and revokes its a
     ).toBe(201);
     expect(await queue.next()).toEqual({ id: readyId, tagId: tag.id });
     const task = await queue.get(readyId);
-    const revision = await queue.claim(task.id, task.revision);
+    expect(task.latestRun).toBeNull();
+    const runId = crypto.randomUUID();
+    const revision = await queue.claim(task.id, task.revision, runId);
     expect(revision).toBeDefined();
     expect(await queue.get(task.id)).toMatchObject({
       status: "in-progress",
       revision,
+      latestRun: { id: runId, phase: "setup", expiresAt: expect.any(Number) },
     });
-    expect(await queue.claim(task.id, task.revision)).toBeUndefined();
+    expect(await queue.claim(task.id, task.revision, runId)).toBe(revision);
+    expect(
+      await queue.claim(task.id, task.revision, crypto.randomUUID()),
+    ).toBeUndefined();
     expect(await queue.next()).toBeUndefined();
+
+    const read = async () =>
+      Schema.decodeUnknownSync(TaskSnapshot)(
+        await (await call(tasksApi, undefined, cookie)).json(),
+      );
+    const before = await read();
+    published.length = 0;
+    expect(
+      await queue.report(task.id, runId, { phase: "implementation" }),
+    ).toBe("updated");
+    expect(
+      await queue.report(task.id, runId, {
+        phase: "checks",
+        summary: "Changed the heading and verified it in the browser.",
+      }),
+    ).toBe("updated");
+    expect(
+      await queue.report(task.id, runId, {
+        phase: "heartbeat",
+        activePhase: "implementation",
+      }),
+    ).toBe("stale");
+    const checked = await read();
+    expect(checked.version).toBe(before.version + 2);
+    expect(published).toEqual([tasksChanged, tasksChanged]);
+    expect(checked.tasks.find(({ id }) => id === task.id)).toMatchObject({
+      revision,
+      latestRun: { id: runId, phase: "checks" },
+    });
+
+    expect(
+      await queue.report(task.id, runId, {
+        phase: "finished",
+        outcome: "checks-failed",
+        reason: "bun run test exited with code 1.",
+      }),
+    ).toBe("updated");
+    const failed = await queue.get(task.id);
+    expect(failed).toMatchObject({
+      status: "in-progress",
+      revision,
+      latestRun: {
+        id: runId,
+        phase: "finished",
+        outcome: "checks-failed",
+        summary: "Changed the heading and verified it in the browser.",
+        reason: "bun run test exited with code 1.",
+        expiresAt: null,
+      },
+    });
+    const reopened = await request(taskApi(task.id), {
+      method: "PUT",
+      headers: {
+        cookie,
+        origin: "https://oneapp.example",
+        "content-type": "application/json",
+        "x-effect-auth-csrf": "1",
+      },
+      body: JSON.stringify({ ...failed, status: "not-started" }),
+    });
+    expect(reopened.status).toBe(200);
+    const retry = crypto.randomUUID();
+    const retryRevision = await queue.claim(
+      task.id,
+      (await queue.get(task.id)).revision,
+      retry,
+    );
+    expect(retryRevision).toBeDefined();
+    expect(await queue.get(task.id)).toMatchObject({
+      status: "in-progress",
+      latestRun: { id: retry, phase: "setup", summary: null, reason: null },
+    });
+    expect(
+      await queue.report(task.id, retry, { phase: "implementation" }),
+    ).toBe("updated");
+    expect(
+      await queue.report(task.id, retry, {
+        phase: "checks",
+        summary: "Fixed and verified.",
+      }),
+    ).toBe("updated");
+    expect(await queue.report(task.id, retry, { phase: "deployment" })).toBe(
+      "updated",
+    );
+    expect(
+      await queue.report(task.id, runId, {
+        phase: "finished",
+        outcome: "deployed",
+      }),
+    ).toBe("stale");
+    const deploymentUrl = "https://example.com/build";
+    expect(
+      await queue.report(task.id, retry, {
+        phase: "heartbeat",
+        activePhase: "deployment",
+        deploymentUrl,
+      }),
+    ).toBe("updated");
+    expect(
+      await queue.report(task.id, retry, {
+        phase: "finished",
+        outcome: "deployed",
+      }),
+    ).toBe("updated");
+    const deployed = await queue.get(task.id);
+    expect(deployed.revision).not.toBe(retryRevision);
+    expect(deployed).toMatchObject({
+      status: "completed",
+      latestRun: {
+        id: retry,
+        outcome: "deployed",
+        summary: "Fixed and verified.",
+        deploymentUrl,
+      },
+    });
   } finally {
     await queue.close();
   }

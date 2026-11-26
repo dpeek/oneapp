@@ -14,6 +14,7 @@ import {
   type Task,
 } from "../tasks-contract.ts";
 import type { TaskAttachment } from "../task-attachment-contract.ts";
+import { taskRunPhases, type TaskRun } from "../task-run-contract.ts";
 import { items } from "./item-tables.ts";
 import { accounts } from "./database.ts";
 
@@ -40,6 +41,32 @@ export const tasks = sqliteTable(
     foreignKey({
       columns: [table.accountId, table.itemId],
       foreignColumns: [items.accountId, items.id],
+    }).onDelete("cascade"),
+  ],
+);
+
+export const taskRuns = sqliteTable(
+  "task_runs",
+  {
+    accountId: text("account_id").notNull(),
+    taskId: text("task_id").notNull(),
+    id: text().notNull(),
+    claimRevision: text("claim_revision").notNull(),
+    phase: text({ enum: taskRunPhases }).notNull(),
+    startedAt: integer("started_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    expiresAt: integer("expires_at"),
+    finishedAt: integer("finished_at"),
+    outcome: text().$type<TaskRun["outcome"]>(),
+    summary: text(),
+    reason: text(),
+    deploymentUrl: text("deployment_url"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.accountId, table.taskId] }),
+    foreignKey({
+      columns: [table.accountId, table.taskId],
+      foreignColumns: [tasks.accountId, tasks.itemId],
     }).onDelete("cascade"),
   ],
 );

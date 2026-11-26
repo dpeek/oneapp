@@ -3,6 +3,7 @@ import type { CallToolResult, McpServer } from "@modelcontextprotocol/server";
 import { Schema } from "effect";
 import { ItemId, Tag, TagCreate } from "../items-contract.ts";
 import { TaskAttachment } from "../task-attachment-contract.ts";
+import { TaskRunClaim, TaskRunUpdate } from "../task-run-contract.ts";
 import {
   Task,
   TaskDate,
@@ -26,6 +27,7 @@ import {
   listTaskAttachments,
   readTaskAttachment,
 } from "./task-attachments-store.ts";
+import { claimTaskRun, updateTaskRun } from "./task-runs-store.ts";
 
 const { description, ...summaryFields } = Task.fields;
 const { title, status, priority, dueOn, tagIds } = summaryFields;
@@ -99,6 +101,65 @@ const runTool = async (failure: string, run: () => Promise<CallToolResult>) => {
 };
 const stale = () =>
   toolFailure("The task changed. Read its latest revision and try again.");
+
+export const registerTaskRunnerTools = (
+  server: McpServer,
+  account: string,
+  db: D1Database,
+  onTaskChange: (account: string) => void,
+) => {
+  server.registerTool(
+    "claim_task_run",
+    {
+      title: "Claim a task for a runner attempt",
+      description:
+        "Claim a ready task at its current revision and start a run.",
+      inputSchema: standardSchema(TaskRunClaim),
+      outputSchema: standardSchema(
+        Schema.Struct({ revision: Schema.NullOr(ItemId) }),
+      ),
+    },
+    (input) =>
+      runTool("Could not claim the task.", async () => {
+        const revision = await claimTaskRun(db, account, input, Date.now());
+        if (revision) onTaskChange(account);
+        return result({ revision });
+      }),
+  );
+  server.registerTool(
+    "update_task_run",
+    {
+      title: "Report task runner activity",
+      description:
+        "Report progress, renew the active lease, or record the outcome of the latest runner attempt.",
+      inputSchema: standardSchema(
+        Schema.Struct({
+          taskId: ItemId,
+          runId: ItemId,
+          update: TaskRunUpdate,
+        }),
+      ),
+      outputSchema: standardSchema(
+        Schema.Struct({
+          status: Schema.Literals(["updated", "stale", "completion-skipped"]),
+        }),
+      ),
+    },
+    ({ taskId, runId, update }) =>
+      runTool("Could not update the task run.", async () => {
+        const status = await updateTaskRun(
+          db,
+          account,
+          taskId,
+          runId,
+          update,
+          Date.now(),
+        );
+        if (status !== "stale") onTaskChange(account);
+        return result({ status });
+      }),
+  );
+};
 
 export const registerTaskTools = (
   server: McpServer,

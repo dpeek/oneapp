@@ -76,7 +76,7 @@ export {
 export * as Popover from "./popover.ts";
 export * as Sheet from "./sheet.ts";
 export { skeleton } from "./skeleton.ts";
-export { spinner } from "./spinner.ts";
+export { spinner, spinnerIcon } from "./spinner.ts";
 export { visuallyHiddenStatus } from "./status.ts";
 export { toolbar } from "./toolbar.ts";
 export * as Tooltip from "./tooltip.ts";

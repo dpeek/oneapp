@@ -10,6 +10,7 @@ import {
   taskAttachmentLimit,
 } from "../../apps/web/src/task-attachment-contract.ts";
 import { Task } from "../../apps/web/src/tasks-contract.ts";
+import type { TaskRunUpdate } from "../../apps/web/src/task-run-contract.ts";
 
 const TaskPage = Schema.Struct({
   tasks: Schema.Array(Schema.Struct({ id: ItemId })),
@@ -25,6 +26,10 @@ const TaskDetails = Schema.Struct({
   }),
 });
 const Receipt = Schema.Struct({ id: ItemId, revision: ItemId });
+const Claim = Schema.Struct({ revision: Schema.NullOr(ItemId) });
+const RunReceipt = Schema.Struct({
+  status: Schema.Literals(["updated", "stale", "completion-skipped"]),
+});
 const readyTag = "ready";
 
 export class TaskQueue {
@@ -108,8 +113,22 @@ export class TaskQueue {
     return task;
   }
 
-  async claim(id: string, revision: string) {
-    return this.setStatus(id, revision, "in-progress");
+  async claim(taskId: string, revision: string, runId: string) {
+    const claim = await this.read(Claim, "claim_task_run", {
+      taskId,
+      revision,
+      runId,
+    });
+    return claim.revision ?? undefined;
+  }
+
+  async report(taskId: string, runId: string, update: TaskRunUpdate) {
+    const receipt = await this.read(RunReceipt, "update_task_run", {
+      taskId,
+      runId,
+      update,
+    });
+    return receipt.status;
   }
 
   async complete(id: string, revision: string) {
@@ -117,30 +136,20 @@ export class TaskQueue {
     if (current.status === "completed") return "completed";
     if (current.revision !== revision || current.status !== "in-progress")
       return "changed";
-    return (await this.setStatus(id, revision, "completed"))
-      ? "completed"
-      : "changed";
-  }
-
-  private async setStatus(
-    id: string,
-    revision: string,
-    status: "in-progress" | "completed",
-  ) {
     const result = await this.call("update_task", {
       id,
       revision,
-      status,
+      status: "completed",
     });
     if (result.isError) {
       const current = await this.get(id);
-      if (current.revision !== revision) return;
-      throw new Error(`MCP could not set task status to ${status}.`);
+      if (current.revision !== revision) return "changed";
+      throw new Error("MCP could not set task status to completed.");
     }
     const receipt = Schema.decodeUnknownSync(Receipt)(result.structuredContent);
     if (receipt.id !== id || receipt.revision === revision)
       throw new Error("MCP returned an unexpected task update receipt.");
-    return receipt.revision;
+    return "completed";
   }
 
   async screenshot(taskId: string, attachment: typeof TaskAttachment.Type) {

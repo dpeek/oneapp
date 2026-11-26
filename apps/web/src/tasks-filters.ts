@@ -7,7 +7,7 @@ import {
   type TaskView,
 } from "./tasks-contract.ts";
 
-export const StatusFilter = Schema.NullOr(Schema.Literals(activeTaskStatuses));
+export const StatusFilter = Schema.Literals(activeTaskStatuses);
 export const Filters = Schema.Struct({
   statuses: Schema.Array(StatusFilter),
   priorities: Schema.Array(TaskPriority),

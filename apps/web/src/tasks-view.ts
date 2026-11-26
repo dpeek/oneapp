@@ -2,9 +2,15 @@ import {
   alert,
   button,
   buttonClassName,
+  circleCheckIconPaths,
+  circleDashedIconPaths,
+  circleDotDashedIconPaths,
+  circleXIconPaths,
+  clockIconPaths,
   Dialog,
   empty,
   field,
+  flameIconPaths,
   input,
   MultiCombobox,
   navigationLinks,
@@ -12,11 +18,15 @@ import {
   outlineIcon,
   plusIcon,
   Sheet,
+  signalHighIconPaths,
+  signalLowIconPaths,
+  signalMediumIconPaths,
   skeleton,
   taskIconPaths,
   textarea,
   timestamp,
   Tokenizer,
+  userCheckIconPaths,
   visuallyHiddenStatus,
 } from "@oneapp/ui";
 import { Effect, Option } from "effect";
@@ -31,6 +41,7 @@ import {
   taskListPath,
   taskPath,
   taskPriorities,
+  taskStatuses,
   taskTagLimit,
   taskTitleLimit,
   type TaskView,
@@ -60,30 +71,31 @@ import {
 import { filterChoice, filterMenu } from "./filter-menu.ts";
 import { screenHeader, screenHeaderBack, workspace } from "./workspace.ts";
 
-const statusLabels = {
-  "": "No status",
-  "not-started": "Not Started",
-  "in-progress": "In Progress",
-  "in-review": "In Review",
-  completed: "Completed",
-  canceled: "Canceled",
-} satisfies Record<NonNullable<Task["status"]> | "", string>;
-const priorityLabels = {
-  "": "No priority",
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  urgent: "Urgent",
-} satisfies Record<NonNullable<Task["priority"]> | "", string>;
+type TaskRowValue = { label: string; icon: readonly string[] };
+
+const taskStatusDisplay = {
+  "not-started": { label: "Not started", icon: circleDotDashedIconPaths },
+  "in-progress": { label: "In progress", icon: clockIconPaths },
+  "in-review": { label: "In review", icon: userCheckIconPaths },
+  completed: { label: "Complete", icon: circleCheckIconPaths },
+  canceled: { label: "Cancelled", icon: circleXIconPaths },
+} satisfies Record<Task["status"], TaskRowValue>;
+const taskPriorityDisplay = {
+  "": { label: "No priority", icon: circleDashedIconPaths },
+  low: { label: "Low", icon: signalLowIconPaths },
+  medium: { label: "Medium", icon: signalMediumIconPaths },
+  high: { label: "High", icon: signalHighIconPaths },
+  urgent: { label: "Urgent", icon: flameIconPaths },
+} satisfies Record<NonNullable<Task["priority"]> | "", TaskRowValue>;
 const priorityRank = { "": 0, low: 1, medium: 2, high: 3, urgent: 4 };
-const statusOptions = Object.entries(statusLabels).map(([value, label]) => ({
+const statusOptions = taskStatuses.map((value) => ({
   value,
-  label,
+  label: taskStatusDisplay[value].label,
 }));
 const filterLabels = { status: "Status", priority: "Priority", tags: "Tags" };
-const viewLabels = { active: "Active", completed: "Completed" };
-const priorityOptions = Object.entries(priorityLabels).map(
-  ([value, label]) => ({ value, label }),
+const viewLabels = { active: "Active", completed: "Closed" };
+const priorityOptions = Object.entries(taskPriorityDisplay).map(
+  ([value, { label }]) => ({ value, label }),
 );
 const taskDateTimeFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -114,6 +126,25 @@ const taskTimestamp = (value: number, h: HtmlBuilder<Message>) =>
   h.time(
     [h.Datetime(new Date(value).toISOString())],
     [taskDateTimeFormat.format(value)],
+  );
+
+const taskRowValue = (
+  { label, icon }: TaskRowValue,
+  kind: "status" | "priority",
+  value: string,
+  h: HtmlBuilder<Message>,
+) =>
+  h.td(
+    [],
+    [
+      h.span(
+        [h.Class("task-row-value"), h.DataAttribute(kind, value)],
+        [
+          outlineIcon(h, icon),
+          h.span([h.Class("task-row-value-label")], [label]),
+        ],
+      ),
+    ],
   );
 
 const taskRow = (
@@ -157,24 +188,12 @@ const taskRow = (
           ),
         ],
       ),
-      h.td(
-        [],
-        [
-          h.span(
-            [
-              h.Class("task-status"),
-              h.DataAttribute("status", task.status ?? ""),
-            ],
-            [statusLabels[task.status ?? ""]],
-          ),
-        ],
-      ),
-      h.td(
-        [
-          h.Class("task-priority"),
-          h.DataAttribute("priority", task.priority ?? ""),
-        ],
-        [priorityLabels[task.priority ?? ""]],
+      taskRowValue(taskStatusDisplay[task.status], "status", task.status, h),
+      taskRowValue(
+        taskPriorityDisplay[task.priority ?? ""],
+        "priority",
+        task.priority ?? "",
+        h,
       ),
       h.td([], [timestamp(task.updatedAt, now, h)]),
     ],
@@ -189,10 +208,10 @@ const taskFilterOptions = (
   const tagQuery = tagNameKey(filterTags.inputValue);
   const options = {
     status: () =>
-      [null, ...activeTaskStatuses].map((value) =>
+      activeTaskStatuses.map((value) =>
         filterChoice(
           {
-            label: statusLabels[value ?? ""],
+            label: taskStatusDisplay[value].label,
             checked: filters.statuses.includes(value),
             message: Message.ToggledStatusFilter({ value }),
           },
@@ -203,7 +222,7 @@ const taskFilterOptions = (
       [null, ...taskPriorities].map((value) =>
         filterChoice(
           {
-            label: priorityLabels[value ?? ""],
+            label: taskPriorityDisplay[value ?? ""].label,
             checked: filters.priorities.includes(value),
             message: Message.ToggledPriorityFilter({ value }),
           },
@@ -330,7 +349,7 @@ const taskList = (
       : viewTasks.length
         ? "No tasks match these filters"
         : view === "completed"
-          ? "No completed tasks yet"
+          ? "No closed tasks yet"
           : model.index.tasks.length
             ? "No active tasks"
             : "No tasks yet";
@@ -449,7 +468,7 @@ const taskFields = (
           {
             label: "Status",
             options: statusOptions,
-            value: draft.status ?? "",
+            value: draft.status,
             disabled: busy,
             onChange: (value) =>
               Message.EditedField({ field: "status", value }),

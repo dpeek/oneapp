@@ -22,6 +22,46 @@ export const taskIconPaths = [
   "m3 16 2 2 4-4m2 3h10",
 ] as const;
 
+// Lucide icons. See THIRD_PARTY_NOTICES.md.
+const circleIconPath = "M22 12a10 10 0 1 0-20 0 10 10 0 1 0 20 0Z";
+export const circleDashedIconPaths = [
+  "M10.1 2.182a10 10 0 0 1 3.8 0",
+  "M13.9 21.818a10 10 0 0 1-3.8 0",
+  "M17.609 3.721a10 10 0 0 1 2.69 2.7",
+  "M2.182 13.9a10 10 0 0 1 0-3.8",
+  "M20.279 17.609a10 10 0 0 1-2.7 2.69",
+  "M21.818 10.1a10 10 0 0 1 0 3.8",
+  "M3.721 6.391a10 10 0 0 1 2.7-2.69",
+  "M6.391 20.279a10 10 0 0 1-2.69-2.7",
+] as const;
+export const circleDotDashedIconPaths = [
+  ...circleDashedIconPaths,
+  "M13 12a1 1 0 1 0-2 0 1 1 0 0 0 2 0Z",
+] as const;
+export const clockIconPaths = [circleIconPath, "M12 6v6l4 2"] as const;
+export const userCheckIconPaths = [
+  "m16 11 2 2 4-4",
+  "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2",
+  "M13 7a4 4 0 1 0-8 0 4 4 0 1 0 8 0Z",
+] as const;
+export const circleCheckIconPaths = [
+  circleIconPath,
+  "m16 9-5.5 5.5L8 12",
+] as const;
+export const circleXIconPaths = [circleIconPath, "m15 9-6 6m0-6 6 6"] as const;
+export const signalLowIconPaths = ["M2 20h.01", "M7 20v-4"] as const;
+export const signalMediumIconPaths = [
+  ...signalLowIconPaths,
+  "M12 20v-8",
+] as const;
+export const signalHighIconPaths = [
+  ...signalMediumIconPaths,
+  "M17 20V8",
+] as const;
+export const flameIconPaths = [
+  "M12 3q1 4 4 6.5t3 5.5a1 1 0 0 1-14 0 5 5 0 0 1 1-3 1 1 0 0 0 5 0c0-2-1.5-3-1.5-5q0-2 2.5-4",
+] as const;
+
 export const filesIconPaths = [
   "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z",
 ] as const;

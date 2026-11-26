@@ -13,6 +13,7 @@ import { ItemId, Tag, TagCreate, tagsApi } from "./items-contract.ts";
 import { createTagPrefix, searchTags } from "./tag-picker.ts";
 import * as Attachments from "./task-attachments.ts";
 import {
+  defaultTaskStatus,
   Task,
   taskApi,
   TaskCreate,
@@ -413,13 +414,12 @@ const start = (
 export const selectedTask = (model: Model) =>
   model.index?.tasks.find((task) => task.id === model.selectedId) ?? null;
 
-const isInView = ({ status }: Task, view: TaskView) =>
-  view === "completed"
-    ? status === "completed"
-    : status !== "completed" && status !== "canceled";
+const activeStatus = Schema.is(StatusFilter);
 
 export const tasksInView = (model: Model) =>
-  (model.index?.tasks ?? []).filter((task) => isInView(task, model.view));
+  (model.index?.tasks ?? []).filter(
+    ({ status }) => activeStatus(status) === (model.view === "active"),
+  );
 
 export const writingCreation = (model: Model) =>
   isCreationWrite(model, model.request?.operation);
@@ -470,10 +470,8 @@ const editField = (
   value: string,
 ): Draft => {
   switch (field) {
-    case "status": {
-      const status = value || null;
-      return Schema.is(TaskStatus)(status) ? { ...draft, status } : draft;
-    }
+    case "status":
+      return Schema.is(TaskStatus)(value) ? { ...draft, status: value } : draft;
     case "priority": {
       const priority = value || null;
       return Schema.is(TaskPriority)(priority) ? { ...draft, priority } : draft;
@@ -612,7 +610,7 @@ export const update = (
               revision: null,
               title: "",
               description: "",
-              status: "not-started",
+              status: defaultTaskStatus,
               priority: null,
               dueOn: null,
               tagIds: [],

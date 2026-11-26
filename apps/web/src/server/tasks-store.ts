@@ -8,7 +8,12 @@ import {
   tagCatalog,
   tagsAreAvailable,
 } from "./items-store.ts";
-import type { Task, TaskCreate, TaskUpdate } from "../tasks-contract.ts";
+import {
+  defaultTaskStatus,
+  type Task,
+  type TaskCreate,
+  type TaskUpdate,
+} from "../tasks-contract.ts";
 
 type TaskSummary = Omit<Task, "description">;
 type TaskRow<T extends TaskSummary = Task> = Omit<T, "tagIds"> & {
@@ -84,10 +89,8 @@ export const listTasks = async (
   };
   if (query) filter("instr(lower(i.title), lower(?)) > 0", query);
   if (status === "active")
-    filters.push(
-      "(t.status IS NULL OR t.status NOT IN ('completed', 'canceled'))",
-    );
-  else if (status !== "all") filter("t.status IS ?", status);
+    filters.push("t.status NOT IN ('completed', 'canceled')");
+  else if (status !== "all") filter("t.status = ?", status);
   if (priority !== undefined) filter("t.priority IS ?", priority);
   if (tagId)
     filter(
@@ -113,7 +116,7 @@ export const createTask = async (
     id,
     title,
     description = "",
-    status = "not-started",
+    status = defaultTaskStatus,
     priority = null,
     dueOn = null,
     tagIds = [],

@@ -27,7 +27,7 @@ it("matches any selected value within each task filter and requires every catego
   const model = {
     view: "active" as const,
     filters: {
-      statuses: [null, "in-progress"] as const,
+      statuses: ["not-started", "in-progress"] as const,
       priorities: [null, "high"] as const,
       tagIds: [alpha, beta],
     },
@@ -36,7 +36,7 @@ it("matches any selected value within each task filter and requires every catego
   expect(matchesTaskFilters(task, model)).toBe(true);
   expect(
     matchesTaskFilters(
-      { ...task, status: null, priority: null, tagIds: [alpha] },
+      { ...task, status: "not-started", priority: null, tagIds: [alpha] },
       model,
     ),
   ).toBe(true);
@@ -53,10 +53,10 @@ it("matches any selected value within each task filter and requires every catego
   );
 });
 
-it("toggles a missing status without removing other selections", () => {
-  const selected = toggleFilter(["in-progress"], null);
-  expect(selected).toEqual(["in-progress", null]);
-  expect(toggleFilter(selected, null)).toEqual(["in-progress"]);
+it("toggles Not started without removing other selections", () => {
+  const selected = toggleFilter(["in-progress"], "not-started");
+  expect(selected).toEqual(["in-progress", "not-started"]);
+  expect(toggleFilter(selected, "not-started")).toEqual(["in-progress"]);
 });
 
 it("allows all tasks through when no values are selected", () => {

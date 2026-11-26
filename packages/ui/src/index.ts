@@ -36,15 +36,25 @@ export { createFileInput, fileInput } from "./file-input.ts";
 export {
   backIcon,
   calendarIconPaths,
+  circleCheckIconPaths,
+  circleDashedIconPaths,
+  circleDotDashedIconPaths,
+  circleXIconPaths,
+  clockIconPaths,
   ellipsisIcon,
   filesIconPaths,
+  flameIconPaths,
   linkIconPaths,
   mailIconPaths,
   noiseIconPath,
   outlineIcon,
   plusIcon,
+  signalHighIconPaths,
+  signalLowIconPaths,
+  signalMediumIconPaths,
   taskIconPaths,
   trashIconPaths,
+  userCheckIconPaths,
 } from "./icons.ts";
 export { createInputGroup } from "./input-group.ts";
 export {

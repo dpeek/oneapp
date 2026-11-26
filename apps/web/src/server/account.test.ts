@@ -3296,10 +3296,18 @@ it("uses scoped MCP tools to read and edit the same tasks and tags as the web ap
       .result?.structuredContent,
   ).toMatchObject({ tasks: [{ id: requestId }], nextOffset: null });
 
-  const edited = await useTool(write, "update_task", {
+  const invalidStatus = await useTool(write, "update_task", {
     id: requestId,
     revision: receipt.revision,
     status: null,
+  });
+  expect(Boolean(invalidStatus.error || invalidStatus.result?.isError)).toBe(
+    true,
+  );
+  const edited = await useTool(write, "update_task", {
+    id: requestId,
+    revision: receipt.revision,
+    status: "not-started",
     priority: null,
     dueOn: null,
     addTagIds: [finance.id],
@@ -3313,7 +3321,7 @@ it("uses scoped MCP tools to read and edit the same tasks and tags as the web ap
   expect(persisted).toMatchObject({
     title: creation.title,
     description,
-    status: null,
+    status: "not-started",
     priority: null,
     dueOn: null,
   });
@@ -6411,6 +6419,9 @@ it("persists reusable task tags and rejects stale or cross-account task edits at
   expect((await call(tasksApi)).status).toBe(401);
 
   const firstInput = { id: crypto.randomUUID(), title: "Capture a task" };
+  expect(
+    (await call(tasksApi, { ...firstInput, status: null }, session)).status,
+  ).toBe(400);
   const created = await call(tasksApi, firstInput, session);
   expect(created.status).toBe(201);
   const first = Schema.decodeUnknownSync(Task)(await created.json());

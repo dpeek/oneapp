@@ -31,14 +31,18 @@ export const taskRouteFor = (
   return Schema.is(ItemId)(id) ? { view, id } : null;
 };
 
+export const defaultTaskStatus = "not-started";
 export const activeTaskStatuses = [
-  "not-started",
+  defaultTaskStatus,
   "in-progress",
   "in-review",
 ] as const;
-export const TaskStatus = Schema.NullOr(
-  Schema.Literals([...activeTaskStatuses, "completed", "canceled"]),
-);
+export const taskStatuses = [
+  ...activeTaskStatuses,
+  "completed",
+  "canceled",
+] as const;
+export const TaskStatus = Schema.Literals(taskStatuses);
 export const taskPriorities = ["low", "medium", "high", "urgent"] as const;
 export const TaskPriority = Schema.NullOr(Schema.Literals(taskPriorities));
 
@@ -72,7 +76,7 @@ export const TaskCreate = Schema.Struct({
   id: ItemId,
   title: TaskTitle,
   description: Schema.optional(TaskFields.fields.description),
-  status: Schema.optional(TaskStatus),
+  status: Schema.optionalKey(TaskStatus),
   priority: Schema.optional(TaskPriority),
   dueOn: Schema.optional(TaskFields.fields.dueOn),
   tagIds: Schema.optional(TaskFields.fields.tagIds),

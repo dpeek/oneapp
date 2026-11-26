@@ -24,7 +24,7 @@ const { description, ...summaryFields } = Task.fields;
 const { title, status, priority, dueOn, tagIds } = summaryFields;
 const optionalFields = {
   description: Schema.optional(description),
-  status: Schema.optional(status),
+  status: Schema.optionalKey(status),
   priority: Schema.optional(priority),
   dueOn: Schema.optional(dueOn),
 };
@@ -32,7 +32,7 @@ const Query = Schema.String.check(Schema.isMaxLength(200));
 const TaskListInput = Schema.Struct({
   ...pageFields,
   query: Schema.optional(Query),
-  status: Schema.optional(
+  status: Schema.optionalKey(
     Schema.Union([Schema.Literals(["active", "all"]), TaskStatus]),
   ),
   priority: Schema.optional(TaskPriority),
@@ -110,7 +110,7 @@ export const registerTaskTools = (
       {
         title: "List tasks",
         description:
-          "List task summaries by most recently updated. Filter by title query, status, priority, tag ID, or inclusive date-only due bounds (YYYY-MM-DD). Status defaults to active, which excludes completed and canceled tasks. Use all for every status, or null for tasks with no status. Use nextOffset to retrieve the next page.",
+          "List task summaries by most recently updated. Filter by title query, status, priority, tag ID, or inclusive date-only due bounds (YYYY-MM-DD). Status defaults to active, which excludes completed and canceled tasks. Use all for every status. Use nextOffset to retrieve the next page.",
         inputSchema: standardSchema(TaskListInput),
         outputSchema: standardSchema(TaskPage),
         annotations: readOnly,
@@ -233,7 +233,7 @@ export const registerTaskTools = (
       {
         title: "Update a task",
         description:
-          "Edit only the supplied fields. Pass the current revision from list_tasks or get_task. Use null to clear status, priority, or dueOn and an empty string to clear the Markdown description. Set status to completed to complete a task or not-started to reopen it. Add or remove existing tag IDs without replacing other tags.",
+          "Edit only the supplied fields. Pass the current revision from list_tasks or get_task. Use null to clear priority or dueOn and an empty string to clear the Markdown description. Set status to completed to complete a task or not-started to reopen it. Add or remove existing tag IDs without replacing other tags.",
         inputSchema: standardSchema(UpdateTask),
         outputSchema: standardSchema(TaskReceipt),
         annotations: {

@@ -42,7 +42,11 @@ const coalescedCheck = (signal: AbortSignal, check: () => Promise<void>) => {
   };
 };
 
-export const changes = Stream.callback<WorkspaceChange | TaskDeployment>(
+type InboxChange = { inboxVersion: number | null };
+
+export const changes = Stream.callback<
+  Exclude<WorkspaceChange, typeof inboxChanged> | TaskDeployment | InboxChange
+>(
   (queue) =>
     Effect.acquireRelease(
       Effect.sync(() => {
@@ -55,7 +59,12 @@ export const changes = Stream.callback<WorkspaceChange | TaskDeployment>(
         let mailVersion = -1;
         let latestDeployment: TaskDeployment | null | undefined;
         const checks = new AbortController();
-        const changed = (change: WorkspaceChange | TaskDeployment) => {
+        const changed = (
+          change:
+            | Exclude<WorkspaceChange, typeof inboxChanged>
+            | TaskDeployment
+            | InboxChange,
+        ) => {
           if (!stopped) Queue.offerUnsafe(queue, change);
         };
         const checkMail = coalescedCheck(checks.signal, async () => {
@@ -65,10 +74,10 @@ export const changes = Stream.callback<WorkspaceChange | TaskDeployment>(
             InboxVersion,
             checks.signal,
           );
-          if (result === "expired") changed(inboxChanged);
+          if (result === "expired") changed({ inboxVersion: null });
           else if (result !== "unchanged") {
             mailVersion = result.version;
-            changed(inboxChanged);
+            changed({ inboxVersion: mailVersion });
           }
         });
         const checkDeployment = coalescedCheck(checks.signal, async () => {

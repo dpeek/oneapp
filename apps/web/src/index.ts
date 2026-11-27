@@ -57,7 +57,6 @@ import * as ExtensionAccess from "./extension-access.ts";
 import * as Inbox from "./inbox.ts";
 import {
   folderPath,
-  inboxChanged,
   mailMessagePage,
   MailRoute,
   mailRouteFor,
@@ -924,14 +923,19 @@ const subscriptions = Subscription.make<Model, Message>()((entry) => ({
         generation !== null
           ? workspaceChanges.pipe(
               Stream.map((change) => {
+                if (typeof change !== "string" && "inboxVersion" in change)
+                  return toInboxMessage(
+                    Inbox.Message.LiveChanged({
+                      version: change.inboxVersion,
+                      refreshView: true,
+                    }),
+                  );
                 if (typeof change !== "string")
                   return Message.DeployedTask({
                     generation,
                     deployment: change,
                   });
                 switch (change) {
-                  case inboxChanged:
-                    return toInboxMessage(Inbox.Message.LiveChanged());
                   case tasksChanged:
                     return toTasksMessage(Tasks.Message.RefreshRequested());
                   case filesChanged:
@@ -1026,7 +1030,13 @@ const loadPage = (
   if (model.page === "vault")
     return foldVaultSetup(model, VaultSetup.Message.Requested());
   if (model.mailRoute)
-    return foldInbox(model, Inbox.Message.Opened(model.mailRoute));
+    return foldInbox(
+      model,
+      Inbox.Message.Opened({
+        ...model.mailRoute,
+        refresh: previousPage !== "mail",
+      }),
+    );
   if (model.peopleRoute)
     return foldPeople(
       model,
@@ -1703,7 +1713,13 @@ const update = (
           }),
         );
       if (message._tag === "LiveChanged" && model.page !== "mail")
-        return foldInbox(model, Inbox.Message.RefreshedUnread());
+        return foldInbox(
+          model,
+          Inbox.Message.LiveChanged({
+            version: message.version,
+            refreshView: false,
+          }),
+        );
       if (
         message._tag === "RequestedBack" &&
         model.account &&
@@ -2119,7 +2135,7 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
       [
         AppNavigation.navigationView(
           model.page,
-          model.inbox.unreadCount,
+          Inbox.visibleUnreadCount(model.inbox),
           model.navigation,
           {
             dialogId: model.creationDialog.id,

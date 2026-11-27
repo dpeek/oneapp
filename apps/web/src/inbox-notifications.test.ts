@@ -625,6 +625,24 @@ const priorityAction = Inbox.Message.GotConversationMenuMessage({
   message: DropdownMenu.Message.SelectedItem({ item: "noise", index: 0 }),
 });
 
+const confirmedRead = (
+  request: string,
+  unread: boolean,
+  { id = first, unreadCount = Number(unread), version = 1 } = {},
+) =>
+  Inbox.Message.UpdatedReadStatus({
+    request,
+    id,
+    status: {
+      unread,
+      unreadCount,
+      version,
+      changed: true,
+      latestIncomingId: id,
+      unreadIncomingIds: unread ? [id] : [],
+    },
+  });
+
 it.each([true, false])(
   "reports only explicit read-status failures after navigation (unread=%s)",
   (unread) => {
@@ -655,10 +673,7 @@ it.each([true, false])(
     expect(failed.model.selected).toBe(second);
     expect(Inbox.update(failed.model, message).outMessage).toBeUndefined();
     expect(Inbox.update(Inbox.initial, message).outMessage).toBeUndefined();
-    const success = Inbox.update(
-      pending.model,
-      Inbox.Message.UpdatedReadStatus({ request, id: first, unread }),
-    );
+    const success = Inbox.update(pending.model, confirmedRead(request, unread));
     expect(success.model.entry).toMatchObject({ unread });
     const queued = applyOutcome(failed.outMessage);
     expect(applyOutcome(success.outMessage).toast.entries).toEqual([]);
@@ -683,7 +698,7 @@ it("keeps automatic mark-read failures inline and ignores mismatched or old comp
   for (const message of [
     Inbox.Message.ReadStatusFailed({ request, id: second }),
     Inbox.Message.ReadStatusFailed({ request: "old", id: first }),
-    Inbox.Message.UpdatedReadStatus({ request, id: first, unread: true }),
+    confirmedRead("old", true),
   ])
     expect(Inbox.update(loaded.model, message)).toEqual({
       model: loaded.model,
@@ -694,15 +709,72 @@ it("keeps automatic mark-read failures inline and ignores mismatched or old comp
   );
   expect(failed.model.readFailed).toBe(first);
   expect(failed.outMessage).toBeUndefined();
-  const saved = Inbox.update(
-    loaded.model,
-    Inbox.Message.UpdatedReadStatus({ request, id: first, unread: false }),
-  );
+  const saved = Inbox.update(loaded.model, confirmedRead(request, false));
   expect(applyOutcome(saved.outMessage).toast.entries).toEqual([]);
   expect(saved.model.entry).toMatchObject({ unread: false });
   const manualRetry = Inbox.update(failed.model, menuAction("toggleUnread"));
   expect(manualRetry.model.readFailed).toBeNull();
   expect(manualRetry.model.readRequests[first]!.userInitiated).toBe(true);
+});
+
+it("inserts a newly unread conversation in place and only catches up for other versions", () => {
+  const state = reader();
+  const summary: typeof ConversationSummary.Type = {
+    id: first,
+    latestIncomingId: first,
+    unreadIncomingIds: [],
+    unreadCount: 0,
+    archived: false,
+    from: mailEntry.from,
+    subject: mailEntry.subject,
+    lastMessageAt: 1,
+    messageCount: 1,
+    participants: [],
+    profiles: [],
+  };
+  const pending = Inbox.update(
+    {
+      ...state,
+      liveVersion: 41,
+      unreadCount: 7,
+      list: { address: null, cursor: "next", messages: [] },
+      filters: {
+        ...state.filters,
+        selection: { ...state.filters.selection, status: "unread" },
+      },
+      thread: { ...state.thread!, summary },
+    },
+    menuAction("toggleUnread"),
+  ).model;
+  expect(Inbox.visibleUnreadCount(pending)).toBe(8);
+  const request = pending.readRequests[first]!.request;
+  const live = (version: number) =>
+    Inbox.Message.LiveChanged({ version, refreshView: true });
+  const signaled = Inbox.update(pending, live(42));
+  expect(signaled.commands).toBeUndefined();
+  const saved = Inbox.update(
+    signaled.model,
+    confirmedRead(request, true, { unreadCount: 11, version: 42 }),
+  );
+  expect(saved.commands).toEqual([]);
+  expect(saved.model.list?.cursor).toBe("next");
+  expect(saved.model.list?.messages).toMatchObject([
+    { id: first, unreadCount: 1 },
+  ]);
+  expect(saved.model.thread?.messages[0]?.unread).toBe(true);
+  expect(saved.model.entry).toMatchObject({ unread: true });
+  expect(Inbox.visibleUnreadCount(saved.model)).toBe(11);
+  expect(Inbox.update(saved.model, live(42)).model).toBe(saved.model);
+  expect(
+    Inbox.update(
+      saved.model,
+      Inbox.Message.ReadStatusFailed({ request, id: first }),
+    ).model,
+  ).toBe(saved.model);
+  const caughtUp = Inbox.update(saved.model, live(43));
+  expect(caughtUp.model.listRequest).not.toBeNull();
+  expect(caughtUp.model.threadRequest).not.toBeNull();
+  expect(caughtUp.model.unreadRequest).not.toBeNull();
 });
 
 it("silently clears an explicit read failure when reopening successfully marks the message read", () => {
@@ -726,11 +798,7 @@ it("silently clears an explicit read failure when reopening successfully marks t
   expect(reopened.model.readRequests[first]!.userInitiated).toBe(false);
   const saved = Inbox.update(
     reopened.model,
-    Inbox.Message.UpdatedReadStatus({
-      request: reopened.model.readRequests[first]!.request,
-      id: first,
-      unread: false,
-    }),
+    confirmedRead(reopened.model.readRequests[first]!.request, false),
   );
   expect(saved.model.entry).toMatchObject({ unread: false });
   const cleared = applyOutcome(saved.outMessage, queued);

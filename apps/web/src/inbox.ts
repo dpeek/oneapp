@@ -60,6 +60,7 @@ import {
   InboxMessageId,
   inboxOriginalApi,
   inboxReadApi,
+  InboxReadStatus,
   InboxUnread,
   inboxUnreadPath,
   isInboxView,
@@ -159,6 +160,11 @@ const emptyTrashDialogId = "mail-empty-trash";
 const splitViewKey = "orumai.mail.splitView";
 const splitViewMedia = "(min-width: 72rem)";
 
+const LiveChange = Schema.Struct({
+  version: Schema.NullOr(Schema.Number),
+  refreshView: Schema.Boolean,
+});
+
 export const Model = Schema.Struct({
   folder: MailboxView,
   layout: Schema.Struct({ wide: Schema.Boolean, split: Schema.Boolean }),
@@ -182,12 +188,18 @@ export const Model = Schema.Struct({
   unreadCount: Schema.Number,
   unreadRequest: Schema.NullOr(Schema.String),
   unreadRefreshQueued: Schema.Boolean,
+  liveVersion: Schema.Number,
+  localReadVersions: Schema.Array(Schema.Number),
+  liveChangeQueued: Schema.NullOr(LiveChange),
   readRequests: Schema.Record(
     Schema.String,
     Schema.Struct({
       request: Schema.String,
       userInitiated: Schema.Boolean,
       unread: Schema.Boolean,
+      previousUnread: Schema.Boolean,
+      countsInInbox: Schema.Boolean,
+      latestIncomingId: Schema.NullOr(InboxMessageId),
       subject: Schema.optional(Schema.String),
     }),
   ),
@@ -244,6 +256,9 @@ export const initial: Model = {
   unreadCount: 0,
   unreadRequest: null,
   unreadRefreshQueued: false,
+  liveVersion: -1,
+  localReadVersions: [],
+  liveChangeQueued: null,
   readRequests: {},
   readFailed: null,
   selected: null,
@@ -289,7 +304,7 @@ const isListVisible = (model: Model) =>
   model.selected === null || isSplitView(model);
 
 export const Message = defineMessageUnion({
-  Opened: MailRoute.fields,
+  Opened: { ...MailRoute.fields, refresh: Schema.optionalKey(Schema.Boolean) },
   ChangedLayoutWidth: { wide: Schema.Boolean },
   ToggledSplitView: {},
   FinishedSavingSplitView: {},
@@ -303,7 +318,7 @@ export const Message = defineMessageUnion({
   GotQuickReplyMessage: { message: QuickReply.Message },
   GotAttachmentMessage: { message: Attachments.Message },
   GotAttachmentPopoverMessage: { message: Popover.Message },
-  LiveChanged: {},
+  LiveChanged: LiveChange.fields,
   RequestedMore: { folder: MailboxView, cursor: Schema.String },
   RetriedEntry: {},
   RetriedThread: {},
@@ -352,7 +367,7 @@ export const Message = defineMessageUnion({
   UpdatedReadStatus: {
     request: Schema.String,
     id: InboxMessageId,
-    unread: Schema.Boolean,
+    status: InboxReadStatus,
   },
   ReadStatusFailed: { request: Schema.String, id: InboxMessageId },
   LoadedThread: { request: Schema.String, thread: Conversation },
@@ -740,9 +755,11 @@ const SetUnread = Command.define("SetInboxUnread", {
         signal,
       });
       if (response.status === 401) return Message.SessionExpired({ request });
-      return response.status === 204
-        ? Message.UpdatedReadStatus({ request, id, unread })
-        : Message.ReadStatusFailed({ request, id });
+      if (!response.ok) return Message.ReadStatusFailed({ request, id });
+      const status = Schema.decodeUnknownSync(InboxReadStatus)(
+        await response.json(),
+      );
+      return Message.UpdatedReadStatus({ request, id, status });
     }).pipe(
       Effect.catch(() =>
         Effect.succeed(Message.ReadStatusFailed({ request, id })),
@@ -751,18 +768,32 @@ const SetUnread = Command.define("SetInboxUnread", {
 });
 
 const LoadThread = Command.define("LoadMailConversation", {
-  args: { request: Schema.String, id: MailMessageId },
+  args: {
+    request: Schema.String,
+    id: MailMessageId,
+    folder: MailboxView,
+    filters: MailFilters,
+  },
   messages: [
     Message.LoadedThread,
     Message.ThreadFailed,
     Message.SessionExpired,
   ],
-  execute: ({ request, id }) =>
+  execute: ({ request, id, folder, filters }) =>
     Effect.tryPromise(async (signal) => {
-      const response = await fetch(conversationApi(id), {
-        cache: "no-store",
-        signal,
-      });
+      const params = new URLSearchParams();
+      if (supportsMailFilters(folder)) {
+        params.set("view", folder);
+        if (filters.people.length || filters.companies.length)
+          params.set("filters", JSON.stringify({ ...filters, status: "all" }));
+      }
+      const response = await fetch(
+        conversationApi(id) + (params.size ? "?" + params : ""),
+        {
+          cache: "no-store",
+          signal,
+        },
+      );
       if (response.status === 401) return Message.SessionExpired({ request });
       if (response.status === 404)
         return Message.LoadedThread({ request, thread: { messages: [] } });
@@ -1004,7 +1035,7 @@ const loadList = (
         filters: model.filters.selection,
         minimum:
           cursor === null && model.folder !== "sent"
-            ? (model.list?.messages.length ?? 0)
+            ? (visibleList(model)?.messages.length ?? 0)
             : 0,
       }),
     ],
@@ -1102,7 +1133,14 @@ const refreshThread = (model: Model): Update.Return<Model, Message> => {
       threadRefreshQueued: false,
       threadFailed: false,
     },
-    commands: [LoadThread({ id: model.selected, request })],
+    commands: [
+      LoadThread({
+        id: model.selected,
+        request,
+        folder: model.folder,
+        filters: model.filters.selection,
+      }),
+    ],
   };
 };
 
@@ -1161,33 +1199,149 @@ const entryUnread = (model: Model) => {
   );
 };
 
+type Summary = typeof ConversationSummary.Type;
+type ReadStatus = typeof InboxReadStatus.Type;
+
+const matchesReadFilter = (model: Model, row: Summary) => {
+  const status = model.filters.selection.status;
+  const unread = row.unreadCount > 0;
+  return status === "all" || unread === (status === "unread");
+};
+
+const withUnreadIds = (row: Summary, unreadIncomingIds: readonly string[]) => ({
+  ...row,
+  unreadIncomingIds,
+  unreadCount: unreadIncomingIds.length,
+});
+
+type ListRow = NonNullable<Model["list"]>["messages"][number];
+
+const rowTime = (row: ListRow) =>
+  "sentAt" in row ? row.sentAt : (row.receivedAt ?? row.lastMessageAt);
+
+const compareRows = (left: ListRow, right: ListRow) =>
+  rowTime(right) - rowTime(left) ||
+  Number(left.id < right.id) - Number(left.id > right.id);
+
+const retainThreadRow = (model: Model): Model["list"] => {
+  const { list, thread } = model;
+  const row = thread?.summary;
+  // This row meets the mailbox and contact filters. Retain it across read-state changes.
+  if (
+    !list ||
+    !row ||
+    matchesReadFilter(model, row) ||
+    list.messages.some(({ id }) => id === row.id)
+  )
+    return list;
+  return { ...list, messages: [...list.messages, row].sort(compareRows) };
+};
+
+const visibleList = (model: Model): Model["list"] => {
+  const { list, readRequests } = model;
+  if (!list || !supportsMailFilters(model.folder)) return list;
+  const pending = Object.entries(readRequests);
+  if (!pending.length && model.filters.selection.status === "all") return list;
+  const project = (row: Summary) => {
+    const changes = pending.filter(
+      ([id, change]) =>
+        row.latestIncomingId === (change.latestIncomingId ?? id) ||
+        row.unreadIncomingIds?.includes(id),
+    );
+    if (!changes.length) return row;
+    const ids = new Set(row.unreadIncomingIds);
+    for (const [id, { unread }] of changes) {
+      if (unread) ids.add(id);
+      else ids.delete(id);
+    }
+    return withUnreadIds(row, [...ids]);
+  };
+  const messages = list.messages.flatMap<ListRow>((row) => {
+    if ("sentAt" in row) return [row];
+    const projected = project(row);
+    return matchesReadFilter(model, projected) ? [projected] : [];
+  });
+  return { ...list, messages };
+};
+
+export const visibleUnreadCount = (model: Model) => {
+  let count = model.unreadCount;
+  for (const { unread, previousUnread, countsInInbox } of Object.values(
+    model.readRequests,
+  ))
+    if (countsInInbox) count += Number(unread) - Number(previousUnread);
+  return Math.max(0, count);
+};
+
+const projectThread = (model: Model): Model["thread"] => {
+  if (!model.thread || !Object.keys(model.readRequests).length)
+    return model.thread;
+  return {
+    ...model.thread,
+    messages: model.thread.messages.map((message) => {
+      const change = model.readRequests[message.id];
+      return change ? { ...message, unread: change.unread } : message;
+    }),
+  };
+};
+
+const nextReadCommand = (model: Model) => {
+  const item = Object.entries(model.readRequests)[0];
+  if (!item) return [];
+  const [id, { request, unread }] = item;
+  return [SetUnread({ id, request, unread })];
+};
+
 const setUnread = (
   model: Model,
   ids: readonly string[],
   unread: boolean,
   userInitiated = false,
-  rowSubject?: string,
+  row?: Summary,
 ): Update.Return<Model, Message> => {
   const readRequests = { ...model.readRequests };
-  const commands = ids.flatMap((id) => {
-    if (readRequests[id]) return [];
-    const request = crypto.randomUUID();
+  const latestIncomingId =
+    row?.latestIncomingId ??
+    model.thread?.messages.findLast(({ folder }) => folder === "inbox")?.id ??
+    null;
+  let added = false;
+  for (const id of ids) {
+    if (readRequests[id]) continue;
+    const message = model.thread?.messages.find((message) => message.id === id);
+    const archived =
+      message?.archived ??
+      row?.archivedIncomingIds?.includes(id) ??
+      row?.archived ??
+      model.thread?.archived ??
+      model.folder === "archive";
+    added = true;
     readRequests[id] = {
-      request,
+      request: crypto.randomUUID(),
       userInitiated,
       unread,
+      previousUnread: !unread,
+      countsInInbox: !archived,
+      latestIncomingId,
       subject:
-        rowSubject ??
+        (row ? conversationSubject([row]) : undefined) ??
         (model.entry?.id === id
           ? model.entry.subject || "(no subject)"
           : undefined),
     };
-    return [SetUnread({ id, unread, request })];
-  });
-  if (!commands.length) return { model };
+  }
+  if (!added) return { model };
+  const next = {
+    ...model,
+    list: retainThreadRow(model),
+    readFailed: null,
+    readRequests,
+  };
   return {
-    model: { ...model, readFailed: null, readRequests },
-    commands,
+    model: next,
+    // Keep confirmed mailbox counts in write order.
+    commands: Object.keys(model.readRequests).length
+      ? []
+      : nextReadCommand(next),
   };
 };
 
@@ -1215,6 +1369,127 @@ const finishReadStatus = (model: Model, id: string): Model => {
     readRequests,
     readFailed: model.readFailed === id ? null : model.readFailed,
   };
+};
+
+const reconcileReadStatus = (
+  model: Model,
+  id: string,
+  status: ReadStatus,
+): Model => {
+  const { latestIncomingId, unreadIncomingIds, unreadCount } = status;
+  const unreadIds = new Set(unreadIncomingIds);
+  const { list, thread, entry } = model;
+  const summary = thread?.summary;
+  const updatedSummary =
+    summary?.latestIncomingId === latestIncomingId
+      ? withUnreadIds(summary, unreadIncomingIds)
+      : summary;
+  const messages = list?.messages.map((row) =>
+    "latestIncomingId" in row && row.latestIncomingId === latestIncomingId
+      ? withUnreadIds(row, unreadIncomingIds)
+      : row,
+  );
+  const related = thread?.messages.some(
+    (message) => message.id === latestIncomingId || message.id === id,
+  );
+  const readRequests = { ...model.readRequests };
+  for (const [pendingId, change] of Object.entries(readRequests)) {
+    if (change.latestIncomingId === latestIncomingId)
+      readRequests[pendingId] = {
+        ...change,
+        previousUnread: unreadIds.has(pendingId),
+      };
+  }
+  return {
+    ...model,
+    unreadCount,
+    readRequests,
+    list: list && messages ? { ...list, messages } : list,
+    thread:
+      thread && related
+        ? {
+            ...thread,
+            ...(updatedSummary ? { summary: updatedSummary } : {}),
+            messages: thread.messages.map((message) =>
+              message.folder === "inbox"
+                ? { ...message, unread: unreadIds.has(message.id) }
+                : message,
+            ),
+          }
+        : thread,
+    entry:
+      entry && "receivedAt" in entry && (entry.id === id || related)
+        ? {
+            ...entry,
+            unread: entry.id === id ? status.unread : unreadIds.has(entry.id),
+          }
+        : entry,
+  };
+};
+
+const advanceLiveVersion = (model: Model, version: number): Model => {
+  const versions = new Set(
+    model.localReadVersions.filter((local) => local > version),
+  );
+  while (versions.delete(version + 1)) version++;
+  return { ...model, liveVersion: version, localReadVersions: [...versions] };
+};
+
+const catchUp = (
+  model: Model,
+  change: typeof LiveChange.Type,
+): Update.Return<Model, Message> => {
+  const { version, refreshView } = change;
+  if (version !== null && version <= model.liveVersion) return { model };
+  if (Object.keys(model.readRequests).length) {
+    const previous = model.liveChangeQueued;
+    return {
+      model: {
+        ...model,
+        liveChangeQueued: {
+          version:
+            previous?.version === null || version === null
+              ? null
+              : Math.max(previous?.version ?? -1, version),
+          refreshView: refreshView || Boolean(previous?.refreshView),
+        },
+      },
+    };
+  }
+  const next = version === null ? model : advanceLiveVersion(model, version);
+  return withUnread(
+    refreshView ? withThread(refreshList(next)) : { model: next },
+  );
+};
+
+const completeRead = (model: Model): Update.Return<Model, Message> => {
+  const commands = nextReadCommand(model);
+  if (commands.length) return { model, commands };
+  if (!model.liveChangeQueued) return { model };
+  return catchUp({ ...model, liveChangeQueued: null }, model.liveChangeQueued);
+};
+
+const restartOverlappingReads = (result: Update.Return<Model, Message>) => {
+  // These requests may have captured data before the PATCH committed.
+  const { listRequest, threadRequest, unreadRequest, entryRequest } =
+    result.model;
+  const append = (next: Update.Return<Model, Message>) => {
+    result = {
+      ...result,
+      model: next.model,
+      commands: [...(result.commands ?? []), ...(next.commands ?? [])],
+    };
+  };
+  if (listRequest)
+    append(
+      loadList({ ...result.model, listRequest: null }, listRequest.cursor),
+    );
+  if (threadRequest)
+    append(refreshThread({ ...result.model, threadRequest: null }));
+  if (unreadRequest)
+    append(refreshUnread({ ...result.model, unreadRequest: null }));
+  if (entryRequest) append(loadEntry({ ...result.model, entryRequest: null }));
+  return result;
 };
 
 const quoteMessage = (entry: typeof MailEntry.Type) => {
@@ -1376,7 +1651,7 @@ const foldRowMenu = Update.foldChild({
   foldOutMessage:
     ({ key, action }): Update.Step<Model, Message> =>
     (model) => {
-      const row = model.list?.messages.find(({ id }) => id === key);
+      const row = visibleList(model)?.messages.find(({ id }) => id === key);
       if (
         !row ||
         "sentAt" in row ||
@@ -1413,7 +1688,7 @@ const foldRowMenu = Update.foldChild({
             rowReadTargets(row),
             row.unreadCount === 0,
             true,
-            subject,
+            row,
           );
         default:
           return changeSenderPriority(model, row.senderRule, action);
@@ -1453,9 +1728,22 @@ const transition = (model: Model, message: Message): Result =>
         { ...result.model, rowActions, list: null, listRequest: null },
         null,
       );
+      const before = model.filters.selection;
+      const after = restarted.model.filters.selection;
+      const updated =
+        before.people === after.people && before.companies === after.companies
+          ? restarted
+          : withThread({
+              ...restarted,
+              model: {
+                ...restarted.model,
+                thread: model.thread && { ...model.thread, summary: undefined },
+                threadRequest: null,
+              },
+            });
       return {
-        model: restarted.model,
-        commands: [...(result.commands ?? []), ...(restarted.commands ?? [])],
+        model: updated.model,
+        commands: [...(result.commands ?? []), ...(updated.commands ?? [])],
       };
     },
     GotFolderSheetMessage: ({ message }) =>
@@ -1474,7 +1762,7 @@ const transition = (model: Model, message: Message): Result =>
         : result;
     },
     UnmountedList: () => ({ model: { ...model, rowActions } }),
-    Opened: ({ id, folder, focusMessage = false }) => {
+    Opened: ({ id, folder, focusMessage = false, refresh }) => {
       const base =
         folder === model.folder
           ? model
@@ -1497,6 +1785,9 @@ const transition = (model: Model, message: Message): Result =>
               unreadRequest: model.unreadRequest,
               unreadRefreshQueued: model.unreadRefreshQueued,
               readRequests: model.readRequests,
+              liveVersion: model.liveVersion,
+              localReadVersions: model.localReadVersions,
+              liveChangeQueued: model.liveChangeQueued,
             };
       const next =
         base.selected === id && base.focusMessage === focusMessage
@@ -1526,10 +1817,14 @@ const transition = (model: Model, message: Message): Result =>
               attachmentPopover: Popover.init({ id: "mail-attachments" }),
             };
       const previous = id === null ? base.selected : null;
-      const list = id && next.list ? { model: next } : loadList(next, null);
-      const result = next.thread ? list : withThread(list);
+      const list = refresh
+        ? refreshList(next)
+        : next.list
+          ? { model: next }
+          : loadList(next, null);
+      const result = next.thread && !refresh ? list : withThread(list);
       if (!previous) return result;
-      const row = base.list?.messages.find(
+      const row = visibleList(base)?.messages.find(
         ({ id }) =>
           id === previous ||
           (folder !== "sent" &&
@@ -1699,7 +1994,7 @@ const transition = (model: Model, message: Message): Result =>
           )
         : result;
     },
-    LiveChanged: () => withUnread(withThread(refreshList(model))),
+    LiveChanged: (change) => catchUp(model, change),
     RequestedMore: ({ folder, cursor }) =>
       isListVisible(model) &&
       model.folder === folder &&
@@ -2077,13 +2372,20 @@ const transition = (model: Model, message: Message): Result =>
     LoadedList: ({ request, page }) => {
       if (request !== model.listRequest?.id) return { model };
       const { cursor } = model.listRequest;
+      let list = page;
+      if (cursor !== null && model.list) {
+        const loadedIds = new Set(page.messages.map(({ id }) => id));
+        const messages = [
+          ...model.list.messages.filter(({ id }) => !loadedIds.has(id)),
+          ...page.messages,
+        ];
+        if (supportsMailFilters(model.folder)) messages.sort(compareRows);
+        list = { ...page, messages };
+      }
       const next = {
         ...model,
         listRequest: null,
-        list:
-          cursor !== null && model.list
-            ? { ...page, messages: [...model.list.messages, ...page.messages] }
-            : page,
+        list: retainThreadRow({ ...model, list }),
       };
       const result =
         next.listRefreshQueued || page.indexing
@@ -2111,45 +2413,47 @@ const transition = (model: Model, message: Message): Result =>
     },
     LoadedUnread: (message) => finishUnread(model, message.request, message),
     UnreadFailed: ({ request }) => finishUnread(model, request),
-    UpdatedReadStatus: ({ request, id, unread }) => {
+    UpdatedReadStatus: ({ request, id, status }) => {
       const change = model.readRequests[id];
-      if (change?.request !== request || change.unread !== unread)
-        return { model };
-      const next = finishReadStatus(model, id);
-      const entry =
-        next.entry?.id === id && "receivedAt" in next.entry
-          ? { ...next.entry, unread }
-          : next.entry;
-      const thread = next.thread && {
-        ...next.thread,
-        messages: next.thread.messages.map((message) =>
-          message.id === id ? { ...message, unread } : message,
-        ),
-      };
-      const updated = { ...next, entry, thread };
-      const result = withUnread(
-        withThread(
-          updated.folder !== "sent" ? refreshList(updated) : { model: updated },
-        ),
-      );
+      if (change?.request !== request) return { model };
+      const next = reconcileReadStatus(finishReadStatus(model, id), id, status);
+      const updated =
+        status.changed && status.version > next.liveVersion
+          ? advanceLiveVersion(
+              {
+                ...next,
+                localReadVersions: [...next.localReadVersions, status.version],
+              },
+              next.liveVersion,
+            )
+          : next;
+      const overlapping = restartOverlappingReads({ model: updated });
+      const result = completeRead(overlapping.model);
       // Reopening can resolve an earlier explicit failure without a manual retry.
-      return dismissNotification(result, readKey(id));
+      return dismissNotification(
+        {
+          ...result,
+          commands: [
+            ...(overlapping.commands ?? []),
+            ...(result.commands ?? []),
+          ],
+        },
+        readKey(id),
+      );
     },
     ReadStatusFailed: ({ request, id }) => {
       const change = model.readRequests[id];
       if (change?.request !== request) return { model };
       const next = finishReadStatus(model, id);
       // Opening an unread message marks it read automatically; keep that failure in context.
-      if (!change.userInitiated) return { model: { ...next, readFailed: id } };
-      return notify(
-        { model: next },
-        {
-          key: readKey(id),
-          variant: "Error",
-          title: `Could not mark email ${change.unread ? "unread" : "read"}. Try again.`,
-          description: change.subject,
-        },
-      );
+      if (!change.userInitiated)
+        return completeRead({ ...next, readFailed: id });
+      return notify(completeRead(next), {
+        key: readKey(id),
+        variant: "Error",
+        title: `Could not mark email ${change.unread ? "unread" : "read"}. Try again.`,
+        description: change.subject,
+      });
     },
     LoadedThread: ({ request, thread }) => {
       if (request !== model.threadRequest) return { model };
@@ -2238,11 +2542,10 @@ export const update = (model: Model, message: Message): Result => {
   const result = transition(model, message);
   const next = result.model;
   const row = next.rowActions.row;
-  if (!row || !model.list || !next.list || model.list === next.list)
-    return result;
-  const remaining = new Set(next.list.messages.map(({ id }) => id));
+  if (!row || !model.list || !next.list) return result;
+  const remaining = new Set(visibleList(next)?.messages.map(({ id }) => id));
   if (remaining.has(row.key)) return result;
-  const previous = model.list.messages;
+  const previous = visibleList(model)?.messages ?? [];
   const index = previous.findIndex(({ id }) => id === row.key);
   if (index === -1) return result;
   const neighbor =
@@ -2960,7 +3263,11 @@ const rowActionItems = (
       action: "toggleUnread",
       label: row.unreadCount ? "Mark read" : "Mark unread",
       path: readIconPath,
-      disabled: readTargets.some((id) => Boolean(model.readRequests[id])),
+      disabled: Object.entries(model.readRequests).some(
+        ([id, change]) =>
+          change.latestIncomingId === row.latestIncomingId ||
+          readTargets.includes(id),
+      ),
     });
   if (row.latestIncomingId)
     items.push(archiveItem(row.archived, model.archiveRequest !== null));
@@ -3429,7 +3736,19 @@ const folderNavigation = (model: Model, h: HtmlBuilder<Message>) =>
     ],
   );
 
-export const view = Submodel.defineView<Model, Message>((model, h) => {
+export const view = Submodel.defineView<Model, Message>((snapshot, h) => {
+  const entry = snapshot.entry;
+  const pending = entry && snapshot.readRequests[entry.id];
+  const model = {
+    ...snapshot,
+    list: visibleList(snapshot),
+    thread: projectThread(snapshot),
+    entry:
+      pending && entry && "receivedAt" in entry
+        ? { ...entry, unread: pending.unread }
+        : entry,
+    unreadCount: visibleUnreadCount(snapshot),
+  };
   const listVisible = isListVisible(model);
   const showPrioritySwitch = listVisible && isInboxView(model.folder);
   const listIndicator = listVisible

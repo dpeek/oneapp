@@ -242,12 +242,15 @@ const scanSize = 12;
 const inboxIndexScan = "inbox:list-mail";
 const sentIndexScan = "sent:people";
 
+const inboxUnreadMessages =
+  "folder = 'inbox' AND deleted = 0 AND unread = 1 AND archived = 0";
+
 export const inboxUnread = async (db: MailDatabase) => {
   const row = await db
     .prepare(
       `
     SELECT count(*) AS unreadCount FROM mail_index_messages
-    WHERE mailbox_id = ${mailboxSql(db)} AND folder = 'inbox' AND deleted = 0 AND unread = 1 AND archived = 0
+    WHERE mailbox_id = ${mailboxSql(db)} AND ${inboxUnreadMessages}
   `,
     )
     .first<{ unreadCount: number }>();
@@ -267,12 +270,8 @@ export const inboxMessageUnread = async (db: MailDatabase, id: string) => {
   return row ? row.unread === 1 : null;
 };
 
-export const setInboxUnread = async (
-  db: MailDatabase,
-  id: string,
-  unread: boolean,
-) => {
-  const updated = await db
+const updateInboxUnread = (db: MailDatabase, id: string, unread: boolean) =>
+  db
     .prepare(
       `
     UPDATE mail_index_messages SET unread = ?2
@@ -280,10 +279,57 @@ export const setInboxUnread = async (
     RETURNING id
   `,
     )
-    .bind(id, unread ? 1 : 0)
-    .first<{ id: string }>();
+    .bind(id, Number(unread));
+
+export const setInboxUnread = async (
+  db: MailDatabase,
+  id: string,
+  unread: boolean,
+) => {
+  const updated = await updateInboxUnread(db, id, unread).first();
   if (updated) return "changed";
   return (await inboxMessageUnread(db, id)) === null ? "missing" : "unchanged";
+};
+
+export const setInboxUnreadStatus = async (
+  db: MailDatabase,
+  id: string,
+  unread: boolean,
+) => {
+  const scope = mailboxSql(db);
+  const status = db
+    .prepare(
+      `WITH incoming AS (
+      SELECT id, unread FROM mail_index_messages
+      WHERE mailbox_id = ${scope} AND thread_id = (
+        SELECT thread_id FROM mail_index_messages WHERE mailbox_id = ${scope} AND id = ?1
+      ) AND folder = 'inbox' AND deleted = 0
+      ORDER BY timestamp DESC, id DESC
+    )
+    SELECT unread, (SELECT id FROM incoming LIMIT 1) AS latestIncomingId,
+      (SELECT json_group_array(id) FROM incoming WHERE unread = 1) AS unreadIncomingIds,
+      (SELECT count(*) FROM mail_index_messages WHERE mailbox_id = ${scope}
+        AND ${inboxUnreadMessages}) AS unreadCount,
+      coalesce((SELECT version FROM mail_changes WHERE mailbox_id = ${scope}), 0) AS version
+    FROM incoming WHERE id = ?1`,
+    )
+    .bind(id);
+  // Read the counts and the version in the same transaction as the write.
+  const [updated, snapshot] = await db.batch<{
+    unread: number;
+    latestIncomingId: string;
+    unreadIncomingIds: string;
+    unreadCount: number;
+    version: number;
+  }>([updateInboxUnread(db, id, unread), status]);
+  const row = snapshot?.results[0];
+  if (!row) return null;
+  return {
+    ...row,
+    unread: row.unread === 1,
+    unreadIncomingIds: JSON.parse(row.unreadIncomingIds) as string[],
+    changed: Boolean(updated?.results.length),
+  };
 };
 
 export const setThreadArchived = async (
@@ -618,6 +664,7 @@ export const listConversations = async (
   view: ConversationView,
   filters?: MailFilters,
   mailboxAddresses: readonly string[] = [],
+  anchor?: string,
 ) => {
   const all = view === "all";
   const incoming = all ? "incoming" : "m";
@@ -639,7 +686,8 @@ export const listConversations = async (
            (${senderPriority(incoming)}) AS senderPriority,
            (SELECT json_group_array(json_object(
               'id', member.id, 'from', member.sender, 'to', member.recipient, 'subject', member.subject,
-              'timestamp', member.timestamp, 'people', member.people, 'folder', member.folder, 'unread', member.unread
+              'timestamp', member.timestamp, 'people', member.people, 'folder', member.folder,
+              'unread', member.unread, 'archived', member.archived
             ) ORDER BY member.timestamp, member.id)
             FROM mail_index_messages member
             WHERE member.mailbox_id = m.mailbox_id AND member.thread_id = m.thread_id AND member.deleted = 0) AS metadata,
@@ -665,6 +713,13 @@ export const listConversations = async (
       )
       ${status === "all" ? "" : `AND ${status === "read" ? "NOT " : ""}EXISTS (SELECT 1 ${unreadMembers})`}
       ${contact.where}
+      ${
+        anchor
+          ? `AND m.thread_id = (
+        SELECT thread_id FROM mail_index_messages WHERE mailbox_id = ${mailboxSql(db)} AND id = ? AND deleted = 0
+      )`
+          : ""
+      }
     ORDER BY m.timestamp DESC, m.id DESC LIMIT (SELECT size FROM page_size)
   `,
   );
@@ -677,6 +732,7 @@ export const listConversations = async (
         ...(all ? [] : [view === "archive" ? 1 : 0]),
         ...(isInboxView(view) ? [view === "noise" ? "noise" : "signal"] : []),
         ...contact.values,
+        ...(anchor ? [anchor] : []),
       )
       .all<{
         id: string;
@@ -695,7 +751,9 @@ export const listConversations = async (
   while (matches.length < pageSize + 1) {
     const { results } = await readPage(after, limit);
     for (const { metadata, ...row } of results) {
-      const indexed = JSON.parse(metadata) as IndexedThreadMember[];
+      const indexed = JSON.parse(metadata) as (IndexedThreadMember & {
+        archived: number;
+      })[];
       const members = indexed.map(withPeople);
       if (
         contact.where &&
@@ -760,6 +818,11 @@ export const listConversations = async (
         unreadIncomingIds: members
           .filter(({ folder, unread }) => folder === "inbox" && unread === 1)
           .map(({ id }) => id),
+        archivedIncomingIds: members
+          .filter(
+            ({ folder, archived }) => folder === "inbox" && archived === 1,
+          )
+          .map(({ id }) => id),
         ...(rule ? { senderRule: rule } : {}),
         ...(all ? {} : { receivedAt: sortAt }),
         subject: conversationSubject(members),
@@ -810,11 +873,11 @@ export const readThread = async (db: MailDatabase, id: string) => {
       db,
       results.map(
         ({
-          archived: _archived,
+          archived,
           senderAddress: _senderAddress,
           senderPriority: _senderPriority,
           ...message
-        }) => presentMessage(message),
+        }) => ({ ...presentMessage(message), archived: archived === 1 }),
       ),
     ),
   };

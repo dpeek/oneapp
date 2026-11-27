@@ -143,6 +143,15 @@ export const InboxMessageId = Schema.String.check(
   ),
 );
 
+export const InboxReadStatus = Schema.Struct({
+  unread: Schema.Boolean,
+  latestIncomingId: InboxMessageId,
+  unreadIncomingIds: Schema.Array(InboxMessageId),
+  unreadCount: Schema.Number,
+  version: Schema.Number,
+  changed: Schema.Boolean,
+});
+
 export const SentMessageId = Schema.String.check(
   Schema.isPattern(/^0-\d{13}-[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/u),
 );
@@ -257,6 +266,7 @@ export const ConversationSummary = Schema.Struct({
   trashBatch: Schema.optionalKey(TrashBatchId),
   latestIncomingId: Schema.NullOr(InboxMessageId),
   unreadIncomingIds: Schema.optionalKey(Schema.Array(InboxMessageId)),
+  archivedIncomingIds: Schema.optionalKey(Schema.Array(InboxMessageId)),
   senderRule: Schema.optionalKey(SenderRule),
   archived: Schema.Boolean,
   receivedAt: Schema.optionalKey(Schema.Number),
@@ -436,6 +446,7 @@ export const ConversationMessage = Schema.Struct({
   to: Schema.String,
   timestamp: Schema.Number,
   unread: Schema.optionalKey(Schema.Boolean),
+  archived: Schema.optionalKey(Schema.Boolean),
   people: Schema.optionalKey(MailPeople),
   bodyPreview: Schema.optionalKey(Schema.String),
 });
@@ -445,6 +456,7 @@ export const Conversation = Schema.Struct({
   profiles: Schema.optionalKey(Schema.Array(PersonMatch)),
   archived: Schema.optionalKey(Schema.Boolean),
   senderRule: Schema.optionalKey(SenderRule),
+  summary: Schema.optionalKey(ConversationSummary),
 });
 
 export const DeletedMailCursor = Schema.Struct({

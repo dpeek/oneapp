@@ -23,6 +23,7 @@ import {
   InboxEntry,
   InboxMessageId,
   InboxPage,
+  InboxReadStatus,
   InboxReadUpdate,
   InboxSend,
   inboxSendPath,
@@ -33,6 +34,7 @@ import {
   InlineReply,
   MailFilters,
   type MailFolder,
+  MailboxView,
   MailMessageId,
   noiseApiPath,
   NoiseSenders,
@@ -47,6 +49,7 @@ import {
   SenderRule,
   sentCopyHeader,
   sentMessageHeader,
+  supportsMailFilters,
 } from "../inbox-contract.ts";
 import {
   hiddenMail,
@@ -78,7 +81,7 @@ import {
   readNoiseSenders,
   readThread,
   scanMail,
-  setInboxUnread,
+  setInboxUnreadStatus,
   setSenderRule,
   setThreadArchived,
 } from "./mail-index.ts";
@@ -502,6 +505,12 @@ const conversationListQuery = HttpServerRequest.schemaSearchParams(
     filters: Schema.optional(Schema.fromJsonString(MailFilters)),
   }),
 );
+const conversationThreadQuery = HttpServerRequest.schemaSearchParams(
+  Schema.Struct({
+    view: Schema.optional(MailboxView),
+    filters: Schema.optional(Schema.fromJsonString(MailFilters)),
+  }),
+);
 
 const sendRateLimit = () => jsonError(429, sendRateLimitMessage);
 
@@ -893,16 +902,18 @@ export const inboxRoutes = (
       return yield* jsonError(400, "Invalid read status");
     const { unread } = body.value;
     const result = yield* Effect.tryPromise(async () => {
-      const updated = await setInboxUnread(env.DB, id, unread);
-      if (updated !== "missing") return updated;
+      const updated = await setInboxUnreadStatus(env.DB, id, unread);
+      if (updated) return updated;
       const thread = await loadConversation(env, id);
       return thread.messages.some((message) => message.id === id)
-        ? setInboxUnread(env.DB, id, unread)
-        : "missing";
+        ? setInboxUnreadStatus(env.DB, id, unread)
+        : null;
     });
-    if (result === "missing") return yield* notFound();
-    if (result === "changed") yield* Effect.sync(() => defer(notifyInbox(env)));
-    return HttpServerResponse.empty({ status: 204, headers: privateHeaders });
+    if (!result) return yield* notFound();
+    if (result.changed) yield* Effect.sync(() => defer(notifyInbox(env)));
+    return yield* HttpServerResponse.schemaJson(InboxReadStatus)(result, {
+      headers: privateHeaders,
+    });
   });
 
   const updateArchive = Effect.gen(function* () {
@@ -1087,6 +1098,33 @@ export const inboxRoutes = (
       ),
     );
 
+  const conversationPage = async (
+    ...args: Parameters<typeof listConversations>
+  ) => {
+    const page = await listConversations(...args);
+    if (!page.messages.length) return { ...page, messages: [] };
+    const [matches, messages] = await Promise.all([
+      profilesFor(
+        env,
+        page.messages.flatMap(({ participants }) =>
+          participants.map(({ address }) => address),
+        ),
+      ),
+      withBodyPreviews(env, page.messages),
+    ]);
+    const profiles = new Map(matches.map((match) => [match.email, match]));
+    return {
+      ...page,
+      messages: messages.map((message) => ({
+        ...message,
+        profiles: message.participants.flatMap(({ address }) => {
+          const match = profiles.get(normalizePersonEmail(address));
+          return match ? [match] : [];
+        }),
+      })),
+    };
+  };
+
   const listThreads = (view: Parameters<typeof listConversations>[2]) =>
     Effect.gen(function* () {
       if (!(yield* requireInboxOwner))
@@ -1103,35 +1141,9 @@ export const inboxRoutes = (
       const indexing = yield* Effect.tryPromise(() =>
         syncMailIndex(env, false, requirePeople),
       );
-      const page = yield* Effect.tryPromise(async () => {
-        const page = await listConversations(
-          env.DB,
-          cursor,
-          view,
-          filters,
-          env.mailboxAddresses,
-        );
-        const [matches, messages] = await Promise.all([
-          profilesFor(
-            env,
-            page.messages.flatMap(({ participants }) =>
-              participants.map(({ address }) => address),
-            ),
-          ),
-          withBodyPreviews(env, page.messages),
-        ]);
-        const profiles = new Map(matches.map((match) => [match.email, match]));
-        return {
-          ...page,
-          messages: messages.map((message) => ({
-            ...message,
-            profiles: message.participants.flatMap(({ address }) => {
-              const match = profiles.get(normalizePersonEmail(address));
-              return match ? [match] : [];
-            }),
-          })),
-        };
-      });
+      const page = yield* Effect.tryPromise(() =>
+        conversationPage(env.DB, cursor, view, filters, env.mailboxAddresses),
+      );
       const sender = inboxSender(env);
       return yield* HttpServerResponse.schemaJson(ConversationPage)(
         {
@@ -1344,6 +1356,10 @@ export const inboxRoutes = (
           return yield* jsonError(403, "Access denied");
         const { id } = yield* HttpRouter.params;
         if (!isMailMessageId(id)) return yield* notFound();
+        const query = yield* conversationThreadQuery.pipe(Effect.option);
+        if (query._tag === "None")
+          return yield* jsonError(400, "Invalid conversation parameters");
+        const { view, filters } = query.value;
         const thread = yield* Effect.tryPromise(() =>
           loadConversation(env, id),
         );
@@ -1351,14 +1367,25 @@ export const inboxRoutes = (
         const addresses = thread.messages.flatMap(
           ({ people }) => people?.members.map(({ address }) => address) ?? [],
         );
-        const [profiles, messages] = yield* Effect.tryPromise(() =>
+        const [profiles, messages, page] = yield* Effect.tryPromise(() =>
           Promise.all([
             profilesFor(env, addresses),
             withBodyPreviews(env, thread.messages),
+            view && supportsMailFilters(view)
+              ? conversationPage(
+                  env.DB,
+                  { id: "", timestamp: null },
+                  view,
+                  filters && { ...filters, status: "all" },
+                  env.mailboxAddresses,
+                  id,
+                )
+              : undefined,
           ]),
         );
+        const summary = page?.messages[0];
         return yield* HttpServerResponse.schemaJson(Conversation)(
-          { ...thread, messages, profiles },
+          { ...thread, messages, profiles, ...(summary ? { summary } : {}) },
           { headers: privateHeaders },
         );
       }).pipe(Effect.catchTags(inboxErrors)),

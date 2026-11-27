@@ -2135,8 +2135,23 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
   expect((await mark(latest.key, false)).status).toBe(401);
   expect((await mark(latest.key, false, { cookie: session })).status).toBe(403);
   expect((await mark(sentId, true, approved)).status).toBe(404);
-  expect((await mark(latest.key, false, approved)).status).toBe(204);
-  expect((await mark(latest.key, false, approved)).status).toBe(204);
+  const markedRead = await mark(latest.key, false, approved);
+  expect(markedRead.status).toBe(200);
+  expect(await markedRead.json()).toEqual({
+    unread: false,
+    latestIncomingId: latest.key,
+    unreadIncomingIds: [],
+    unreadCount: 1,
+    changed: true,
+    version: version + 1,
+  });
+  const alreadyRead = await mark(latest.key, false, approved);
+  expect(alreadyRead.status).toBe(200);
+  expect(await alreadyRead.json()).toMatchObject({
+    unread: false,
+    changed: false,
+    version: version + 1,
+  });
   expect(publish).toHaveBeenCalledOnce();
   expect((await get(versionCheck)).version).toBeGreaterThan(version);
   expect(await get(inboxUnreadPath)).toEqual({ unreadCount: 1 });
@@ -2144,7 +2159,15 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
   expect(
     readThread.messages.every(({ unread }: { unread: boolean }) => !unread),
   ).toBe(true);
-  expect((await mark(latest.key, true, approved)).status).toBe(204);
+  const markedUnread = await mark(latest.key, true, approved);
+  expect(markedUnread.status).toBe(200);
+  expect(await markedUnread.json()).toMatchObject({
+    unread: true,
+    unreadIncomingIds: [latest.key],
+    unreadCount: 2,
+    changed: true,
+    version: version + 2,
+  });
   expect(await get(inboxUnreadPath)).toEqual({ unreadCount: 2 });
   const removed = await request(inboxMessageApi(latest.key), {
     method: "DELETE",
@@ -2189,7 +2212,7 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
     403,
   );
   expect((await archive(root.key, true)).status).toBe(409);
-  expect((await mark(bridge.key, true, approved)).status).toBe(204);
+  expect((await mark(bridge.key, true, approved)).status).toBe(200);
   expect((await archive(bridge.key, true)).status).toBe(204);
   expect((await archive(bridge.key, true)).status).toBe(204);
   expect(await get(inboxUnreadPath)).toEqual({ unreadCount: 1 });
@@ -2209,6 +2232,12 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
   expect(await get(conversationApi(root.key))).toMatchObject({
     archived: true,
   });
+  expect(await get(`${conversationApi(root.key)}?view=archive`)).toMatchObject({
+    summary: { id: bridge.key, unreadCount: 1 },
+  });
+  expect(
+    (await get(`${conversationApi(root.key)}?view=inbox`)).summary,
+  ).toBeUndefined();
   expect(await get(mailMessageApi("sent", sentId))).toMatchObject({
     id: sentId,
   });

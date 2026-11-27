@@ -72,10 +72,12 @@ const downloadLink = (file: StoredFile, h: HtmlBuilder<Message>) =>
     [
       h.Href(fileContentApi(file.id, "download")),
       h.Download(file.name),
-      h.Class(buttonClassName({ variant: "outline", size: "sm" })),
       h.DataAttribute("slot", "button"),
+      h.AriaLabel(`Download ${file.name}`),
+      h.Title(`Download ${file.name}`),
+      h.Class(buttonClassName({ variant: "ghost", size: "icon-sm" })),
     ],
-    [downloadIcon(h), "Download"],
+    [downloadIcon(h)],
   );
 
 const fileDetail = (

@@ -2517,6 +2517,9 @@ const listView = (model: Model, h: HtmlBuilder<Message>) => {
       h.div(
         [h.Key(folder), h.Class("workspace-results")],
         [
+          ...(isInboxView(folder) && list?.address
+            ? [h.p([h.Class("inbox-mailbox-address")], [list.address])]
+            : []),
           ...(list === null && listRequest?.cursor === null
             ? [listLoading("Loading messages…", h)]
             : []),

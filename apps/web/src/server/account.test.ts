@@ -148,6 +148,7 @@ import { digest } from "./digest.ts";
 import { ensureOwner } from "./provision-owner.ts";
 import { mcpOAuth } from "./mcp-oauth.ts";
 import { mailPeople } from "./mail-people.ts";
+import { seedMailRoutes } from "./mail-routing.ts";
 import worker from "./worker.ts";
 import {
   publishWorkspaceChange,
@@ -5107,6 +5108,144 @@ it("finds older archived replies and cites scoped mail in a task without marking
   expect(index.tasks.find(({ id }) => id === task.id)).toMatchObject({
     description,
   });
+});
+
+it("routes apex SMTP recipients to their mailboxes and sends from the primary address", async () => {
+  using sqlite = new Database(":memory:");
+  const address = "mail@dpeek.com";
+  const put = vi.fn(
+    async (
+      key: string,
+      raw: ReadableStream,
+      options: { customMetadata: { envelopeTo: string } },
+    ) => {
+      await new Response(raw).arrayBuffer();
+      return { key, uploaded: new Date(), ...options };
+    },
+  );
+  const publish = vi.fn(async () => {});
+  const inbox = vi.fn((_mailboxId: string) => ({ publish }));
+  const send = vi.fn(async (_message: EmailMessageBuilder) => ({
+    messageId: "<apex-routing@example.net>",
+  }));
+  const { env, call, cookies, signIn } = await setup(sqlite, {
+    INBOX_EMAIL_ADDRESS: address,
+    INBOX_MESSAGES: {
+      put,
+      get: async () => null,
+      list: async () => ({ objects: [], truncated: false }),
+    } as unknown as WorkerEnv["INBOX_MESSAGES"],
+    INBOX_UPDATES: {
+      getByName: inbox,
+    } as unknown as WorkerEnv["INBOX_UPDATES"],
+    INBOX_SEND: { send } as SendEmail,
+    INBOX_SEND_LIMIT: { limit: async () => ({ success: true }) },
+    SENT_MESSAGES: {
+      put: async () => ({}),
+      list: async () => ({ objects: [], truncated: false }),
+    } as unknown as WorkerEnv["SENT_MESSAGES"],
+  });
+  sqlite.exec(`
+    INSERT INTO accounts (id, active, security_revision) VALUES ('team-fixture', 1, '1');
+    INSERT INTO mailboxes (id, owner_account_id, name) VALUES ('work', 'team-fixture', 'Work');
+    INSERT INTO mailbox_addresses VALUES
+      ('existing@dpeek.com', 'personal', 1, 0),
+      ('dispatch@dpeek.com', 'work', 1, 0),
+      ('blocked@dpeek.com', 'work', 0, 0);
+    INSERT INTO mail_domain_routes VALUES ('orumai.app', 'personal');
+  `);
+  await seedMailRoutes(env.DB);
+  await seedMailRoutes(env.DB);
+  env.INBOX_EMAIL_FROM = address;
+
+  const aliases = ["support@orumai.app", "team@orumai.app", "admin@orumai.app"];
+  expect(
+    sqlite
+      .query(
+        "SELECT address, can_receive, can_send FROM mailbox_addresses WHERE address LIKE '%@orumai.app' ORDER BY address",
+      )
+      .all(),
+  ).toEqual(
+    aliases
+      .toSorted()
+      .map((alias) => ({ address: alias, can_receive: 1, can_send: 0 })),
+  );
+  const receive = async (to: string) => {
+    const from = "sender@example.net";
+    const headers = new Headers({ subject: `Fixture for ${to}`, to: address });
+    const raw = new TextEncoder().encode(
+      `From: ${from}\r\nTo: ${address}\r\nSubject: ${headers.get("subject")}\r\n\r\nFixture`,
+    );
+    const setReject = vi.fn();
+    await worker.email(
+      {
+        from,
+        to,
+        headers,
+        raw: new Blob([raw]).stream() as unknown as Parameters<
+          typeof worker.email
+        >[0]["raw"],
+        rawSize: raw.byteLength,
+        setReject,
+      },
+      env,
+    );
+    return setReject;
+  };
+  vi.stubGlobal(
+    "FixedLengthStream",
+    class extends TransformStream {
+      constructor() {
+        super();
+      }
+    },
+  );
+  try {
+    for (const to of [
+      address,
+      "existing@dpeek.com",
+      "unlisted@dpeek.com",
+      ...aliases,
+      "dispatch@dpeek.com",
+    ]) {
+      expect(await receive(to)).not.toHaveBeenCalled();
+      const [key, , metadata] = put.mock.lastCall!;
+      const mailboxId = to === "dispatch@dpeek.com" ? "work" : "personal";
+      expect(key.startsWith("mailboxes/work/")).toBe(mailboxId === "work");
+      expect(metadata.customMetadata.envelopeTo).toBe(to);
+      expect(inbox).toHaveBeenLastCalledWith(mailboxId);
+      expect(
+        sqlite
+          .query("SELECT mailbox_id FROM mail_index_messages WHERE id = ?")
+          .get(key.split("/").at(-1)!),
+      ).toEqual({
+        mailbox_id: mailboxId,
+      });
+    }
+    for (const to of ["unassigned@orumai.app", "blocked@dpeek.com"]) {
+      expect(await receive(to)).toHaveBeenCalledWith("Unknown recipient");
+    }
+    expect(put).toHaveBeenCalledTimes(7);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+
+  const session = cookies(await signIn(password));
+  expect(
+    await (await call(conversationsApiPath, undefined, session)).json(),
+  ).toMatchObject({
+    address,
+    sender: address,
+  });
+  const response = await call(
+    inboxSendPath,
+    { to: "recipient@example.net", subject: "Apex sender", text: "Fixture" },
+    session,
+  );
+  expect(response.status).toBe(204);
+  expect(send).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ from: address }),
+  );
 });
 
 it("searches legacy imports, incoming MIME and sent replies by body with the mail read grant", async () => {

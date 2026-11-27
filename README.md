@@ -307,9 +307,13 @@ Set `ONEAPP_EXTERNAL_AUTH_SECRETS=true` for an existing Worker whose `AUTH_SECRE
 
 Set `ACCOUNT_EMAIL_ZONE_ID` to the Cloudflare DNS zone ID that owns `APP_DOMAIN` to enable account email. Alchemy onboards that hostname for Email Sending and the Worker sends from `accounts@APP_DOMAIN`. Leave this setting unset on preview deployments that should not send mail.
 
-Set `INBOX_EMAIL_ZONE_ID` to the Cloudflare DNS zone ID that owns the `APP_DOMAIN` subdomain to receive mail at `mail@APP_DOMAIN`. Alchemy configures Email Routing for the subdomain and creates a rule for that address. After deploying, send a test email and verify that a `.eml` object appears in the stage's private `InboxMessages` R2 bucket. Each object contains the raw email, including attachments, and stores the SMTP envelope sender and recipient as object metadata.
+The production stack looks up the active `dpeek.com` and `orumai.app` zones by name. It provisions the owner and seeds D1 before enabling Email Routing and installing one catch-all per apex, both targeting `oneapp-web-production`. Cloudflare adds the apex MX records when Email Routing is enabled. Alchemy removes the legacy `mail@app.dpeek.com` rule and its inbound subdomain DNS after applying the new resources.
 
-Set `INBOX_EMAIL_SENDING_DOMAIN` to use `mail@INBOX_EMAIL_SENDING_DOMAIN` for outbound mailbox mail. The domain must belong to `ACCOUNT_EMAIL_ZONE_ID`, and the `personal` mailbox identity for the new address must have `can_send` enabled. Alchemy verifies the sending domain separately from inbound Email Routing. The Worker uses `mail@APP_DOMAIN` while the new sending domain is pending verification. Account email continues to use `accounts@APP_DOMAIN`.
+D1 first checks the SMTP envelope recipient against `mailbox_addresses`. A disabled exact address is rejected. An unlisted `dpeek.com` recipient goes to `personal` through `mail_domain_routes`. On `orumai.app`, only enabled exact addresses are accepted. The initial aliases `support@orumai.app`, `team@orumai.app`, and `admin@orumai.app` receive into `personal` and have no send permission.
+
+The primary mailbox address is `mail@dpeek.com`. Production uses the `dpeek.com` zone ID in `ACCOUNT_EMAIL_ZONE_ID` for Email Sending. Outbound mailbox mail becomes available once Cloudflare verifies that sending domain. Account email continues to use `accounts@APP_DOMAIN`.
+
+After applying the production changes, check both apex MX records. Send test mail to an existing and an unlisted `dpeek.com` address and to each provisioned `orumai.app` alias, then confirm the arrivals in Mail. Check that an unassigned `orumai.app` recipient is rejected and that a message sent from the inbox arrives with `mail@dpeek.com` as its sender.
 
 Sign in and open **Mail** (`/mail`) to browse Inbox conversations by their latest incoming message. Open a conversation to read the selected message and expand earlier emails and sent replies. Select **Back** to return to the folder’s list.
 

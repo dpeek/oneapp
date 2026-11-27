@@ -8,6 +8,12 @@ import {
   resetPasswordPage,
 } from "./apps/web/src/password-recovery-contract.ts";
 import type { InboxUpdates } from "./apps/web/src/server/cloudflare-worker.ts";
+import {
+  primaryMailAddress,
+  primaryMailDomain,
+  exactMailDomain,
+  seedMailRoutes,
+} from "./apps/web/src/server/mail-routing.ts";
 import { provisionOwner } from "./apps/web/src/server/provision-owner.ts";
 
 const Database = Cloudflare.D1.Database("Database", {
@@ -32,19 +38,26 @@ const ProfilePhotos = Cloudflare.R2.Bucket("ProfilePhotos", {
   publicAccess: false,
 });
 
-const inboxRouting = Effect.gen(function* () {
-  const zoneId = yield* Config.option(Config.String("INBOX_EMAIL_ZONE_ID"));
-  if (Option.isNone(zoneId)) return undefined;
-  const hostname = yield* Config.String("APP_DOMAIN");
-  return { zoneId: zoneId.value, name: hostname.toLowerCase() };
-});
-
-const inboxAddress = (hostname: string) => `mail@${hostname}`;
+const provisionMailRoutes = Alchemy.Action(
+  "ProvisionMailRoutes",
+  Effect.gen(function* () {
+    const database = yield* Cloudflare.D1.QueryDatabase(Database);
+    return Effect.fn(function* (_input: {
+      databaseId: string;
+      ownerReady: boolean;
+    }) {
+      const db = yield* database.raw;
+      yield* Effect.tryPromise(() => seedMailRoutes(db));
+      return { ready: true };
+    });
+  }).pipe(Effect.provide(Cloudflare.D1.QueryDatabaseLocal)),
+);
 
 export const Web = Cloudflare.Worker(
   "Web",
   Effect.gen(function* () {
     const { dev } = yield* Alchemy.AlchemyContext;
+    const production = (yield* Alchemy.Stage) === "production" && !dev;
     const snapshot =
       dev &&
       (yield* Config.Boolean("ONEAPP_DEV_SNAPSHOT").pipe(
@@ -57,7 +70,6 @@ export const Web = Cloudflare.Worker(
     const emailZone = yield* Config.option(
       Config.String("ACCOUNT_EMAIL_ZONE_ID"),
     );
-    const inbox = yield* inboxRouting;
     const sending = yield* Effect.gen(function* () {
       if (Option.isNone(emailZone)) return undefined;
       const hostname = yield* Config.String("APP_DOMAIN");
@@ -67,20 +79,11 @@ export const Web = Cloudflare.Worker(
         previewEnabled: false,
       });
     });
-    const inboxSendingDomain = yield* Config.option(
-      Config.NonEmptyString("INBOX_EMAIL_SENDING_DOMAIN").pipe(
-        Config.map((hostname) => hostname.trim().toLowerCase()),
-      ),
-    );
-    const alternateInboxDomain = Option.getOrUndefined(inboxSendingDomain);
-    const alternateInboxSending =
-      inbox &&
-      alternateInboxDomain &&
-      alternateInboxDomain !== inbox.name &&
-      Option.isSome(emailZone)
+    const inboxSending =
+      production && Option.isSome(emailZone)
         ? yield* Cloudflare.Email.SendingSubdomain("InboxSendingDomain", {
             zoneId: emailZone.value,
-            name: alternateInboxDomain,
+            name: primaryMailDomain,
             previewEnabled: false,
           })
         : undefined;
@@ -161,7 +164,9 @@ export const Web = Cloudflare.Worker(
         SENT_MESSAGES: SentMessages,
         PROFILE_PHOTOS: ProfilePhotos,
         INBOX_UPDATES: Cloudflare.DurableObject<InboxUpdates>("InboxUpdates"),
-        ...(inbox ? { INBOX_EMAIL_ADDRESS: inboxAddress(inbox.name) } : {}),
+        ...(production || dev
+          ? { INBOX_EMAIL_ADDRESS: primaryMailAddress }
+          : {}),
         APP_ORIGIN: Cloudflare.Worker.URL,
         BITWARDEN_ICON_LIMIT: Cloudflare.RateLimit("BitwardenIconLimit", {
           namespaceId: 1004,
@@ -191,31 +196,15 @@ export const Web = Cloudflare.Worker(
               }),
             }
           : {}),
-        ...(sending && inbox
+        ...(inboxSending
           ? {
-              INBOX_EMAIL_FROM: alternateInboxSending
-                ? Output.all(
-                    alternateInboxSending.enabled,
-                    alternateInboxSending.name,
-                    sending.enabled,
-                  ).pipe(
-                    Output.map(([enabled, hostname, fallbackEnabled]) => {
-                      if (enabled) return inboxAddress(hostname);
-                      return fallbackEnabled ? inboxAddress(inbox.name) : "";
-                    }),
-                  )
-                : sending.enabled.pipe(
-                    Output.map((enabled) =>
-                      enabled ? inboxAddress(inbox.name) : "",
-                    ),
-                  ),
+              INBOX_EMAIL_FROM: inboxSending.enabled.pipe(
+                Output.map((enabled): string =>
+                  enabled ? primaryMailAddress : "",
+                ),
+              ),
               INBOX_SEND: Cloudflare.Email.SendEmail("InboxSend", {
-                allowedSenderAddresses: [
-                  inboxAddress(inbox.name),
-                  ...(alternateInboxSending && alternateInboxDomain
-                    ? [inboxAddress(alternateInboxDomain)]
-                    : []),
-                ],
+                allowedSenderAddresses: [primaryMailAddress],
               }),
               INBOX_SEND_LIMIT: Cloudflare.RateLimit("InboxSendLimit", {
                 namespaceId: 1005,
@@ -252,26 +241,32 @@ export default Alchemy.Stack(
     ),
   },
   Effect.gen(function* () {
-    const inbox = yield* inboxRouting;
+    const { dev } = yield* Alchemy.AlchemyContext;
+    const production = (yield* Alchemy.Stage) === "production" && !dev;
     const database = yield* Database;
-    yield* provisionOwner(database)({ databaseId: database.databaseId });
+    const owner = yield* provisionOwner(database)({
+      databaseId: database.databaseId,
+    });
     const worker = yield* Web;
-    if (inbox) {
-      const subdomain = yield* Cloudflare.Email.RoutingSubdomain(
-        "InboxEmailDomain",
-        inbox,
-      );
-      yield* Cloudflare.Email.Rule("InboxEmailRule", {
-        zone: subdomain.zoneId,
-        matchers: [
-          {
-            type: "literal",
-            field: "to",
-            value: subdomain.name.pipe(Output.map(inboxAddress)),
-          },
-        ],
-        actions: [{ type: "worker", value: [worker.workerName] }],
+    if (production) {
+      const routes = yield* provisionMailRoutes({
+        databaseId: database.databaseId,
+        ownerReady: owner.ready,
       });
+      for (const [id, domain] of [
+        ["Dpeek", primaryMailDomain],
+        ["Orumai", exactMailDomain],
+      ] as const) {
+        // Wait for D1 before enabling ingress. Routing also provisions the
+        // apex MX records on Cloudflare DNS.
+        const routing = yield* Cloudflare.Email.Routing(`${id}EmailRouting`, {
+          zone: routes.ready.pipe(Output.map(() => domain)),
+        }).pipe(Alchemy.RemovalPolicy.retain());
+        yield* Cloudflare.Email.CatchAll(`${id}EmailCatchAll`, {
+          zone: routing.zoneId,
+          actions: [{ type: "worker", value: [worker.workerName] }],
+        });
+      }
     }
     return { url: worker.url };
   }),

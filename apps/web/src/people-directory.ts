@@ -44,6 +44,7 @@ type DirectoryMessage = typeof Message.Type;
 type Directory = (typeof Model.Type)["directory"];
 
 const sectionLabels = { person: "People", company: "Companies" };
+const editIconPaths = ["m4 16 11-11a2.8 2.8 0 0 1 4 4L8 20H4v-4zm9-9 4 4"];
 
 const directoryNavigation = (
   section: ContactKind,
@@ -111,9 +112,7 @@ const personItem = (
     {
       action: "edit",
       label: "Edit",
-      icon: outlineIcon(h, [
-        "m4 16 11-11a2.8 2.8 0 0 1 4 4L8 20H4v-4zm9-9 4 4",
-      ]),
+      icon: outlineIcon(h, editIconPaths),
       disabled: !canEditContact(directory, person),
     },
     ...(person.self
@@ -256,34 +255,42 @@ const detailView = (
                 size: "lg",
                 imageMounted: Message.Mounted(),
               }),
-              [
-                button(
-                  {
-                    size: "sm",
-                    attributes: [h.Id(detailEditButtonId)],
-                    disabled: !canEditContact(directory, person),
-                    onClick: Message.EditedRecord(),
-                    children: ["Edit"],
-                  },
-                  h,
-                ),
-                ...(person.self
-                  ? []
-                  : [
-                      button(
-                        {
-                          variant: "ghost",
-                          size: "icon-sm",
-                          ariaLabel: "Delete contact",
-                          attributes: [h.Title("Delete contact")],
-                          disabled: !canDeleteContact(directory, person),
-                          onClick: Message.RequestedDelete(),
-                          children: [outlineIcon(h, trashIconPaths)],
-                        },
-                        h,
-                      ),
-                    ]),
-              ],
+              h.div(
+                [h.Class("people-detail-actions")],
+                [
+                  button(
+                    {
+                      variant: "ghost",
+                      size: "icon-sm",
+                      ariaLabel: "Edit contact",
+                      attributes: [
+                        h.Id(detailEditButtonId),
+                        h.Title("Edit contact"),
+                      ],
+                      disabled: !canEditContact(directory, person),
+                      onClick: Message.EditedRecord(),
+                      children: [outlineIcon(h, editIconPaths)],
+                    },
+                    h,
+                  ),
+                  ...(person.self
+                    ? []
+                    : [
+                        button(
+                          {
+                            variant: "ghost",
+                            size: "icon-sm",
+                            ariaLabel: "Delete contact",
+                            attributes: [h.Title("Delete contact")],
+                            disabled: !canDeleteContact(directory, person),
+                            onClick: Message.RequestedDelete(),
+                            children: [outlineIcon(h, trashIconPaths)],
+                          },
+                          h,
+                        ),
+                      ]),
+                ],
+              ),
               person.self && person.name
                 ? "Your profile"
                 : person.kind === "company"

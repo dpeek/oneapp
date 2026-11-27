@@ -1198,7 +1198,7 @@ export const profileHeader = (
   h: HtmlBuilder<Message>,
   name: string,
   media: Html,
-  actions: ReadonlyArray<Html>,
+  actions: Html,
   subtitle?: string,
 ) =>
   h.header(
@@ -1217,7 +1217,7 @@ export const profileHeader = (
           ),
         ],
       ),
-      buttonGroup(actions, h),
+      actions,
     ],
   );
 
@@ -1338,7 +1338,7 @@ const profileForm = (
     ],
     [
       options.heading
-        ? profileHeader(h, options.heading, photo, actions)
+        ? profileHeader(h, options.heading, photo, buttonGroup(actions, h))
         : photo,
       nativeSelect(
         {

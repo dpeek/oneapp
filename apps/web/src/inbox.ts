@@ -3429,8 +3429,30 @@ const folderNavigation = (model: Model, h: HtmlBuilder<Message>) =>
     ],
   );
 
-export const view = Submodel.defineView<Model, Message>((model, h) =>
-  workspace(
+export const view = Submodel.defineView<Model, Message>((model, h) => {
+  const listVisible = isListVisible(model);
+  const showPrioritySwitch = listVisible && isInboxView(model.folder);
+  const listIndicator = listVisible
+    ? [
+        h.span(
+          [h.Class("inbox-list-indicator")],
+          model.listRequest
+            ? [
+                spinner(
+                  model.listRequest.cursor !== null
+                    ? "Loading more messages…"
+                    : model.list
+                      ? "Refreshing messages…"
+                      : "Loading messages…",
+                  h,
+                ),
+              ]
+            : [],
+        ),
+      ]
+    : [];
+
+  return workspace(
     {
       className: "inbox",
       attributes: [h.OnMount(WatchLayout())],
@@ -3472,8 +3494,8 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
               ],
             ),
           ],
-          controls:
-            model.selected === null && model.folder === "trash"
+          controls: [
+            ...(model.selected === null && model.folder === "trash"
               ? [
                   button(
                     {
@@ -3491,7 +3513,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
                     h,
                   ),
                 ]
-              : isListVisible(model) && supportsMailFilters(model.folder)
+              : listVisible && supportsMailFilters(model.folder)
                 ? [
                     h.submodel({
                       slotId: "inbox-filters",
@@ -3500,46 +3522,26 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
                       toParentMessage: toFiltersMessage,
                     }),
                   ]
-                : undefined,
-          viewControls:
-            isListVisible(model) && isInboxView(model.folder)
-              ? [inboxPrioritySwitch(model.folder, h)]
-              : undefined,
-          endControls: [
-            ...(model.layout.wide
-              ? [
-                  button(
-                    {
-                      size: "sm",
-                      variant: "quiet",
-                      attributes: [h.AriaPressed(String(model.layout.split))],
-                      onClick: Message.ToggledSplitView(),
-                      children: ["Split view"],
-                    },
-                    h,
-                  ),
-                ]
-              : []),
-            ...(isListVisible(model)
-              ? [
-                  h.span(
-                    [h.Class("inbox-list-indicator")],
-                    model.listRequest
-                      ? [
-                          spinner(
-                            model.listRequest.cursor !== null
-                              ? "Loading more messages…"
-                              : model.list
-                                ? "Refreshing messages…"
-                                : "Loading messages…",
-                            h,
-                          ),
-                        ]
-                      : [],
-                  ),
-                ]
-              : []),
+                : []),
+            ...(showPrioritySwitch ? [] : listIndicator),
           ],
+          viewControls: showPrioritySwitch
+            ? [inboxPrioritySwitch(model.folder, h), ...listIndicator]
+            : undefined,
+          endControls: model.layout.wide
+            ? [
+                button(
+                  {
+                    size: "sm",
+                    variant: "quiet",
+                    attributes: [h.AriaPressed(String(model.layout.split))],
+                    onClick: Message.ToggledSplitView(),
+                    children: ["Split view"],
+                  },
+                  h,
+                ),
+              ]
+            : undefined,
           primaryAction: button(
             {
               size: "sm",
@@ -3573,5 +3575,5 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
       ),
     },
     h,
-  ),
-);
+  );
+});

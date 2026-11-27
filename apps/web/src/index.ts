@@ -675,16 +675,16 @@ const Navigate = Command.define("Navigate", {
 const creationItems = [
   { value: "task", label: "Task", iconPaths: taskIconPaths },
   { value: "event", label: "Event", iconPaths: calendarIconPaths },
-  { value: "email", label: "New email", iconPaths: mailIconPaths },
-  { value: "link", label: "Save link", iconPaths: linkIconPaths },
+  { value: "email", label: "Email", iconPaths: mailIconPaths },
+  { value: "link", label: "Link", iconPaths: linkIconPaths },
   {
     value: "contact",
-    label: "Add contact",
+    label: "Contact",
     iconPaths: AppNavigation.contactsIconPaths,
   },
   {
     value: "upload",
-    label: "Upload file",
+    label: "File",
     iconPaths: filesIconPaths,
   },
 ] as const;

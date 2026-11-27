@@ -28,9 +28,10 @@ import { tagNameKey, type Tag } from "./items-contract.ts";
 import { isTaskRunInterrupted, type TaskRun } from "./task-run-contract.ts";
 import {
   type Task,
+  TaskList,
   taskDescriptionLimit,
+  taskListPath,
   taskPath,
-  tasksPath,
   taskTitleLimit,
 } from "./tasks-contract.ts";
 import { taskFilterCount } from "./tasks-filters.ts";
@@ -178,7 +179,11 @@ const filterLabels = {
   assignee: "Assignee",
   tags: "Tags",
 };
-const taskListLabel = "All tasks";
+const taskListLabels = {
+  active: "Active",
+  complete: "Complete",
+  all: "All tasks",
+} satisfies Record<TaskList, string>;
 const taskDateTimeFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeStyle: "short",
@@ -355,13 +360,14 @@ const taskSort = (model: Model, h: HtmlBuilder<Message>) =>
 
 const taskTable = (
   rows: readonly Html[],
+  label: string,
   loading: boolean,
   h: HtmlBuilder<Message>,
 ) =>
   h.table(
     [
       h.Class("task-table"),
-      ...(loading ? [h.AriaHidden(true)] : [h.AriaLabel(taskListLabel)]),
+      ...(loading ? [h.AriaHidden(true)] : [h.AriaLabel(label)]),
     ],
     [
       h.thead(
@@ -427,6 +433,7 @@ const taskList = (
 ) => {
   const allTasks = model.index?.tasks ?? [];
   const tasks = visibleTasks(model);
+  const label = taskListLabels[model.list];
   const loading = !model.index && model.request?.operation._tag === "Load";
   const emptyTitle =
     !model.index || tasks.length
@@ -441,10 +448,11 @@ const taskList = (
       tasks.map((task) =>
         taskRow(task, model, tags, viewInputs, now, model.runActivityTime, h),
       ),
+      label,
       false,
       h,
     );
-  } else if (loading) results = taskTable(taskPlaceholders(h), true, h);
+  } else if (loading) results = taskTable(taskPlaceholders(h), label, true, h);
   else if (emptyTitle) {
     const action = allTasks.length
       ? button(
@@ -988,12 +996,16 @@ const taskDetail = (
   );
 };
 
-const taskNavigation = (h: HtmlBuilder<Message>) =>
+const taskNavigation = (current: TaskList, h: HtmlBuilder<Message>) =>
   navigationLinks(
     {
       label: "Task navigation",
       variant: "sidebar",
-      destinations: [{ href: tasksPath, label: taskListLabel, current: true }],
+      destinations: TaskList.literals.map((list) => ({
+        href: taskListPath(list),
+        label: taskListLabels[list],
+        current: list === current,
+      })),
     },
     h,
   );
@@ -1004,7 +1016,8 @@ export const view = Submodel.defineView(function tasksView(
   h: HtmlBuilder<Message>,
 ) {
   const tags = sortedTags(model);
-  const { selectedId, folderSheet } = model;
+  const { selectedId, folderSheet, list } = model;
+  const label = taskListLabels[list];
   const addTask = button(
     {
       size: "sm",
@@ -1031,12 +1044,12 @@ export const view = Submodel.defineView(function tasksView(
       className: "workspace-stacked tasks-workspace",
       header: screenHeader(
         {
-          title: selectedId ? undefined : taskListLabel,
+          title: selectedId ? undefined : label,
           navigation: [
             ...(selectedId
               ? [
                   screenHeaderBack(
-                    { href: tasksPath, label: `Back to ${taskListLabel}` },
+                    { href: taskListPath(list), label: `Back to ${label}` },
                     h,
                   ),
                 ]
@@ -1099,7 +1112,7 @@ export const view = Submodel.defineView(function tasksView(
         },
         h,
       ),
-      sidebar: taskNavigation(h),
+      sidebar: taskNavigation(list, h),
       list: taskList(model, tags, viewInputs, h),
       hasSelection: selectedId !== null,
       ...(selectedId
@@ -1109,7 +1122,7 @@ export const view = Submodel.defineView(function tasksView(
         {
           model: folderSheet,
           title: "Task navigation",
-          content: taskNavigation(h),
+          content: taskNavigation(list, h),
           toParentMessage: toFolderSheetMessage,
         },
         h,

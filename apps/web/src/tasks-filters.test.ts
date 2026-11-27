@@ -1,10 +1,10 @@
 import { expect, it } from "@effect/vitest";
 import { type Task, taskStatuses } from "./tasks-contract.ts";
 import {
-  defaultFilters,
   emptyFilters,
   matchesTaskFilters,
   taskFilterCount,
+  taskListFilters,
   toggleFilter,
 } from "./tasks-filters.ts";
 
@@ -59,15 +59,22 @@ it("matches any selected value within each task filter and requires every catego
   );
 });
 
-it("defaults to the three active statuses with no other selections", () => {
-  expect(
-    taskStatuses.filter((status) =>
-      matchesTaskFilters({ ...task, status }, defaultFilters),
-    ),
-  ).toEqual(["not-started", "in-progress", "in-review"]);
-  expect(defaultFilters.priorities).toEqual([]);
-  expect(defaultFilters.assignees).toEqual([]);
-  expect(defaultFilters.tagIds).toEqual([]);
+it("sets only the status criteria for each named task list", () => {
+  for (const [list, statuses] of [
+    ["active", ["not-started", "in-progress", "in-review"]],
+    ["complete", ["completed"]],
+    ["all", taskStatuses],
+  ] as const) {
+    const filters = taskListFilters[list];
+    expect(
+      taskStatuses.filter((status) =>
+        matchesTaskFilters({ ...task, status }, filters),
+      ),
+    ).toEqual(statuses);
+    expect(filters.priorities).toEqual([]);
+    expect(filters.assignees).toEqual([]);
+    expect(filters.tagIds).toEqual([]);
+  }
 });
 
 it("can add and remove an unassigned filter alongside a named assignee", () => {

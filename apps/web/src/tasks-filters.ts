@@ -5,6 +5,7 @@ import {
   TaskPriority,
   type Task,
   TaskAssignee,
+  type TaskList,
   TaskStatus,
 } from "./tasks-contract.ts";
 
@@ -20,9 +21,10 @@ export const emptyFilters: typeof Filters.Type = {
   assignees: [],
   tagIds: [],
 };
-export const defaultFilters: typeof Filters.Type = {
-  ...emptyFilters,
-  statuses: activeTaskStatuses,
+export const taskListFilters: Record<TaskList, typeof Filters.Type> = {
+  active: { ...emptyFilters, statuses: activeTaskStatuses },
+  complete: { ...emptyFilters, statuses: ["completed"] },
+  all: emptyFilters,
 };
 
 export const toggleFilter = <Value>(values: readonly Value[], value: Value) =>

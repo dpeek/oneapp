@@ -8,17 +8,25 @@ export const tasksChanged = "tasks.changed";
 export const taskPath = (id: string) => `${tasksPath}/${id}`;
 export const taskApi = (id: string) => `${tasksApi}/${id}` as const;
 
+export const TaskList = Schema.Literals(["active", "complete", "all"]);
+export type TaskList = typeof TaskList.Type;
+export const defaultTaskList = "active";
+export const taskListPath = (list: TaskList) =>
+  list === defaultTaskList ? tasksPath : `${tasksPath}/${list}`;
+
 export const TaskRoute = Schema.Struct({
   id: Schema.NullOr(ItemId),
+  list: Schema.NullOr(TaskList),
 });
 export const taskRouteFor = (
   pathname: string,
 ): typeof TaskRoute.Type | null => {
   const path = pathname.replace(/\/$/u, "");
-  if (path === tasksPath) return { id: null };
+  const list = TaskList.literals.find((list) => taskListPath(list) === path);
+  if (list) return { id: null, list };
   if (!path.startsWith(`${tasksPath}/`)) return null;
   const id = path.slice(tasksPath.length + 1);
-  return Schema.is(ItemId)(id) ? { id } : null;
+  return Schema.is(ItemId)(id) ? { id, list: null } : null;
 };
 
 export const defaultTaskStatus = "not-started";

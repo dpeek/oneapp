@@ -29,6 +29,7 @@ import {
 } from "./task-properties.ts";
 import * as Attachments from "./task-attachments.ts";
 import {
+  defaultTaskList,
   defaultTaskStatus,
   Task,
   taskApi,
@@ -37,6 +38,7 @@ import {
   TaskDate,
   TaskDelete,
   TaskFields,
+  TaskList,
   TaskPriority,
   TaskRoute,
   TaskSnapshot,
@@ -46,10 +48,10 @@ import {
   taskTagLimit,
 } from "./tasks-contract.ts";
 import {
-  defaultFilters,
   emptyFilters,
   Filters,
   matchesTaskFilters,
+  taskListFilters,
   toggleFilter,
 } from "./tasks-filters.ts";
 
@@ -106,6 +108,7 @@ const filterPopover = Popover.init({ id: "task-filters" });
 const filterTags = MultiCombobox.init("task-filter-tags");
 const closedFilterOptions = { filterCategory: null, filterTags };
 const Sort = Schema.Literals(["updated", "priority", "due"]);
+const defaultSort = "updated";
 const sortMenu = DropdownMenu.SingleSelect.init({ id: "task-sort" });
 const closedTaskMenus = {
   filterPopover,
@@ -117,6 +120,7 @@ export const taskSortMenu =
 export const Model = Schema.Struct({
   index: Schema.NullOr(TaskSnapshot),
   folderSheet: Sheet.Model,
+  list: TaskList,
   selectedId: Schema.NullOr(ItemId),
   edits: Schema.Record(Schema.String, Edits.Draft),
   picker: Schema.NullOr(Picker),
@@ -157,6 +161,7 @@ export type Model = typeof Model.Type;
 export const initial: Model = {
   index: null,
   folderSheet: Sheet.init({ id: "task-views" }),
+  list: defaultTaskList,
   selectedId: null,
   edits: {},
   picker: null,
@@ -166,8 +171,8 @@ export const initial: Model = {
   deleteDialog: Dialog.init({ id: deleteDialogId }),
   deletion: null,
   ...closedTaskMenus,
-  filters: defaultFilters,
-  sort: "updated",
+  filters: taskListFilters[defaultTaskList],
+  sort: defaultSort,
   request: null,
   refreshRequest: null,
   refreshPending: false,
@@ -1062,8 +1067,10 @@ const transition = (
   return Message.match<Update.ReturnWithOutMessage<Model, Message, OutMessage>>(
     message,
     {
-      Opened: ({ id, refresh }) => {
-        const next =
+      Opened: ({ id, list, refresh }) => {
+        const nextList = list ?? (refresh ? defaultTaskList : model.list);
+        const listChanged = nextList !== model.list;
+        let next =
           id !== model.selectedId
             ? {
                 ...model,
@@ -1075,13 +1082,20 @@ const transition = (
                 deletion: null,
                 error: null,
               }
-            : refresh
+            : refresh || listChanged
               ? {
                   ...model,
                   ...closedTaskMenus,
                   ...(model.creation ? { creation: null, error: null } : {}),
                 }
               : model;
+        if (listChanged)
+          next = {
+            ...next,
+            list: nextList,
+            filters: taskListFilters[nextList],
+            sort: defaultSort,
+          };
         return Update.combine(next, [
           (next) =>
             id !== model.selectedId && next.deleteDialog.isOpen
@@ -1094,7 +1108,7 @@ const transition = (
           (next) => ({
             model: next,
             commands:
-              !refresh && id === null && model.selectedId
+              !refresh && !listChanged && id === null && model.selectedId
                 ? [FocusList({ id: model.selectedId })]
                 : [],
           }),

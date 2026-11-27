@@ -94,10 +94,10 @@ import {
 import { view as filesView } from "./files-view.ts";
 import * as Tasks from "./tasks.ts";
 import {
+  taskListPath,
   taskPath,
   TaskRoute,
   taskRouteFor,
-  tasksPath,
   tasksChanged,
 } from "./tasks-contract.ts";
 import {
@@ -485,7 +485,10 @@ const foldTaskFeature = Update.foldChild({
             model,
             commands: [
               Navigate({
-                href: out._tag === "OpenList" ? tasksPath : taskPath(out.id),
+                href:
+                  out._tag === "OpenList"
+                    ? taskListPath(model.tasks.list)
+                    : taskPath(out.id),
                 mode: out._tag === "OpenList" ? "replace" : "push",
               }),
             ],
@@ -1095,6 +1098,7 @@ const update = (
         settingsSection === model.settingsSection &&
         calendarRoute?.id === model.calendarRoute?.id &&
         taskRoute?.id === model.taskRoute?.id &&
+        taskRoute?.list === model.taskRoute?.list &&
         fileRoute?.id === model.fileRoute?.id &&
         mailRoute?.folder === model.mailRoute?.folder &&
         mailRoute?.id === model.mailRoute?.id &&

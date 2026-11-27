@@ -1,4 +1,5 @@
 import "./mail-editor.ts";
+import "./task-description-editor.ts";
 import * as PushSettings from "./push-settings.ts";
 import {
   clearPushAfterSignOut,

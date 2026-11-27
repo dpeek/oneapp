@@ -7,7 +7,7 @@ import {
   stage,
   type Draft,
 } from "./task-edits.ts";
-import type { Task } from "./tasks-contract.ts";
+import { taskDescriptionLimit, type Task } from "./tasks-contract.ts";
 
 const task: Task = {
   id: "task",
@@ -70,6 +70,30 @@ describe("task edit drafts", () => {
       });
       expect(overlay(latest, next).assignee).toBe("oru");
     }
+  });
+
+  it("retains an oversized description and stages it only after correction", () => {
+    const value = "x".repeat(taskDescriptionLimit + 1);
+    const draft: Draft = {
+      ...init(task),
+      pending: { description: "Earlier edit", priority: "high" },
+      text: { description: { value, timer: null } },
+    };
+    const invalid = commitText(task, draft, "description", true);
+    expect(invalid.text.description?.value).toBe(value);
+    expect(invalid.pending).toEqual({ priority: "high" });
+    const corrected = value.slice(1);
+    const valid = commitText(
+      task,
+      {
+        ...invalid,
+        text: { description: { value: corrected, timer: "next" } },
+      },
+      "description",
+      false,
+    );
+    expect(valid.text.description).toBeUndefined();
+    expect(valid.pending.description).toBe(corrected);
   });
 
   it("trims committed titles and keeps a blank draft out of other writes", () => {

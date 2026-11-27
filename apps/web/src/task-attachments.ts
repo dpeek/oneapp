@@ -89,6 +89,12 @@ export const WatchEditor = Mount.defineStream("WatchTaskScreenshotInput", {
         };
         const paste = (event: Event) => {
           if (!(event instanceof ClipboardEvent)) return;
+          // A nested Add task dialog owns its clipboard events.
+          if (
+            event.target instanceof Element &&
+            event.target.closest("dialog") !== pasteScope.closest("dialog")
+          )
+            return;
           const files = Array.from(event.clipboardData?.files ?? []);
           if (!files.length) return;
           event.preventDefault();

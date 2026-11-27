@@ -45,6 +45,7 @@ import {
   TaskStatus,
   TaskUpdate,
   tasksApi,
+  taskDescriptionLimit,
   taskTagLimit,
 } from "./tasks-contract.ts";
 import {
@@ -59,6 +60,7 @@ const Draft = Schema.Struct({
   ...TaskFields.fields,
   id: ItemId,
   title: Schema.String,
+  description: Schema.String,
   assignee: TaskAssignee,
 });
 const Creation = Schema.Struct({
@@ -1380,8 +1382,11 @@ const transition = (
         const task = findTask(model, id);
         if (!task) return { model };
         const draft = model.edits[id] ?? Edits.init(task);
-        const timer =
-          field === "title" && !value.trim() ? null : crypto.randomUUID();
+        const valid =
+          field === "title"
+            ? !!value.trim()
+            : value.length <= taskDescriptionLimit;
+        const timer = valid ? crypto.randomUUID() : null;
         const pending = { ...draft.pending };
         delete pending[field];
         return {

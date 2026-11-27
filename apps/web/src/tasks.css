@@ -759,3 +759,227 @@
 .file-upload input:disabled {
   cursor: default;
 }
+
+.task-description {
+  display: grid;
+  min-inline-size: 0;
+  gap: 0.375rem;
+}
+
+.task-description [hidden] {
+  display: none;
+}
+
+.task-description-toolbar,
+.task-description-tools,
+.task-description-link {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.task-description-toolbar {
+  justify-content: space-between;
+}
+
+.task-description button {
+  min-inline-size: 2rem;
+  min-block-size: 1.875rem;
+  padding: 0.125rem 0.5rem;
+  border: 0;
+  border-radius: var(--control-radius);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.task-description button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.task-description button[aria-selected="true"],
+.task-description button[aria-pressed="true"] {
+  background: var(--selected);
+  color: var(--text);
+}
+
+.task-description button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.task-description button[data-format="bold"] {
+  font-weight: 700;
+}
+
+.task-description button[data-format="italic"] {
+  font-style: italic;
+}
+
+.task-description-panel {
+  min-inline-size: 0;
+  padding: 0.375rem;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+}
+
+.task-description-panel [role="listbox"] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.125rem;
+  margin-block-start: 0.25rem;
+}
+
+.task-description-panel input {
+  box-sizing: border-box;
+  min-inline-size: 0;
+  inline-size: 100%;
+}
+
+.task-description-link input {
+  flex: 1 1 12rem;
+}
+
+.task-description-body {
+  min-inline-size: 0;
+  min-block-size: 3.5rem;
+  padding-block: 0.25rem;
+  border-radius: var(--control-radius);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.task-description-body:focus-visible,
+.task-description button:focus-visible,
+.task-description li[role="checkbox"]:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.task-description-body > :first-child {
+  margin-block-start: 0;
+}
+
+.task-description-body > :last-child {
+  margin-block-end: 0;
+}
+
+.task-description-body:has(> p:only-child > br:only-child)::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.task-description-body :is(p, ul, ol, blockquote) {
+  margin-block: 0.5rem;
+}
+
+.task-description-body :is(ul, ol) {
+  padding-inline-start: 1.5rem;
+}
+
+.task-description-body li > :is(ul, ol) {
+  margin-block: 0;
+}
+
+.task-description-body blockquote {
+  margin-inline: 0;
+  padding-inline-start: 0.75rem;
+  border-inline-start: 3px solid var(--border);
+}
+
+.task-description-body a {
+  text-decoration: underline;
+}
+
+.task-description-code {
+  display: block;
+  padding: 0.5rem;
+  border-radius: var(--control-radius);
+  background: var(--hover);
+  white-space: pre-wrap;
+  tab-size: 4;
+}
+
+.task-description-bold {
+  font-weight: 700;
+}
+
+.task-description-italic {
+  font-style: italic;
+}
+
+.task-description-body :not(.task-description-code) > code {
+  padding-inline: 0.2em;
+  border-radius: 0.25em;
+  background: var(--hover);
+}
+
+.task-description-nested,
+.task-description-checked,
+.task-description-unchecked {
+  list-style: none;
+}
+
+.task-description-checked,
+.task-description-unchecked {
+  position: relative;
+}
+
+.task-description-checked::before,
+.task-description-unchecked::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: -1.15em;
+  inset-block-start: 0.15em;
+  box-sizing: border-box;
+  inline-size: 1.15em;
+  block-size: 1.15em;
+  border: 1px solid var(--muted);
+  border-radius: 0.25rem;
+  cursor: pointer;
+}
+
+.task-description-checked::before {
+  content: "✓" / "";
+  color: var(--text);
+  background: var(--selected);
+  text-align: center;
+  line-height: 1;
+}
+
+.task-description-source textarea {
+  min-block-size: 3.5rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.875rem;
+}
+
+.task-description-source::after {
+  font-family: ui-monospace, monospace;
+  font-size: 0.875rem;
+}
+
+.task-description-note,
+.task-description-error,
+.task-description-link [role="status"] {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.task-description-error,
+.task-description-link [role="status"] {
+  color: var(--alert-error);
+}
+
+@media (pointer: coarse) {
+  .task-description button {
+    min-inline-size: 44px;
+    min-block-size: 44px;
+  }
+}

@@ -81,9 +81,18 @@ export const commitText = (
   if (!input) return draft;
   const value = field === "title" ? input.value.trim() : input.value;
   const text = { ...draft.text };
-  if (field === "title" && !Schema.is(TaskTitle)(value)) {
-    // An invalid title is a local draft and must never enter a write.
-    return { ...draft, text: { ...text, title: { ...input, timer: null } } };
+  const valid =
+    field === "title"
+      ? Schema.is(TaskTitle)(value)
+      : Schema.is(TaskFields.fields.description)(value);
+  if (!valid) {
+    const pending = { ...draft.pending };
+    delete pending[field];
+    return {
+      ...draft,
+      pending,
+      text: { ...text, [field]: { ...input, timer: null } },
+    };
   }
   if (!blur && value !== input.value) text[field] = { ...input, timer: null };
   else delete text[field];

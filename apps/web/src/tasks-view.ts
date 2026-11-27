@@ -23,6 +23,7 @@ import { Effect, Option } from "effect";
 import { Mount, Submodel } from "foldkit";
 import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html";
 import * as Attachments from "./task-attachments.ts";
+import { taskDescriptionEditor } from "./task-description-editor-contract.ts";
 import { mailMessageLink, mailRouteFor } from "./inbox-contract.ts";
 import { tagNameKey, type Tag } from "./items-contract.ts";
 import { isTaskRunInterrupted, type TaskRun } from "./task-run-contract.ts";
@@ -621,6 +622,7 @@ export const createView = Submodel.defineView(
                       : model.request !== null ||
                         !model.index ||
                         !draft.title.trim() ||
+                        draft.description.length > taskDescriptionLimit ||
                         validatingScreenshots > 0,
                     children: [
                       saved
@@ -726,62 +728,49 @@ type CreationForm = {
   titleEdited: boolean;
 };
 
-const taskDocumentField = (
+const taskDocumentTitle = (
   model: Model,
-  task: Pick<Task, "id" | TextField>,
-  field: TextField,
+  task: Pick<Task, "id" | "title">,
   h: HtmlBuilder<Message>,
   creation?: CreationForm,
 ) => {
-  const title = field === "title";
-  const draft = creation ? undefined : model.edits[task.id]?.text[field];
-  const value = draft?.value ?? task[field];
+  const draft = creation ? undefined : model.edits[task.id]?.text.title;
+  const value = draft?.value ?? task.title;
   const invalid =
-    title && (creation?.titleEdited ?? draft !== undefined) && !value.trim();
+    (creation?.titleEdited ?? draft !== undefined) && !value.trim();
   const errorId = creation ? "task-create-title-error" : "task-title-error";
-  const commitTitle = Message.BlurredText({ id: task.id, field });
+  const commitTitle = Message.BlurredText({ id: task.id, field: "title" });
   const editor = h.span(
     [h.Class("task-document-input"), h.DataAttribute("value", value)],
     [
       h.textarea([
         h.Rows(1),
-        h.AriaLabel(title ? "Task title" : "Description (Markdown)"),
+        h.AriaLabel("Task title"),
         h.Value(value),
-        h.Maxlength(title ? taskTitleLimit : taskDescriptionLimit),
-        h.Placeholder(
-          title ? (creation ? "New task" : "Task title") : "Add a description…",
-        ),
+        h.Maxlength(taskTitleLimit),
+        h.Placeholder(creation ? "New task" : "Task title"),
         ...(creation
           ? [
               h.Readonly(creation.locked),
-              ...(title
-                ? [
-                    h.Id(creationTitleId),
-                    h.Required(true),
-                    ...creation.initialFocus,
-                  ]
-                : []),
+              h.Id(creationTitleId),
+              h.Required(true),
+              ...creation.initialFocus,
             ]
           : [h.OnBlur(commitTitle)]),
         ...(invalid ? [h.AriaInvalid(true), h.AriaDescribedBy(errorId)] : []),
         h.OnInput((value) =>
           Message.EditedText({
             id: task.id,
-            field,
-            value: title ? value.replace(/[\r\n]+/gu, " ") : value,
+            field: "title",
+            value: value.replace(/[\r\n]+/gu, " "),
           }),
         ),
-        ...(title
-          ? [
-              h.OnKeyDownPreventDefault((key) =>
-                key === "Enter" ? Option.some(commitTitle) : Option.none(),
-              ),
-            ]
-          : []),
+        h.OnKeyDownPreventDefault((key) =>
+          key === "Enter" ? Option.some(commitTitle) : Option.none(),
+        ),
       ]),
     ],
   );
-  if (!title) return editor;
   const titleStyle = [h.Class("task-document-title-text")];
   return h.div(
     [h.Class("task-document-title")],
@@ -799,6 +788,31 @@ const taskDocumentField = (
   );
 };
 
+const taskDocumentDescription = (
+  model: Model,
+  task: Pick<Task, "id" | "description">,
+  h: HtmlBuilder<Message>,
+  creation?: CreationForm,
+) => {
+  const draft = creation ? undefined : model.edits[task.id]?.text.description;
+  const editor = taskDescriptionEditor.withMessage(h);
+  return editor([
+    h.Key(task.id),
+    editor.Value(draft?.value ?? task.description),
+    editor.ReadOnly(creation?.locked ?? false),
+    editor.OnDescriptionEdited((value) =>
+      Message.EditedText({ id: task.id, field: "description", value }),
+    ),
+    ...(creation
+      ? []
+      : [
+          editor.OnDescriptionBlurred(() =>
+            Message.BlurredText({ id: task.id, field: "description" }),
+          ),
+        ]),
+  ]);
+};
+
 const taskDocument = (
   model: Model,
   task: Pick<Task, "id" | TextField | Property>,
@@ -810,7 +824,7 @@ const taskDocument = (
   h.div(
     [h.Class("task-document-header")],
     [
-      taskDocumentField(model, task, "title", h, creation),
+      taskDocumentTitle(model, task, h, creation),
       h.div(
         [h.Class("task-property-strip")],
         (["tagIds", "status", "priority", "assignee", "dueOn"] as const).map(
@@ -828,7 +842,7 @@ const taskDocument = (
       ),
     ],
   ),
-  taskDocumentField(model, task, "description", h, creation),
+  taskDocumentDescription(model, task, h, creation),
 ];
 
 const taskMailSources = (description: string, h: HtmlBuilder<Message>) => {

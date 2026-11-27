@@ -1,5 +1,6 @@
 import { Schema as AuthSchema } from "@yielded/auth";
 import { Schema } from "effect";
+import { CompanyAvatarStyle } from "./company-avatar-contract.ts";
 import { isCompanyDomain } from "./company-domains.ts";
 
 export const peopleApiPath = "/api/people";
@@ -70,6 +71,7 @@ export const PersonSummary = Schema.Struct({
   iconDomain: Schema.optionalKey(Schema.NullOr(Schema.String)),
   name: Schema.String,
   photo: Schema.NullOr(PersonId),
+  avatarStyle: Schema.optionalKey(CompanyAvatarStyle),
   self: Schema.Boolean,
 });
 export type PersonSummary = typeof PersonSummary.Type;
@@ -107,6 +109,7 @@ export const PersonDraft = Schema.Struct({
     ),
   ),
   revision: Schema.optionalKey(PersonId),
+  avatarStyle: Schema.optionalKey(CompanyAvatarStyle),
   photo: Schema.optionalKey(
     Schema.NullOr(
       Schema.String.check(

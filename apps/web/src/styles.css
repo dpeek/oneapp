@@ -924,14 +924,6 @@ orumai-vault-reader {
   cursor: pointer;
 }
 
-.company-photo-picker {
-  border-radius: var(--control-radius);
-}
-
-.company-photo-picker > [data-photo-preview] {
-  background: white;
-}
-
 .person-photo-picker:focus-within {
   outline: 2px solid var(--focus);
   outline-offset: 3px;
@@ -985,6 +977,51 @@ orumai-vault-reader {
   display: flex;
   align-items: center;
   gap: 0.375rem;
+}
+
+.company-avatar-editor {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.875rem;
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.company-avatar-preview {
+  flex: none;
+}
+
+.company-avatar-preview [data-slot="avatar-image"] {
+  background: white;
+}
+
+.company-avatar-fields,
+.company-avatar-upload:not([hidden]) {
+  display: grid;
+  gap: 0.75rem;
+  min-inline-size: 0;
+}
+
+.company-avatar-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.company-avatar-choices button {
+  padding: 0.1875rem;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: transparent;
+  cursor: pointer;
+}
+
+.company-avatar-choices button[aria-pressed="true"],
+.company-avatar-choices button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
 }
 
 .person-value-fields {

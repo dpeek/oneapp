@@ -14,6 +14,8 @@ import {
   PersonEmail,
 } from "./people-contract.ts";
 
+export const contactValuesChanged = "contact-values-changed";
+
 const readEmail = Schema.decodeUnknownOption(PersonEmail);
 const fields = {
   addresses: {
@@ -112,7 +114,7 @@ export const mountContactValues = async (
     help.id = `${prefix}-help`;
     help.className = "person-value-help";
     help.textContent =
-      "Mail matches senders at any of these domains and their subdomains. The primary domain supplies the default favicon.";
+      "Mail matches senders at any of these domains and their subdomains. The primary domain supplies the automatic avatar.";
     fieldset.setAttribute("aria-describedby", help.id);
     fieldset.append(help);
   }
@@ -251,12 +253,18 @@ export const mountContactValues = async (
       });
       revealError();
       refresh();
+      fieldset.dispatchEvent(
+        new Event(contactValuesChanged, { bubbles: true }),
+      );
     });
     remove.addEventListener("click", () => {
       const index = rows.indexOf(row);
       rows.splice(index, 1);
       element.remove();
       refresh();
+      fieldset.dispatchEvent(
+        new Event(contactValuesChanged, { bubbles: true }),
+      );
       (rows[index]?.control ?? rows.at(-1)?.control ?? add).focus();
     });
     return control;
@@ -269,6 +277,7 @@ export const mountContactValues = async (
   });
   for (const value of values.length ? values : [""]) insertRow(value);
   refresh();
+  fieldset.dispatchEvent(new Event(contactValuesChanged, { bubbles: true }));
   if (name === "addresses") {
     try {
       const response = await fetch(noiseSendersApiPath, {

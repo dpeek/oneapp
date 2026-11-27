@@ -62,12 +62,13 @@ const styles = stylex.create({
     visibility: { default: "hidden", ":where([data-loaded])": "inherit" },
   },
   photo: { objectFit: "cover", padding: 0 },
+  fitted: { objectFit: "contain", padding: 0, backgroundColor: "white" },
 });
 
 type AvatarAppearance = Readonly<{
   variant?: "round" | "square";
   size?: "sm" | "lg";
-  fit?: "cover";
+  fit?: "cover" | "contain";
 }>;
 
 type AvatarProps<Message> = AvatarAppearance &
@@ -87,8 +88,12 @@ const avatarClassName = ({ variant, size }: AvatarAppearance) =>
 
 const fallbackClassName = stylex.props(styles.layer).className ?? "";
 const imageClassName = (fit: AvatarAppearance["fit"]) =>
-  stylex.props(styles.layer, styles.image, fit === "cover" && styles.photo)
-    .className ?? "";
+  stylex.props(
+    styles.layer,
+    styles.image,
+    fit === "cover" && styles.photo,
+    fit === "contain" && styles.fitted,
+  ).className ?? "";
 
 export const avatar = <Message>(
   {

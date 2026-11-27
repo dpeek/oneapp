@@ -36,7 +36,7 @@ const maxHtmlBytes = 256 * 1024;
 const acceptImage =
   "image/png,image/x-icon,image/vnd.microsoft.icon,image/webp,image/jpeg,image/gif,image/avif";
 
-const siteFetcher = (blockedHosts: ReadonlySet<string>) => {
+export const siteFetcher = (blockedHosts: ReadonlySet<string>) => {
   const dns = new Map<string, Promise<boolean>>();
   const signal = AbortSignal.timeout(6_000);
   const timedOut = new Promise<false>((resolve) => {
@@ -95,7 +95,11 @@ const siteFetcher = (blockedHosts: ReadonlySet<string>) => {
   };
 };
 
-const readBody = async (response: Response, limit: number, prefix = false) => {
+export const readBody = async (
+  response: Response,
+  limit: number,
+  prefix = false,
+) => {
   const body = response.body;
   if (!body) return null;
   if (!prefix && Number(response.headers.get("content-length")) > limit) {
@@ -135,7 +139,7 @@ const riff = encoder.encode("RIFF");
 const webp = encoder.encode("WEBP");
 const avif = encoder.encode("ftypavif");
 const avis = encoder.encode("ftypavis");
-const rasterType = (bytes: Uint8Array) => {
+export const rasterType = (bytes: Uint8Array) => {
   if (matches(bytes, [137, 80, 78, 71, 13, 10, 26, 10])) return "image/png";
   if (matches(bytes, [0, 0, 1, 0]) && bytes.length > 6) return "image/x-icon";
   if (matches(bytes, [255, 216, 255])) return "image/jpeg";
@@ -145,7 +149,12 @@ const rasterType = (bytes: Uint8Array) => {
   return null;
 };
 
-const iconLinks = async (page: Response, url: URL, allowSvg: boolean) => {
+export const iconLinks = async (
+  page: Response,
+  url: URL,
+  allowSvg: boolean,
+  company = false,
+) => {
   const type = page.headers
     .get("content-type")
     ?.split(";")[0]
@@ -153,13 +162,14 @@ const iconLinks = async (page: Response, url: URL, allowSvg: boolean) => {
     .toLowerCase();
   if (type !== "text/html" && type !== "application/xhtml+xml") {
     await page.body?.cancel();
-    return [];
+    return { icons: [], manifest: null };
   }
   const bytes = await readBody(page, maxHtmlBytes, true);
-  if (!bytes) return [];
+  if (!bytes) return { icons: [], manifest: null };
 
   let base: URL | null = null;
-  const links: string[] = [];
+  const links: { href: string; sizes: string; svg: boolean }[] = [];
+  let manifest: string | undefined;
   await new HTMLRewriter()
     .on("head base[href]", {
       element(element) {
@@ -171,14 +181,16 @@ const iconLinks = async (page: Response, url: URL, allowSvg: boolean) => {
     })
     .on("link[rel][href]", {
       element(element) {
-        if (links.length >= 16) return;
         const rel =
           element.getAttribute("rel")?.toLowerCase().split(/\s+/u) ?? [];
         const href = element.getAttribute("href");
+        if (!href) return;
+        if (company && rel.includes("manifest")) manifest ??= href;
+        const svg =
+          element.getAttribute("type")?.toLowerCase() === "image/svg+xml";
         if (
-          href &&
-          (allowSvg ||
-            element.getAttribute("type")?.toLowerCase() !== "image/svg+xml") &&
+          links.length < (company ? 32 : 16) &&
+          (allowSvg || !svg) &&
           rel.some((part) =>
             [
               "icon",
@@ -187,7 +199,7 @@ const iconLinks = async (page: Response, url: URL, allowSvg: boolean) => {
             ].includes(part),
           )
         )
-          links.push(href);
+          links.push({ href, sizes: element.getAttribute("sizes") ?? "", svg });
       },
     })
     .transform(
@@ -195,10 +207,48 @@ const iconLinks = async (page: Response, url: URL, allowSvg: boolean) => {
     )
     .arrayBuffer();
 
-  return links.flatMap((href) => {
-    const target = URL.parse(decodeHTMLAttribute(href), base ?? url);
-    return target?.protocol === "https:" ? [target] : [];
-  });
+  const resolve = (href: string) =>
+    URL.parse(decodeHTMLAttribute(href), base ?? url);
+  return {
+    icons: links.flatMap(({ href, sizes, svg }) => {
+      const target = resolve(href);
+      return target?.protocol === "https:" ? [{ url: target, sizes, svg }] : [];
+    }),
+    manifest: manifest ? resolve(manifest) : null,
+  };
+};
+
+export const readWebsiteImage = async (
+  fetchSite: ReturnType<typeof siteFetcher>,
+  url: URL,
+  rasterizeSvg?: RasterizeSvg,
+  svgSize?: number,
+) => {
+  const result = await fetchSite(
+    url,
+    rasterizeSvg ? `${acceptImage},image/svg+xml` : acceptImage,
+  );
+  if (!result) return null;
+  const { response, target } = result;
+  const body = await readBody(response, maxIconBytes);
+  if (!body) return null;
+  const type = rasterType(body);
+  if (type) return { body, type, scalable: false };
+  const contentType = response.headers
+    .get("content-type")
+    ?.split(";", 1)[0]
+    ?.trim()
+    .toLowerCase();
+  if (
+    rasterizeSvg &&
+    (contentType === "image/svg+xml" ||
+      url.pathname.toLowerCase().endsWith(".svg") ||
+      target.pathname.toLowerCase().endsWith(".svg"))
+  ) {
+    const png = await rasterizeSvg(body, svgSize);
+    if (png) return { body: png, type: "image/png", scalable: true };
+  }
+  return null;
 };
 
 export const downloadWebsiteIcon = async (
@@ -208,33 +258,7 @@ export const downloadWebsiteIcon = async (
 ) => {
   const homepage = new URL(`https://${host}`);
   const fetchSite = siteFetcher(blockedHosts);
-  const readIcon = async (url: URL) => {
-    const result = await fetchSite(
-      url,
-      rasterizeSvg ? `${acceptImage},image/svg+xml` : acceptImage,
-    );
-    if (!result) return null;
-    const { response, target } = result;
-    const body = await readBody(response, maxIconBytes);
-    if (!body) return null;
-    const type = rasterType(body);
-    if (type) return { body, type };
-    const contentType = response.headers
-      .get("content-type")
-      ?.split(";", 1)[0]
-      ?.trim()
-      .toLowerCase();
-    if (
-      rasterizeSvg &&
-      (contentType === "image/svg+xml" ||
-        url.pathname.toLowerCase().endsWith(".svg") ||
-        target.pathname.toLowerCase().endsWith(".svg"))
-    ) {
-      const png = await rasterizeSvg(body);
-      if (png) return { body: png, type: "image/png" };
-    }
-    return null;
-  };
+  const readIcon = (url: URL) => readWebsiteImage(fetchSite, url, rasterizeSvg);
 
   const favicon = new URL("/favicon.ico", homepage);
   const conventionalIcon = await readIcon(favicon);
@@ -242,11 +266,11 @@ export const downloadWebsiteIcon = async (
 
   const page = await fetchSite(homepage, "text/html,application/xhtml+xml");
   const declared = page
-    ? await iconLinks(page.response, page.target, Boolean(rasterizeSvg))
+    ? (await iconLinks(page.response, page.target, Boolean(rasterizeSvg))).icons
     : [];
   const location = page?.target ?? homepage;
   const candidates = [
-    ...declared.slice(0, 3),
+    ...declared.slice(0, 3).map(({ url }) => url),
     new URL("/favicon.ico", location),
     new URL("/apple-touch-icon.png", location),
   ];

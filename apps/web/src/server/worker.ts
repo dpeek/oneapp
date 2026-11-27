@@ -42,6 +42,7 @@ import { cloudflareEmail, disabledEmail } from "./account-email.ts";
 import { accountRoutes } from "./account.ts";
 import { AppAuth, authHttp, ownerId, sessionCookieName } from "./auth.ts";
 import { bitwardenDeviceRoutes } from "./bitwarden/devices.ts";
+import type { RenderCompanyAvatar } from "./bitwarden/company-avatar-image.ts";
 import { bitwardenIcon } from "./bitwarden/icons.ts";
 import { bitwardenFetch, isBitwardenPath } from "./bitwarden/routes.ts";
 import type { RasterizeSvg } from "./bitwarden/website-icon-svg.ts";
@@ -225,6 +226,7 @@ export default {
     },
     context?: { waitUntil(promise: Promise<unknown>): void },
     rasterizeSvg?: RasterizeSvg,
+    renderCompanyAvatar?: RenderCompanyAvatar,
   ): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -245,7 +247,14 @@ export default {
       );
     };
     if (path.startsWith("/icons/"))
-      return bitwardenIcon(request, url, env, defer, rasterizeSvg);
+      return bitwardenIcon(
+        request,
+        url,
+        env,
+        defer,
+        rasterizeSvg,
+        renderCompanyAvatar,
+      );
     if (
       (path === forgotPasswordPage || path === resetPasswordPage) &&
       env.ASSETS

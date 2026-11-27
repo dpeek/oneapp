@@ -3,16 +3,19 @@ import type {
   Request as CloudflareRequest,
   WebSocket as CloudflareWebSocket,
 } from "@cloudflare/workers-types";
+import photonModule from "@cf-wasm/photon/photon.wasm";
 import resvgModule from "@resvg/resvg-wasm/index_bg.wasm";
 import { DurableObject } from "cloudflare:workers";
 import { inboxChanged } from "../inbox-contract.ts";
 import type { WorkspaceChange } from "../workspace-change-contract.ts";
 
+import { createCompanyAvatarRenderer } from "./bitwarden/company-avatar-image.ts";
 import { createSvgRasterizer } from "./bitwarden/website-icon-svg.ts";
 import worker from "./worker.ts";
 import { publishWorkspaceChange, socketSession } from "./workspace-events.ts";
 
 const rasterizeSvg = createSvgRasterizer(resvgModule);
+const renderCompanyAvatar = createCompanyAvatarRenderer(photonModule);
 
 export default {
   ...worker,
@@ -22,6 +25,7 @@ export default {
       env,
       context,
       rasterizeSvg,
+      renderCompanyAvatar,
     )) satisfies typeof worker.fetch,
 };
 

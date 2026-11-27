@@ -15,6 +15,12 @@ import { focus } from "foldkit/dom";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import * as Mount from "foldkit/mount";
+import type { CompanyAvatarStyle } from "./company-avatar-contract.ts";
+import {
+  isProfilePhoto,
+  mountCompanyAvatar,
+  photoTypes,
+} from "./company-avatar-editor.ts";
 import { mountContactValues } from "./contact-values.ts";
 import {
   peopleApiPath,
@@ -392,29 +398,28 @@ const FocusDirectoryEdit = Command.define("FocusPeopleDirectoryEdit", {
     ).pipe(Effect.ignore, Effect.as(Message.Mounted())),
 });
 
-const photoTypes = ["image/jpeg", "image/png", "image/webp"];
-const isProfilePhoto = (file: File) =>
-  file.size <= 10 * 1024 * 1024 && photoTypes.includes(file.type);
-
-const photoFor = async (file: File) => {
+const photoFor = async (file: File, preserveAspect: boolean) => {
   if (!isProfilePhoto(file))
     throw new Error("Choose a JPEG, PNG, or WebP photo up to 10 MB.");
   const source = await createImageBitmap(file);
   try {
     const canvas = document.createElement("canvas");
-    canvas.width = profilePhotoSize;
-    canvas.height = profilePhotoSize;
+    const side = Math.min(source.width, source.height);
+    const width = preserveAspect ? source.width : side;
+    const height = preserveAspect ? source.height : side;
+    const scale = profilePhotoSize / Math.max(width, height);
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
     const context = canvas.getContext("2d");
     if (!context) throw new Error("Could not process the photo.");
-    const side = Math.min(source.width, source.height);
     context.fillStyle = "#fff";
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.drawImage(
       source,
-      (source.width - side) / 2,
-      (source.height - side) / 2,
-      side,
-      side,
+      (source.width - width) / 2,
+      (source.height - height) / 2,
+      width,
+      height,
       0,
       0,
       canvas.width,
@@ -441,15 +446,37 @@ const Save = Command.define("SavePersonProfile", {
         if (!(form instanceof HTMLFormElement))
           return fail("Reopen the profile and try again.");
         const fields = new FormData(form);
-        const file = fields.get("photo");
         const kind = fields.get("kind") === "company" ? "company" : "person";
+        const mode =
+          kind === "company" ? fields.get("companyAvatarSource") : null;
+        const file = fields.get(mode === "upload" ? "companyPhoto" : "photo");
         const noiseChanges = fields.get("noiseChanges");
-        let photo: string | null | undefined = fields.has("removePhoto")
-          ? null
-          : undefined;
-        if (file instanceof File && file.size) {
+        let photo: string | null | undefined;
+        let avatarStyle: CompanyAvatarStyle | undefined;
+        if (mode === "automatic" || fields.has("removePhoto")) photo = null;
+        if (mode === "website") {
+          const selected = fields.get("websitePhoto");
+          if (typeof selected === "string" && selected) photo = selected;
+          else if (!person?.photo || person.avatarStyle !== "website")
+            return fail("Choose a website image.");
+          avatarStyle = "website";
+        }
+        if (mode === "upload") {
+          if (
+            !(file instanceof File && file.size) &&
+            (!person?.photo || person.avatarStyle === "website")
+          )
+            return fail("Choose an image to upload.");
+          avatarStyle =
+            fields.get("companyAvatarFit") === "fit" ? "fit" : "fill";
+        }
+        if (
+          (mode === "upload" || kind === "person") &&
+          file instanceof File &&
+          file.size
+        ) {
           try {
-            photo = await photoFor(file);
+            photo = await photoFor(file, kind === "company");
           } catch {
             return fail(
               "Choose a readable JPEG, PNG, or WebP photo up to 10 MB.",
@@ -475,6 +502,7 @@ const Save = Command.define("SavePersonProfile", {
             : {}),
           ...(person ? { revision: person.revision } : {}),
           ...(photo === undefined ? {} : { photo }),
+          ...(avatarStyle ? { avatarStyle } : {}),
         });
         if (decoded._tag === "None")
           return fail(
@@ -1088,6 +1116,20 @@ export const update = (
   );
 };
 
+const CompanyAvatarEditor = Mount.define("CompanyAvatarEditor", {
+  args: { person: Schema.NullOr(Person), fallback: Schema.String },
+  messages: [Message.Mounted],
+  execute: ({ element, person, fallback }) =>
+    Effect.acquireRelease(
+      Effect.sync(() =>
+        element instanceof HTMLFieldSetElement
+          ? mountCompanyAvatar(element, person, fallback)
+          : undefined,
+      ),
+      (cleanup) => Effect.sync(() => cleanup?.()),
+    ).pipe(Effect.as(Message.Mounted())),
+});
+
 const PrepareForm = Mount.define("PrefillPersonProfileForm", {
   args: { name: Schema.String },
   messages: [Message.Mounted],
@@ -1180,43 +1222,42 @@ export const profileAvatar = <Parent>(
     imageMounted: Parent;
     kind?: typeof ContactKind.Type;
   },
-) =>
-  uiAvatar(
+) => {
+  const { src, fit } = contactImage(person);
+  return uiAvatar(
     {
       fallback: profileInitials(options.name ?? person?.name ?? "", address),
-      src: contactImage(person).src,
+      src,
       variant:
         (options.kind ?? person?.kind) === "company" ? "square" : "round",
       imageMounted: options.imageMounted,
       size: options.size,
-      fit: "cover",
+      fit: options.kind === "person" ? "cover" : fit,
     },
     h,
   );
+};
 
 export const profileHeader = (
   h: HtmlBuilder<Message>,
   name: string,
-  media: Html,
+  media: Html | null,
   actions: Html,
   subtitle?: string,
 ) =>
   h.header(
     [h.Class("people-detail-header")],
     [
-      h.div(
-        [h.Class("people-profile-identity")],
-        [
-          media,
-          h.div(
-            [],
-            [
-              h.h2([], [name]),
-              ...(subtitle ? [h.p([h.Class("people-self")], [subtitle])] : []),
-            ],
-          ),
-        ],
-      ),
+      h.div(media ? [h.Class("people-profile-identity")] : [], [
+        ...(media ? [media] : []),
+        h.div(
+          [],
+          [
+            h.h2([], [name]),
+            ...(subtitle ? [h.p([h.Class("people-self")], [subtitle])] : []),
+          ],
+        ),
+      ]),
       actions,
     ],
   );
@@ -1227,15 +1268,11 @@ const photoPicker = (
   name: string,
   address: string,
   pending: boolean,
-  kind: typeof ContactKind.Type,
 ) => {
-  const imageLabel = kind === "company" ? "company logo" : "profile photo";
-  const label = `${person?.photo ? "Change" : "Upload"} ${imageLabel}`;
+  const label = `${person?.photo ? "Change" : "Upload"} profile photo`;
   return h.label(
     [
-      h.Class(
-        `person-photo-picker${kind === "company" ? " company-photo-picker" : ""}`,
-      ),
+      h.Class("person-photo-picker"),
       h.Title(label),
       h.Inert(pending),
       h.OnMount(PreviewPhoto()),
@@ -1243,7 +1280,7 @@ const photoPicker = (
     [
       profileAvatar(h, person, address, {
         name,
-        kind,
+        kind: "person",
         size: "lg",
         imageMounted: Message.Mounted(),
       }),
@@ -1298,14 +1335,12 @@ const profileForm = (
   const domains = person?.domains ?? options.domains ?? [];
   const emails = person?.addresses ?? (address ? [address] : []);
   const name = person?.name || options.suggestedName || "";
-  const photo = photoPicker(
-    h,
-    person,
-    name,
-    address ?? emails[0] ?? person?.managedAddresses[0] ?? "",
-    pending,
-    kind,
-  );
+  const profileAddress =
+    address ?? emails[0] ?? person?.managedAddresses[0] ?? "";
+  const photo =
+    kind === "person"
+      ? photoPicker(h, person, name, profileAddress, pending)
+      : null;
   const actions = [
     button(
       {
@@ -1337,9 +1372,11 @@ const profileForm = (
       h.OnMount(PrepareForm({ name })),
     ],
     [
-      options.heading
-        ? profileHeader(h, options.heading, photo, buttonGroup(actions, h))
-        : photo,
+      ...(options.heading
+        ? [profileHeader(h, options.heading, photo, buttonGroup(actions, h))]
+        : photo
+          ? [photo]
+          : []),
       nativeSelect(
         {
           label: "Contact type",
@@ -1391,19 +1428,34 @@ const profileForm = (
         ],
         [],
       ),
-      ...(person?.photo
+      ...(kind === "company"
         ? [
-            h.label(
-              [h.Class("person-photo-remove"), h.Inert(pending)],
+            h.fieldset(
               [
-                h.input([h.Type("checkbox"), h.Name("removePhoto")]),
-                kind === "company"
-                  ? "Remove logo and use favicon"
-                  : "Remove photo",
+                h.Key("company-avatar"),
+                h.Class("company-avatar-editor"),
+                h.Inert(pending),
+                h.OnMount(
+                  CompanyAvatarEditor({
+                    person,
+                    fallback: profileInitials(name, profileAddress),
+                  }),
+                ),
               ],
+              [],
             ),
           ]
-        : []),
+        : person?.photo
+          ? [
+              h.label(
+                [h.Class("person-photo-remove"), h.Inert(pending)],
+                [
+                  h.input([h.Type("checkbox"), h.Name("removePhoto")]),
+                  "Remove photo",
+                ],
+              ),
+            ]
+          : []),
       ...(options.heading ? [] : [Dialog.footer(actions, h)]),
     ],
   );

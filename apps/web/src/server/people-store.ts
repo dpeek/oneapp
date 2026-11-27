@@ -1,5 +1,6 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { Schema } from "effect";
+import type { CompanyAvatarStyle } from "../company-avatar-contract.ts";
 import { isCompanyDomain, normalizeCompanyDomain } from "../company-domains.ts";
 import {
   normalizePersonEmail,
@@ -8,7 +9,7 @@ import {
   type Person,
   type PersonMatch,
 } from "../people-contract.ts";
-import { senderIconDomain } from "./mail-sender.ts";
+import { senderIconDomain } from "../mail-domain.ts";
 import { ownerId } from "./auth.ts";
 
 type PeopleDb = D1Database;
@@ -21,9 +22,10 @@ type PersonRow = {
   domains: string;
   iconEmail: string | null;
   photo: string | null;
+  avatarStyle: CompanyAvatarStyle | null;
   revision: string;
 };
-const fields = `p.id, p.account_id AS accountId, p.name, p.photo, p.revision, p.kind,
+const fields = `p.id, p.account_id AS accountId, p.name, p.photo, p.avatar_style AS avatarStyle, p.revision, p.kind,
   (SELECT json_group_array(domain ORDER BY position) FROM company_domains WHERE company_id = p.id) AS domains,
   (SELECT email FROM person_addresses WHERE person_id = p.id ORDER BY email LIMIT 1) AS iconEmail`;
 const fieldsWithAddresses = `${fields},
@@ -84,6 +86,7 @@ const summary = (row: PersonRow) => ({
   ...(row.kind === "company"
     ? {
         kind: row.kind,
+        ...(row.avatarStyle ? { avatarStyle: row.avatarStyle } : {}),
         domains: JSON.parse(row.domains) as string[],
         iconDomain:
           (JSON.parse(row.domains) as string[])[0] ??
@@ -282,6 +285,7 @@ export const writeProfile = async (
   kind: "person" | "company" = "person",
   domains: string[] = [],
   noise?: { mailboxId: string; on: string[]; off: string[] },
+  avatarStyle: CompanyAvatarStyle | null = null,
 ) => {
   const revision = crypto.randomUUID();
   const matchesRevision =
@@ -290,14 +294,14 @@ export const writeProfile = async (
     currentRevision
       ? db
           .prepare(
-            "UPDATE people SET name = ?, photo = ?, revision = ?, kind = ? WHERE id = ? AND revision = ? RETURNING id",
+            "UPDATE people SET name = ?, photo = ?, revision = ?, kind = ?, avatar_style = ? WHERE id = ? AND revision = ? RETURNING id",
           )
-          .bind(name, photo, revision, kind, id, currentRevision)
+          .bind(name, photo, revision, kind, avatarStyle, id, currentRevision)
       : db
           .prepare(
-            "INSERT INTO people (id, name, photo, revision, kind) VALUES (?, ?, ?, ?, ?) RETURNING id",
+            "INSERT INTO people (id, name, photo, revision, kind, avatar_style) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
           )
-          .bind(id, name, photo, revision, kind),
+          .bind(id, name, photo, revision, kind, avatarStyle),
     db
       .prepare(
         `DELETE FROM person_addresses WHERE person_id = ?1 AND ${matchesRevision}`,
@@ -353,8 +357,8 @@ export const deleteContact = async (
     db
       .prepare(
         `INSERT INTO contact_deletions
-           (id, receipt, revision, name, kind, photo, addresses, domains, expires_at)
-         SELECT p.id, ?3, p.revision, p.name, p.kind, p.photo,
+           (id, receipt, revision, name, kind, photo, avatar_style, addresses, domains, expires_at)
+         SELECT p.id, ?3, p.revision, p.name, p.kind, p.photo, p.avatar_style,
            (SELECT json_group_array(email ORDER BY email) FROM person_addresses WHERE person_id = p.id),
            (SELECT json_group_array(domain ORDER BY position) FROM company_domains WHERE company_id = p.id),
            ?4
@@ -395,8 +399,8 @@ export const restoreContact = async (
   const [result] = await db.batch<{ id: string }>([
     db
       .prepare(
-        `INSERT INTO people (id, name, kind, photo, revision)
-         SELECT id, name, kind, photo, ?2 FROM contact_deletions
+        `INSERT INTO people (id, name, kind, photo, avatar_style, revision)
+         SELECT id, name, kind, photo, avatar_style, ?2 FROM contact_deletions
          WHERE receipt = ?1 AND expires_at > ?3 RETURNING id`,
       )
       .bind(receipt, revision, now),

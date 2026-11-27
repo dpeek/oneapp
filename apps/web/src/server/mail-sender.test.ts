@@ -1,9 +1,6 @@
+import { senderIconDomain } from "../mail-domain.ts";
 import { expect, it } from "@effect/vitest";
-import {
-  inferSenderAppearance,
-  senderIconDomain,
-  type SenderHeader,
-} from "./mail-sender.ts";
+import { inferSenderAppearance, type SenderHeader } from "./mail-sender.ts";
 import { mailPeople } from "./mail-people.ts";
 
 const infer = (

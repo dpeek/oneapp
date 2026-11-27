@@ -1,7 +1,15 @@
+import { PhotonImage } from "@cf-wasm/photon/others";
 import { afterEach, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 import type { WorkerEnv } from "../../../../../alchemy.run.ts";
 import worker from "../worker.ts";
+import {
+  companyAvatarSize,
+  companyAvatarPath,
+  companyWebsiteImagesPath,
+  type CompanyWebsiteImages,
+} from "../../company-avatar-contract.ts";
+import { createCompanyAvatarRenderer } from "./company-avatar-image.ts";
 import { createSvgRasterizer } from "./website-icon-svg.ts";
 
 const dns = vi.hoisted(() => ({
@@ -23,6 +31,10 @@ const rasterizeSvg = createSvgRasterizer(
   await WebAssembly.compile(await Bun.file(wasmFile).arrayBuffer()),
 );
 
+const photonFile = new URL(import.meta.resolve("@cf-wasm/photon/photon.wasm"));
+const renderCompanyAvatar = createCompanyAvatarRenderer(
+  await WebAssembly.compile(await Bun.file(photonFile).arrayBuffer()),
+);
 const setup = (success = true) => {
   const cache = new Map<string, Response>();
   const fetch = vi.fn<typeof globalThis.fetch>();
@@ -49,6 +61,7 @@ const setup = (success = true) => {
       env,
       undefined,
       rasterizeSvg,
+      renderCompanyAvatar,
     );
   return { request, fetch, limit };
 };
@@ -267,4 +280,137 @@ it("rate limits cache misses before contacting DNS or websites", async () => {
   expect((await request()).status).toBe(429);
   expect(dns.resolve4).not.toHaveBeenCalled();
   expect(fetch).not.toHaveBeenCalled();
+});
+
+const fixtureIcon = async (size: number, markup: string) =>
+  (await rasterizeSvg(
+    new TextEncoder().encode(
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">${markup}</svg>`,
+    ),
+    size,
+  ))!;
+
+it("ranks decoded company artwork from HTML and manifests and keeps the generic favicon first", async () => {
+  const { request, fetch, limit } = setup();
+  const square = '<rect width="100" height="100" fill="navy"/>';
+  const conventional = await fixtureIcon(16, square);
+  const ico = new Uint8Array(22 + conventional.length);
+  const header = new DataView(ico.buffer);
+  header.setUint16(2, 1, true);
+  header.setUint16(4, 1, true);
+  header.setUint8(6, 16);
+  header.setUint8(7, 16);
+  header.setUint16(10, 1, true);
+  header.setUint16(12, 32, true);
+  header.setUint32(14, conventional.length, true);
+  header.setUint32(18, 22, true);
+  ico.set(conventional, 22);
+  const assets = new Map([
+    ["/favicon.ico", ico],
+    ["/touch.png", await fixtureIcon(180, square.replace("navy", "green"))],
+    ["/fake.png", await fixtureIcon(24, square.replace("navy", "orange"))],
+    [
+      "/manifest/large.png",
+      await fixtureIcon(512, square.replace("navy", "purple")),
+    ],
+    [
+      "/circle.png",
+      await fixtureIcon(256, '<circle cx="50" cy="50" r="48" fill="red"/>'),
+    ],
+  ]);
+  fetch.mockImplementation(async (input) => {
+    const { pathname } = new URL(String(input));
+    if (pathname === "/")
+      return new Response(
+        '<link rel="icon" sizes="1024x1024" href="/fake.png">' +
+          '<link rel="apple-touch-icon" sizes="180x180" href="/touch.png">' +
+          '<link rel="icon" sizes="256x256" href="/circle.png">' +
+          '<link rel="manifest" href="/manifest/app.webmanifest">',
+        { headers: { "content-type": "text/html" } },
+      );
+    if (pathname === "/manifest/app.webmanifest")
+      return Response.json({
+        icons: [
+          { src: "large.png", sizes: "512x512", purpose: "maskable any" },
+          { src: "https://127.0.0.1/private.png", sizes: "1024x1024" },
+        ],
+      });
+    const body = assets.get(pathname);
+    return body ? new Response(body) : new Response(null, { status: 404 });
+  });
+
+  const host = "example.com";
+  const options = (await (
+    await request(companyWebsiteImagesPath(host))
+  ).json()) as CompanyWebsiteImages;
+  expect(options.map(({ width }) => width)).toEqual([512, 256, 180, 24, 16]);
+  const automatic = await request(companyAvatarPath(host));
+  expect(automatic.headers.get("content-type")).toBe("image/jpeg");
+  expect(new Uint8Array(await automatic.arrayBuffer()).toBase64()).toBe(
+    options[0]!.photo,
+  );
+  expect(limit).toHaveBeenCalledOnce();
+  expect(dns.resolve4.mock.calls).toEqual([[host]]);
+  const generic = await request();
+  expect(generic.headers.get("content-type")).toBe("image/x-icon");
+  expect(new Uint8Array(await generic.arrayBuffer())).toEqual(ico);
+});
+
+it("keeps a transparent circular mark whole on a solid, high-density tile", async () => {
+  const png = await fixtureIcon(
+    512,
+    '<circle cx="50" cy="50" r="35" fill="#e20000"/>',
+  );
+  const result = renderCompanyAvatar(png, "image/png");
+  expect(result).toMatchObject({ width: 512, height: 512, shape: 1 });
+  using tile = PhotonImage.new_from_byteslice(
+    Uint8Array.fromBase64(result!.photo),
+  );
+  const size = companyAvatarSize;
+  expect([tile.get_width(), tile.get_height()]).toEqual([size, size]);
+  const pixels = tile.get_raw_pixels();
+  const pixel = (x: number, y: number) =>
+    Array.from(pixels.subarray((y * size + x) * 4, (y * size + x) * 4 + 4));
+  for (const [x, y] of [
+    [0, 0],
+    [size / 2, 0],
+    [0, size / 2],
+    [size - 1, size - 1],
+  ] as const)
+    expect(pixel(x, y)).toEqual([255, 255, 255, 255]);
+  for (const [x, y] of [
+    [size / 2, size / 2],
+    [size / 2, 32],
+    [32, size / 2],
+  ] as const) {
+    expect(pixel(x, y)[0]).toBeGreaterThan(200);
+    expect(pixel(x, y)[1]).toBeLessThan(20);
+  }
+});
+
+it("prefers a scalable declared icon over similarly shaped raster artwork", async () => {
+  const { request, fetch } = setup();
+  const large = await fixtureIcon(
+    512,
+    '<rect width="100" height="100" fill="navy"/>',
+  );
+  fetch
+    .mockResolvedValueOnce(
+      new Response(
+        '<link rel="icon" sizes="512x512" href="/logo.png"><link rel="icon" sizes="any" href="/logo.svg">',
+        { headers: { "content-type": "text/html" } },
+      ),
+    )
+    .mockResolvedValueOnce(
+      new Response(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" fill="green"/></svg>',
+        { headers: { "content-type": "image/svg+xml" } },
+      ),
+    )
+    .mockResolvedValueOnce(new Response(large));
+  const response = await request(companyWebsiteImagesPath("example.com"));
+  expect(await response.json()).toMatchObject([
+    { scalable: true, width: companyAvatarSize, height: companyAvatarSize },
+    { scalable: false, width: 512, height: 512 },
+  ]);
 });

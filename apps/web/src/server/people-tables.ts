@@ -11,6 +11,7 @@ export const people = sqliteTable("people", {
     .notNull()
     .default("person"),
   photo: text(),
+  avatarStyle: text("avatar_style", { enum: ["website", "fit", "fill"] }),
   revision: text().notNull(),
 });
 
@@ -46,6 +47,7 @@ export const contactDeletions = sqliteTable(
     name: text().notNull(),
     kind: text({ enum: ["person", "company"] }).notNull(),
     photo: text(),
+    avatarStyle: text("avatar_style", { enum: ["website", "fit", "fill"] }),
     addresses: text().notNull(),
     domains: text().notNull(),
     expiresAt: integer("expires_at").notNull(),

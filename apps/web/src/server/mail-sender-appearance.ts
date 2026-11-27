@@ -5,7 +5,7 @@ import type {
   SenderAppearanceUpdate,
 } from "../inbox-contract.ts";
 import { normalizePersonEmail } from "../people-contract.ts";
-import { senderIconDomain } from "./mail-sender.ts";
+import { senderIconDomain } from "../mail-domain.ts";
 
 type Kind = "person" | "service";
 export const senderAppearanceRules = async (

@@ -2,11 +2,11 @@ import { initWasm, Resvg } from "@resvg/resvg-wasm";
 
 export type RasterizeSvg = (
   bytes: Uint8Array,
+  size?: number,
 ) => Promise<Uint8Array<ArrayBuffer> | null>;
 
 const maxSvgBytes = 128 * 1024;
 const maxSourceDimension = 16_384;
-const iconSize = 64;
 const decoder = new TextDecoder("utf-8", { fatal: true });
 // Keep the renderer in vector-only mode, including for SVGs with embedded bitmaps.
 const unsupportedMarkup =
@@ -17,7 +17,7 @@ export const createSvgRasterizer = (
 ): RasterizeSvg => {
   let ready: Promise<void> | undefined;
 
-  return async (bytes) => {
+  return async (bytes, iconSize = 64) => {
     if (bytes.byteLength > maxSvgBytes) return null;
     try {
       const svg = decoder.decode(bytes);

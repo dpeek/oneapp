@@ -2,7 +2,7 @@ import { expect, it } from "@effect/vitest";
 import { companyForHostname, isCompanyDomain } from "./company-domains.ts";
 import { contactImage } from "./contact-image.ts";
 import { personPhotoPath, type PersonSummary } from "./people-contract.ts";
-import { websiteIconPath } from "./website-icon-host.ts";
+import { companyAvatarPath } from "./company-avatar-contract.ts";
 
 it("accepts company hosts but rejects URLs, public suffixes, and private network names", () => {
   for (const domain of ["ACME.COM.", "accounts.acme.co.uk", "acme.github.io"])
@@ -46,7 +46,7 @@ it("matches only explicit company domains, with DNS boundaries and the most spec
     expect(companyForHostname(companies, host)).toBeUndefined();
 });
 
-it("shares company favicon defaults and logo overrides while preserving person portraits", () => {
+it("shares automatic company avatars and logo overrides while preserving person portraits", () => {
   const company: PersonSummary = {
     id: "00000000-0000-0000-0000-000000000001",
     name: "Acme",
@@ -58,17 +58,31 @@ it("shares company favicon defaults and logo overrides while preserving person p
   };
   expect(contactImage(company)).toEqual({
     company: true,
-    src: websiteIconPath("acme.com"),
+    fit: "cover",
+    src: companyAvatarPath("acme.com"),
   });
   expect(contactImage({ ...company, domains: [] }).src).toBe(
-    websiteIconPath("fallback.com"),
+    companyAvatarPath("fallback.com"),
   );
   const photo = "00000000-0000-0000-0000-000000000002";
   expect(contactImage({ ...company, photo }).src).toBe(
     personPhotoPath(company.id, photo),
   );
+  expect(
+    contactImage({
+      ...company,
+      photo,
+      avatarStyle: "fit",
+      domains: ["other.com"],
+    }),
+  ).toEqual({
+    company: true,
+    fit: "contain",
+    src: personPhotoPath(company.id, photo),
+  });
   expect(contactImage({ ...company, kind: "person" })).toEqual({
     company: false,
+    fit: "cover",
     src: null,
   });
   expect(contactImage({ ...company, kind: "person", photo }).src).toBe(

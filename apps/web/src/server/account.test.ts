@@ -863,6 +863,7 @@ it("deletes contacts immediately and restores their details with Undo", async ()
       kind: "company",
       domains,
       addresses: [address],
+      avatarStyle: "website",
       photo: new Uint8Array([0xff, 0xd8, 0xff, 0xff, 0xd9]).toBase64(),
     },
     session,
@@ -8698,6 +8699,9 @@ it("persists sender avatar overrides separately from Signal/Noise and restores a
   const { mailPeople } = await import("./mail-people.ts");
   const { senderAppearanceApiPath } = await import("../inbox-contract.ts");
   const { call, request, db, signIn, cookies } = await setup(sqlite, {
+    PROFILE_PHOTOS: {
+      put: async () => undefined,
+    } as unknown as WorkerEnv["PROFILE_PHOTOS"],
     INBOX_MESSAGES: {
       list: async () => ({ objects: [], truncated: false }),
       get: async () => null,
@@ -8783,6 +8787,41 @@ it("persists sender avatar overrides separately from Signal/Noise and restores a
     domain: "acme.co.uk",
   });
   expect(sqlite.query("SELECT * FROM mail_sender_avatars").all()).toEqual([]);
+
+  const companyResponse = await call(
+    peopleApiPath,
+    {
+      kind: "company",
+      name: "Acme",
+      domains: ["acme.co.uk"],
+      addresses: [],
+      avatarStyle: "fit",
+      photo: new Uint8Array([0xff, 0xd8, 0xff, 0xff, 0xd9]).toBase64(),
+    },
+    session,
+  );
+  expect(companyResponse.status).toBe(201);
+  const company: Person = await companyResponse.json();
+  const matched = await (
+    await call(conversationsApiPath, undefined, session)
+  ).json();
+  expect(matched).toMatchObject({
+    messages: [
+      {
+        profiles: [
+          {
+            email: address,
+            person: {
+              id: company.id,
+              kind: "company",
+              photo: company.photo,
+              avatarStyle: "fit",
+            },
+          },
+        ],
+      },
+    ],
+  });
 });
 
 it("uses mailbox aliases for Reply All and never reads another mailbox's originals", async () => {

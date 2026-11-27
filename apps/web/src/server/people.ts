@@ -30,7 +30,7 @@ import {
   writeProfile,
 } from "./people-store.ts";
 
-import { senderIconDomain } from "./mail-sender.ts";
+import { senderIconDomain } from "../mail-domain.ts";
 import { normalizeCompanyDomain } from "../company-domains.ts";
 import { notifyInbox } from "./mail-delivery.ts";
 import {
@@ -198,6 +198,12 @@ const savePerson = async (
   if (input.photo && !bytes) return { status: "photo" } as const;
   const uploaded = bytes ? crypto.randomUUID() : null;
   const photo = input.photo === undefined ? (current?.photo ?? null) : uploaded;
+  const avatarStyle =
+    kind === "company" && photo
+      ? (input.avatarStyle ??
+        (input.photo === undefined ? current?.avatarStyle : undefined) ??
+        null)
+      : null;
   try {
     if (bytes && uploaded)
       await env.PROFILE_PHOTOS.put(uploaded, bytes, {
@@ -223,6 +229,7 @@ const savePerson = async (
               .map(({ address }) => address),
           }
         : undefined,
+      avatarStyle,
     );
     if (!revision) {
       if (uploaded) defer(removePhotoIfUnused(env, owner, uploaded));
@@ -240,6 +247,7 @@ const savePerson = async (
           ? {
               kind,
               domains,
+              ...(avatarStyle ? { avatarStyle } : {}),
               iconDomain:
                 domains[0] ??
                 (addresses[0]

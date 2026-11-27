@@ -18,6 +18,7 @@ import {
   taskAttachmentLimitMiB,
   taskAttachmentsApi,
 } from "../task-attachment-contract.ts";
+import { latestTaskDeploymentPath } from "../task-run-contract.ts";
 import {
   taskApi,
   TaskAssignee,
@@ -31,6 +32,7 @@ import type { NotifyItemChange } from "../workspace-change-contract.ts";
 import { jsonError, privateHeaders, readFileName } from "./api-response.ts";
 import { AppAuth, ownerId, type authHttp } from "./auth.ts";
 import { createTag, removeTag, renameTag, tagCatalog } from "./items-store.ts";
+import { latestTaskDeployment } from "./task-runs-store.ts";
 import {
   createTask,
   deleteTask,
@@ -220,6 +222,20 @@ export const tasksRoutes = (
           headers: privateHeaders,
         });
       }),
+    ),
+    HttpRouter.add(
+      "GET",
+      latestTaskDeploymentPath,
+      handle(
+        authenticated((account) =>
+          Effect.gen(function* () {
+            const deployment = yield* Effect.tryPromise(() =>
+              latestTaskDeployment(db, account),
+            );
+            return yield* json(deployment);
+          }),
+        ),
+      ),
     ),
     HttpRouter.add(
       "GET",

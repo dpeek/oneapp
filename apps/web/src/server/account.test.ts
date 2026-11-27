@@ -54,6 +54,7 @@ import {
   taskAttachmentApi,
   taskAttachmentsApi,
 } from "../task-attachment-contract.ts";
+import { latestTaskDeploymentPath } from "../task-run-contract.ts";
 import {
   Task,
   taskApi,
@@ -3308,6 +3309,16 @@ it("lets a dedicated runner claim opted-in tasks and report only the latest run 
     } as unknown as WorkerEnv["INBOX_UPDATES"],
   });
   const cookie = cookies(await signIn(password));
+  expect((await request(latestTaskDeploymentPath, {})).status).toBe(401);
+  const latestDeployment = async () => {
+    const response = await request(latestTaskDeploymentPath, {
+      headers: { cookie },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    return response.json();
+  };
+  expect(await latestDeployment()).toBeNull();
   const issue = async (
     scopes: typeof cliLinkScopes | typeof taskRunnerScopes,
   ) => {
@@ -3551,6 +3562,20 @@ it("lets a dedicated runner claim opted-in tasks and report only the latest run 
         expiresAt: null,
       },
     });
+    expect(
+      (
+        await call(
+          tasksApi,
+          {
+            id: crypto.randomUUID(),
+            title: "Manual completion",
+            status: "completed",
+          },
+          cookie,
+        )
+      ).status,
+    ).toBe(201);
+    expect(await latestDeployment()).toBeNull();
     const reopened = await request(taskApi(task.id), {
       method: "PUT",
       headers: {
@@ -3619,6 +3644,11 @@ it("lets a dedicated runner claim opted-in tasks and report only the latest run 
         summary: "Fixed and verified.",
         deploymentUrl,
       },
+    });
+    expect(await latestDeployment()).toEqual({
+      id: retry,
+      finishedAt: deployed.latestRun?.finishedAt,
+      title: "Fix a typo",
     });
 
     const claimAssigned = (
@@ -3697,6 +3727,7 @@ it("lets a dedicated runner claim opted-in tasks and report only the latest run 
         outcome: "setup-failed",
       }),
     });
+    expect(await latestDeployment()).toMatchObject({ id: retry });
 
     const success = await createAssigned();
     const successfulRun = crypto.randomUUID();
@@ -3717,15 +3748,42 @@ it("lets a dedicated runner claim opted-in tasks and report only the latest run 
     expect(
       await queue.report(success.id, successfulRun, { phase: "deployment" }),
     ).toBe("updated");
+    const inFlight = await queue.get(success.id);
+    expect(
+      (
+        await request(taskApi(success.id), {
+          method: "PUT",
+          headers: {
+            cookie,
+            origin: "https://oneapp.example",
+            "content-type": "application/json",
+            "x-effect-auth-csrf": "1",
+          },
+          body: JSON.stringify({
+            ...inFlight,
+            title: "Deployment with a concurrent edit",
+            status: "in-review",
+          }),
+        })
+      ).status,
+    ).toBe(200);
+    published.length = 0;
     expect(
       await queue.report(success.id, successfulRun, {
         phase: "finished",
         outcome: "deployed",
       }),
-    ).toBe("updated");
-    expect(await queue.get(success.id)).toMatchObject({
-      status: "completed",
+    ).toBe("completion-skipped");
+    const finished = await queue.get(success.id);
+    expect(finished).toMatchObject({
+      status: "in-review",
       assignee: "oru",
+    });
+    expect(published).toEqual([tasksChanged]);
+    expect(await latestDeployment()).toEqual({
+      id: successfulRun,
+      finishedAt: finished.latestRun?.finishedAt,
+      title: "Deployment with a concurrent edit",
     });
   } finally {
     await queue.close();

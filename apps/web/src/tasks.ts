@@ -158,6 +158,29 @@ export const Model = Schema.Struct({
   ),
 });
 export type Model = typeof Model.Type;
+export const hasUnsavedChanges = ({ creation, edits, attachments }: Model) => {
+  const draft = creation?.draft;
+  return (
+    (creation !== null &&
+      draft !== undefined &&
+      (draft.title !== "" ||
+        draft.description !== "" ||
+        draft.status !== defaultTaskStatus ||
+        draft.priority !== null ||
+        draft.dueOn !== null ||
+        draft.assignee !== "owner" ||
+        draft.tagIds.length > 0 ||
+        creation.screenshots.length > 0 ||
+        creation.validatingScreenshots > 0)) ||
+    Object.values(edits).some(
+      (edit) =>
+        edit.flight !== null ||
+        Edits.changed(edit.pending) ||
+        Object.keys(edit.text).length > 0,
+    ) ||
+    attachments.request?.operation === "Upload"
+  );
+};
 export const initial: Model = {
   index: null,
   folderSheet: Sheet.init({ id: "task-views" }),

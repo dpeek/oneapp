@@ -3,6 +3,14 @@ import { ItemId } from "./items-contract.ts";
 
 export const taskRunHeartbeatMs = 20_000;
 export const taskRunLeaseMs = 90_000;
+export const latestTaskDeploymentPath = "/api/tasks/latest-deployment";
+export const TaskDeployment = Schema.Struct({
+  id: ItemId,
+  finishedAt: Schema.Int,
+  title: Schema.String,
+});
+export type TaskDeployment = typeof TaskDeployment.Type;
+
 const activePhases = [
   "setup",
   "implementation",

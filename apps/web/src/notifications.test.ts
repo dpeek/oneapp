@@ -1,5 +1,5 @@
 import { expect, it } from "@effect/vitest";
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
 import { vi } from "vitest";
 vi.mock("@orumai/ui", async () => {
   const state =
@@ -213,6 +213,36 @@ it("clears account notifications and rejects all messages from the previous gene
       Notifications.wrap(current.generation)(Toast.Message.DismissedAll()),
     ).model.toast.entries[0]?.animation.transitionState,
   ).toBe("LeaveStart");
+});
+
+it("coalesces deployments and keeps the reload action available after activation", () => {
+  const notification = {
+    key: "task-deployment",
+    variant: "Success" as const,
+    title: "Deployed: First task",
+    action: Notifications.Action.ReloadApp(),
+  };
+  const first = Notifications.show(Notifications.init(), notification).model;
+  const { model } = Notifications.show(first, {
+    ...notification,
+    title: "Deployed: Second task",
+  });
+  expect(model.toast.entries).toHaveLength(1);
+  const entry = model.toast.entries[0]!;
+  expect(entry.id).toBe(first.toast.entries[0]?.id);
+  expect(entry.payload).toMatchObject({
+    title: "Deployed: Second task",
+    actionLabel: "Reload app",
+  });
+  expect(Option.isNone(entry.maybeDuration)).toBe(true);
+  expect(
+    Notifications.update(
+      model,
+      Notifications.wrap(model.generation)(
+        Toast.Message.ActivatedToastAction({ id: entry.id }),
+      ),
+    ),
+  ).toEqual({ model, outMessage: notification.action });
 });
 
 it("silently dismisses only the requested key, clears its action immediately, and is safe to repeat", () => {

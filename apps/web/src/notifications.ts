@@ -17,8 +17,15 @@ export const Action = defineMessageUnion({
     batchId: Schema.optionalKey(TrashBatchId),
   },
   RestoreContact: ContactUndo.fields,
+  ReloadApp: {},
 });
 export type Action = typeof Action.Type;
+
+const actionLabels: Record<Action["_tag"], string> = {
+  RestoreMail: "Undo",
+  RestoreContact: "Undo",
+  ReloadApp: "Reload app",
+};
 
 // Features report accepted outcomes, without depending on the toast renderer.
 export const Notification = Schema.Struct({
@@ -64,9 +71,12 @@ export const show = (
     (entry) =>
       entry.id === id && !entry.animation.transitionState.startsWith("Leave"),
   );
+  const actionLabel = notification.action
+    ? actionLabels[notification.action._tag]
+    : undefined;
   const input = {
     ...notification,
-    ...(notification.action ? { actionLabel: "Undo" } : {}),
+    ...(actionLabel === undefined ? {} : { actionLabel }),
     ...(notification.durationMs === undefined
       ? {}
       : { sticky: false, duration: notification.durationMs }),
@@ -74,7 +84,8 @@ export const show = (
   // Replacing an actionable outcome must also remove its old action and details.
   const replace =
     existing &&
-    (Boolean(existing.payload.actionLabel) !== Boolean(notification.action) ||
+    ((existing.payload.actionLabel === undefined) !==
+      (actionLabel === undefined) ||
       (existing.payload.description !== undefined &&
         notification.description === undefined));
   const dismissed = replace
@@ -131,15 +142,17 @@ export const update = (
   if (message._tag === "HostMounted" || message.generation !== model.generation)
     return { model };
   const result = Toast.update(model.toast, message.message);
+  const action =
+    result.outMessage?._tag === "ActivatedToast"
+      ? model.actions[result.outMessage.entry.id]
+      : undefined;
+  // Keep the deployment toast available if the user cancels the reload.
+  if (action?._tag === "ReloadApp") return { model, outMessage: action };
   const ids = new Set(
     result.model.entries
       .filter((entry) => !entry.animation.transitionState.startsWith("Leave"))
       .map((entry) => entry.id),
   );
-  const action =
-    result.outMessage?._tag === "ActivatedToast"
-      ? model.actions[result.outMessage.entry.id]
-      : undefined;
   return {
     model: {
       ...model,

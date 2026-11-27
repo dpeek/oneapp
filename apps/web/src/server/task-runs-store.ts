@@ -1,6 +1,7 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import {
   taskRunLeaseMs,
+  type TaskDeployment,
   type TaskRunClaim,
   type TaskRunOutcome,
   type TaskRunUpdate,
@@ -8,6 +9,19 @@ import {
 import type { WorkspaceActor } from "../tasks-contract.ts";
 import { claimed } from "./items-store.ts";
 import { incrementTaskVersion } from "./tasks-store.ts";
+
+export const latestTaskDeployment = (db: D1Database, account: string) =>
+  db
+    .prepare(
+      `SELECT r.id, r.finished_at AS finishedAt, i.title
+       FROM task_runs r JOIN items i
+         ON i.account_id = r.account_id AND i.id = r.task_id
+       WHERE r.account_id = ?1 AND r.outcome = 'deployed'
+         AND r.finished_at IS NOT NULL
+       ORDER BY r.finished_at DESC, r.id DESC LIMIT 1`,
+    )
+    .bind(account)
+    .first<TaskDeployment>();
 
 export const claimTaskRun = async (
   db: D1Database,

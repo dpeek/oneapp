@@ -93,6 +93,7 @@ import {
 } from "./files-contract.ts";
 import { view as filesView } from "./files-view.ts";
 import * as Tasks from "./tasks.ts";
+import { TaskDeployment } from "./task-run-contract.ts";
 import {
   taskListPath,
   taskPath,
@@ -122,6 +123,7 @@ const pageFor = (url: Url.Url): Page => {
 };
 
 const settingsSheetId = "settings-sections";
+const reloadDialogId = "reload-app-dialog";
 const Model = Schema.Struct({
   page: AppNavigation.Page,
   navigation: AppNavigation.Model,
@@ -150,6 +152,7 @@ const Model = Schema.Struct({
   signInNotice: Schema.NullOr(Schema.String),
   links: Links.Model,
   notifications: Notifications.Model,
+  reloadDialog: Dialog.Model,
   connectedClients: ConnectedClients.Model,
   cliLogin: Schema.NullOr(CliLogin.Model),
   extensionAccess: ExtensionAccess.Model,
@@ -190,6 +193,9 @@ const Message = defineMessageUnion({
   GotCreationMenuMessage: { message: CommandMenu.Message },
   GotLinksMessage: { message: Links.Message },
   GotNotificationMessage: { message: Notifications.Message },
+  DeployedTask: { generation: Schema.Int, deployment: TaskDeployment },
+  GotReloadDialogMessage: { message: Dialog.Message },
+  ConfirmedReload: {},
   GotConnectedClientsMessage: { message: ConnectedClients.Message },
   GotTagSettingsMessage: { message: TagSettings.Message },
   GotCliLoginMessage: { message: CliLogin.Message },
@@ -375,22 +381,83 @@ const applyNotification = (
 };
 const toNotificationMessage = (message: Notifications.Message) =>
   Message.GotNotificationMessage({ message });
+const toReloadDialogMessage = (message: typeof Dialog.Message.Type) =>
+  Message.GotReloadDialogMessage({ message });
+const foldReloadDialog = Update.foldChild({
+  update: Dialog.update,
+  read: (model: Model) => Option.some(model.reloadDialog),
+  write: (model, reloadDialog) => ({ ...model, reloadDialog }),
+  toParentMessage: toReloadDialogMessage,
+  foldOutMessage: () => (model) => ({ model }),
+});
+const ReloadApp = Command.define("ReloadApp", {
+  args: {},
+  messages: [Message.NavigationFinished],
+  execute: () =>
+    Effect.sync(() => {
+      window.location.reload();
+      return Message.NavigationFinished();
+    }),
+});
+const hasUnsavedChanges = (model: Model) => {
+  const { compose, quickReply } = model.inbox;
+  const tagAction = model.tagSettings.action;
+  return (
+    Tasks.hasUnsavedChanges(model.tasks) ||
+    Boolean(model.links.creation?.url) ||
+    Boolean(quickReply.text || quickReply.html || quickReply.request) ||
+    (compose.dialog.isOpen &&
+      Boolean(
+        compose.reply ||
+        compose.body.text ||
+        compose.body.html ||
+        Object.values(compose.headers).some(Boolean) ||
+        compose.attachments.length ||
+        compose.loadingFiles,
+      )) ||
+    model.calendar.editor !== null ||
+    model.calendar.calendarEditor !== null ||
+    model.calendar.preview !== null ||
+    model.people.dialog.isOpen ||
+    model.people.directory.edit !== null ||
+    model.tagSettings.name !== "" ||
+    (tagAction?._tag === "Rename" && tagAction.name !== tagAction.tag.name) ||
+    document.querySelector(".vault-item-form") !== null ||
+    Array.from(
+      document.querySelectorAll<HTMLInputElement>(
+        ".account-form input:not([type=hidden]), #vault-setup input, vault-reader input",
+      ),
+    ).some((input) => input.value !== input.defaultValue)
+  );
+};
 const foldNotifications = Update.foldChild({
   update: Notifications.update,
   read: (model: Model) => Option.some(model.notifications),
   write: (model, notifications) => ({ ...model, notifications }),
   toParentMessage: toNotificationMessage,
-  foldOutMessage: (action: Notifications.Action) => (model) =>
-    action._tag === "RestoreContact"
-      ? foldPeople(
+  foldOutMessage: (action: Notifications.Action) => (model) => {
+    switch (action._tag) {
+      case "ReloadApp":
+        if (model.reloadDialog.isOpen) return { model };
+        return hasUnsavedChanges(model)
+          ? foldReloadDialog(model, Dialog.Message.RequestedOpen())
+          : { model, commands: [ReloadApp({})] };
+      case "RestoreContact":
+        return foldPeople(
           model,
           People.Message.RequestedRestore({
             id: action.id,
             receipt: action.receipt,
             name: action.name,
           }),
-        )
-      : foldInbox(model, Inbox.Message.ActivatedNotification({ action })),
+        );
+      case "RestoreMail":
+        return foldInbox(
+          model,
+          Inbox.Message.ActivatedNotification({ action }),
+        );
+    }
+  },
 });
 const toLinksMessage = (message: Links.Message) =>
   Message.GotLinksMessage({ message });
@@ -843,15 +910,23 @@ const subscriptions = Subscription.make<Model, Message>()((entry) => ({
     },
   ),
   workspaceChanges: entry(
-    { active: Schema.Boolean },
+    { generation: Schema.NullOr(Schema.Int) },
     {
       modelToDependencies: (model) => ({
-        active: model.account !== null && !isApproval(model),
+        generation:
+          model.account !== null && !isApproval(model)
+            ? model.notifications.generation
+            : null,
       }),
-      dependenciesToStream: ({ active }) =>
-        active
+      dependenciesToStream: ({ generation }) =>
+        generation !== null
           ? workspaceChanges.pipe(
               Stream.map((change) => {
+                if (typeof change !== "string")
+                  return Message.DeployedTask({
+                    generation,
+                    deployment: change,
+                  });
                 switch (change) {
                   case inboxChanged:
                     return toInboxMessage(Inbox.Message.LiveChanged());
@@ -1009,6 +1084,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     signInNotice: null,
     links: Links.initial,
     notifications: Notifications.init(),
+    reloadDialog: Dialog.init({ id: reloadDialogId }),
     connectedClients: ConnectedClients.initial,
     cliLogin: CliLogin.initial(),
     extensionAccess: ExtensionAccess.initial(),
@@ -1197,6 +1273,7 @@ const update = (
         signInNotice: null,
         links: Links.initial,
         notifications: Notifications.clear(model.notifications),
+        reloadDialog: Dialog.init({ id: reloadDialogId }),
         connectedClients: ConnectedClients.initial,
         cliLogin,
         extensionAccess: ExtensionAccess.initial(),
@@ -1572,6 +1649,23 @@ const update = (
       message.message._tag === "ActivatedToastAction"
         ? { model }
         : foldNotifications(model, message),
+    DeployedTask: ({ generation, deployment }) =>
+      !model.account || generation !== model.notifications.generation
+        ? { model }
+        : applyNotification(model, {
+            _tag: "Notify",
+            notification: {
+              key: "task-deployment",
+              variant: "Success",
+              title: `Deployed: ${deployment.title}`,
+              action: Notifications.Action.ReloadApp(),
+            },
+          }),
+    GotReloadDialogMessage: ({ message }) => foldReloadDialog(model, message),
+    ConfirmedReload: () =>
+      model.reloadDialog.isOpen
+        ? { model, commands: [ReloadApp({})] }
+        : { model },
     RequestFailed: ({ error }) => ({
       model: { ...model, pending: false, error },
     }),
@@ -2238,6 +2332,44 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
       [
         page.body,
         notificationView(model.notifications, toNotificationMessage, h),
+        ...(model.account
+          ? [
+              Dialog.view(
+                {
+                  model: model.reloadDialog,
+                  title: "Reload app?",
+                  alertDescription: "Reloading will discard unsaved changes.",
+                  toParentMessage: toReloadDialogMessage,
+                  content: (initialFocus) =>
+                    Dialog.footer(
+                      [
+                        button(
+                          {
+                            variant: "outline",
+                            attributes: initialFocus,
+                            onClick: toReloadDialogMessage(
+                              Dialog.Message.RequestedClose(),
+                            ),
+                            children: ["Cancel"],
+                          },
+                          h,
+                        ),
+                        button(
+                          {
+                            variant: "destructive",
+                            onClick: Message.ConfirmedReload(),
+                            children: ["Reload and discard changes"],
+                          },
+                          h,
+                        ),
+                      ],
+                      h,
+                    ),
+                },
+                h,
+              ),
+            ]
+          : []),
       ],
     ),
   };

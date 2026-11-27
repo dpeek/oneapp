@@ -6,13 +6,43 @@ import {
   inboxVersionPath,
 } from "./inbox-contract.ts";
 import { tagsChanged } from "./items-contract.ts";
+import {
+  latestTaskDeploymentPath,
+  TaskDeployment,
+} from "./task-run-contract.ts";
 import { tasksChanged } from "./tasks-contract.ts";
 import {
   workspaceEventsPath,
   type WorkspaceChange,
 } from "./workspace-change-contract.ts";
 
-export const changes = Stream.callback<WorkspaceChange>(
+const decodeDeployment = Schema.decodeUnknownSync(
+  Schema.NullOr(TaskDeployment),
+);
+
+const coalescedCheck = (signal: AbortSignal, check: () => Promise<void>) => {
+  let checking = false;
+  let queued = false;
+  const run = async () => {
+    checking = true;
+    do {
+      queued = false;
+      try {
+        await check();
+      } catch {
+        // A later signal can recover from a failed request.
+      }
+    } while (queued && !signal.aborted);
+    checking = false;
+  };
+  return () => {
+    if (signal.aborted) return;
+    if (checking) queued = true;
+    else void run();
+  };
+};
+
+export const changes = Stream.callback<WorkspaceChange | TaskDeployment>(
   (queue) =>
     Effect.acquireRelease(
       Effect.sync(() => {
@@ -23,43 +53,49 @@ export const changes = Stream.callback<WorkspaceChange>(
         let retry: number | undefined;
         let delay = 1000;
         let mailVersion = -1;
-        let checkingMail = false;
-        let mailCheckQueued = false;
-        const mailChecks = new AbortController();
-        const changed = (change: WorkspaceChange) => {
+        let latestDeployment: TaskDeployment | null | undefined;
+        const checks = new AbortController();
+        const changed = (change: WorkspaceChange | TaskDeployment) => {
           if (!stopped) Queue.offerUnsafe(queue, change);
         };
-        const checkMail = async () => {
-          if (stopped) return;
-          if (checkingMail) {
-            mailCheckQueued = true;
-            return;
+        const checkMail = coalescedCheck(checks.signal, async () => {
+          const result = await checkIndex(
+            inboxVersionPath,
+            mailVersion,
+            InboxVersion,
+            checks.signal,
+          );
+          if (result === "expired") changed(inboxChanged);
+          else if (result !== "unchanged") {
+            mailVersion = result.version;
+            changed(inboxChanged);
           }
-          checkingMail = true;
-          try {
-            const result = await checkIndex(
-              inboxVersionPath,
-              mailVersion,
-              InboxVersion,
-              mailChecks.signal,
-            );
-            if (result === "expired") changed(inboxChanged);
-            else if (result !== "unchanged") {
-              mailVersion = result.version;
-              changed(inboxChanged);
-            }
-          } catch {
-            // The next check can recover from a failed request.
-          } finally {
-            checkingMail = false;
-            if (mailCheckQueued) {
-              mailCheckQueued = false;
-              void checkMail();
-            }
+        });
+        const checkDeployment = coalescedCheck(checks.signal, async () => {
+          const response = await fetch(latestTaskDeploymentPath, {
+            signal: checks.signal,
+            cache: "no-store",
+          });
+          if (!response.ok) return;
+          const deployment = decodeDeployment(await response.json());
+          if (latestDeployment === undefined) {
+            latestDeployment = deployment;
+          } else if (
+            deployment &&
+            (!latestDeployment ||
+              (deployment.id !== latestDeployment.id &&
+                (deployment.finishedAt > latestDeployment.finishedAt ||
+                  (deployment.finishedAt === latestDeployment.finishedAt &&
+                    deployment.id > latestDeployment.id))))
+          ) {
+            // Removing or reclaiming a task can expose an older successful run.
+            latestDeployment = deployment;
+            changed(deployment);
           }
-        };
+        });
         const refresh = () => {
-          void checkMail();
+          checkMail();
+          checkDeployment();
           changed(tagsChanged);
         };
         const connect = () => {
@@ -70,7 +106,8 @@ export const changes = Stream.callback<WorkspaceChange>(
             refresh();
           };
           connection.onmessage = ({ data }) => {
-            if (data === inboxChanged) void checkMail();
+            if (data === inboxChanged) checkMail();
+            if (data === tasksChanged) checkDeployment();
             if (
               data === tasksChanged ||
               data === filesChanged ||
@@ -92,16 +129,17 @@ export const changes = Stream.callback<WorkspaceChange>(
         window.addEventListener("online", resumed);
         window.addEventListener("focus", resumed);
         const poll = window.setInterval(() => {
-          if (document.visibilityState === "visible") void checkMail();
+          if (document.visibilityState === "visible") checkMail();
         }, 30_000);
-        void checkMail();
+        checkMail();
+        checkDeployment();
         connect();
         return () => {
           document.removeEventListener("visibilitychange", resumed);
           window.removeEventListener("online", resumed);
           window.removeEventListener("focus", resumed);
           stopped = true;
-          mailChecks.abort();
+          checks.abort();
           window.clearInterval(poll);
           window.clearTimeout(retry);
           socket?.close();

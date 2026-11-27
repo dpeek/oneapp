@@ -13,6 +13,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { watchDeployments } from "./task-runner/deployments.ts";
 import { githubRepository, productionChecks } from "./task-runner/github.ts";
+import { PublishQueue } from "./task-runner/publish-queue.ts";
 import { TaskQueue } from "./task-runner/queue.ts";
 import { gitOrigin, resolveBunCache, runNext } from "./task-runner/run.ts";
 import { configureBrowser, resolveBrowser } from "./task-runner/settings.ts";
@@ -22,7 +23,7 @@ const usage = `Usage: bun --no-env-file run tasks:runner [--server <origin>] [--
        bun --no-env-file run tasks:runner --login [--no-browser] [--server <origin>]
        bun --no-env-file run tasks:runner --configure-browser <executable>
 
-Picks up one not-started task at a time. Tasks tagged ready take priority,
+Runs up to two not-started tasks in parallel. Tasks tagged ready take priority,
 followed by tasks assigned to Oru. A successful run pushes to origin/main
 and tracks production deployment. --once attempts one task and follows
 pending deployments. --dry-run lists the next eligible task.`;
@@ -133,6 +134,7 @@ async function main() {
   try {
     await lock.writeFile(String(process.pid));
     const implementationFinished = new AbortController();
+    const publishQueue = new PublishQueue();
     const withQueue = async <A>(use: (queue: TaskQueue) => Promise<A>) => {
       const queue = new TaskQueue(origin, token, signal);
       try {
@@ -142,7 +144,7 @@ async function main() {
         await queue.close();
       }
     };
-    const run = () =>
+    const run = (claimed?: () => void) =>
       withQueue((queue) =>
         runNext(queue, {
           origin,
@@ -153,12 +155,14 @@ async function main() {
           signal,
           browser,
           bunCache,
+          publishQueue,
+          claimed,
         }),
       );
-    const implement = async () => {
+    const implement = async (claimed?: () => void) => {
       if (signal.aborted) return false;
       try {
-        return Boolean(await run());
+        return Boolean(await run(claimed));
       } catch (error) {
         if (signal.aborted) return false;
         if (values.once) throw error;
@@ -166,10 +170,18 @@ async function main() {
         return false;
       }
     };
+    const start = async () => {
+      if (publishQueue.blocked) return;
+      const claimed = Promise.withResolvers<boolean>();
+      const done = implement(() => claimed.resolve(true)).then(() => {
+        claimed.resolve(false);
+      });
+      return (await claimed.promise) ? { done } : undefined;
+    };
     const implementations = (
       values.once
         ? implement()
-        : watchTaskQueue({ origin, token, signal, check: implement })
+        : watchTaskQueue({ origin, token, signal, start })
     ).finally(() => implementationFinished.abort());
     const deployments = watchDeployments({
       directory,
@@ -179,7 +191,7 @@ async function main() {
       implementationFinished: values.once
         ? implementationFinished.signal
         : undefined,
-      checks: () => productionChecks(repository, signal),
+      checks: () => productionChecks(repository, signal).deployed,
       complete: (id, revision) =>
         withQueue((queue) => queue.complete(id, revision)),
       report: (id, runId, update) =>

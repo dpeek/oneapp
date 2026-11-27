@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { preparePendingPush, watchDeployments } from "./deployments.ts";
+import { PublishQueue } from "./publish-queue.ts";
 import {
   captureCommand,
   commandEnv,
@@ -22,7 +23,7 @@ import {
 const exerciseWorkflow = () =>
   Effect.promise(async () => {
     const root = await mkdtemp(join(tmpdir(), "orumai-workflow-"));
-    const signal = AbortSignal.timeout(15_000);
+    const signal = AbortSignal.timeout(25_000);
     const remote = join(root, "remote.git");
     const upstream = join(root, "upstream");
     const mirror = join(root, "mirror.git");
@@ -87,6 +88,15 @@ const exerciseWorkflow = () =>
       await git(root, "clone", "--no-local", mirror, repo);
       await mkdir(attempt);
 
+      const secondMirror = join(root, "second-mirror.git");
+      const secondRepo = join(root, "second-repo");
+      const secondRun = join(root, "second-attempt");
+      await mkdir(secondRun);
+      await git(root, "clone", "--bare", "--no-local", remote, secondMirror);
+      await git(root, "clone", "--no-local", secondMirror, secondRepo);
+      await Bun.write(join(secondRepo, "second.txt"), "second candidate\n");
+      const secondCandidate = await commit(secondRepo, "Second candidate");
+      const publishQueue = new PublishQueue();
       const phases = ["setup", "implementation"];
       let advanceDuringChecks: (() => Promise<void>) | undefined;
       let tracked: string | undefined;
@@ -118,6 +128,10 @@ const exerciseWorkflow = () =>
         sandbox: [],
         env: commandEnv,
         signal,
+        queue: publishQueue,
+        waiting: async () => {},
+        publishing: async () => {},
+        waitForProduction: async () => {},
         checking: async () => {
           phases.push("checks");
           const advance = advanceDuringChecks;
@@ -159,6 +173,30 @@ const exerciseWorkflow = () =>
         },
       };
       const workflow = createWorkflow(workflowOptions);
+      const secondQueued = Promise.withResolvers<void>();
+      const secondChecking = Promise.withResolvers<string>();
+      const allowSecondVerify = Promise.withResolvers<void>();
+      const secondReadyToPush = Promise.withResolvers<string>();
+      const secondSafeToPush = Promise.withResolvers<void>();
+      const second = createWorkflow({
+        ...workflowOptions,
+        repo: secondRepo,
+        mirror: secondMirror,
+        run: secondRun,
+        waiting: async () => secondQueued.resolve(),
+        checking: async (sha) => {
+          secondChecking.resolve(sha);
+          await allowSecondVerify.promise;
+        },
+        working: async () => {},
+        waitForProduction: async (sha) => {
+          secondReadyToPush.resolve(sha);
+          await secondSafeToPush.promise;
+        },
+        preparePush: async () => async () => {},
+        trackPush: async () => {},
+      });
+      let secondTurn: Promise<Awaited<ReturnType<typeof second.dispatch>>>;
 
       const client = fileURLToPath(
         new URL("./workflow-client.ts", import.meta.url),
@@ -180,10 +218,13 @@ const exerciseWorkflow = () =>
         };
 
         await Bun.write(join(repo, "message.txt"), "broken\n");
-        expect((await command("verify")).stderr).toContain(
+        expect((await command("fetch")).stderr).toContain(
           "uncommitted changes",
         );
         await commit(repo, "Broken candidate");
+        await fetchMain();
+        secondTurn = second.dispatch("fetch");
+        await secondQueued.promise;
         const failed = await command("verify");
         expect(failed.exitCode).toBe(7);
         expect(failed.stderr).toContain("bun run test failed (exit 7)");
@@ -222,6 +263,7 @@ const exerciseWorkflow = () =>
         expect(rejected.stderr).toContain("Push rejected. Fetch, rebase");
         expect(await readdir(join(root, "deployments"))).toEqual([]);
         expect(phases.at(-1)).toBe("implementation");
+        expect((await command("verify")).stderr).toContain("Run Fetch");
 
         await fetchMain();
         await git(repo, "rebase", "origin/main");
@@ -274,6 +316,19 @@ const exerciseWorkflow = () =>
         expect(log.match(/bun run build/g)).toHaveLength(3);
       });
 
+      expect(await secondTurn!).toMatchObject({
+        exitCode: 0,
+        message: expect.stringContaining(tracked!),
+      });
+      await git(secondRepo, "fetch", "origin");
+      expect((await second.dispatch("verify")).message).toContain("rebased");
+      await git(secondRepo, "rebase", "origin/main");
+      const secondRebased = await git(secondRepo, "rev-parse", "HEAD");
+      expect(secondRebased).not.toBe(secondCandidate);
+      expect(await git(secondRepo, "rev-parse", "HEAD^")).toBe(tracked);
+      const secondVerify = second.dispatch("verify");
+      expect(await secondChecking.promise).toBe(secondRebased);
+
       const firstPoll = new AbortController();
       const pendingPhases: string[] = [];
       await watchDeployments({
@@ -293,6 +348,14 @@ const exerciseWorkflow = () =>
       expect(pendingPhases).toEqual(["deployment", "heartbeat"]);
       expect(phases.at(-1)).toBe("deployment");
       expect(await readdir(join(root, "deployments"))).toHaveLength(1);
+      allowSecondVerify.resolve();
+      expect(await secondVerify).toEqual({
+        exitCode: 0,
+        message: `Verified ${secondRebased}.`,
+      });
+      const secondPush = second.dispatch("publish");
+      expect(await secondReadyToPush.promise).toBe(tracked);
+      expect(await git(remote, "rev-parse", "main")).toBe(tracked);
 
       confirmed = true;
       await watchDeployments({
@@ -306,17 +369,55 @@ const exerciseWorkflow = () =>
       });
       expect(phases.at(-1)).toBe("finished");
       expect(await readdir(join(root, "deployments"))).toEqual([]);
+      secondSafeToPush.resolve();
+      expect(await secondPush).toMatchObject({ exitCode: 0 });
+      expect(await git(remote, "rev-parse", "main")).toBe(secondRebased);
 
+      await Bun.write(join(repo, "message.txt"), "another candidate\n");
+      await commit(repo, "Another candidate");
+      const timedOut = createWorkflow({
+        ...workflowOptions,
+        slotTimeoutMs: 500,
+      });
+      expect(await timedOut.dispatch("fetch")).toMatchObject({ exitCode: 0 });
+      const afterTimeout = createWorkflow(workflowOptions);
+      expect(await afterTimeout.dispatch("fetch")).toMatchObject({
+        exitCode: 0,
+      });
+      expect((await timedOut.dispatch("publish")).message).toContain(
+        "timed out holding the publish slot",
+      );
+      await afterTimeout.close();
+
+      const canceled = new AbortController();
+      const canceledWorkflow = createWorkflow({
+        ...workflowOptions,
+        signal: canceled.signal,
+      });
+      expect(await canceledWorkflow.dispatch("fetch")).toMatchObject({
+        exitCode: 0,
+      });
+      const thirdQueued = Promise.withResolvers<void>();
       const uncertainWorkflow = createWorkflow({
         ...workflowOptions,
+        waiting: async () => thirdQueued.resolve(),
         trackPush: async (sha, _summary, accepted) => {
           expect(accepted).toBe(false);
           tracked = sha;
         },
       });
-      expect(await uncertainWorkflow.dispatch("fetch")).toMatchObject({
+      const thirdTurn = uncertainWorkflow.dispatch("fetch");
+      await thirdQueued.promise;
+      canceled.abort(new Error("Canceled fixture run."));
+      expect((await canceledWorkflow.dispatch("verify")).message).toBe(
+        "Canceled fixture run.",
+      );
+      expect(await thirdTurn).toMatchObject({
         exitCode: 0,
       });
+      await git(repo, "fetch", "origin");
+      await git(repo, "rebase", "origin/main");
+      const uncertain = await git(repo, "rev-parse", "HEAD");
       await git(
         mirror,
         "remote",
@@ -325,8 +426,13 @@ const exerciseWorkflow = () =>
         "origin",
         join(root, "unavailable.git"),
       );
-      await Bun.write(join(repo, "message.txt"), "another candidate\n");
-      const uncertain = await commit(repo, "Another candidate");
+      await git(
+        mirror,
+        "remote",
+        "set-url",
+        "origin",
+        join(root, "missing.git"),
+      );
       expect(await uncertainWorkflow.dispatch("verify")).toMatchObject({
         exitCode: 0,
       });
@@ -340,14 +446,18 @@ const exerciseWorkflow = () =>
       expect((await uncertainWorkflow.dispatch("publish")).message).toContain(
         "already tracking",
       );
+      const next = createWorkflow(workflowOptions);
+      expect((await next.dispatch("fetch")).message).toContain(
+        "could not reconcile the push",
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-// Let the 15-second subprocess deadline expire before Vitest interrupts cleanup.
+// Let the subprocess deadline expire before Vitest interrupts cleanup.
 it.effect(
-  "repairs and rebases verified candidates in one session",
+  "publishes FIFO, repairs conflicts and external advances, and tracks a deploy during the next verification",
   exerciseWorkflow,
-  20_000,
+  30_000,
 );

@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { setTimeout } from "node:timers/promises";
 
 export const GitSha = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/));
 const MainRef = Schema.Struct({ object: Schema.Struct({ sha: GitSha }) });
@@ -83,6 +84,7 @@ export function productionChecks(repository: string, signal: AbortSignal) {
       `commits/${sha}/check-runs?filter=all&per_page=100&check_name=${encodeURIComponent(checkName)}`,
       true,
     ).then(async (response) => {
+      let completed: ProductionDeployment | undefined;
       for (const run of response?.check_runs ?? []) {
         if (
           run.name !== checkName ||
@@ -94,19 +96,25 @@ export function productionChecks(repository: string, signal: AbortSignal) {
           CheckSuite,
           `check-suites/${run.check_suite.id}`,
         );
-        if (suite?.head_branch === "main")
-          return {
+        if (suite?.head_branch === "main") {
+          const deployment = {
             sha,
             buildUrl: run.details_url,
             conclusion: run.status === "completed" ? run.conclusion : null,
           };
+          if (!deployment.conclusion) return deployment;
+          completed ??= deployment;
+        }
       }
+      return completed;
     });
     checks.set(sha, result);
     return result;
   };
 
-  return async (sha: string): Promise<ProductionDeployment | undefined> => {
+  const deployed = async (
+    sha: string,
+  ): Promise<ProductionDeployment | undefined> => {
     main ??= request(MainRef, "git/ref/heads/main").then((ref) => {
       if (!ref) throw new Error("GitHub did not return the production branch.");
       return ref.object.sha;
@@ -125,4 +133,20 @@ export function productionChecks(repository: string, signal: AbortSignal) {
     if (ownCheck?.conclusion === "success") return ownCheck;
     return (await check(head)) ?? ownCheck;
   };
+  return { deployed, exact: check };
+}
+
+export async function waitForProduction(
+  repository: string,
+  sha: string,
+  signal: AbortSignal,
+) {
+  // Alchemy's production state is shared. Wait for the exact parent build
+  // to finish before triggering another, while allowing Verify to run ahead.
+  while (!signal.aborted) {
+    const production = await productionChecks(repository, signal).exact(sha);
+    if (production?.conclusion) return;
+    await setTimeout(10_000, undefined, { signal });
+  }
+  signal.throwIfAborted();
 }

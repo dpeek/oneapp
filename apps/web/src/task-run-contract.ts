@@ -6,6 +6,7 @@ export const taskRunLeaseMs = 90_000;
 const activePhases = [
   "setup",
   "implementation",
+  "waiting-to-publish",
   "checks",
   "deployment",
 ] as const;
@@ -14,6 +15,7 @@ const outcomes = [
   "deployed",
   "setup-failed",
   "implementation-failed",
+  "publish-failed",
   "checks-failed",
   "deployment-failed",
 ] as const;
@@ -49,6 +51,7 @@ export const TaskRunClaim = Schema.Struct({
 });
 export const TaskRunUpdate = Schema.Union([
   Schema.Struct({ phase: Schema.Literal("implementation") }),
+  Schema.Struct({ phase: Schema.Literal("waiting-to-publish") }),
   Schema.Struct({
     phase: Schema.Literal("checks"),
     summary: Schema.optionalKey(TaskRunSummary),

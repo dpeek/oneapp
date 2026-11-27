@@ -2,10 +2,13 @@ import { mkdtemp, open, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { GitSha } from "./github.ts";
 import { Schema } from "effect";
-import { stopProcessGroup } from "./processes.ts";
+import { waitForProcessGroup } from "./processes.ts";
+import type { PublishQueue } from "./publish-queue.ts";
 import type { WorkflowResult } from "./workflow-client.ts";
 
 const mainRef = "refs/heads/main";
+const publishTimeoutMs = 15 * 60_000;
+const maxMainAdvances = 2;
 const statusArgs = [
   "status",
   "--porcelain",
@@ -44,14 +47,14 @@ export async function captureCommand(
   signal.throwIfAborted();
   const child = Bun.spawn(args, {
     cwd,
-    signal,
+    detached: true,
     env,
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
   });
   const [exitCode, stdout, stderr] = await Promise.all([
-    child.exited,
+    waitForProcessGroup(child, signal),
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
   ]);
@@ -93,6 +96,11 @@ export function createWorkflow(options: {
   sandbox: string[];
   env: Record<string, string | undefined>;
   signal: AbortSignal;
+  queue: PublishQueue;
+  slotTimeoutMs?: number;
+  waiting: () => Promise<void>;
+  publishing: () => Promise<void>;
+  waitForProduction: (sha: string, signal: AbortSignal) => Promise<void>;
   checking: (sha: string) => Promise<void>;
   working: (sha: string, result: WorkflowResult) => Promise<void>;
   preparePush: (
@@ -106,7 +114,9 @@ export function createWorkflow(options: {
     detail: string,
   ) => Promise<void>;
 }) {
-  const { repo, mirror, run, sandbox, env, signal } = options;
+  const { repo, mirror, run, sandbox, env, queue } = options;
+  const stopped = new AbortController();
+  const signal = AbortSignal.any([options.signal, stopped.signal]);
   const localGitEnv = {
     ...commandEnv,
     GIT_NO_REPLACE_OBJECTS: "1",
@@ -114,18 +124,32 @@ export function createWorkflow(options: {
     GIT_CONFIG_GLOBAL: "/dev/null",
   };
   const logPath = join(run, "verify.log");
-  const verified = new Set<string>();
+  let verified: string | undefined;
   let pendingActivity: { sha: string; result: WorkflowResult } | undefined;
-  let published = false;
+  let ended: string | undefined;
   let active: Promise<WorkflowResult> | undefined;
+  let slot: ReturnType<PublishQueue["request"]> | undefined;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  let fetched = false;
+  let mainAdvances = 0;
+
+  const releaseSlot = () => {
+    clearTimeout(deadline);
+    slot?.release();
+    slot = undefined;
+  };
+  const abort = () => {
+    if (!active) releaseSlot();
+  };
+  signal.addEventListener("abort", abort, { once: true });
 
   const git = async (args: string[], cwd = mirror) =>
     requireSuccess(
       `git ${args[0]}`,
       await captureCommand(["git", ...args], cwd, signal, localGitEnv),
     );
-  const remoteGit = (args: string[]) =>
-    captureCommand(["git", ...args], mirror, signal, {
+  const remoteGit = (args: string[], commandSignal = signal) =>
+    captureCommand(["git", ...args], mirror, commandSignal, {
       ...commandEnv,
       ...gitEnv,
     });
@@ -175,35 +199,57 @@ export function createWorkflow(options: {
     );
   };
 
+  const refreshMirror = (commandSignal = signal) =>
+    remoteGit(
+      [
+        "fetch",
+        "--no-tags",
+        "--no-recurse-submodules",
+        "origin",
+        `${mainRef}:${mainRef}`,
+      ],
+      commandSignal,
+    );
+
   const fetchMain = async () => {
-    const result = await remoteGit([
-      "fetch",
-      "--no-tags",
-      "--no-recurse-submodules",
-      "origin",
-      `${mainRef}:${mainRef}`,
-    ]);
-    if (result.exitCode !== 0)
-      return failure(
-        `Fetch failed (exit ${result.exitCode}). ${result.stderr}`,
-        result.exitCode,
-      );
+    if (!slot) {
+      const sha = await cleanHead();
+      if (sha === (await git(["rev-parse", mainRef])))
+        return failure(
+          "Commit the candidate before requesting the publish slot.",
+        );
+      slot = queue.request();
+      try {
+        if (slot.waiting) await options.waiting();
+        await slot.enter(signal);
+        deadline = setTimeout(() => {
+          stopped.abort(
+            new Error("The runner timed out holding the publish slot."),
+          );
+        }, options.slotTimeoutMs ?? publishTimeoutMs);
+        await options.publishing();
+      } catch (error) {
+        releaseSlot();
+        throw error;
+      }
+    }
+    fetched = false;
+    verified = undefined;
+    try {
+      requireSuccess("Fetch", await refreshMirror());
+    } catch (error) {
+      ended = signal.aborted ? undefined : String(error);
+      throw error;
+    }
+    signal.throwIfAborted();
+    fetched = true;
     return success(
       `Fetched main at ${await git(["rev-parse", mainRef])}. Run git fetch origin in the checkout.`,
     );
   };
 
-  const checkSnapshot = async (sha: string) => {
-    // Copy the commit without credentials. A separate checkout keeps edits
-    // during verification from affecting the suite.
-    const candidate = `refs/orumai/candidates/${sha}`;
-    await git([
-      "fetch",
-      "--no-tags",
-      "--no-recurse-submodules",
-      repo,
-      `${sha}:${candidate}`,
-    ]);
+  const checkSnapshot = async (sha: string, candidate: string) => {
+    // A separate checkout keeps edits during verification from affecting the suite.
     const snapshot = await mkdtemp(join(run, "verify-"));
     try {
       await git(["init", "--quiet"], snapshot);
@@ -230,7 +276,6 @@ export function createWorkflow(options: {
             [...sandbox, process.execPath, "--no-env-file", ...args],
             {
               cwd: snapshot,
-              signal,
               env,
               detached: true,
               stdin: "ignore",
@@ -238,9 +283,7 @@ export function createWorkflow(options: {
               stderr: log.fd,
             },
           );
-          const exitCode = await child.exited.finally(() =>
-            stopProcessGroup(child),
-          );
+          const exitCode = await waitForProcessGroup(child, signal);
           if (exitCode !== 0)
             return failure(
               `${command} failed (exit ${exitCode}).\n${await failureDetails(log, from)}\nFull output: ${logPath}`,
@@ -257,7 +300,7 @@ export function createWorkflow(options: {
         return failure(
           `Verification changed the candidate checkout. Full output: ${logPath}`,
         );
-      verified.add(sha);
+      verified = sha;
       return success(`Verified ${sha}.`);
     } finally {
       await rm(snapshot, { recursive: true, force: true });
@@ -265,14 +308,30 @@ export function createWorkflow(options: {
   };
 
   const verify = async () => {
+    if (!fetched)
+      return failure("Run Fetch and rebase onto origin/main before Verify.");
     const sha = await cleanHead();
+    const upstream = await git(["rev-parse", mainRef]);
+    const candidate = `refs/orumai/candidates/${sha}`;
+    // Copy the commit without credentials.
+    await git([
+      "fetch",
+      "--no-tags",
+      "--no-recurse-submodules",
+      repo,
+      `${sha}:${candidate}`,
+    ]);
+    if (sha === upstream || !(await isAncestor(upstream, sha)))
+      return failure(
+        "Verify requires a candidate rebased onto the freshly fetched main.",
+      );
     if (pendingActivity) {
       await options.working(pendingActivity.sha, pendingActivity.result);
       pendingActivity = undefined;
     }
-    if (verified.has(sha)) return success(`Verified ${sha} (cached).`);
+    if (verified === sha) return success(`Verified ${sha} (cached).`);
     await options.checking(sha);
-    const result = await checkSnapshot(sha).catch((error: unknown) =>
+    const result = await checkSnapshot(sha, candidate).catch((error: unknown) =>
       failure(error instanceof Error ? error.message : String(error)),
     );
     pendingActivity = { sha, result };
@@ -281,9 +340,41 @@ export function createWorkflow(options: {
     return result;
   };
 
+  const isAncestor = async (
+    ancestor: string,
+    sha: string,
+    commandSignal = signal,
+  ) => {
+    const result = await captureCommand(
+      ["git", "merge-base", "--is-ancestor", ancestor, sha],
+      mirror,
+      commandSignal,
+      localGitEnv,
+    );
+    if (result.exitCode === 1) return false;
+    requireSuccess("git merge-base", result);
+    return true;
+  };
+
+  const reconcile = async (sha: string) => {
+    // The slot stays held until a fresh remote read settles the push.
+    const probe = AbortSignal.timeout(30_000);
+    requireSuccess("Push reconciliation fetch", await refreshMirror(probe));
+    const head = requireSuccess(
+      "git rev-parse",
+      await captureCommand(
+        ["git", "rev-parse", mainRef],
+        mirror,
+        probe,
+        localGitEnv,
+      ),
+    );
+    return isAncestor(sha, head, probe);
+  };
+
   const publish = async (summary: string | undefined) => {
     const sha = await cleanHead();
-    if (!verified.has(sha))
+    if (!fetched || verified !== sha)
       return failure(
         `HEAD ${sha} has no successful verification. Run Verify before publishing.`,
       );
@@ -292,22 +383,22 @@ export function createWorkflow(options: {
       return failure(
         "HEAD matches main. Commit the task changes before publishing.",
       );
-    const ancestry = await captureCommand(
-      ["git", "merge-base", "--is-ancestor", upstream, sha],
-      mirror,
-      signal,
-    );
-    if (ancestry.exitCode === 1)
-      return failure(
-        "Main has advanced. Fetch, rebase onto origin/main, and verify again.",
-      );
-    requireSuccess("git merge-base", ancestry);
-
+    await options.waitForProduction(upstream, signal);
     if ((await cleanHead()) !== sha)
       return failure(
         "HEAD changed before publishing. Verify the current commit.",
       );
     const release = await options.preparePush(sha, summary);
+    try {
+      signal.throwIfAborted();
+      if ((await cleanHead()) !== sha)
+        throw new Error(
+          "HEAD changed before pushing. Verify the current commit.",
+        );
+    } catch (error) {
+      await release(false);
+      throw error;
+    }
     let accepted = false;
     let detail: string;
     let rejection: WorkflowResult | undefined;
@@ -326,16 +417,22 @@ export function createWorkflow(options: {
         return refs?.endsWith(`:${mainRef}`);
       });
       if (status && /^!\t[^\t]+\t\[(?:remote )?rejected\]/.test(status)) {
-        const rejected =
+        const advanced =
           /\((fetch first|non-fast-forward|failed to update ref)\)/.test(
             status,
           );
-        rejection = failure(
-          rejected
-            ? `Push rejected. Fetch, rebase onto origin/main, and verify again.\n${status}`
-            : `Push rejected.\n${status}${result.stderr ? `\n${result.stderr}` : ""}`,
-          result.exitCode || 1,
-        );
+        if (advanced && ++mainAdvances <= maxMainAdvances) {
+          fetched = false;
+          verified = undefined;
+          rejection = failure(
+            `Push rejected. Fetch, rebase onto origin/main, and verify again.\n${status}`,
+          );
+        } else {
+          ended = advanced
+            ? `Main kept advancing. Stopped after ${maxMainAdvances} publish retries.`
+            : `Push rejected. ${status} ${result.stderr}`.trim();
+          rejection = failure(ended);
+        }
       }
       accepted = result.exitCode === 0 || /^[ =*]\t/.test(status ?? "");
       detail = [status, result.stderr].filter(Boolean).join("\n");
@@ -346,7 +443,25 @@ export function createWorkflow(options: {
       await release(false);
       return rejection;
     }
-    published = true;
+    if (!accepted) {
+      let reconciled = false;
+      try {
+        accepted = await reconcile(sha);
+        reconciled = true;
+      } catch (error) {
+        detail = [detail, String(error)].filter(Boolean).join("\n");
+        queue.block(
+          `Publishing is paused because the runner could not reconcile the push of ${sha}. Check origin/main and restart the runner.`,
+        );
+      }
+      if (!accepted && reconciled) {
+        await release(false);
+        ended =
+          `Origin/main does not contain ${sha} after the push. ${detail}`.trim();
+        return failure(ended);
+      }
+    }
+    ended = "The runner is already tracking this run's deployment.";
     try {
       await options.trackPush(sha, summary, accepted, detail);
     } finally {
@@ -361,9 +476,13 @@ export function createWorkflow(options: {
 
   return {
     async dispatch(command: string, summary?: string) {
-      if (published)
-        return failure("The runner is already tracking this run's deployment.");
-      if (signal.aborted) return failure("The task runner session has ended.");
+      if (ended) return failure(ended);
+      if (signal.aborted)
+        return failure(
+          signal.reason instanceof Error
+            ? signal.reason.message
+            : "The task runner session has ended.",
+        );
       if (active) return failure("Another workflow command is running.");
       const operation =
         command === "fetch"
@@ -378,13 +497,23 @@ export function createWorkflow(options: {
         failure(error instanceof Error ? error.message : String(error)),
       );
       try {
-        return await active;
+        const result = await active;
+        if (signal.aborted && !ended)
+          return failure(
+            signal.reason instanceof Error
+              ? signal.reason.message
+              : "The task runner session has ended.",
+          );
+        return result;
       } finally {
         active = undefined;
+        if (ended || signal.aborted) releaseSlot();
       }
     },
-    async drain() {
+    async close() {
+      stopped.abort(new Error("The task runner session has ended."));
       await active;
+      releaseSlot();
     },
   };
 }
@@ -428,7 +557,7 @@ export async function withWorkflowServer<T>(
     // Stop accepting commands before waiting for a request that outlived Codex.
     accepting = false;
     const closed = server.stop(true);
-    await workflow.drain();
+    await workflow.close();
     await closed;
   }
 }

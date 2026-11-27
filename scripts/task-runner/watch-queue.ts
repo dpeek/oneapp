@@ -5,6 +5,7 @@ import {
 
 const initialRetryMs = 1_000;
 const maxRetryMs = 30_000;
+const maxSessions = 2;
 // The workspace's DOM types omit Bun's header options.
 const BunWebSocket = WebSocket as typeof WebSocket & {
   new (url: URL, options: Bun.WebSocketOptions): WebSocket;
@@ -14,13 +15,13 @@ export async function watchTaskQueue({
   origin,
   token,
   signal,
-  check,
+  start,
   fallbackMs = 60_000,
 }: {
   origin: string;
   token: string;
   signal: AbortSignal;
-  check: () => Promise<boolean>;
+  start: () => Promise<{ done: Promise<void> } | undefined>;
   fallbackMs?: number;
 }) {
   if (signal.aborted) return;
@@ -30,9 +31,11 @@ export async function watchTaskQueue({
   let socket: WebSocket | undefined;
   let retry: ReturnType<typeof setTimeout> | undefined;
   let delay = initialRetryMs;
-  // One pending check covers every change received during the current attempt.
+  // Serialize claims while allowing the claimed sessions to run concurrently.
   let pending = Promise.withResolvers<void>();
   const wake = () => pending.resolve();
+  const active = new Set<Promise<void>>();
+  let failure: { cause: unknown } | undefined;
   const connect = () => {
     if (signal.aborted) return;
     const connection = new BunWebSocket(url, {
@@ -62,8 +65,22 @@ export async function watchTaskQueue({
     while (!signal.aborted) {
       await pending.promise;
       if (signal.aborted) break;
+      if (failure) throw failure.cause;
       pending = Promise.withResolvers<void>();
-      if (await check()) wake();
+      if (active.size >= maxSessions) continue;
+      const attempt = await start();
+      if (attempt) {
+        const done = attempt.done
+          .catch((cause: unknown) => {
+            failure = { cause };
+          })
+          .finally(() => {
+            active.delete(done);
+            wake();
+          });
+        active.add(done);
+        wake();
+      }
     }
   } finally {
     signal.removeEventListener("abort", wake);
@@ -73,5 +90,6 @@ export async function watchTaskQueue({
       socket.onclose = null;
       socket.close();
     }
+    await Promise.allSettled(active);
   }
 }

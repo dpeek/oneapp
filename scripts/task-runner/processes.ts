@@ -6,10 +6,13 @@ function hasNoLiveDarwinGroupMembers(pgid: number) {
   });
   return (
     processes.exitCode === 0 &&
-    !processes.stdout.toString().split("\n").some((line) => {
-      const [group, state] = line.trim().split(/\s+/u);
-      return Number(group) === pgid && !state?.startsWith("Z");
-    })
+    !processes.stdout
+      .toString()
+      .split("\n")
+      .some((line) => {
+        const [group, state] = line.trim().split(/\s+/u);
+        return Number(group) === pgid && !state?.startsWith("Z");
+      })
   );
 }
 
@@ -60,4 +63,23 @@ export async function stopProcessGroup(child: ReturnType<typeof Bun.spawn>) {
     }
   }
   throw new Error(`Process group ${child.pid} did not exit.`);
+}
+
+export async function waitForProcessGroup(
+  child: ReturnType<typeof Bun.spawn>,
+  signal: AbortSignal,
+) {
+  let stopping: Promise<void> | undefined;
+  const stop = () => (stopping ??= stopProcessGroup(child));
+  const abort = () => {
+    void stop().catch(() => undefined);
+  };
+  signal.addEventListener("abort", abort, { once: true });
+  if (signal.aborted) abort();
+  try {
+    return await child.exited;
+  } finally {
+    signal.removeEventListener("abort", abort);
+    await stop();
+  }
 }

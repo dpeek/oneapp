@@ -30,12 +30,12 @@ it("wakes for task and tag changes, coalesces active work, and checks on reconne
   });
   const shutdown = new AbortController();
   const release = Promise.withResolvers<void>();
-  const check = vi.fn(async () => false);
+  const check = vi.fn(async () => undefined);
   const watcher = watchTaskQueue({
     origin: listener.url.origin,
     token,
     signal: shutdown.signal,
-    check,
+    start: check,
   });
   const waitForCheck = (count: number) =>
     vi.waitFor(() => expect(check).toHaveBeenCalledTimes(count), {
@@ -46,7 +46,6 @@ it("wakes for task and tag changes, coalesces active work, and checks on reconne
     await waitForCheck(2);
     check.mockImplementationOnce(async () => {
       await release.promise;
-      return false;
     });
 
     peer!.send(tasksChanged);
@@ -82,12 +81,12 @@ it("checks immediately at startup and falls back when no notification arrives", 
     fetch: () => new Response(null, { status: 503 }),
   });
   const shutdown = new AbortController();
-  const check = vi.fn(async () => false);
+  const check = vi.fn(async () => undefined);
   const watcher = watchTaskQueue({
     origin: listener.url.origin,
     token: "runner-fixture",
     signal: shutdown.signal,
-    check,
+    start: check,
     fallbackMs: 200,
   });
   try {
@@ -96,6 +95,37 @@ it("checks immediately at startup and falls back when no notification arrives", 
     await vi.waitFor(() => expect(check).toHaveBeenCalledTimes(2));
   } finally {
     shutdown.abort();
+    await watcher;
+  }
+});
+
+it("keeps two claimed sessions running and fills a slot as soon as one finishes", async () => {
+  using listener = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Response(null, { status: 503 }),
+  });
+  const shutdown = new AbortController();
+  const jobs = Array.from({ length: 3 }, () => Promise.withResolvers<void>());
+  const pending = jobs.slice();
+  const start = vi.fn(async () => {
+    const job = pending.shift();
+    if (job) return { done: job.promise };
+  });
+  const watcher = watchTaskQueue({
+    origin: listener.url.origin,
+    token: "runner-fixture",
+    signal: shutdown.signal,
+    start,
+  });
+  try {
+    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(2));
+    expect(pending).toEqual([jobs[2]]);
+    jobs[1]!.resolve();
+    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(3));
+  } finally {
+    shutdown.abort();
+    jobs.forEach(({ resolve }) => resolve());
     await watcher;
   }
 });

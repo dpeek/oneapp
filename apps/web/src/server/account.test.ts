@@ -3512,6 +3512,22 @@ it("lets a dedicated runner claim opted-in tasks and report only the latest run 
       revision,
       latestRun: { id: runId, phase: "implementation" },
     });
+    expect(
+      await queue.report(task.id, runId, { phase: "waiting-to-publish" }),
+    ).toBe("updated");
+    expect(
+      await queue.report(task.id, runId, {
+        phase: "heartbeat",
+        activePhase: "waiting-to-publish",
+      }),
+    ).toBe("updated");
+    expect(await queue.get(task.id)).toMatchObject({
+      revision,
+      latestRun: { id: runId, phase: "waiting-to-publish" },
+    });
+    expect(
+      await queue.report(task.id, runId, { phase: "implementation" }),
+    ).toBe("updated");
     expect(await queue.report(task.id, runId, { phase: "checks" })).toBe(
       "updated",
     );

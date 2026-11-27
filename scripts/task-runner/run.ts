@@ -6,6 +6,7 @@ import {
   isTaskRunInterrupted,
   taskRunHeartbeatMs,
   TaskRunSummary,
+  type TaskRun,
   type TaskRunUpdate,
 } from "../../apps/web/src/task-run-contract.ts";
 import { taskPath } from "../../apps/web/src/tasks-contract.ts";
@@ -13,6 +14,9 @@ import { withBrowserSession } from "./browser.ts";
 import { preparePendingPush } from "./deployments.ts";
 import { withDevServer } from "./dev.ts";
 import { recordRunEvent } from "./events.ts";
+import { waitForProduction } from "./github.ts";
+import { waitForProcessGroup } from "./processes.ts";
+import type { PublishQueue } from "./publish-queue.ts";
 import type { TaskQueue } from "./queue.ts";
 import {
   commandEnv,
@@ -61,19 +65,21 @@ const execute = async (
     stdin?: Uint8Array;
     stdout?: Bun.BunFile;
     env?: Record<string, string | undefined>;
+    processGroup?: boolean;
   } = {},
 ) => {
   signal.throwIfAborted();
   const child = Bun.spawn(command, {
     cwd,
-    signal,
+    signal: options.processGroup ? undefined : signal,
+    detached: options.processGroup,
     env: { ...commandEnv, ...options.env },
     stdin: options.stdin ?? "ignore",
     stdout: options.capture ? "pipe" : (options.stdout ?? "inherit"),
     stderr: "inherit",
   });
   const [exit, output] = await Promise.all([
-    child.exited,
+    options.processGroup ? waitForProcessGroup(child, signal) : child.exited,
     options.capture ? new Response(child.stdout as ReadableStream).text() : "",
   ]);
   signal.throwIfAborted();
@@ -122,6 +128,8 @@ export async function runNext(
     signal: AbortSignal;
     browser: string;
     bunCache: string;
+    publishQueue: PublishQueue;
+    claimed?: () => void;
   },
 ) {
   const next = await queue.next();
@@ -149,18 +157,23 @@ export async function runNext(
   let claimed = false;
   let publication: { sha: string; accepted: boolean } | undefined;
   let summary: string | undefined;
-  let phase: "setup" | "implementation" | "checks" | "deployment" = "setup";
+  const activity: { phase: Exclude<TaskRun["phase"], "finished"> } = {
+    phase: "setup",
+  };
   const report = (update: TaskRunUpdate) =>
     queue.report(task.id, runId, update);
   const advance = async (
     update: Extract<
       TaskRunUpdate,
-      { phase: "implementation" | "checks" | "deployment" }
+      {
+        phase:
+          "implementation" | "waiting-to-publish" | "checks" | "deployment";
+      }
     >,
   ) => {
     if ((await report(update)) === "stale")
       throw new Error("A newer runner attempt replaced this run.");
-    phase = update.phase;
+    activity.phase = update.phase;
   };
   const stopped = new AbortController();
   const heartbeatSignal = AbortSignal.any([signal, stopped.signal]);
@@ -179,6 +192,7 @@ export async function runNext(
       return;
     }
     claimed = true;
+    settings.claimed?.();
     heartbeat = (async () => {
       while (!heartbeatSignal.aborted) {
         await setTimeout(taskRunHeartbeatMs, undefined, {
@@ -186,7 +200,7 @@ export async function runNext(
         }).catch(() => undefined);
         if (heartbeatSignal.aborted) return;
         try {
-          await report({ phase: "heartbeat", activePhase: phase });
+          await report({ phase: "heartbeat", activePhase: activity.phase });
         } catch {
           await record("heartbeat-failed").catch(() => undefined);
         }
@@ -265,9 +279,9 @@ The runner stops its dev server and browser when this run ends. Track and stop a
 Use these local commands from the task checkout. The harness owns remote credentials, Activity, and deployment tracking. Publish changes only through the local Publish command.
 
 1. Implement the task and run focused tests and local UI verification where relevant. Commit the changes locally and include an Orumai-Task: ${task.id} trailer. Keep the checkout clean.
-2. Fetch using bun --no-env-file "$ORUMAI_WORKFLOW" fetch. Then run git fetch origin and git rebase origin/main. The checkout's origin is a local mirror refreshed by Fetch. Resolve conflicts and finish the rebase in this session. If main added schema changes, check that any unpublished migration follows all migrations on origin/main, including the latest deployed migration.
+2. Once the candidate is committed, run bun --no-env-file "$ORUMAI_WORKFLOW" fetch to queue for the publish slot. Let the command finish while any earlier candidate publishes. Then run git fetch origin and git rebase origin/main. The checkout's origin is a local mirror refreshed by Fetch. Resolve conflicts and finish the rebase in this session. If main added schema changes, check that any unpublished migration follows all migrations on origin/main, including the latest deployed migration.
 3. Verify using bun --no-env-file "$ORUMAI_WORKFLOW" verify. It installs from the frozen lockfile and runs type checks, the full test suite, and builds for the clean commit. Use its failure output to fix issues, commit, and verify again. Use Verify for the full suite.
-4. Publish using bun --no-env-file "$ORUMAI_WORKFLOW" publish "Concise summary of what changed and what you verified". A confirmed branch advance means repeat Fetch, rebase, and Verify before retrying Publish. Resolve other actionable failures within this session's time limit. If Publish says acceptance is uncertain, the runner is already tracking deployment. End the session so the runner can reconcile the push.
+4. Publish using bun --no-env-file "$ORUMAI_WORKFLOW" publish "Concise summary of what changed and what you verified". Publish may wait for the preceding production build to finish. If main advances, repeat Fetch, rebase, and Verify before retrying Publish. The slot allows up to two retries for branch advances and has a 15-minute time limit. If Publish says acceptance is uncertain, end the session. The runner is tracking deployment.
 
 Return outcome "implemented" if Publish accepted the commit. Return "blocked" with a specific reason if you cannot finish or the push is uncertain. Keep the checkout available for inspection when blocked.
 
@@ -292,6 +306,19 @@ ${JSON.stringify({ id: task.id, title: task.title, description: task.description
       sandbox: sandboxCommand(sandboxArgs),
       env: { ...commandEnv, ...sandboxEnv },
       signal: agentSignal,
+      queue: settings.publishQueue,
+      waiting: async () => {
+        await advance({ phase: "waiting-to-publish" });
+        await record("waiting-to-publish");
+      },
+      publishing: async () => {
+        await advance({ phase: "implementation" });
+        await record("publish-slot-acquired");
+      },
+      waitForProduction: async (sha, signal) => {
+        await record("checking-previous-deployment", { sha });
+        await waitForProduction(repository, sha, signal);
+      },
       checking: async (sha) => {
         await advance({ phase: "checks" });
         await record("checking", { sha, log: join(run, "verify.log") });
@@ -412,6 +439,7 @@ ${JSON.stringify({ id: task.id, title: task.title, description: task.description
               repo,
               agentSignal,
               {
+                processGroup: true,
                 stdin: new TextEncoder().encode(prompt),
                 stdout: Bun.file(codexLog),
                 env: {
@@ -451,7 +479,10 @@ ${JSON.stringify({ id: task.id, title: task.title, description: task.description
     if (claimed && !signal.aborted) {
       await report({
         phase: "finished",
-        outcome: `${phase}-failed`,
+        outcome:
+          activity.phase === "waiting-to-publish"
+            ? "publish-failed"
+            : `${activity.phase}-failed`,
         reason: reason.slice(0, 2_000),
         summary,
       }).catch(() => record("outcome-report-failed"));

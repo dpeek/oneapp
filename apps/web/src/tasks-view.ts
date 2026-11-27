@@ -77,6 +77,7 @@ import {
 const runPhaseLabels = {
   setup: "Setting up",
   implementation: "Agent working",
+  "waiting-to-publish": "Waiting to publish",
   checks: "Running checks",
   deployment: "Waiting for deploy",
 } satisfies Record<Exclude<TaskRun["phase"], "finished">, string>;
@@ -84,6 +85,7 @@ const runOutcomeLabels = {
   deployed: "Deployed",
   "setup-failed": "Setup failed",
   "implementation-failed": "Implementation failed",
+  "publish-failed": "Publish failed",
   "checks-failed": "Checks failed",
   "deployment-failed": "Deployment failed",
   interrupted: "Run interrupted",

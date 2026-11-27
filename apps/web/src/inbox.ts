@@ -2483,9 +2483,6 @@ const inboxPrioritySwitch = (selected: MailboxView, h: HtmlBuilder<Message>) =>
     h,
   );
 
-const listLoading = (label: string, h: HtmlBuilder<Message>) =>
-  h.div([h.Class("inbox-list-loading")], [spinner(label, h)]);
-
 const listFailure = (message: string, h: HtmlBuilder<Message>) =>
   h.div(
     [h.Class("inbox-status")],
@@ -2585,12 +2582,6 @@ const listView = (model: Model, h: HtmlBuilder<Message>) => {
       h.div(
         [h.Key(folder), h.Class("workspace-results")],
         [
-          ...(isInboxView(folder) && list?.address
-            ? [h.p([h.Class("inbox-mailbox-address")], [list.address])]
-            : []),
-          ...(list === null && listRequest?.cursor === null
-            ? [listLoading("Loading messages…", h)]
-            : []),
           ...(listError?.cursor === null
             ? [listFailure(listError.message, h)]
             : []),
@@ -2607,8 +2598,7 @@ const listView = (model: Model, h: HtmlBuilder<Message>) => {
             : [
                 list.messages.length === 0 &&
                 list.cursor === null &&
-                !list.indexing &&
-                listRequest === null
+                !list.indexing
                   ? supportsMailFilters(folder) &&
                     mailFilterCount(model.filters.selection)
                     ? filteredEmpty(h)
@@ -2630,9 +2620,6 @@ const listView = (model: Model, h: HtmlBuilder<Message>) => {
                       ),
                       h,
                     ),
-                ...(listRequest?.cursor != null
-                  ? [listLoading("Loading more messages…", h)]
-                  : []),
                 ...(listError?.cursor != null
                   ? [listFailure(listError.message, h)]
                   : []),
@@ -3518,20 +3505,41 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
             isListVisible(model) && isInboxView(model.folder)
               ? [inboxPrioritySwitch(model.folder, h)]
               : undefined,
-          endControls: model.layout.wide
-            ? [
-                button(
-                  {
-                    size: "sm",
-                    variant: "quiet",
-                    attributes: [h.AriaPressed(String(model.layout.split))],
-                    onClick: Message.ToggledSplitView(),
-                    children: ["Split view"],
-                  },
-                  h,
-                ),
-              ]
-            : undefined,
+          endControls: [
+            ...(model.layout.wide
+              ? [
+                  button(
+                    {
+                      size: "sm",
+                      variant: "quiet",
+                      attributes: [h.AriaPressed(String(model.layout.split))],
+                      onClick: Message.ToggledSplitView(),
+                      children: ["Split view"],
+                    },
+                    h,
+                  ),
+                ]
+              : []),
+            ...(isListVisible(model)
+              ? [
+                  h.span(
+                    [h.Class("inbox-list-indicator")],
+                    model.listRequest
+                      ? [
+                          spinner(
+                            model.listRequest.cursor !== null
+                              ? "Loading more messages…"
+                              : model.list
+                                ? "Refreshing messages…"
+                                : "Loading messages…",
+                            h,
+                          ),
+                        ]
+                      : [],
+                  ),
+                ]
+              : []),
+          ],
           primaryAction: button(
             {
               size: "sm",
@@ -3544,17 +3552,6 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
             },
             h,
           ),
-          feedback:
-            isListVisible(model) &&
-            model.list !== null &&
-            model.listRequest?.cursor === null
-              ? [
-                  h.span(
-                    [h.Class("inbox-refresh-indicator")],
-                    [spinner("Refreshing messages…", h)],
-                  ),
-                ]
-              : undefined,
         },
         h,
       ),

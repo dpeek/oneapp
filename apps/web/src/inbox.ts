@@ -2715,52 +2715,41 @@ const messageItem = (
               ),
             ],
           ),
-          ...(participants.length > 1 || (!sent && message.archived)
+          ...(participants.length > 1
             ? [
                 h.div(
                   [h.Class("inbox-item-summary")],
                   [
-                    ...(participants.length > 1
-                      ? [
-                          avatarGroup(
-                            participants.map(
-                              ([
-                                key,
-                                {
-                                  addresses: [address, ...aliases],
-                                  name,
-                                  person,
-                                  appearance,
-                                },
-                              ]) => ({
-                                key,
-                                label:
-                                  sent && !address
-                                    ? "Unknown recipient"
-                                    : participantTooltip(
-                                        name,
-                                        address,
-                                        aliases,
-                                      ),
-                                picture: profileAvatar(h, {
-                                  address,
-                                  person,
-                                  name,
-                                  aliases,
-                                  appearance,
-                                  editLabel: `Edit participant profile for ${address}`,
-                                }),
-                              }),
-                            ),
-                            h,
-                            "Participant profiles",
-                            5,
-                          ),
-                        ]
-                      : []),
-                    ...(!sent && message.archived
-                      ? [h.span([h.Class("inbox-conversation-done")], ["Done"])]
-                      : []),
+                    avatarGroup(
+                      participants.map(
+                        ([
+                          key,
+                          {
+                            addresses: [address, ...aliases],
+                            name,
+                            person,
+                            appearance,
+                          },
+                        ]) => ({
+                          key,
+                          label:
+                            sent && !address
+                              ? "Unknown recipient"
+                              : participantTooltip(name, address, aliases),
+                          picture: profileAvatar(h, {
+                            address,
+                            person,
+                            name,
+                            aliases,
+                            appearance,
+                            editLabel: `Edit participant profile for ${address}`,
+                          }),
+                        }),
+                      ),
+                      h,
+                      "Participant profiles",
+                      5,
+                    ),
                   ],
                 ),
               ]

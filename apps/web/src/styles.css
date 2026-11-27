@@ -1599,10 +1599,6 @@ button {
   min-inline-size: 0;
 }
 
-.inbox-conversation-done {
-  font-size: 0.75rem;
-}
-
 @media (max-width: 40rem) {
   .inbox-list [data-slot="item-title"] {
     display: -webkit-box;

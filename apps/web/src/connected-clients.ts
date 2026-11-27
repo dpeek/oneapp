@@ -98,11 +98,14 @@ const readConnections = async (
       );
     case "Extension":
       return Schema.decodeUnknownSync(ExtensionAccessList)(body).map(
-        ({ id, createdAt }) => ({
+        ({ id, createdAt, scope }) => ({
           id,
           createdAt,
           type,
-          name: "Chrome extension",
+          name:
+            scope === "vault-read"
+              ? "Chrome extension · Vault logins"
+              : "Chrome extension",
         }),
       );
     case "MCP":

@@ -1,0 +1,1 @@
+ALTER TABLE `extension_tokens` ADD `scope` text DEFAULT 'links' NOT NULL;

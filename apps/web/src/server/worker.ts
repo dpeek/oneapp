@@ -51,6 +51,7 @@ import { cliTokenRoutes, requireCliScope } from "./cli-tokens.ts";
 import { authDependencies, databaseLayer } from "./database.ts";
 import { emailChangeRoutes } from "./email-change.ts";
 import { extensionAccessRoutes } from "./extension-access.ts";
+import { extensionVaultRoutes } from "./vault/extension.ts";
 import {
   inboxRoutes,
   inboxSubject,
@@ -536,6 +537,7 @@ export default {
           cliTokenRoutes(http),
           cliLoginRoutes(http),
           extensionAccessRoutes(http),
+          extensionVaultRoutes,
           mcpGrantRoutes(http, env.APP_ORIGIN),
         ).pipe(http.middleware),
         http.routes(),

@@ -4,6 +4,8 @@ import {
   extensionAccessPath,
   extensionApprovalHash,
   extensionId,
+  ExtensionScope,
+  vaultExtensionApprovalHash,
 } from "@orumai/core/extension-auth";
 import { Effect, Schema } from "effect";
 import { Command, Submodel, type Update } from "foldkit";
@@ -11,6 +13,7 @@ import { defineMessageUnion } from "foldkit/message";
 
 export const Model = Schema.Struct({
   approvalId: Schema.NullOr(ExtensionRequestId),
+  scope: ExtensionScope,
   approved: Schema.Boolean,
   pending: Schema.Boolean,
   error: Schema.String,
@@ -19,11 +22,12 @@ type Model = typeof Model.Type;
 
 export function initial(): Model {
   const hash = window.location.hash;
-  const id = hash.startsWith(extensionApprovalHash)
-    ? hash.slice(extensionApprovalHash.length)
-    : null;
+  const vault = hash.startsWith(vaultExtensionApprovalHash);
+  const prefix = vault ? vaultExtensionApprovalHash : extensionApprovalHash;
+  const id = hash.startsWith(prefix) ? hash.slice(prefix.length) : null;
   return {
     approvalId: Schema.is(ExtensionRequestId)(id) ? id : null,
+    scope: vault ? "vault-read" : "links",
     approved: false,
     pending: false,
     error: "",
@@ -42,9 +46,9 @@ const fail = (error: string) => () => Effect.succeed(Message.Failed({ error }));
 const isApproval = Schema.is(ExtensionApproval);
 
 const Approve = Command.define("ApproveChromeExtension", {
-  args: { id: ExtensionRequestId },
+  args: { id: ExtensionRequestId, scope: ExtensionScope },
   messages: [Message.Approved, Message.Failed],
-  execute: ({ id }) =>
+  execute: ({ id, scope }) =>
     Effect.tryPromise(async (signal) => {
       const runtime =
         typeof chrome === "undefined" ? undefined : chrome.runtime;
@@ -57,13 +61,17 @@ const Approve = Command.define("ApproveChromeExtension", {
       const approval = await new Promise<unknown>((resolve) => {
         runtime.sendMessage(
           extensionId,
-          { type: "approve-oneapp-extension", id },
+          { type: "approve-oneapp-extension", id, scope },
           (value) => {
             resolve(runtime.lastError ? null : value);
           },
         );
       });
-      if (!isApproval(approval) || approval.id !== id) {
+      if (
+        !isApproval(approval) ||
+        approval.id !== id ||
+        (approval.scope ?? "links") !== scope
+      ) {
         return Message.Failed({
           error:
             "This connection request is unavailable or expired. Open a new request from the extension.",
@@ -87,7 +95,11 @@ const Approve = Command.define("ApproveChromeExtension", {
         });
       if (response.status !== 204)
         throw new Error("Could not approve the extension");
-      if (window.location.hash === extensionApprovalHash + id)
+      const prefix =
+        scope === "vault-read"
+          ? vaultExtensionApprovalHash
+          : extensionApprovalHash;
+      if (window.location.hash === prefix + id)
         window.history.replaceState(
           null,
           "",
@@ -109,7 +121,10 @@ export const update = (model: Model, message: Message) => {
     RequestedApproval: () =>
       model.pending || !model.approvalId
         ? { model }
-        : { model: pending, commands: [Approve({ id: model.approvalId })] },
+        : {
+            model: pending,
+            commands: [Approve({ id: model.approvalId, scope: model.scope })],
+          },
     Approved: () => ({
       model: { ...model, approvalId: null, approved: true, pending: false },
     }),
@@ -118,6 +133,7 @@ export const update = (model: Model, message: Message) => {
 };
 
 export const view = Submodel.defineView<Model, Message>((model, h) => {
+  const vault = model.scope === "vault-read";
   const button = (label: string, message: Message) =>
     h.button(
       [h.Type("button"), h.Disabled(model.pending), h.OnClick(message)],
@@ -126,28 +142,49 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
   return h.section(
     [h.Id("extension-access")],
     [
-      h.h2([], ["Connect the Orumai extension"]),
+      h.h2(
+        [],
+        [
+          vault
+            ? "Connect the Orumai extension to your vault"
+            : "Connect the Orumai extension",
+        ],
+      ),
       ...(model.approvalId
         ? [
             h.p(
               [],
               [
-                "Allow this Chrome extension to save links to your account until you revoke access.",
+                vault
+                  ? "Allow this Chrome extension to read encrypted login records. Unlocking and matching happen in Chrome. You can revoke access in Settings under Connected clients."
+                  : "Allow this Chrome extension to save links to your account until you revoke access.",
               ],
             ),
-            button("Connect", Message.RequestedApproval()),
+            button(
+              vault ? "Allow read-only vault access" : "Connect",
+              Message.RequestedApproval(),
+            ),
           ]
         : []),
       h.p(
         [h.Role("status")],
         [
           model.approved
-            ? "Extension connected. You can return to the tab you want to save."
+            ? vault
+              ? "Vault access approved. Reopen the extension on the tab you want to sign in to."
+              : "Extension connected. You can return to the tab you want to save."
             : "",
         ],
       ),
       h.p([h.Role("alert")], [model.error]),
-      ...(model.approved ? [h.a([h.Href("/links")], ["Back to Links"])] : []),
+      ...(model.approved
+        ? [
+            h.a(
+              [h.Href(vault ? "/vault" : "/links")],
+              [vault ? "Open Vault" : "Back to Links"],
+            ),
+          ]
+        : []),
     ],
   );
 });

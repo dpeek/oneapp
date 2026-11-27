@@ -9,6 +9,8 @@
     "./extension-auth": "./src/extension-auth.ts",
     "./files": "./src/files.ts",
     "./links": "./src/links.ts",
+    "./vault": "./src/vault.ts",
+    "./vault-crypto": "./src/vault-crypto.ts",
     "./mail-snapshot": "./src/mail-snapshot.ts",
     "./mail-import": "./src/mail-import.ts"
   },

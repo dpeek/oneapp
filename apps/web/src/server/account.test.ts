@@ -19,6 +19,7 @@ import {
   linksReadScope,
   linksWriteScope,
 } from "@orumai/core/links";
+import { extensionVaultPath } from "@orumai/core/vault";
 import { EmailDelivery } from "@yielded/auth";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { ConfigProvider, Effect, Redacted, Schema } from "effect";
@@ -142,7 +143,11 @@ import {
   VaultSnapshot,
 } from "../vault-items-contract.ts";
 import { extraItemTypes, itemTypes } from "../vault-item-content.ts";
-import { createVaultSetup } from "../vault-crypto.ts";
+import {
+  createVaultSetup,
+  encryptLogin,
+  unlockVault,
+} from "../vault-crypto.ts";
 import { deviceLifetimeMillis, randomSecret } from "./bitwarden/tokens.ts";
 import { digest } from "./digest.ts";
 import { ensureOwner } from "./provision-owner.ts";
@@ -3105,6 +3110,147 @@ it("issues scoped CLI tokens and applies read and write scopes to the Links API"
     (await credential(extensionSecret, linkPath(extensionLink.id), "DELETE"))
       .status,
   ).toBe(401);
+});
+
+it("requires explicit read-only extension access and projects only active encrypted logins", async () => {
+  using sqlite = new Database(":memory:");
+  const { call, request, signIn, cookies } = await setup(sqlite);
+  const session = cookies(await signIn(password));
+  const vaultSecret = `one_ext_${"v".repeat(43)}`;
+  const linksSecret = `one_ext_${"l".repeat(43)}`;
+  const vaultGrant = {
+    id: crypto.randomUUID(),
+    digest: await digestSecret(vaultSecret),
+    scope: "vault-read",
+  };
+  const use = (path: string, secret = vaultSecret, method = "GET") =>
+    request(path, {
+      method,
+      headers: {
+        authorization: `Bearer ${secret}`,
+        origin: "https://oneapp.example",
+        "x-effect-auth-csrf": "1",
+      },
+    });
+  expect((await call(extensionAccessPath, vaultGrant)).status).toBe(401);
+  expect((await use(extensionVaultPath)).status).toBe(401);
+  expect((await call(extensionAccessPath, vaultGrant, session)).status).toBe(
+    204,
+  );
+  expect((await use(extensionVaultPath)).status).toBe(404);
+  expect((await use(linksPath, vaultSecret, "POST")).status).toBe(401);
+  expect((await use(vaultItemsPath)).status).toBe(401);
+  expect((await use(vaultItemsPath, vaultSecret, "POST")).status).toBe(401);
+  expect(
+    (
+      await call(
+        extensionAccessPath,
+        {
+          id: crypto.randomUUID(),
+          digest: await digestSecret(linksSecret),
+        },
+        session,
+      )
+    ).status,
+  ).toBe(204);
+  expect((await use(extensionVaultPath, linksSecret)).status).toBe(401);
+
+  const masterPassword = "vault extension fixture password";
+  const keys = await createVaultSetup(masterPassword, email);
+  expect((await call(vaultSetupPath, keys, session)).status).toBe(201);
+  const key = await unlockVault(masterPassword, {
+    ...keys,
+    kdfIterations: 600_000,
+  });
+  const encrypted = await encryptLogin(
+    {
+      title: "Fixture login",
+      username: "test-account",
+      password: "test-password",
+      website: "https://example.test/login",
+    },
+    key,
+  );
+  const item = {
+    keyId: keys.keyId,
+    type: 1,
+    name: encrypted.name,
+    wrappedKey: encrypted.wrappedKey,
+    details: {
+      reprompt: 1,
+      notes: encrypted.name,
+      credentials: {
+        username: encrypted.username,
+        password: encrypted.password,
+        uris: [{ ...encrypted.website!, match: 3 }],
+      },
+    },
+  };
+  const created = await call(vaultItemsPath, item, session);
+  expect(created.status).toBe(201);
+  const { id, revision } = (await created.json()) as {
+    id: string;
+    revision: number;
+  };
+  expect(
+    (
+      await call(
+        vaultItemsPath,
+        {
+          keyId: keys.keyId,
+          name: encrypted.name,
+          wrappedKey: encrypted.wrappedKey,
+          type: 2,
+          notes: encrypted.name,
+        },
+        session,
+      )
+    ).status,
+  ).toBe(201);
+  for (const column of ["deleted_at", "archived_at"]) {
+    sqlite.run(
+      `INSERT INTO personal_vault_logins
+       (id, vault_id, name, wrapped_key, details, created_at, revision_at, ${column})
+       SELECT ?, vault_id, name, wrapped_key, details, created_at, revision_at, 1
+       FROM personal_vault_logins WHERE id = ?`,
+      [crypto.randomUUID(), id],
+    );
+  }
+
+  const snapshot = await use(extensionVaultPath);
+  expect(snapshot.status).toBe(200);
+  expect(snapshot.headers.get("cache-control")).toContain("no-store");
+  expect(await snapshot.json()).toEqual({
+    keyId: keys.keyId,
+    wrappedKey: keys.wrappedKey,
+    kdfSalt: keys.kdfSalt,
+    kdfIterations: 600_000,
+    logins: [
+      {
+        id,
+        revision,
+        name: encrypted.name,
+        wrappedKey: encrypted.wrappedKey,
+        username: encrypted.username,
+        password: encrypted.password,
+        uris: [{ uri: encrypted.website!.uri, match: 3 }],
+        requiresMasterPassword: true,
+      },
+    ],
+  });
+  expect(
+    (
+      await request(`${extensionAccessPath}/${vaultGrant.id}`, {
+        method: "DELETE",
+        headers: {
+          cookie: session,
+          origin: "https://oneapp.example",
+          "x-effect-auth-csrf": "1",
+        },
+      })
+    ).status,
+  ).toBe(204);
+  expect((await use(extensionVaultPath)).status).toBe(401);
 });
 
 const defaultMcpScopes = [

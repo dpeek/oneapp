@@ -43,3 +43,49 @@ p {
   outline: 2px solid var(--focus);
   outline-offset: 3px;
 }
+
+#vault-root,
+.link-actions,
+.vault-password,
+.vault-login {
+  display: grid;
+  gap: 0.5rem;
+}
+
+#vault-root > button {
+  justify-self: start;
+}
+
+.link-actions {
+  border-top: 1px solid var(--border);
+  padding-top: 0.75rem;
+}
+
+h2,
+h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.vault-logins {
+  display: grid;
+  gap: 0.75rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 17rem;
+  overflow-y: auto;
+}
+
+.vault-login {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  border-bottom: 1px solid var(--border);
+  padding: 0 0 0.75rem;
+}
+
+.vault-copy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}

@@ -2,7 +2,7 @@ import { Schema } from "effect";
 
 export const vaultPath = "/vault";
 export const vaultSetupPath = "/api/vault/setup";
-export const vaultKdfIterations = 600_000;
+export { vaultKdfIterations } from "@orumai/core/vault";
 export const vaultPasswordMinimum = 12;
 export const vaultPasswordMaximum = 1024;
 export const normalizeVaultSalt = (email: string) => email.trim().toLowerCase();

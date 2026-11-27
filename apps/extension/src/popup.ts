@@ -13,6 +13,7 @@ import {
   readConnection,
   serverRequest,
 } from "./access.ts";
+import { mountVaultPopup } from "./vault.ts";
 
 const Status = Schema.Literals(["disconnected", "pending", "connected"]);
 const Model = Schema.Struct({
@@ -176,10 +177,9 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
 
   return {
     title: appName,
-    body: h.main(
-      [],
+    body: h.div(
+      [h.Class("link-actions")],
       [
-        h.h1([], [appName]),
         ...(model.status === "connected"
           ? [
               action("Save this tab", Message.ClickedSave()),
@@ -199,7 +199,7 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
               ),
             ]
           : model.status === "disconnected"
-            ? [action("Connect to Orumai", Message.ClickedConnect())]
+            ? [action("Connect to save links", Message.ClickedConnect(), true)]
             : model.status === "pending"
               ? [
                   h.p([], ["Approve the connection in the Orumai tab."]),
@@ -228,6 +228,9 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
     ),
   };
 };
+
+const vaultRoot = document.getElementById("vault-root");
+if (vaultRoot) mountVaultPopup(vaultRoot);
 
 Runtime.run(
   Runtime.makeApplication({

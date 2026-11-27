@@ -4,11 +4,14 @@ import {
   extensionApprovalHash,
   ExtensionRequestId,
   ExtensionSecret,
+  type ExtensionScope,
+  vaultExtensionApprovalHash,
 } from "@orumai/core/extension-auth";
 import { Schema } from "effect";
 import { Base64Url } from "effect/encoding";
 
-const key = "connection";
+const storageKey = (scope: ExtensionScope) =>
+  scope === "links" ? "connection" : "vaultConnection";
 const Connection = Schema.Struct({
   id: ExtensionRequestId,
   secret: ExtensionSecret,
@@ -18,12 +21,14 @@ const Connection = Schema.Struct({
 const isConnection = Schema.is(Connection);
 export type Connection = typeof Connection.Type;
 
-export async function readConnection() {
+export async function readConnection(scope: ExtensionScope = "links") {
+  const key = storageKey(scope);
   const connection = (await chrome.storage.local.get(key))[key];
   return isConnection(connection) ? connection : undefined;
 }
 
-export const clearConnection = () => chrome.storage.local.remove(key);
+export const clearConnection = (scope: ExtensionScope = "links") =>
+  chrome.storage.local.remove(storageKey(scope));
 
 export const serverRequest = (
   path: string,
@@ -43,7 +48,10 @@ export const serverRequest = (
   });
 };
 
-export async function connect() {
+export async function connect(scope: ExtensionScope = "links") {
+  const key = storageKey(scope);
+  const approvalHash =
+    scope === "links" ? extensionApprovalHash : vaultExtensionApprovalHash;
   const tab = await chrome.tabs.create({ active: false, url: "about:blank" });
   if (tab.id === undefined) throw new Error("Could not open approval tab");
   const connection: Connection = {
@@ -59,16 +67,28 @@ export async function connect() {
   try {
     await chrome.tabs.update(tab.id, {
       active: true,
-      url: `${defaultServerUrl}/${extensionApprovalHash}${connection.id}`,
+      url: `${defaultServerUrl}/${approvalHash}${connection.id}`,
     });
   } catch (error) {
-    await clearConnection();
+    await clearConnection(scope);
     throw error;
   }
 }
 
-export async function connectionStatus(signal: AbortSignal) {
-  const connection = await readConnection();
+type ConnectionStatus = "connected" | "disconnected" | "pending";
+export function connectionStatus(
+  signal: AbortSignal,
+): Promise<ConnectionStatus>;
+export function connectionStatus(
+  signal: AbortSignal,
+  scope: ExtensionScope,
+): Promise<ConnectionStatus | "revoked">;
+export async function connectionStatus(
+  signal: AbortSignal,
+  scope: ExtensionScope = "links",
+) {
+  const key = storageKey(scope);
+  const connection = await readConnection(scope);
   if (!connection) return "disconnected";
   const response = await serverRequest(
     currentExtensionPath,
@@ -86,6 +106,8 @@ export async function connectionStatus(signal: AbortSignal) {
   if (response.status !== 401)
     throw new Error("Could not check extension access");
   if (Date.now() < connection.pendingUntil) return "pending";
-  await clearConnection();
+  if (scope === "vault-read")
+    return connection.pendingUntil === 0 ? "revoked" : "disconnected";
+  await clearConnection(scope);
   return "disconnected";
 }

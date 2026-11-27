@@ -1,18 +1,6 @@
+import { EncryptedLoginUri, EncryptedVaultValue } from "@orumai/core/vault";
 import { Schema } from "effect";
-
-// Personal vaults currently use Bitwarden's authenticated type-2 encrypted strings.
-export const EncryptedVaultValue = Schema.String.check(
-  Schema.isMaxLength(128 * 1024),
-  Schema.isPattern(
-    /^2\.[A-Za-z0-9+/]{22}==\|[A-Za-z0-9+/]{22,}={0,2}\|[A-Za-z0-9+/]{43}=$/u,
-  ),
-);
-
-export const WrappedItemKey = Schema.String.check(
-  Schema.isPattern(
-    /^2\.[A-Za-z0-9+/]{22}==\|[A-Za-z0-9+/]{107}=\|[A-Za-z0-9+/]{43}=$/u,
-  ),
-);
+export { EncryptedVaultValue, WrappedItemKey } from "@orumai/core/vault";
 
 const Encrypted = EncryptedVaultValue;
 const optionalEncrypted = Schema.optionalKey(Schema.NullOr(Encrypted));
@@ -54,15 +42,7 @@ const EditableLogin = Schema.Struct({
   autofillOnPageLoad: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
   uris: Schema.optionalKey(
     Schema.NullOr(
-      Schema.Array(
-        Schema.Struct({
-          uri: Schema.NullOr(Encrypted),
-          match: Schema.optionalKey(
-            Schema.NullOr(Schema.Literals([0, 1, 2, 3, 4, 5])),
-          ),
-          uriChecksum: optionalEncrypted,
-        }),
-      ).check(Schema.isMaxLength(100)),
+      Schema.Array(EncryptedLoginUri).check(Schema.isMaxLength(100)),
     ),
   ),
 });

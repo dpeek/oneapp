@@ -91,6 +91,7 @@ export const extensionTokens = sqliteTable(
       .notNull()
       .references(() => accounts.id),
     digest: text().notNull().unique(),
+    scope: text().$type<"links" | "vault-read">().notNull().default("links"),
     createdAt: integer("created_at").notNull(),
     expiresAt: integer("expires_at"),
     revokedAt: integer("revoked_at"),

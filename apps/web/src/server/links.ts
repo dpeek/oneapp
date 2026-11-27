@@ -31,7 +31,7 @@ const linkOwner = (scope: typeof LinkScope.Type, allowExtension = false) =>
       const token =
         allowExtension &&
         /^Bearer one_ext_/iu.test(request.headers.authorization)
-          ? yield* requireExtensionToken
+          ? yield* requireExtensionToken("links")
           : yield* requireCliScope(scope);
       return { id: token.ownerId, browserSession: false };
     }

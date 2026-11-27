@@ -6,6 +6,7 @@ import {
   ExtensionApproval,
   extensionAccessPath,
   ExtensionRequestId,
+  type ExtensionScope,
   ExtensionSecret,
 } from "@orumai/core/extension-auth";
 import { ByteSize, Clock, Data, Effect, Layer, Schema } from "effect";
@@ -24,7 +25,9 @@ class InvalidExtensionToken extends Data.TaggedError(
 export const invalidExtensionResponse = () =>
   jsonError(401, "Extension access is invalid, expired, or revoked");
 
-export const requireExtensionToken = Effect.gen(function* () {
+export const requireExtensionToken = Effect.fnUntraced(function* (
+  scope?: ExtensionScope,
+) {
   const request = yield* HttpServerRequest.HttpServerRequest;
   const secret = /^Bearer (\S+)$/iu.exec(
     request.headers.authorization ?? "",
@@ -35,10 +38,12 @@ export const requireExtensionToken = Effect.gen(function* () {
   const now = yield* Clock.currentTimeMillis;
   const sql = yield* SqlClient.SqlClient;
   const [token] = yield* sql<typeof ExtensionAccess.Type & { ownerId: string }>`
-    SELECT t.id, t.owner_id AS "ownerId", t.created_at AS "createdAt", t.expires_at AS "expiresAt"
+    SELECT t.id, t.owner_id AS "ownerId", t.created_at AS "createdAt",
+           t.expires_at AS "expiresAt", t.scope
     FROM extension_tokens t JOIN accounts a ON a.id = t.owner_id
     WHERE t.digest = ${digest} AND t.revoked_at IS NULL
       AND (t.expires_at IS NULL OR t.expires_at > ${now}) AND a.active = 1
+      AND (${scope ?? null} IS NULL OR t.scope = ${scope ?? null})
   `;
   if (!token) return yield* new InvalidExtensionToken();
   return token;
@@ -60,7 +65,7 @@ export const extensionAccessRoutes = (http: ReturnType<typeof authHttp>) =>
         const now = yield* Clock.currentTimeMillis;
         const sql = yield* SqlClient.SqlClient;
         const tokens = yield* sql<typeof ExtensionAccess.Type>`
-          SELECT id, created_at AS "createdAt", expires_at AS "expiresAt"
+          SELECT id, created_at AS "createdAt", expires_at AS "expiresAt", scope
           FROM extension_tokens
           WHERE owner_id = ${session.subjectId} AND revoked_at IS NULL
             AND (expires_at IS NULL OR expires_at > ${now})
@@ -90,12 +95,12 @@ export const extensionAccessRoutes = (http: ReturnType<typeof authHttp>) =>
             );
             if (input._tag === "None")
               return yield* jsonError(400, "Invalid extension request");
-            const { id, digest } = input.value;
+            const { id, digest, scope = "links" } = input.value;
             const now = yield* Clock.currentTimeMillis;
             const sql = yield* SqlClient.SqlClient;
             const [token] = yield* sql<{ id: string }>`
-            INSERT INTO extension_tokens (id, owner_id, digest, created_at)
-            VALUES (${id}, ${session.subjectId}, ${digest}, ${now})
+            INSERT INTO extension_tokens (id, owner_id, digest, created_at, scope)
+            VALUES (${id}, ${session.subjectId}, ${digest}, ${now}, ${scope})
             ON CONFLICT DO NOTHING RETURNING id
           `;
             if (!token)
@@ -142,7 +147,7 @@ export const extensionAccessRoutes = (http: ReturnType<typeof authHttp>) =>
     HttpRouter.add(
       "GET",
       currentExtensionPath,
-      requireExtensionToken.pipe(
+      requireExtensionToken().pipe(
         Effect.as(noContent()),
         Effect.catchTag("InvalidExtensionToken", invalidExtensionResponse),
       ),
@@ -151,7 +156,7 @@ export const extensionAccessRoutes = (http: ReturnType<typeof authHttp>) =>
       "DELETE",
       currentExtensionPath,
       Effect.gen(function* () {
-        const token = yield* requireExtensionToken;
+        const token = yield* requireExtensionToken();
         const now = yield* Clock.currentTimeMillis;
         const sql = yield* SqlClient.SqlClient;
         yield* sql`

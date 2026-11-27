@@ -96,7 +96,7 @@ export const EditVaultItem = Schema.Union([
   EditVaultNote,
   EditDetailedItem,
 ]);
-export const hostUriMatch = 1;
+export { hostUriMatch } from "@orumai/core/vault";
 
 const itemFields = {
   id: Schema.String,

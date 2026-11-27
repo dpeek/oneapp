@@ -33,7 +33,7 @@ describe("task description Markdown", () => {
       "## **Work**",
       "",
       "Read *updates* and `logs`.  ",
-      "[Original email](/mail#message-fixture)",
+      "[Original email](/app/mail#message-fixture)",
       "",
       "",
       "> First line\\",
@@ -62,7 +62,9 @@ describe("task description Markdown", () => {
     );
     const encoded = editor.read($serializeDescription);
     expect(encoded).toContain("## **Work** today");
-    expect(encoded).toContain("[Original email](/mail#message-fixture)\n\n\n>");
+    expect(encoded).toContain(
+      "[Original email](/app/mail#message-fixture)\n\n\n>",
+    );
     expect(encoded).toMatch(/logs`\.(?: {2}|\\)\n\[Original email\]/u);
     expect(encoded).toMatch(/> First line(?: {2}|\\)\n> Second line/u);
     expect(encoded).toMatch(
@@ -76,7 +78,7 @@ describe("task description Markdown", () => {
   it("uses source for Markdown outside the visual editor's supported structure", () => {
     for (const markdown of [
       "| Name |\n| ---- |\n| Data |",
-      "[Source][link]\n\n[link]: /mail#message-fixture",
+      "[Source][link]\n\n[link]: /app/mail#message-fixture",
       "![Screenshot](/api/tasks/fixture/attachments/fixture)",
       "> A paragraph\n>\n> Another paragraph",
     ])

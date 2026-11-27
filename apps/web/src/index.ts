@@ -9,7 +9,7 @@ import {
   authorizationFromFragment,
   bitwardenSignInQuery,
 } from "./bitwarden-connection.ts";
-import { appName } from "@orumai/core";
+import { appName, vaultPath, workspacePath } from "@orumai/core";
 import {
   alert,
   button,
@@ -106,21 +106,23 @@ import {
   createView as taskCreateView,
   view as tasksView,
 } from "./tasks-view.ts";
-import { vaultPath } from "./vault-setup-contract.ts";
 import * as VaultSetup from "./vault-setup.ts";
 import { screenHeader, workspace, workspaceDrawerMedia } from "./workspace.ts";
 import { changes as workspaceChanges } from "./workspace-changes.ts";
 
 type Page = typeof AppNavigation.Page.Type;
-const pageFor = (url: Url.Url): Page => {
-  if (mailRouteFor(url.pathname)) return "mail";
-  if (calendarRouteFor(url.pathname)) return "calendar";
-  if (taskRouteFor(url.pathname)) return "tasks";
-  if (fileRouteFor(url.pathname)) return "files";
-  if (contactsRouteFor(url.pathname)) return "contacts";
-  if (url.pathname === vaultPath || url.pathname === `${vaultPath}/`)
-    return "vault";
-  return settingsSectionFor(url) ? "settings" : "links";
+const pageFor = (pathname: string): Page | null => {
+  if (mailRouteFor(pathname)) return "mail";
+  if (calendarRouteFor(pathname)) return "calendar";
+  if (taskRouteFor(pathname)) return "tasks";
+  if (fileRouteFor(pathname)) return "files";
+  if (contactsRouteFor(pathname)) return "contacts";
+  if (settingsSectionFor(pathname)) return "settings";
+  const path = pathname.replace(/\/$/u, "");
+  if (path === vaultPath) return "vault";
+  return path === workspacePath || path === AppNavigation.linksPage
+    ? "links"
+    : null;
 };
 
 const settingsSheetId = "settings-sections";
@@ -211,8 +213,7 @@ const bitwardenAuthorization = authorizationFromFragment(initialUrl);
 const connectingBitwarden =
   bitwardenAuthorization !== null &&
   initialUrl.searchParams.get(bitwardenSignInQuery) === "1";
-const connectingMcp =
-  new URL(window.location.href).searchParams.get(mcpLoginQuery) === "1";
+const connectingMcp = initialUrl.searchParams.get(mcpLoginQuery) === "1";
 const toAccountSettingsMessage = (
   message: typeof AccountSettings.Message.Type,
 ) => Message.GotAccountSettingsMessage({ message });
@@ -1056,15 +1057,15 @@ const loadPage = (
 };
 
 const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
-  const page = pageFor(url);
+  const fragment = Option.getOrUndefined(url.hash);
   const model: Model = {
-    page,
+    page: pageFor(url.pathname) ?? "links",
     navigation: AppNavigation.initial,
     account: null,
     appearance: AccountSettings.initialAppearance,
     sessionCheck: "checking",
     accountSettings: AccountSettings.initial,
-    settingsSection: settingsSectionFor(url),
+    settingsSection: settingsSectionFor(url.pathname, fragment),
     settingsSheet: Sheet.init({ id: settingsSheetId }),
     tagSettings: TagSettings.initial,
     pushSettings: PushSettings.initial,
@@ -1080,7 +1081,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     creationMenu: null,
     pendingCreateAction: null,
     taskRoute: taskRouteFor(url.pathname),
-    mailRoute: mailRouteFor(url.pathname, Option.getOrUndefined(url.hash)),
+    mailRoute: mailRouteFor(url.pathname, fragment),
     peopleRoute: contactsRouteFor(url.pathname),
     signInNotice: null,
     links: Links.initial,
@@ -1097,15 +1098,6 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
   >[number][] = [LoadAccount({})];
   const mailNavigation = canonicalMailNavigation(url, model.mailRoute);
   if (mailNavigation) commands.push(mailNavigation);
-  if (url.pathname === "/" && !connectingBitwarden && !isApproval(model)) {
-    const hash = Option.getOrUndefined(url.hash);
-    const path = model.settingsSection
-      ? settingsSectionPath(model.settingsSection)
-      : `/${page}`;
-    commands.push(
-      Navigate({ href: `${path}${hash ? "#" + hash : ""}`, mode: "replace" }),
-    );
-  }
   return { model, commands };
 };
 
@@ -1115,57 +1107,33 @@ const update = (
 ): Update.Return<Model, Message> =>
   Message.match<Update.Return<Model, Message>>(message, {
     RequestedUrl: ({ request }) => {
-      const settingsSection =
-        request._tag === "Internal" ? settingsSectionFor(request.url) : null;
-      const mailRoute =
-        request._tag === "Internal"
-          ? mailRouteFor(
-              request.url.pathname,
-              Option.getOrUndefined(request.url.hash),
-            )
-          : null;
+      const href =
+        request._tag === "Internal" ? Url.toString(request.url) : request.href;
       if (
         request._tag === "Internal" &&
         !isApproval(model) &&
-        (request.url.pathname === "/links" ||
-          settingsSection ||
-          request.url.pathname === vaultPath ||
-          calendarRouteFor(request.url.pathname) ||
-          taskRouteFor(request.url.pathname) ||
-          fileRouteFor(request.url.pathname) ||
-          mailRoute ||
-          contactsRouteFor(request.url.pathname))
+        pageFor(request.url.pathname)
       ) {
         const from = Update.combine(model, [
           closeNavigationOverflow,
           closeFolderSheet,
         ]);
-        if (
-          request.url.pathname === window.location.pathname &&
-          (!mailRoute ||
-            mailRoute.focusMessage === model.mailRoute?.focusMessage) &&
-          (!settingsSection || settingsSection === model.settingsSection)
-        )
-          return from;
+        if (href === window.location.href) return from;
         return {
           model: from.model,
           commands: [
             ...(from.commands ?? []),
-            Navigate({ href: Url.toString(request.url), mode: "push" }),
+            Navigate({ href, mode: "push" }),
           ],
         };
       }
-      const href =
-        request._tag === "Internal" ? Url.toString(request.url) : request.href;
       return { model, commands: [Navigate({ href, mode: "load" })] };
     },
     ChangedUrl: ({ url }) => {
-      const page = pageFor(url);
-      const settingsSection = settingsSectionFor(url);
-      const mailRoute = mailRouteFor(
-        url.pathname,
-        Option.getOrUndefined(url.hash),
-      );
+      const page = pageFor(url.pathname) ?? "links";
+      const fragment = Option.getOrUndefined(url.hash);
+      const settingsSection = settingsSectionFor(url.pathname, fragment);
+      const mailRoute = mailRouteFor(url.pathname, fragment);
       const calendarRoute = calendarRouteFor(url.pathname);
       const taskRoute = taskRouteFor(url.pathname);
       const fileRoute = fileRouteFor(url.pathname);
@@ -2389,16 +2357,24 @@ const updateWithTheme = (model: Model, message: Message) => {
   return result;
 };
 
-if (window.isSecureContext && "serviceWorker" in navigator)
-  void registerServiceWorker().catch(() => {
-    /* Settings exposes registration failures. */
-  });
+// Extension and Bitwarden approvals can arrive in fragments that the Worker never sees.
+const rootHandoff =
+  initialUrl.pathname === "/" &&
+  (connectingBitwarden ||
+    connectingMcp ||
+    CliLogin.initial() !== null ||
+    ExtensionAccess.initial().approvalId !== null);
 
 if (bitwardenAuthorization && !connectingBitwarden) {
   window.location.replace(bitwardenAuthorization);
-} else if (PasswordRecovery.isRecoveryPage(window.location.pathname)) {
-  PasswordRecovery.run(window.location.pathname);
-} else
+} else if (PasswordRecovery.isRecoveryPage(initialUrl.pathname)) {
+  PasswordRecovery.run(initialUrl.pathname);
+} else if (pageFor(initialUrl.pathname) || rootHandoff) {
+  if (window.isSecureContext && "serviceWorker" in navigator)
+    void registerServiceWorker().catch(() => {
+      /* Settings exposes registration failures. */
+    });
+
   Runtime.run(
     Runtime.makeApplication({
       Model,
@@ -2413,3 +2389,18 @@ if (bitwardenAuthorization && !connectingBitwarden) {
       container: document.getElementById("root"),
     }),
   );
+} else if (initialUrl.pathname === "/" && initialUrl.hash === "#cli-access") {
+  initialUrl.pathname = settingsSectionPath("clients");
+  window.location.replace(initialUrl);
+} else {
+  document.title = `Page not found · ${appName}`;
+  const main = document.createElement("main");
+  main.className = "standalone";
+  const heading = document.createElement("h1");
+  heading.textContent = "Page not found";
+  const link = document.createElement("a");
+  link.href = workspacePath;
+  link.textContent = "Open Orumai";
+  main.append(heading, link);
+  document.getElementById("root")?.append(main);
+}

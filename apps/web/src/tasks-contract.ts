@@ -1,8 +1,9 @@
+import { workspacePath } from "@orumai/core";
 import { Schema } from "effect";
 import { ItemId, ItemTagIds, itemTagLimit, Tag } from "./items-contract.ts";
 import { TaskRun } from "./task-run-contract.ts";
 
-export const tasksPath = "/tasks";
+export const tasksPath = `${workspacePath}/tasks`;
 export const tasksApi = "/api/tasks";
 export const tasksChanged = "tasks.changed";
 export const taskPath = (id: string) => `${tasksPath}/${id}`;

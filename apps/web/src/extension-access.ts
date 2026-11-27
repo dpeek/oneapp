@@ -1,3 +1,4 @@
+import { vaultPath } from "@orumai/core";
 import {
   ExtensionApproval,
   ExtensionRequestId,
@@ -10,6 +11,7 @@ import {
 import { Effect, Schema } from "effect";
 import { Command, Submodel, type Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";
+import { linksPage } from "./navigation.ts";
 
 export const Model = Schema.Struct({
   approvalId: Schema.NullOr(ExtensionRequestId),
@@ -180,7 +182,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
       ...(model.approved
         ? [
             h.a(
-              [h.Href(vault ? "/vault" : "/links")],
+              [h.Href(vault ? vaultPath : linksPage)],
               [vault ? "Open Vault" : "Back to Links"],
             ),
           ]

@@ -5,7 +5,7 @@ import WebKit
 final class Orumai: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate,
     WKDownloadDelegate
 {
-    private let home = URL(string: "https://app.dpeek.com")!
+    private let home = URL(string: "https://app.dpeek.com/app")!
     private let webView = WKWebView()
     private var window: NSWindow!
     private var hasLoadedPage = false

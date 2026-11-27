@@ -9,14 +9,22 @@ import {
 const key = "0-8199999999990-00000000-0000-4000-8000-000000000000";
 const inboxId = `${key}.eml`;
 
-it("uses /mail for the inbox and its folders", () => {
-  expect(folderPath("inbox")).toBe("/mail");
-  expect(folderPath("trash")).toBe("/mail/trash");
-  expect(mailRouteFor("/mail/trash")).toEqual({ folder: "trash", id: null });
-  expect(mailRouteFor("/mail")).toEqual({ folder: "inbox", id: null });
-  expect(mailRouteFor("/mail/noise")).toEqual({ folder: "noise", id: null });
+it("uses /app/mail for the inbox and its folders", () => {
+  expect(folderPath("inbox")).toBe("/app/mail");
+  expect(folderPath("trash")).toBe("/app/mail/trash");
+  expect(mailRouteFor("/app/mail/trash")).toEqual({
+    folder: "trash",
+    id: null,
+  });
+  expect(mailRouteFor("/app/mail")).toEqual({ folder: "inbox", id: null });
+  expect(mailRouteFor("/app/mail/noise")).toEqual({
+    folder: "noise",
+    id: null,
+  });
   expect(mailRouteFor("/inbox")).toBeNull();
   expect(mailRouteFor(`/inbox/${key}`)).toBeNull();
+  expect(mailRouteFor("/mail")).toBeNull();
+  expect(mailRouteFor(`/mail/all/received/${key}`)).toBeNull();
 });
 
 it("routes clean and original .eml links for received mail", () => {
@@ -39,8 +47,8 @@ it("distinguishes received and sent mail with matching key stems", () => {
   for (const folder of ["all", "trash"] as const) {
     const received = mailMessagePage(folder, inboxId);
     const sent = mailMessagePage(folder, key);
-    expect(received).toBe(`/mail/${folder}/received/${key}`);
-    expect(sent).toBe(`/mail/${folder}/${key}`);
+    expect(received).toBe(`/app/mail/${folder}/received/${key}`);
+    expect(sent).toBe(`/app/mail/${folder}/${key}`);
     expect(mailRouteFor(received)).toEqual({ folder, id: inboxId });
     expect(mailRouteFor(`${sent}.eml`)).toEqual({ folder, id: inboxId });
     expect(mailRouteFor(sent)).toEqual({ folder, id: key });
@@ -49,7 +57,7 @@ it("distinguishes received and sent mail with matching key stems", () => {
     folder: "sent",
     id: key,
   });
-  expect(mailRouteFor(`/mail/sent/${inboxId}`)).toBeNull();
+  expect(mailRouteFor(`/app/mail/sent/${inboxId}`)).toBeNull();
 });
 
 it("keeps message citations focused on the linked message in All Mail", () => {

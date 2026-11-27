@@ -1,6 +1,5 @@
 import { Schema } from "effect";
 
-export const vaultPath = "/vault";
 export const vaultSetupPath = "/api/vault/setup";
 export { vaultKdfIterations } from "@orumai/core/vault";
 export const vaultPasswordMinimum = 12;

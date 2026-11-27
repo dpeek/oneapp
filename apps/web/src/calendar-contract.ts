@@ -1,6 +1,7 @@
+import { workspacePath } from "@orumai/core";
 import { Schema } from "effect";
 
-export const calendarPath = "/calendar";
+export const calendarPath = `${workspacePath}/calendar`;
 export const calendarApi = "/api/calendar";
 export const calendarImportLimit = 2 * 1024 * 1024;
 export const calendarImportLimitLabel = `${calendarImportLimit / (1024 * 1024)} MiB`;

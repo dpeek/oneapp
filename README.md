@@ -11,7 +11,7 @@ bun install
 bun run dev
 ```
 
-Open `http://localhost:1337`. The root `dev` command starts the local Cloudflare Worker and Vite web app together and watches both for changes. On first run it populates local dev from the latest encrypted backup. Use the `OWNER_EMAIL` and `OWNER_PASSWORD` from the local environment file printed at startup. See [Local production backups](#local-production-backups) for setup and refresh.
+Open `http://localhost:1337/app`. The root `dev` command starts the local Cloudflare Worker and Vite web app together and watches both for changes. On first run it populates local dev from the latest encrypted backup. Use the `OWNER_EMAIL` and `OWNER_PASSWORD` from the local environment file printed at startup. See [Local production backups](#local-production-backups) for setup and refresh.
 
 For a fresh checkout without a backup, follow [Run the full web stack with an empty database](#run-the-full-web-stack-with-an-empty-database).
 
@@ -30,13 +30,13 @@ ALCHEMY_HOME="$PWD/.alchemy/home" XDG_STATE_HOME="$PWD/.alchemy/xdg-state" \
 
 The root launcher starts the local Worker and Vite, applies the migrations to an empty local database, and provisions a local owner. Use a different stage name for another empty database. The launcher reuses the named stage's database on restart.
 
-Open `http://localhost:18373/tasks` and sign in with `OWNER_EMAIL` and `OWNER_PASSWORD` from `.alchemy/clean_clone.env`. The Tasks page should show **No tasks yet**.
+Open `http://localhost:18373/app/tasks` and sign in with `OWNER_EMAIL` and `OWNER_PASSWORD` from `.alchemy/clean_clone.env`. The Tasks page should show **No tasks yet**.
 
 With the runner's browser, skip its external Chrome version check, which the sandbox blocks. Wait for the sign-in form to appear in `snapshot -i`, then use its references to `fill` the fields and `click` **Sign in**. Read the login values inside a helper process that passes the commands via `batch --bail` on stdin and suppresses the batch output.
 
 ```sh
 export AGENT_BROWSER_NO_VERSION_CHECK=1
-"$ORUMAI_BROWSER" open http://localhost:18373/tasks
+"$ORUMAI_BROWSER" open http://localhost:18373/app/tasks
 "$ORUMAI_BROWSER" snapshot -i
 ```
 
@@ -173,7 +173,7 @@ Then import in another terminal:
 bun run mail:import --snapshot .mail-snapshots/icloud --stage mail_replay --mailbox personal
 ```
 
-Sign in at `http://localhost:1338` with the `mail@dpeek.com` credentials in `.alchemy/mail_replay.env`. The importer requires an explicit local stage and destination `--mailbox`, verifies the entire snapshot before writing, and stores a per-message report in `.alchemy/mail-import/<stage>/<mailbox>/<snapshot-id>-report.json`. Failed messages make the command exit nonzero. Repeat the command to resume; completed receipts are skipped, preserving subsequent read/archive/deletion changes. The local adapter reports messages over 25 MiB as unsupported; their originals remain in the snapshot.
+Sign in at `http://localhost:1338/app` with the `mail@dpeek.com` credentials in `.alchemy/mail_replay.env`. The importer requires an explicit local stage and destination `--mailbox`, verifies the entire snapshot before writing, and stores a per-message report in `.alchemy/mail-import/<stage>/<mailbox>/<snapshot-id>-report.json`. Failed messages make the command exit nonzero. Repeat the command to resume; completed receipts are skipped, preserving subsequent read/archive/deletion changes. The local adapter reports messages over 25 MiB as unsupported; their originals remain in the snapshot.
 
 After every selected message has imported successfully and threading is finished, a one-time completion policy marks inactive conversations complete. A conversation qualifies when its latest incoming **or sent** message is strictly older than 30 days, none of its incoming messages is unread, and none of its messages has the source `\\Flagged` flag. The cutoff is fixed at the snapshot's `createdAt` minus 30 days, so retries and imports on another machine make the same age comparison. Deleted messages are ignored; conversations containing mail outside this import are protected. Existing complete conversations stay complete.
 
@@ -231,7 +231,7 @@ Install the standalone Command Line Tools with `xcode-select --install` or use a
 
 The macOS build bundles the static [Orumai icon](apps/apple/Orumai.icns). Open the [spiral explorer](doc/brand/spiral-explorer.html) in a browser to revisit the settings used for the mark.
 
-The app loads `https://app.dpeek.com` and keeps its own Orumai sign-in session. Links to other sites open in your default browser.
+The app loads `https://app.dpeek.com/app` and keeps its own Orumai sign-in session. Links to other sites open in your default browser.
 
 ## Local production backups
 
@@ -315,9 +315,9 @@ The primary mailbox address is `mail@dpeek.com`. Production uses the `dpeek.com`
 
 After applying the production changes, check both apex MX records. Send test mail to an existing and an unlisted `dpeek.com` address and to each provisioned `orumai.app` alias, then confirm the arrivals in Mail. Check that an unassigned `orumai.app` recipient is rejected and that a message sent from the inbox arrives with `mail@dpeek.com` as its sender.
 
-Sign in and open **Mail** (`/mail`) to browse Inbox conversations by their latest incoming message. Open a conversation to read the selected message and expand earlier emails and sent replies. Select **Back** to return to the folder’s list.
+Sign in and open **Mail** (`/app/mail`) to browse Inbox conversations by their latest incoming message. Open a conversation to read the selected message and expand earlier emails and sent replies. Select **Back** to return to the folder’s list.
 
-**Contacts** (`/contacts`) holds people and companies. Choose **Add contact**, then select **Person** or **Company**; company contacts can have email addresses, website domains and a logo. Contact details use `/contacts/<id>`.
+**Contacts** (`/app/contacts`) holds people and companies. Choose **Add contact**, then select **Person** or **Company**; company contacts can have email addresses, website domains and a logo. Contact details use `/app/contacts/<id>`.
 
 Automatic sender appearance uses the visible From address and headers. Transactional mailbox tokens (including tagged invoices and product-prefixed no-reply addresses), delivery subdomains such as `email` and `messages`, shared mailboxes, and organization names favor a company/service icon. Public-suffix parsing distinguishes real subdomains from suffixes such as `co.uk` and private hosting tenants. Named people at institutional subdomains and personal mail providers remain personal unless stronger delivery or transactional signals apply. Named employees at company domains are not automatically companies. These are heuristics; explicit sender overrides and saved person/company contacts take precedence. Cached appearances are rebuilt from original headers when the rules change, preserving mailbox state.
 
@@ -327,7 +327,7 @@ The Orumai vault and Bitwarden clients request website icons from Orumai at `/ic
 
 Cloudflare stores invocation logs and traces at 100% sampling and groups recurring errors in Workers Issues. Query strings are redacted from request URLs in telemetry. Open **Workers & Pages → oneapp-web-production → Observability** to inspect production logs and traces. [Cloudflare Query Builder](https://developers.cloudflare.com/workers/observability/query-builder/) also documents the telemetry API.
 
-Open the URL printed at the end of the deploy and sign in with the configured email and password. Under **Links** (`/links`), enter an HTTP or HTTPS URL and press Enter. Use **Delete** next to a saved link to remove it. **Settings** (`/settings`) opens Account, with separate pages for Notifications and Clients.
+Open `/app` at the URL printed at the end of the deploy and sign in with the configured email and password. Under **Links** (`/app/links`), enter an HTTP or HTTPS URL and press Enter. Use **Delete** next to a saved link to remove it. **Settings** (`/app/settings`) opens Account, with separate pages for Notifications and Clients.
 
 In **Settings → Account**, request a code to verify the current email or use your current password to set a new one. Password changes sign out all browser sessions and send a notice to the verified address when email sending is configured. New passwords must have at least 15 characters. For breach screening, the server sends the first five hexadecimal characters of the new password's SHA-1 hash to [Pwned Passwords](https://haveibeenpwned.com/API/v3#PwnedPasswords) and matches the returned hashes locally.
 

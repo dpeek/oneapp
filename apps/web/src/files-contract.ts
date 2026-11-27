@@ -1,8 +1,9 @@
+import { workspacePath } from "@orumai/core";
 import { FileMetadata } from "@orumai/core/files";
 import { Schema } from "effect";
 import { ItemId, ItemTagIds, Tag } from "./items-contract.ts";
 
-export const filesPath = "/files";
+export const filesPath = `${workspacePath}/files`;
 export const filesApi = "/api/files";
 export const filesChanged = "files.changed";
 export const filePath = (id: string) => `${filesPath}/${id}`;
@@ -14,9 +15,10 @@ export const FileRoute = Schema.Struct({ id: Schema.NullOr(ItemId) });
 export const fileRouteFor = (
   pathname: string,
 ): typeof FileRoute.Type | null => {
-  if (pathname === filesPath || pathname === `${filesPath}/`)
-    return { id: null };
-  const id = /^\/files\/([^/]+)\/?$/u.exec(pathname)?.[1];
+  const path = pathname.replace(/\/$/u, "");
+  if (path === filesPath) return { id: null };
+  if (!path.startsWith(`${filesPath}/`)) return null;
+  const id = path.slice(filesPath.length + 1);
   return Schema.is(ItemId)(id) ? { id } : null;
 };
 

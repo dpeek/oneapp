@@ -1,3 +1,4 @@
+import { vaultPath, workspacePath } from "@orumai/core";
 import {
   button,
   calendarIconPaths,
@@ -24,7 +25,8 @@ import { mailPath } from "./inbox-contract.ts";
 import { contactsPath } from "./people-contract.ts";
 import { settingsPath } from "./settings-navigation.ts";
 import { tasksPath } from "./tasks-contract.ts";
-import { vaultPath } from "./vault-setup-contract.ts";
+
+export const linksPage = `${workspacePath}/links`;
 
 export const Page = Schema.Literals([
   "links",
@@ -46,7 +48,7 @@ export const contactsIconPaths = [
 const destinations = [
   {
     page: "links",
-    href: "/links",
+    href: linksPage,
     label: "Links",
     paths: linkIconPaths,
   },

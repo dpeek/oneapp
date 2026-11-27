@@ -1,9 +1,9 @@
+import { workspacePath } from "@orumai/core";
 import { navigationLinks, outlineIcon } from "@orumai/ui";
-import { Option, Schema } from "effect";
-import type { Url } from "foldkit";
+import { Schema } from "effect";
 import type { HtmlBuilder } from "foldkit/html";
 
-export const settingsPath = "/settings";
+export const settingsPath = `${workspacePath}/settings`;
 export const SettingsSection = Schema.Literals([
   "account",
   "notifications",
@@ -52,13 +52,9 @@ export const settingsSectionPath = (section: SettingsSection) =>
 export const settingsSectionLabel = (section: SettingsSection) =>
   destinations[section].label;
 
-export const settingsSectionFor = ({ pathname, hash }: Url.Url) => {
+export const settingsSectionFor = (pathname: string, fragment?: string) => {
   const path = pathname.replace(/\/$/u, "");
-  if (
-    (pathname === "/" || path === settingsPath) &&
-    Option.getOrUndefined(hash) === "cli-access"
-  )
-    return "clients";
+  if (path === settingsPath && fragment === "cli-access") return "clients";
   return (
     SettingsSection.literals.find(
       (section) => path === settingsSectionPath(section),

@@ -2,7 +2,7 @@
   "id": "/",
   "name": "Orumai",
   "short_name": "Orumai",
-  "start_url": "/mail",
+  "start_url": "/app",
   "scope": "/",
   "display": "standalone",
   "background_color": "#ffffff",

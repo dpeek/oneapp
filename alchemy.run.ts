@@ -1,5 +1,6 @@
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import { taskRunnerMcpPath } from "./packages/core/src/cli-auth.ts";
+import { workspacePath } from "./packages/core/src/index.ts";
 import * as Alchemy from "alchemy";
 import * as Output from "alchemy/Output";
 import { Config, Effect, Layer, Option, Redacted } from "effect";
@@ -89,8 +90,10 @@ export const Web = Cloudflare.Worker(
         : undefined;
     const from = `accounts@${Option.getOrUndefined(domain)}`;
     const assetRouting = {
-      notFoundHandling: "single-page-application" as const,
+      notFoundHandling: "none" as const,
       runWorkerFirst: [
+        workspacePath,
+        `${workspacePath}/*`,
         "/api",
         "/api/*",
         "/identity/*",

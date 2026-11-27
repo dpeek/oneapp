@@ -1,9 +1,10 @@
+import { workspacePath } from "@orumai/core";
 import { FileMetadata } from "@orumai/core/files";
 import { Schema as AuthSchema } from "@yielded/auth";
 import { Schema } from "effect";
 import { PersonEmail, PersonId, PersonMatch } from "./people-contract.ts";
 
-export const mailPath = "/mail";
+export const mailPath = `${workspacePath}/mail`;
 export const inboxApiPath = "/api/inbox";
 export const inboxVersionPath = `${inboxApiPath}/version`;
 export const InboxVersion = Schema.Struct({ version: Schema.Int });

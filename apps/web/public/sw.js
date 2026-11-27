@@ -41,14 +41,14 @@ const destination = (value) => {
     const url = new URL(value, self.location.origin);
     if (
       url.origin === self.location.origin &&
-      (url.pathname === "/calendar" ||
-        /^\/mail\/all\/received\/[^/]+$/.test(url.pathname)) &&
+      (url.pathname === "/app/calendar" ||
+        /^\/app\/mail\/all\/received\/[^/]+$/.test(url.pathname)) &&
       !url.search &&
       !url.hash
     )
       return url.href;
   } catch {}
-  return new URL("/mail", self.location.origin).href;
+  return new URL("/app/mail", self.location.origin).href;
 };
 self.addEventListener("push", (event) => {
   let payload = {};
@@ -70,7 +70,7 @@ self.addEventListener("push", (event) => {
             : calendar
               ? "oneapp-calendar"
               : "oneapp-new-mail",
-        data: { url: destination(calendar ? "/calendar" : payload?.url) },
+        data: { url: destination(calendar ? "/app/calendar" : payload?.url) },
       },
     ),
   );
@@ -86,9 +86,13 @@ self.addEventListener("notificationclick", (event) => {
       });
       const existing =
         windows.find((client) => client.url === url) ??
-        windows.find(
-          (client) => new URL(client.url).origin === self.location.origin,
-        );
+        windows.find((client) => {
+          const page = new URL(client.url);
+          return (
+            page.origin === self.location.origin &&
+            (page.pathname === "/app" || page.pathname.startsWith("/app/"))
+          );
+        });
       if (existing) {
         try {
           const client =

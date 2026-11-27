@@ -367,6 +367,23 @@ const setup = async (
   };
 };
 
+it("serves the workspace shell for direct visits under /app", async () => {
+  using sqlite = new Database(":memory:");
+  const { request } = await setup(sqlite);
+  const legacyTask = "/tasks/00000000-0000-4000-8000-000000000000";
+  for (const path of ["/app", `/app${legacyTask}?source=fixture`]) {
+    const response = await request(path, {});
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("<html></html>");
+    expect(response.headers.get("location")).toBeNull();
+  }
+  for (const path of ["/mail", legacyTask, "/application"]) {
+    const response = await request(path, {});
+    expect(response.status).toBe(404);
+    expect(response.headers.get("location")).toBeNull();
+  }
+});
+
 it("renames shared tags and cascades deletion through tasks and files", async () => {
   using sqlite = new Database(":memory:");
   const published: Array<{ change: string; tasks: number; files: number }> = [];
@@ -4172,7 +4189,7 @@ it("lists only the owner's calendar occurrences with an explicit read grant", as
       { id: team, name: "Team" },
     ],
     events,
-    url: `${origin}/calendar`,
+    url: `${origin}/app/calendar`,
     nextOffset: null,
     incomplete: false,
   });
@@ -4184,7 +4201,7 @@ it("lists only the owner's calendar occurrences with an explicit read grant", as
     (await list({ calendarId: team })).result?.structuredContent,
   ).toMatchObject({
     events: [events[1], events[3]],
-    url: `${origin}/calendar/${team}`,
+    url: `${origin}/app/calendar/${team}`,
     incomplete: false,
   });
   expect((await list({ limit: 2 })).result?.structuredContent).toMatchObject({
@@ -5884,7 +5901,7 @@ it("uses scoped MCP tools to read and edit the same tasks and tags as the web ap
     id: requestId,
     revision: expect.any(String),
     assignee: "owner",
-    url: `${origin}/tasks/${requestId}`,
+    url: `${origin}/app/tasks/${requestId}`,
   });
   const getTask = async () => {
     const reply = await useTool(read, "get_task", { id: requestId });

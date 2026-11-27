@@ -72,11 +72,12 @@ const makeRuntime = () =>
     assets: {
       directory: join(appDirectory, "dist"),
       binding: "ASSETS",
-      assetConfig: { not_found_handling: "single-page-application" },
       routerConfig: {
         has_user_worker: true,
         static_routing: {
           user_worker: [
+            "/app",
+            "/app/*",
             "/api/*",
             "/identity/*",
             "/icons/*",

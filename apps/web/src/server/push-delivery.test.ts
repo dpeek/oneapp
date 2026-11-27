@@ -457,7 +457,7 @@ it("delivers private calendar reminders when due and once per device", async () 
     expect(payload).toEqual({
       type: "calendar",
       tag: `calendar:event:${now + 60_000}`,
-      url: "/calendar",
+      url: "/app/calendar",
     });
     return new Response(null, { status: 201 });
   });

@@ -17,6 +17,7 @@ import {
 } from "./mailbox.ts";
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import type { ForwardableEmailMessage } from "@cloudflare/workers-types";
+import { isWorkspacePath } from "@orumai/core";
 import { cliLoginPath, taskRunnerScope } from "@orumai/core/cli-auth";
 import { EmailDelivery } from "@yielded/auth";
 import { ProofDispatchScheduler } from "@yielded/auth/Proofs";
@@ -255,10 +256,9 @@ export default {
         rasterizeSvg,
         renderCompanyAvatar,
       );
-    if (
-      (path === forgotPasswordPage || path === resetPasswordPage) &&
-      env.ASSETS
-    ) {
+    const recoveryPage =
+      path === forgotPasswordPage || path === resetPasswordPage;
+    if ((isWorkspacePath(path) || recoveryPage) && env.ASSETS) {
       const method = request.method;
       if (method !== "GET" && method !== "HEAD")
         return new Response(null, {
@@ -268,6 +268,7 @@ export default {
       const page = await env.ASSETS.fetch(
         new Request(new URL("/", url), { method }),
       );
+      if (!recoveryPage) return page;
       const headers = new Headers(page.headers);
       headers.set(
         "cache-control",

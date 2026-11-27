@@ -1,10 +1,11 @@
+import { workspacePath } from "@orumai/core";
 import { Schema as AuthSchema } from "@yielded/auth";
 import { Schema } from "effect";
 import { CompanyAvatarStyle } from "./company-avatar-contract.ts";
 import { isCompanyDomain } from "./company-domains.ts";
 
 export const peopleApiPath = "/api/people";
-export const contactsPath = "/contacts";
+export const contactsPath = `${workspacePath}/contacts`;
 const companiesPath = `${contactsPath}/companies`;
 export const contactPath = (id: string) => `${contactsPath}/${id}`;
 export const contactsListPath = (kind: ContactKind) =>

@@ -96,10 +96,10 @@ it("opens the actual received-message URL on a cold launch and rejects external 
   await worker.dispatch("notificationclick", {
     notification: {
       close,
-      data: { url: "https://attacker.example/mail/all/received/fake" },
+      data: { url: "https://attacker.example/app/mail/all/received/fake" },
     },
   });
-  expect(worker.openWindow).toHaveBeenLastCalledWith(`${origin}/mail`);
+  expect(worker.openWindow).toHaveBeenLastCalledWith(`${origin}/app/mail`);
 });
 
 it("focuses a matching window and navigates an existing window to a different message", async () => {
@@ -109,18 +109,25 @@ it("focuses a matching window and navigates an existing window to a different me
     focus: vi.fn(async () => {}),
     navigate: vi.fn(async (_url: string) => window),
   };
+  const approval = {
+    url: `${origin}/?connect-mcp=1`,
+    focus: vi.fn(async () => {}),
+    navigate: vi.fn(async (_url: string) => approval),
+  };
+  worker.windows.push(approval);
   worker.windows.push(window);
   await worker.dispatch("notificationclick", {
     notification: { close() {}, data: { url: href } },
   });
   expect(window.focus).toHaveBeenCalledTimes(1);
   expect(window.navigate).not.toHaveBeenCalled();
-  window.url = `${origin}/settings`;
+  window.url = `${origin}/app/settings`;
   await worker.dispatch("notificationclick", {
     notification: { close() {}, data: { url: href } },
   });
   expect(window.navigate).toHaveBeenCalledWith(href);
   expect(window.focus).toHaveBeenCalledTimes(2);
+  expect(approval.navigate).not.toHaveBeenCalled();
   expect(worker.openWindow).not.toHaveBeenCalled();
 });
 
@@ -152,11 +159,11 @@ it("opens the calendar from a private reminder using the same-origin calendar ro
         type: "calendar",
         title: "Private event",
         tag: "calendar:event:time",
-        url: "https://example.com/calendar",
+        url: "https://example.com/app/calendar",
       }),
     },
   });
-  const url = `${origin}/calendar`;
+  const url = `${origin}/app/calendar`;
   expect(worker.notifications).toHaveBeenCalledWith(
     "Calendar reminder",
     expect.objectContaining({

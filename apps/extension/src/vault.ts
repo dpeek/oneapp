@@ -1,4 +1,4 @@
-import { defaultServerUrl } from "@orumai/core";
+import { defaultServerUrl, vaultPath } from "@orumai/core";
 import {
   extensionVaultPath,
   type ExtensionVaultLogin,
@@ -383,7 +383,7 @@ export function mountVaultPopup(root: HTMLElement) {
         break;
       case "uninitialized": {
         const link = element("a", "Open Vault in Orumai");
-        link.href = new URL("/vault", defaultServerUrl).href;
+        link.href = new URL(vaultPath, defaultServerUrl).href;
         link.target = "_blank";
         link.rel = "noopener noreferrer";
         root.append(

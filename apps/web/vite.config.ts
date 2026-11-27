@@ -2,6 +2,7 @@ import { foldkit } from "@foldkit/vite-plugin";
 import stylex from "@stylexjs/unplugin/vite";
 import { createReadStream, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { isWorkspacePath } from "@orumai/core";
 import { defineConfig } from "vite";
 import { stylexOptions } from "../../scripts/stylex-options.ts";
 
@@ -14,6 +15,7 @@ const pdfWorker = fileURLToPath(
 
 export default defineConfig({
   root: fileURLToPath(new URL("./", import.meta.url)),
+  appType: "mpa",
   // Development serves source files, independently of production's dist/.
   plugins: [
     foldkit({ devToolsMcpPort: false }),
@@ -37,6 +39,14 @@ export default defineConfig({
       configureServer(server) {
         server.middlewares.use((request, response, next) => {
           const pathname = request.url?.split("?")[0];
+          if (
+            pathname &&
+            isWorkspacePath(pathname) &&
+            (request.method === "GET" || request.method === "HEAD")
+          ) {
+            request.url = "/index.html";
+            return next();
+          }
           if (pathname === "/mcp-consent.css") {
             // Let Vite resolve the shared theme import before serving CSS.
             request.url = "/src/mcp-consent.css?direct";

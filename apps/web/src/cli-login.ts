@@ -1,3 +1,4 @@
+import { workspacePath } from "@orumai/core";
 import {
   CliRequestedScopes,
   CliLoginApproval,
@@ -146,7 +147,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
                   : "CLI login declined.",
               ],
             ),
-            h.a([h.Href("/")], ["Back to Orumai"]),
+            h.a([h.Href(workspacePath)], ["Back to Orumai"]),
           ]
         : model.approval
           ? [

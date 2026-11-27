@@ -1,4 +1,4 @@
-import { appName, defaultServerUrl } from "@orumai/core";
+import { appName, defaultServerUrl, workspacePath } from "@orumai/core";
 import { currentExtensionPath } from "@orumai/core/extension-auth";
 import { linksPath, SaveLink } from "@orumai/core/links";
 import { alert, button } from "@orumai/ui";
@@ -188,7 +188,7 @@ const view = (model: Model, h: HtmlBuilder<Message>): Document => {
                 [
                   h.a(
                     [
-                      h.Href(defaultServerUrl),
+                      h.Href(new URL(workspacePath, defaultServerUrl).href),
                       h.Target("_blank"),
                       h.Rel("noopener noreferrer"),
                     ],

@@ -1,4 +1,4 @@
-import { appName } from "@orumai/core";
+import { appName, workspacePath } from "@orumai/core";
 import { alert, button, field, input } from "@orumai/ui";
 import { EmailDelivery } from "@yielded/auth";
 import { Effect, Option, Redacted, Schema } from "effect";
@@ -286,7 +286,7 @@ export const run = (pathname: string) => {
               ...(model.phase === "invalid" || model.phase === "reset"
                 ? [h.a([h.Href(forgotPasswordPage)], ["Request a new link"])]
                 : []),
-              h.a([h.Href("/")], ["Back to sign in"]),
+              h.a([h.Href(workspacePath)], ["Back to sign in"]),
             ],
           ),
         ],

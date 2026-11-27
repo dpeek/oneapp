@@ -80,7 +80,7 @@ const webLoginUrl = `https://login.oneapp-vault.test:${new URL(origin).port}/fix
 const signInToOrumai = async ({ context, localResponse }) => {
   step = "signing in to Orumai";
   const app = context.pages()[0];
-  await app.goto(origin);
+  await app.goto(new URL("/app", origin).href);
   await app.getByLabel("Email", { exact: true }).fill(fixtureEmail);
   await app.getByLabel("Password", { exact: true }).fill(ownerPassword);
   await button(app, "Sign in").click();
@@ -718,7 +718,7 @@ try {
     );
 
     step = "opening the encrypted vault in the Orumai web app";
-    await app.goto(new URL("/vault", origin).href);
+    await app.goto(new URL("/app/vault", origin).href);
     const webVault = app.locator("orumai-vault-reader");
     const unlockPassword = webVault.getByLabel("Vault master password", {
       exact: true,
@@ -1400,7 +1400,7 @@ try {
     const firstDevice = claims(token).device;
     const secondDevice = claims(secondToken).device;
     assert.notEqual(firstDevice, secondDevice);
-    await app.goto(new URL("/settings/clients", origin).href);
+    await app.goto(new URL("/app/settings/clients", origin).href);
     const listing = await localResponse((response) =>
       endpoint(response, devicesPath),
     );

@@ -156,9 +156,12 @@ const rowMenu = ItemActionMenu.create<RowAction>();
 const rowActions = ItemActionMenu.init("mail-row-actions");
 const newEmailButtonId = "mail-new-email";
 const emptyTrashDialogId = "mail-empty-trash";
+const splitViewKey = "orumai.mail.splitView";
+const splitViewMedia = "(min-width: 72rem)";
 
 export const Model = Schema.Struct({
   folder: MailboxView,
+  layout: Schema.Struct({ wide: Schema.Boolean, split: Schema.Boolean }),
   filters: Filters.Model,
   folderSheet: Sheet.Model,
   conversationMenu: DropdownMenu.Model,
@@ -227,6 +230,7 @@ type Model = typeof Model.Type;
 
 export const initial: Model = {
   folder: "inbox",
+  layout: { wide: false, split: false },
   filters: Filters.initial,
   folderSheet: Sheet.init({ id: "mail-folders" }),
   conversationMenu: DropdownMenu.init({ id: "mail-conversation-actions" }),
@@ -269,8 +273,26 @@ export const initial: Model = {
   quickReply: QuickReply.initial,
 };
 
+export const init = (): Model => ({
+  ...initial,
+  layout: {
+    wide: matchMedia(splitViewMedia).matches,
+    split: Effect.try(() => localStorage.getItem(splitViewKey) === "true").pipe(
+      Effect.orElseSucceed(() => false),
+      Effect.runSync,
+    ),
+  },
+});
+
+const isSplitView = ({ layout }: Model) => layout.wide && layout.split;
+const isListVisible = (model: Model) =>
+  model.selected === null || isSplitView(model);
+
 export const Message = defineMessageUnion({
   Opened: MailRoute.fields,
+  ChangedLayoutWidth: { wide: Schema.Boolean },
+  ToggledSplitView: {},
+  FinishedSavingSplitView: {},
   GotFolderSheetMessage: { message: Sheet.Message },
   GotFiltersMessage: { message: Filters.Message },
   RetriedList: {},
@@ -356,7 +378,7 @@ const toFiltersMessage = (message: typeof Filters.Message.Type) =>
 const foldFilters = Update.foldChild({
   update: Filters.update,
   read: (model: Model) =>
-    supportsMailFilters(model.folder) && model.selected === null
+    supportsMailFilters(model.folder) && isListVisible(model)
       ? Option.some(model.filters)
       : Option.none(),
   write: (model, filters) => ({ ...model, filters }),
@@ -511,6 +533,28 @@ const FocusEntry = Mount.define("FocusInboxEntry", {
         element.focus({ preventScroll: true });
       return Message.FocusUpdated();
     }),
+});
+
+const WatchLayout = Mount.defineStream("WatchMailLayout", {
+  messages: [Message.ChangedLayoutWidth],
+  execute: () => {
+    const media = matchMedia(splitViewMedia);
+    return Stream.fromEventListener<MediaQueryListEvent>(media, "change").pipe(
+      Stream.map(({ matches }) => matches),
+      Stream.prepend([media.matches]),
+      Stream.map((wide) => Message.ChangedLayoutWidth({ wide })),
+    );
+  },
+});
+
+const SaveSplitView = Command.define("SaveMailSplitView", {
+  args: { split: Schema.Boolean },
+  messages: [Message.FinishedSavingSplitView],
+  execute: ({ split }) =>
+    Effect.try(() => localStorage.setItem(splitViewKey, String(split))).pipe(
+      Effect.ignore,
+      Effect.as(Message.FinishedSavingSplitView()),
+    ),
 });
 
 const FocusAttachmentButton = Command.define("FocusMailAttachments", {
@@ -1326,7 +1370,7 @@ const requestConversationDelete = (
 const foldRowMenu = Update.foldChild({
   update: rowMenu.update,
   read: (model: Model) =>
-    model.selected === null ? Option.some(model.rowActions) : Option.none(),
+    isListVisible(model) ? Option.some(model.rowActions) : Option.none(),
   write: (model, rowActions) => ({ ...model, rowActions }),
   toParentMessage: toRowMenuMessage,
   foldOutMessage:
@@ -1377,8 +1421,30 @@ const foldRowMenu = Update.foldChild({
     },
 });
 
+const withLayout = (model: Model, layout: Model["layout"]): Model => {
+  const next = { ...model, layout };
+  return isListVisible(model) && !isListVisible(next)
+    ? { ...next, filters: Filters.resetMenu(next.filters), rowActions }
+    : next;
+};
+
 const transition = (model: Model, message: Message): Result =>
   Message.match<Result>(message, {
+    ChangedLayoutWidth: ({ wide }) => ({
+      model:
+        model.layout.wide === wide
+          ? model
+          : withLayout(model, { ...model.layout, wide }),
+    }),
+    ToggledSplitView: () => {
+      if (!model.layout.wide) return { model };
+      const split = !model.layout.split;
+      return {
+        model: withLayout(model, { ...model.layout, split }),
+        commands: [SaveSplitView({ split })],
+      };
+    },
+    FinishedSavingSplitView: () => ({ model }),
     GotFiltersMessage: ({ message }) => {
       const result = foldFilters(model, message);
       if (model.filters.selection === result.model.filters.selection)
@@ -1415,6 +1481,7 @@ const transition = (model: Model, message: Message): Result =>
           : {
               ...initial,
               folder,
+              layout: model.layout,
               filters: Filters.resetMenu(model.filters),
               folderSheet: model.folderSheet,
               compose: model.compose,
@@ -1634,7 +1701,7 @@ const transition = (model: Model, message: Message): Result =>
     },
     LiveChanged: () => withUnread(withThread(refreshList(model))),
     RequestedMore: ({ folder, cursor }) =>
-      model.selected === null &&
+      isListVisible(model) &&
       model.folder === folder &&
       model.list?.cursor === cursor &&
       !model.list.indexing &&
@@ -2504,12 +2571,13 @@ const emptyTrashDialog = (model: Model, h: HtmlBuilder<Message>) => {
 const listView = (model: Model, h: HtmlBuilder<Message>) => {
   const now = Date.now();
   const { list, listRequest, listError, folder, selected } = model;
+  const visible = isListVisible(model);
   return h.section(
     [
       h.Class("workspace-list inbox-list"),
       h.DataAttribute("folder", folder),
       h.AriaLabel("Messages"),
-      h.Inert(selected !== null),
+      h.Inert(!visible),
       h.Tabindex(-1),
       h.OnUnmount(Message.UnmountedList()),
     ],
@@ -2572,7 +2640,7 @@ const listView = (model: Model, h: HtmlBuilder<Message>) => {
                 !list.indexing &&
                 !listRequest &&
                 !listError &&
-                selected === null
+                visible
                   ? [
                       h.div(
                         [
@@ -3377,7 +3445,9 @@ const folderNavigation = (model: Model, h: HtmlBuilder<Message>) =>
 export const view = Submodel.defineView<Model, Message>((model, h) =>
   workspace(
     {
-      className: "workspace-stacked inbox",
+      className: "inbox",
+      attributes: [h.OnMount(WatchLayout())],
+      layout: isSplitView(model) ? "split" : "stacked",
       header: screenHeader(
         {
           title: mailboxLabels[model.folder],
@@ -3434,7 +3504,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
                     h,
                   ),
                 ]
-              : model.selected === null && supportsMailFilters(model.folder)
+              : isListVisible(model) && supportsMailFilters(model.folder)
                 ? [
                     h.submodel({
                       slotId: "inbox-filters",
@@ -3445,9 +3515,23 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
                   ]
                 : undefined,
           viewControls:
-            model.selected === null && isInboxView(model.folder)
+            isListVisible(model) && isInboxView(model.folder)
               ? [inboxPrioritySwitch(model.folder, h)]
               : undefined,
+          endControls: model.layout.wide
+            ? [
+                button(
+                  {
+                    size: "sm",
+                    variant: "quiet",
+                    attributes: [h.AriaPressed(String(model.layout.split))],
+                    onClick: Message.ToggledSplitView(),
+                    children: ["Split view"],
+                  },
+                  h,
+                ),
+              ]
+            : undefined,
           primaryAction: button(
             {
               size: "sm",
@@ -3461,7 +3545,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) =>
             h,
           ),
           feedback:
-            model.selected === null &&
+            isListVisible(model) &&
             model.list !== null &&
             model.listRequest?.cursor === null
               ? [

@@ -64,6 +64,8 @@ export const screenHeaderBack = <Message>(
 export const workspace = <Message>(
   props: {
     className: string;
+    attributes?: readonly Attribute<Message>[];
+    layout?: "stacked" | "split";
     header: Html;
     sidebar?: Html;
     list: Html;
@@ -75,8 +77,11 @@ export const workspace = <Message>(
 ): Html =>
   h.div(
     [
-      h.Class(`workspace ${props.className}`),
+      h.Class(
+        `workspace ${props.className}${props.layout ? ` workspace-${props.layout}` : ""}`,
+      ),
       ...(props.hasSelection ? [h.DataAttribute("panel", "")] : []),
+      ...(props.attributes ?? []),
     ],
     [
       props.header,

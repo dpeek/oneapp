@@ -1,4 +1,4 @@
-import { expect, it } from "@effect/vitest";
+import { describe, expect, it } from "@effect/vitest";
 import { Duration, Option } from "effect";
 import { vi } from "vitest";
 vi.mock("@orumai/ui", async () => {
@@ -33,6 +33,7 @@ vi.mock("@orumai/ui", async () => {
 import { DropdownMenu, ItemActionMenu } from "@orumai/ui";
 import * as Toast from "../../../packages/ui/src/toast-state.ts";
 import * as Inbox from "./inbox.ts";
+import * as Filters from "./inbox-filters.ts";
 import * as Compose from "./inbox-compose.ts";
 import * as Reply from "./inbox-inline-reply.ts";
 import * as Recovery from "./inbox-recovery.ts";
@@ -41,6 +42,84 @@ import type { ConversationSummary } from "./inbox-contract.ts";
 
 const first = "0-8199999999990-00000000-0000-4000-8000-000000000000.eml";
 const second = first.replace("9990", "9991");
+
+describe("desktop Mail layout", () => {
+  const selected = {
+    ...Inbox.initial,
+    folder: "archive" as const,
+    selected: first,
+    list: { address: null, cursor: "next", messages: [] },
+    layout: { wide: true, split: false },
+  };
+
+  it("keeps the mailbox and reader state when toggling or resizing", () => {
+    const toggled = Inbox.update(selected, Inbox.Message.ToggledSplitView());
+    expect(toggled.model).toEqual({
+      ...selected,
+      layout: { wide: true, split: true },
+    });
+    expect(toggled.commands?.[0]?.args).toEqual({ split: true });
+
+    const narrowed = Inbox.update(
+      toggled.model,
+      Inbox.Message.ChangedLayoutWidth({ wide: false }),
+    );
+    expect(narrowed.model).toEqual({
+      ...toggled.model,
+      layout: { wide: false, split: true },
+    });
+    expect(narrowed.commands).toBeUndefined();
+    expect(
+      Inbox.update(narrowed.model, Inbox.Message.ToggledSplitView()).model,
+    ).toBe(narrowed.model);
+    expect(
+      Inbox.update(
+        narrowed.model,
+        Inbox.Message.ChangedLayoutWidth({ wide: true }),
+      ).model,
+    ).toEqual(toggled.model);
+  });
+
+  it("retains the layout preference across mailbox navigation", () => {
+    const split = Inbox.update(
+      selected,
+      Inbox.Message.ToggledSplitView(),
+    ).model;
+    const next = Inbox.update(
+      split,
+      Inbox.Message.Opened({ folder: "all", id: first }),
+    );
+    expect(next.model.layout).toEqual(split.layout);
+    expect(next.model.folder).toBe("all");
+    expect(next.model.selected).toBe(first);
+  });
+
+  it("accepts filters and pagination while the selected conversation is open in split view", () => {
+    const split = Inbox.update(
+      selected,
+      Inbox.Message.ToggledSplitView(),
+    ).model;
+    const filter = Inbox.Message.GotFiltersMessage({
+      message: Filters.Message.SelectedStatus({ status: "unread" }),
+    });
+    const more = Inbox.Message.RequestedMore({
+      folder: "archive",
+      cursor: "next",
+    });
+    expect(Inbox.update(selected, filter).model).toBe(selected);
+    expect(Inbox.update(selected, more).model).toBe(selected);
+    expect(Inbox.update(split, more).model.listRequest?.cursor).toBe("next");
+
+    const filtered = Inbox.update(split, filter).model;
+    expect(filtered.filters.selection.status).toBe("unread");
+    expect(filtered.selected).toBe(first);
+    expect(filtered.listRequest?.cursor).toBeNull();
+    expect(
+      Inbox.update(filtered, Inbox.Message.ChangedLayoutWidth({ wide: false }))
+        .model.filters.selection.status,
+    ).toBe("unread");
+  });
+});
 
 it("uses the current row's incoming messages for consecutive read actions", () => {
   const third = first.replace("9990", "9992");

@@ -270,6 +270,21 @@ orumai-vault-reader {
     / minmax(0, 1fr);
 }
 
+.workspace.workspace-split {
+  --workspace-list-width: clamp(17rem, 29vw, 30rem);
+  grid-template:
+    "header header" auto
+    "items detail" minmax(0, 1fr)
+    / var(--workspace-list-width) minmax(0, 1fr);
+}
+
+.workspace.workspace-split:has(> .workspace-sidebar) {
+  grid-template:
+    "filters header header" auto
+    "filters items detail" minmax(0, 1fr)
+    / var(--workspace-sidebar-width) var(--workspace-list-width) minmax(0, 1fr);
+}
+
 .workspace-stacked .workspace-detail {
   grid-area: items;
 }

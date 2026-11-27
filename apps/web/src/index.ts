@@ -1181,7 +1181,7 @@ const update = (
         tagSettings: TagSettings.initial,
         pushSettings: PushSettings.initial,
         vaultSetup: VaultSetup.initial,
-        inbox: Inbox.initial,
+        inbox: Inbox.init(),
         people: People.initial,
         calendar: Calendar.initial(),
         calendarRoute: model.calendarRoute,

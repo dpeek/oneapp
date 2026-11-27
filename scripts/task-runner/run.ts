@@ -14,7 +14,6 @@ import { withBrowserSession } from "./browser.ts";
 import { preparePendingPush } from "./deployments.ts";
 import { withDevServer } from "./dev.ts";
 import { recordRunEvent } from "./events.ts";
-import { waitForProduction } from "./github.ts";
 import { waitForProcessGroup } from "./processes.ts";
 import type { PublishQueue } from "./publish-queue.ts";
 import type { TaskQueue } from "./queue.ts";
@@ -129,6 +128,7 @@ export async function runNext(
     browser: string;
     bunCache: string;
     publishQueue: PublishQueue;
+    waitForProduction: (sha: string, signal: AbortSignal) => Promise<void>;
     claimed?: () => void;
   },
 ) {
@@ -317,7 +317,7 @@ ${JSON.stringify({ id: task.id, title: task.title, description: task.description
       },
       waitForProduction: async (sha, signal) => {
         await record("checking-previous-deployment", { sha });
-        await waitForProduction(repository, sha, signal);
+        await settings.waitForProduction(sha, signal);
       },
       checking: async (sha) => {
         await advance({ phase: "checks" });

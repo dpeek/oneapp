@@ -11,8 +11,9 @@ import { mkdir, open, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { cloudflareBuilds } from "./task-runner/cloudflare.ts";
 import { watchDeployments } from "./task-runner/deployments.ts";
-import { githubRepository, productionChecks } from "./task-runner/github.ts";
+import { githubRepository } from "./task-runner/git.ts";
 import { PublishQueue } from "./task-runner/publish-queue.ts";
 import { TaskQueue } from "./task-runner/queue.ts";
 import { gitOrigin, resolveBunCache, runNext } from "./task-runner/run.ts";
@@ -111,10 +112,6 @@ async function main() {
   const repository = githubRepository(remote);
   if (!Bun.which("codex"))
     throw new Error("Install the Codex CLI on the runner.");
-  if (!Bun.which("gh"))
-    throw new Error(
-      "Install the GitHub CLI and sign in to read deployment checks.",
-    );
   const browser = await resolveBrowser();
   const bunCache = await resolveBunCache(source, signal);
   const directory = join(
@@ -133,6 +130,7 @@ async function main() {
   );
   try {
     await lock.writeFile(String(process.pid));
+    const cloudflare = await cloudflareBuilds(source, signal);
     const implementationFinished = new AbortController();
     const publishQueue = new PublishQueue();
     const withQueue = async <A>(use: (queue: TaskQueue) => Promise<A>) => {
@@ -156,6 +154,7 @@ async function main() {
           browser,
           bunCache,
           publishQueue,
+          waitForProduction: cloudflare.waitForProduction,
           claimed,
         }),
       );
@@ -191,7 +190,7 @@ async function main() {
       implementationFinished: values.once
         ? implementationFinished.signal
         : undefined,
-      checks: () => productionChecks(repository, signal).deployed,
+      checks: () => cloudflare.checks(signal).deployed,
       complete: (id, revision) =>
         withQueue((queue) => queue.complete(id, revision)),
       report: (id, runId, update) =>

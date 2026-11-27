@@ -14,8 +14,9 @@ import {
   TaskRunSummary,
   type TaskRunUpdate,
 } from "../../apps/web/src/task-run-contract.ts";
+import type { ProductionDeployment } from "./cloudflare.ts";
 import { recordRunEvent } from "./events.ts";
-import { GitSha, type ProductionDeployment } from "./github.ts";
+import { GitSha } from "./git.ts";
 
 const Deployment = Schema.Struct({
   taskId: ItemId,

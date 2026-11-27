@@ -415,7 +415,7 @@ Access tokens refresh automatically within the 30-day grant. Open **Settings →
 
 ### Run tagged tasks with Codex
 
-After deploying the runner's MCP endpoint, set up Bun, Git, the GitHub CLI (`gh`), and the Codex CLI on an always-on machine. The runner needs Git credentials and a commit identity for `origin`. Sign in with `gh auth login --hostname github.com` or supply a `GH_TOKEN` with access to read the repository's contents and checks. Codex needs its own login or `CODEX_API_KEY`. From an Orumai checkout, run:
+After deploying the runner's MCP endpoint, set up Bun, Git, Node.js 22 or newer, and the Codex CLI on an always-on machine. The runner needs Git credentials and a commit identity for `origin`. Codex needs its own login or `CODEX_API_KEY`. From an Orumai checkout, run:
 
 ```sh
 bun install --frozen-lockfile
@@ -424,6 +424,8 @@ bun --no-env-file run tasks:runner --login
 bun --no-env-file run tasks:runner --dry-run
 bun --no-env-file run tasks:runner --once
 ```
+
+The runner uses the Cloudflare CLI installed by Bun. It can reuse an existing `cf` login. To sign in, run `./node_modules/.bin/cf auth login`. Set `CLOUDFLARE_AUTH_PROFILE` to select a named profile and `CLOUDFLARE_ACCOUNT_ID` to select an account. For a service, supply `CLOUDFLARE_API_TOKEN` with **Workers CI Read**, `CLOUDFLARE_ACCOUNT_ID`, and `ORUMAI_CLOUDFLARE_WORKER_TAG` in the runner's environment. If the Worker tag is omitted, the credential also needs **Workers Scripts Read** so the runner can look up `oneapp-web-production` by name. [Cloudflare Workers Builds API](https://developers.cloudflare.com/workers/ci-cd/builds/api-reference/)
 
 Approve the runner in your browser. `--login --no-browser` prints the approval URL for a machine without a browser. The runner stores its task credential in the OS credential store, separately from `oru auth login`. A service can also supply an approved credential as `ORUMAI_RUNNER_TOKEN` through its secret store. Revoke the credential under **Settings → Clients**. Use `--server <origin>` on each command to work against a different Orumai server.
 
@@ -441,4 +443,4 @@ The Codex sandbox allows writes to the runner account's Bun package cache, resol
 
 For each task, the runner starts a fresh development server on a free localhost port and opens an isolated headless browser. Agents get the dev URL in `ORUMAI_DEV_URL`, the generated local sign-in file in `ORUMAI_DEV_ENV_FILE`, and the browser CLI in `ORUMAI_BROWSER`. The runner stops the browser and dev process group when the agent exits, including on failure. The server log is saved as `dev.log` alongside the run log.
 
-Run logs live under `$XDG_STATE_HOME/orumai-task-runner` or `~/.local/state/orumai-task-runner`. `run.jsonl` records the push SHA and deployment result. The runner tracks Cloudflare's `Workers Builds: oneapp-web-production` check on GitHub while working on the next task. Pending deployments resume after restart. A successful production check on the pushed commit or the current `main` tip containing it marks the task **Completed** through MCP, provided the task still has the claimed revision. A failed build stays **In progress** and can be retried in Cloudflare. The runner stops tracking after 30 minutes without a successful deployment and leaves the task open for review. Failed implementation runs retain their checkout. To retry implementation, review the log and move the task back to **Not started**.
+Run logs live under `$XDG_STATE_HOME/orumai-task-runner` or `~/.local/state/orumai-task-runner`. `run.jsonl` records the push SHA and deployment result. The runner reads Workers Builds for `oneapp-web-production` through `cf` while working on the next task. Pending deployments resume after restart. A successful production build on the pushed commit or the current `main` tip containing it marks the task **Completed** through MCP, provided the task still has the claimed revision. A failed build stays **In progress** and can be retried in Cloudflare. The runner stops tracking after 30 minutes without a successful deployment and leaves the task open for review. Failed implementation runs retain their checkout. To retry implementation, review the log and move the task back to **Not started**.

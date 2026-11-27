@@ -1,6 +1,6 @@
 import { mkdtemp, open, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { GitSha } from "./github.ts";
+import { GitSha } from "./git.ts";
 import { Schema } from "effect";
 import { waitForProcessGroup } from "./processes.ts";
 import type { PublishQueue } from "./publish-queue.ts";

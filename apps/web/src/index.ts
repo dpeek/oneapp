@@ -2398,6 +2398,19 @@ const rootHandoff =
     CliLogin.initial() !== null ||
     ExtensionAccess.initial().approvalId !== null);
 
+const showPageNotFound = () => {
+  document.title = `Page not found · ${appName}`;
+  const main = document.createElement("main");
+  main.className = "standalone";
+  const heading = document.createElement("h1");
+  heading.textContent = "Page not found";
+  const link = document.createElement("a");
+  link.href = workspacePath;
+  link.textContent = "Open Orumai";
+  main.append(heading, link);
+  document.getElementById("root")?.append(main);
+};
+
 if (bitwardenAuthorization && !connectingBitwarden) {
   window.location.replace(bitwardenAuthorization);
 } else if (PasswordRecovery.isRecoveryPage(initialUrl.pathname)) {
@@ -2425,15 +2438,13 @@ if (bitwardenAuthorization && !connectingBitwarden) {
 } else if (initialUrl.pathname === "/" && initialUrl.hash === "#cli-access") {
   initialUrl.pathname = settingsSectionPath("clients");
   window.location.replace(initialUrl);
+} else if (initialUrl.pathname === "/") {
+  void Effect.runPromise(
+    readAccount.pipe(Effect.orElseSucceed(() => null)),
+  ).then((account) => {
+    if (account) window.location.replace(workspacePath);
+    else showPageNotFound();
+  });
 } else {
-  document.title = `Page not found · ${appName}`;
-  const main = document.createElement("main");
-  main.className = "standalone";
-  const heading = document.createElement("h1");
-  heading.textContent = "Page not found";
-  const link = document.createElement("a");
-  link.href = workspacePath;
-  link.textContent = "Open Orumai";
-  main.append(heading, link);
-  document.getElementById("root")?.append(main);
+  showPageNotFound();
 }

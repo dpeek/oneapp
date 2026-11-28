@@ -43,7 +43,6 @@ import {
   FilterCategory,
   activityTooltip,
   addTaskButtonId,
-  creationDialogId,
   creationFieldsLocked,
   creationSubmitId,
   creationTitleId,
@@ -69,6 +68,7 @@ import {
 } from "./tasks.ts";
 import { filterChoice, filterMenu } from "./filter-menu.ts";
 import {
+  creationDialogId,
   screenHeader,
   screenHeaderBack,
   watchWorkspaceWidth,

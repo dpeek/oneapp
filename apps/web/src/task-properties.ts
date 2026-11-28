@@ -2,9 +2,7 @@ import { Temporal } from "@js-temporal/polyfill";
 import { CalendarPicker, MultiCombobox, Popover } from "@orumai/ui";
 import { Schema } from "effect";
 import { defaultEnglishLocale } from "foldkit/calendar";
-import { ItemId, type Tag, tagNameKey } from "./items-contract.ts";
-import { createTagPrefix, searchTags } from "./tag-picker.ts";
-import { taskTagLimit } from "./tasks-contract.ts";
+import { ItemId } from "./items-contract.ts";
 
 export const Property = Schema.Literals([
   "tagIds",
@@ -79,36 +77,4 @@ export const dueChoices = (localDate: string) => {
     },
     { id: today.add({ days: 7 }).toString(), name: "In 1 week" },
   ].map(({ id, name }, index) => ({ id: `${index}:${id}`, name, date: id }));
-};
-
-export const tagChoices = (
-  query: string,
-  selected: readonly string[],
-  tags: readonly Tag[],
-) => {
-  const { name, canCreate, error } = searchTags(query, selected, tags);
-  const key = tagNameKey(name);
-  const atLimit = selected.length >= taskTagLimit;
-  const matchingTags = tags.filter((tag) => tagNameKey(tag.name).includes(key));
-  const choices = [
-    ...matchingTags.filter(({ id }) => selected.includes(id)),
-    ...matchingTags.filter(({ id }) => !selected.includes(id)),
-  ].map((tag) => ({ ...tag, disabled: atLimit && !selected.includes(tag.id) }));
-  if (canCreate && !atLimit) {
-    return {
-      choices: [
-        ...choices,
-        {
-          id: `${createTagPrefix}${name}`,
-          name: `Create “${name}”`,
-          disabled: false,
-        },
-      ],
-      error,
-    };
-  }
-  return {
-    choices,
-    error: error ?? (atLimit ? `Up to ${taskTagLimit} tags per task.` : null),
-  };
 };

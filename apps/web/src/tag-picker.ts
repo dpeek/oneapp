@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import {
+  itemTagLimit,
   normalizeTagName,
   TagName,
   tagNameKey,
@@ -8,33 +9,40 @@ import {
 } from "./items-contract.ts";
 
 export const createTagPrefix = "create:";
+export const clearTagChoice = "clear";
 
-export const searchTags = (
-  input: string,
-  selectedIds: readonly string[],
+export const tagChoices = (
+  query: string,
+  selected: readonly string[],
   tags: readonly Tag[],
-  error: string | null = null,
+  item: "task" | "file" | "document" = "task",
 ) => {
-  const name = normalizeTagName(input);
+  const name = normalizeTagName(query);
   const key = tagNameKey(name);
-  const matches = tags.filter((tag) => tagNameKey(tag.name).includes(key));
-  const items = matches.filter((tag) => !selectedIds.includes(tag.id));
+  const matchingTags = tags.filter((tag) => tagNameKey(tag.name).includes(key));
+  const atLimit = selected.length >= itemTagLimit;
+  const choices = [
+    ...matchingTags.filter(({ id }) => selected.includes(id)),
+    ...matchingTags.filter(({ id }) => !selected.includes(id)),
+  ].map((tag) => ({ ...tag, disabled: atLimit && !selected.includes(tag.id) }));
   const invalid = name !== "" && !Schema.is(TagName)(name);
-  const canCreate =
-    name !== "" &&
+  if (
+    name &&
     !invalid &&
-    !matches.some((tag) => tagNameKey(tag.name) === key);
+    !atLimit &&
+    !matchingTags.some((tag) => tagNameKey(tag.name) === key)
+  )
+    choices.push({
+      id: `${createTagPrefix}${name}`,
+      name: `Create “${name}”`,
+      disabled: false,
+    });
   return {
-    name,
-    canCreate,
-    items: canCreate
-      ? [
-          ...items,
-          { id: `${createTagPrefix}${name}`, name: `Create “${name}”` },
-        ]
-      : items,
+    choices,
     error: invalid
       ? `Enter a tag name of up to ${tagNameLimit} characters.`
-      : error,
+      : atLimit
+        ? `Up to ${itemTagLimit} tags per ${item}.`
+        : null,
   };
 };

@@ -12,13 +12,12 @@ import {
   outlineIcon,
   plusIcon,
   skeleton,
-  Tokenizer,
   trashIconPaths,
   visuallyHiddenStatus,
 } from "@orumai/ui";
 import { Effect, Option } from "effect";
 import { Mount, Submodel } from "foldkit";
-import type { Html, HtmlBuilder } from "foldkit/html";
+import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html";
 import { fileSize, renderPdf } from "./file-display.ts";
 import { filterChoice, filterMenu } from "./filter-menu.ts";
 import {
@@ -32,6 +31,7 @@ import {
   type StoredFile,
 } from "./files-contract.ts";
 import {
+  creationTitleId,
   fileActionMenu,
   fileActionsId,
   fileDeleteDialogId,
@@ -39,22 +39,24 @@ import {
   matchesFileFilter,
   Message,
   selectedFile,
+  tagPickerId,
+  writingCreation,
   toActionMenuMessage,
   toFilterPopoverMessage,
   toDeleteDialogMessage,
   uploadInputId,
   type Model,
 } from "./files.ts";
-import {
-  ItemId,
-  itemTagLimit,
-  tagNameLimit,
-  type Tag,
-} from "./items-contract.ts";
+import { ItemId, type Tag } from "./items-contract.ts";
 import { markdownEditor } from "./markdown-editor-contract.ts";
 import { changed, uploading } from "./file-document-edits.ts";
-import { searchTags } from "./tag-picker.ts";
-import { screenHeader, screenHeaderBack, workspace } from "./workspace.ts";
+import { tagProperty } from "./tag-picker-view.ts";
+import {
+  creationDialogId,
+  screenHeader,
+  screenHeaderBack,
+  workspace,
+} from "./workspace.ts";
 
 const RenderPdf = Mount.define("RenderFilePdf", {
   args: { id: ItemId },
@@ -311,6 +313,176 @@ const documentEditor = (
   );
 };
 
+const fileTags = (
+  model: Model,
+  { id, tagIds }: Pick<StoredFile, "id" | "tagIds">,
+  item: "document" | "file",
+  tags: readonly Tag[],
+  h: HtmlBuilder<Message>,
+) => {
+  const key = tagPickerId(id);
+  return h.div(
+    [h.Class("task-property-strip")],
+    [
+      tagProperty(
+        {
+          id: key,
+          picker: model.tagPicker?.popover.id === key ? model.tagPicker : null,
+          tags,
+          tagIds,
+          item,
+          disabled:
+            !model.index || model.request?.operation._tag === "CreateDocument",
+          creatingDisabled: model.request !== null,
+          error: null,
+          toPopoverMessage: (message) =>
+            Message.GotTagPopoverMessage({ id, message }),
+          toSearchMessage: (message) =>
+            Message.GotTagSearchMessage({ id, message }),
+        },
+        h,
+      ),
+    ],
+  );
+};
+
+const sortedTags = (model: Model) =>
+  [...(model.index?.tags ?? [])].sort((left, right) =>
+    left.name.localeCompare(right.name),
+  );
+
+export const createView = Submodel.defineView(
+  (
+    model: Model,
+    initialFocus: readonly ChildAttribute[],
+    h: HtmlBuilder<Message>,
+  ) => {
+    const { creation, request, index } = model;
+    if (!creation) return h.empty;
+    const submitting = request?.operation._tag === "CreateDocument";
+    const loadError = index ? null : model.error;
+    const editor = markdownEditor.withMessage(h);
+    return h.form(
+      [h.Class("task-create-form"), h.OnSubmit(Message.CreatedDocument())],
+      [
+        h.div(
+          [h.Class("task-editor task-create-body")],
+          [
+            h.div(
+              [h.Class("task-document-header")],
+              [
+                h.div(
+                  [h.Class("task-document-title-text")],
+                  [
+                    h.span(
+                      [
+                        h.Class("task-document-input"),
+                        h.DataAttribute("value", creation.title),
+                      ],
+                      [
+                        h.textarea([
+                          h.Id(creationTitleId),
+                          h.Rows(1),
+                          h.AriaLabel("Document title"),
+                          h.Value(creation.title),
+                          h.Maxlength(documentTitleLimit),
+                          h.Placeholder("New document"),
+                          h.Readonly(submitting),
+                          h.Required(true),
+                          ...initialFocus,
+                          h.OnInput((value) =>
+                            Message.EditedCreation({
+                              field: "title",
+                              value: value.replace(/[\r\n]+/gu, " "),
+                            }),
+                          ),
+                          h.OnKeyDownPreventDefault((key) =>
+                            key === "Enter"
+                              ? Option.some(Message.CreatedDocument())
+                              : Option.none(),
+                          ),
+                        ]),
+                      ],
+                    ),
+                  ],
+                ),
+                fileTags(model, creation, "document", sortedTags(model), h),
+              ],
+            ),
+            editor([
+              editor.Value(creation.markdown),
+              editor.Label("Document body"),
+              editor.Placeholder("Write something…"),
+              editor.Limit(documentMarkdownLimit),
+              editor.ReadOnly(submitting),
+              editor.OnDescriptionEdited((value) =>
+                Message.EditedCreation({ field: "markdown", value }),
+              ),
+            ]),
+            alert(
+              {
+                message: creation.error ?? loadError,
+                severity: "error",
+                announcement: "status",
+                action:
+                  loadError && !request
+                    ? button(
+                        {
+                          variant: "outline",
+                          size: "sm",
+                          onClick: Message.Retried(),
+                          children: ["Retry"],
+                        },
+                        h,
+                      )
+                    : undefined,
+              },
+              h,
+            ),
+            !index && !loadError
+              ? h.p([h.Role("status")], ["Loading tags…"])
+              : h.empty,
+          ],
+        ),
+        h.div(
+          [h.Class("task-create-footer")],
+          [
+            Dialog.footer(
+              [
+                button(
+                  {
+                    variant: "outline",
+                    size: "sm",
+                    disabled: writingCreation(model),
+                    onClick: Message.ClosedCreate(),
+                    children: ["Cancel"],
+                  },
+                  h,
+                ),
+                button(
+                  {
+                    type: "submit",
+                    size: "sm",
+                    focusableWhenDisabled: submitting,
+                    disabled:
+                      request !== null ||
+                      !index ||
+                      !creation.title.trim() ||
+                      creation.markdown.length > documentMarkdownLimit,
+                    children: [submitting ? "Creating…" : "Create document"],
+                  },
+                  h,
+                ),
+              ],
+              h,
+            ),
+          ],
+        ),
+      ],
+    );
+  },
+);
+
 const fileDetail = (
   model: Model,
   tags: readonly Tag[],
@@ -329,8 +501,6 @@ const fileDetail = (
             ? "File not found."
             : "File details are unavailable.",
       ]);
-    const full = file.tagIds.length >= itemTagLimit;
-    const search = searchTags(model.tagPicker.inputValue, file.tagIds, tags);
     return h.div(
       [h.Key(file.id), h.Class("file-detail-content")],
       [
@@ -390,27 +560,7 @@ const fileDetail = (
               ],
             ),
         savedFile
-          ? Tokenizer.view(
-              {
-                model: model.tagPicker,
-                label: "Tags",
-                placeholder: "Search or create tags",
-                emptyMessage: "No matching tags",
-                items: search.items,
-                selected: tags.filter(({ id }) => file.tagIds.includes(id)),
-                maxLength: tagNameLimit,
-                busy: model.request !== null,
-                full,
-                description: full
-                  ? `A file can have up to ${itemTagLimit} tags.`
-                  : null,
-                error: search.error,
-                toParentMessage: (message) =>
-                  Message.GotTagPickerMessage({ id: file.id, message }),
-                onRemove: (id) => Message.RemovedTag({ id }),
-              },
-              h,
-            )
+          ? fileTags(model, file, file.authored ? "document" : "file", tags, h)
           : h.empty,
         alert(
           {
@@ -652,7 +802,7 @@ const uploadControl = (model: Model, h: HtmlBuilder<Message>) =>
           h.DataAttribute("slot", "button"),
           h.AriaHidden(true),
         ],
-        ["Upload file"],
+        [plusIcon(h, "16"), "Upload"],
       ),
       input<Message>(
         [
@@ -670,9 +820,7 @@ const uploadControl = (model: Model, h: HtmlBuilder<Message>) =>
   );
 
 export const view = Submodel.defineView<Model, Message>((model, h) => {
-  const tags = [...(model.index?.tags ?? [])].sort((left, right) =>
-    left.name.localeCompare(right.name),
-  );
+  const tags = sortedTags(model);
   const operation = model.request?.operation._tag;
   const loadStatus =
     operation === "Load"
@@ -700,8 +848,10 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
             {
               size: "sm",
               disabled: model.request !== null || model.index === null,
-              onClick: Message.CreatedDocument(),
-              children: [plusIcon(h, "16"), "New Markdown document"],
+              ariaLabel: "Add document",
+              dialogId: creationDialogId,
+              onClick: Message.OpenedCreate({ source: "header" }),
+              children: [plusIcon(h, "16"), "Document"],
             },
             h,
           ),

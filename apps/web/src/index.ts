@@ -98,7 +98,10 @@ import {
   FileRoute,
   fileRouteFor,
 } from "./files-contract.ts";
-import { view as filesView } from "./files-view.ts";
+import {
+  createView as documentCreateView,
+  view as filesView,
+} from "./files-view.ts";
 import * as Tasks from "./tasks.ts";
 import { TaskDeployment } from "./task-run-contract.ts";
 import {
@@ -113,7 +116,12 @@ import {
   view as tasksView,
 } from "./tasks-view.ts";
 import * as VaultSetup from "./vault-setup.ts";
-import { screenHeader, workspace, workspaceDrawerMedia } from "./workspace.ts";
+import {
+  creationDialogId,
+  screenHeader,
+  workspace,
+  workspaceDrawerMedia,
+} from "./workspace.ts";
 import { changes as workspaceChanges } from "./workspace-changes.ts";
 
 type Page = typeof AppNavigation.Page.Type;
@@ -586,12 +594,14 @@ const foldTaskFeature = Update.foldChild({
 
 const creationEditors = {
   task: { title: "Add task", focusId: Tasks.creationTitleId },
+  document: { title: "New document", focusId: Files.creationTitleId },
   event: { title: "New event", focusId: Calendar.creationTitleId },
   link: { title: "Save link", focusId: Links.creationUrlId },
 };
 
 const creationEditor = (model: Model): keyof typeof creationEditors | null => {
   if (model.tasks.creation) return "task";
+  if (model.files.creation) return "document";
   if (Calendar.hasGlobalEventEditor(model.calendar)) return "event";
   return model.links.creation ? "link" : null;
 };
@@ -638,7 +648,7 @@ const foldLinks = (model: Model, message: Links.Message) =>
 const toFilesMessage = (message: Files.Message) =>
   Message.GotFilesMessage({ message });
 const fileUploadNotificationKey = "files-upload";
-const foldFiles = Update.foldChild({
+const foldFilesFeature = Update.foldChild({
   update: Files.update,
   read: (model: Model) =>
     model.account ? Option.some(model.files) : Option.none(),
@@ -682,6 +692,9 @@ const foldFiles = Update.foldChild({
     },
 });
 
+const foldFiles = (model: Model, message: Files.Message) =>
+  foldCreationEditor(model, (next) => foldFilesFeature(next, message));
+
 const Navigate = Command.define("Navigate", {
   args: {
     href: Schema.String,
@@ -700,6 +713,11 @@ const Navigate = Command.define("Navigate", {
 
 const creationItems = [
   { value: "task", label: "Task", iconPaths: taskIconPaths },
+  {
+    value: "document",
+    label: "Document",
+    iconPaths: ["M6 3h8l4 4v14H6zM14 3v5h4M9 12h6m-6 4h6"],
+  },
   { value: "event", label: "Event", iconPaths: calendarIconPaths },
   { value: "email", label: "Email", iconPaths: mailIconPaths },
   { value: "link", label: "Link", iconPaths: linkIconPaths },
@@ -743,6 +761,11 @@ const foldCreationMenu = Update.foldChild({
           return foldTasks(
             model,
             Tasks.Message.OpenedCreate({ preserveView: true }),
+          );
+        case "document":
+          return foldFiles(
+            model,
+            Files.Message.OpenedCreate({ source: "create" }),
           );
         case "email":
           return Inbox.composeSender(model.inbox)
@@ -1124,7 +1147,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     tasks: Tasks.initial,
     files: Files.initial,
     fileRoute: fileRouteFor(url.pathname),
-    creationDialog: Dialog.init({ id: Tasks.creationDialogId }),
+    creationDialog: Dialog.init({ id: creationDialogId }),
     creationMenu: null,
     pendingCreateAction: null,
     taskRoute: taskRouteFor(url.pathname),
@@ -1283,7 +1306,7 @@ const update = (
         tasks: Tasks.init(),
         files: Files.initial,
         fileRoute: model.fileRoute,
-        creationDialog: Dialog.init({ id: Tasks.creationDialogId }),
+        creationDialog: Dialog.init({ id: creationDialogId }),
         creationMenu: null,
         pendingCreateAction: null,
         taskRoute: model.taskRoute,
@@ -1598,7 +1621,9 @@ const update = (
         ? { model }
         : foldTasks(model, message),
     GotFilesMessage: ({ message }) =>
-      message._tag === "RefreshRequested" && model.page !== "files"
+      message._tag === "RefreshRequested" &&
+      model.page !== "files" &&
+      !model.files.creation
         ? { model }
         : foldFiles(model, message),
     ItemViewsRefreshRequested: () =>
@@ -1636,6 +1661,8 @@ const update = (
         switch (creationEditor(model)) {
           case "task":
             return foldTasks(model, Tasks.Message.DismissedCreate());
+          case "document":
+            return foldFiles(model, Files.Message.DismissedCreate());
           case "event":
             return foldCalendar(model, Calendar.Message.ClosedEventEditor());
           case "link":
@@ -1652,6 +1679,9 @@ const update = (
               ...result.model,
               creationMenu: null,
               tasks: { ...result.model.tasks, creation: null },
+              files: result.model.files.creation
+                ? { ...result.model.files, creation: null, tagPicker: null }
+                : result.model.files,
               links: { ...result.model.links, creation: null },
               calendar: Calendar.hasGlobalEventEditor(model.calendar)
                 ? { ...result.model.calendar, editor: null }
@@ -2326,9 +2356,13 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
           {
             model: model.creationDialog,
             title: menu || !editor ? "Create" : creationEditors[editor].title,
-            size: editor === "task" ? "extra-wide" : undefined,
-            padded: menu === null && editor !== "task",
-            showHeader: menu === null && editor !== "task",
+            size:
+              editor === "task" || editor === "document"
+                ? "extra-wide"
+                : undefined,
+            padded: menu === null && editor !== "task" && editor !== "document",
+            showHeader:
+              menu === null && editor !== "task" && editor !== "document",
             showCloseButton: false,
             content: (initialFocus) => {
               if (menu)
@@ -2368,6 +2402,14 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
                       ownerEmail: model.account?.email ?? "",
                     },
                     toParentMessage: toTasksMessage,
+                  });
+                case "document":
+                  return h.submodel({
+                    slotId: "document-creation",
+                    view: documentCreateView,
+                    model: model.files,
+                    viewInputs: initialFocus,
+                    toParentMessage: toFilesMessage,
                   });
                 case "link":
                   return h.submodel({

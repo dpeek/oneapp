@@ -13,7 +13,7 @@ import { Command, Render, Update } from "foldkit";
 import { focus } from "foldkit/dom";
 import { defineMessageUnion } from "foldkit/message";
 import { ItemId, Tag, TagCreate, tagsApi } from "./items-contract.ts";
-import { createTagPrefix } from "./tag-picker.ts";
+import { clearTagChoice, createTagPrefix, tagChoices } from "./tag-picker.ts";
 import { checkIndex } from "./workspace-changes.ts";
 import * as Edits from "./task-edits.ts";
 import {
@@ -24,7 +24,6 @@ import {
   Picker,
   pickerId,
   PickerTarget,
-  tagChoices,
   taskCalendar,
 } from "./task-properties.ts";
 import * as Attachments from "./task-attachments.ts";
@@ -101,7 +100,6 @@ export const FilterCategory = Schema.Literals([
   "tags",
 ]);
 export const filterOptionsId = "task-filter-options";
-export const creationDialogId = "task-create-dialog";
 export const creationTitleId = "task-create-title-input";
 export const creationSubmitId = "task-create-submit";
 export const addTaskButtonId = "add-task";
@@ -832,7 +830,7 @@ const chooseProperty = (
       model.index?.tags ?? [],
     );
     if (
-      value !== clearChoice &&
+      value !== clearTagChoice &&
       !choices.some(({ id, disabled }) => id === value && !disabled)
     )
       return { model };
@@ -845,7 +843,7 @@ const chooseProperty = (
           input: { name: value.slice(createTagPrefix.length) },
         },
       );
-    const clearing = value === clearChoice;
+    const clearing = value === clearTagChoice;
     const tagIds = clearing ? [] : toggleFilter(current.tagIds, value);
     const request = model.request;
     const cancelAttachment =

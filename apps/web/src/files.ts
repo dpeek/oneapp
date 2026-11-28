@@ -1,4 +1,4 @@
-import { Dialog, ItemActionMenu, Popover, Tokenizer } from "@orumai/ui";
+import { Dialog, ItemActionMenu, MultiCombobox, Popover } from "@orumai/ui";
 import { Effect, Option, Schema } from "effect";
 import { Command, Dom, Update } from "foldkit";
 import { focus } from "foldkit/dom";
@@ -12,6 +12,7 @@ import {
   DocumentMarkdown,
   DocumentTitle,
   FileDocument,
+  FileDocumentCreate,
   FileDocumentUpdate,
   FileDeletion,
   FileIndex,
@@ -32,16 +33,30 @@ import {
 import * as Edits from "./file-document-edits.ts";
 import { imageUploadLimit, invalidImage } from "./image-upload.ts";
 import { InlineImagePaste } from "./markdown-editor-contract.ts";
-import { createTagPrefix, searchTags } from "./tag-picker.ts";
+import { clearTagChoice, createTagPrefix, tagChoices } from "./tag-picker.ts";
 import { checkIndex } from "./workspace-changes.ts";
 
 export const uploadInputId = "files-upload";
 export const createUploadInputId = "create-file-upload";
 export const fileDeleteDialogId = "file-delete-dialog";
+export const creationTitleId = "file-create-title";
 export const fileActionsId = "file-actions";
 export const fileActionMenu = ItemActionMenu.create<"open" | "download">();
 const closedActions = ItemActionMenu.init(fileActionsId);
 const UploadSource = Schema.Literals(["header", "create"]);
+const Creation = Schema.Struct({
+  id: ItemId,
+  source: UploadSource,
+  title: Schema.String,
+  markdown: Schema.String,
+  tagIds: ItemTagIds,
+  error: Schema.NullOr(Schema.String),
+});
+const TagPicker = Schema.Struct({
+  popover: Popover.Model,
+  search: MultiCombobox.Model,
+});
+export const tagPickerId = (id: string) => `file-tags-${id}`;
 
 export const openUploadPicker = () => {
   const input = document.getElementById(createUploadInputId);
@@ -57,7 +72,11 @@ const closedFilterMenu = {
 };
 const Operation = Schema.Union([
   Schema.TaggedStruct("Load", {}),
-  Schema.TaggedStruct("CreateDocument", {}),
+  Schema.TaggedStruct("CreateDocument", {
+    source: UploadSource,
+    input: FileDocumentCreate,
+  }),
+  Schema.TaggedStruct("AddDraftTag", { id: ItemId, name: TagName }),
   Schema.TaggedStruct("ReadDocument", { id: ItemId }),
   Schema.TaggedStruct("SaveDocument", {
     id: ItemId,
@@ -80,7 +99,8 @@ export const Model = Schema.Struct({
   actions: ItemActionMenu.Model,
   filterPopover: Popover.Model,
   tagOptionsOpen: Schema.Boolean,
-  tagPicker: Tokenizer.Model,
+  tagPicker: Schema.NullOr(TagPicker),
+  creation: Schema.NullOr(Creation),
   previewFailed: Schema.Boolean,
   documents: Schema.Record(ItemId, Edits.Draft),
   documentLoadFailed: Schema.NullOr(ItemId),
@@ -100,14 +120,14 @@ export const Model = Schema.Struct({
   error: Schema.NullOr(Schema.String),
 });
 export type Model = typeof Model.Type;
-const tagPicker = () => Tokenizer.init({ id: "file-tags" });
 export const initial: Model = {
   index: null,
   selectedId: null,
   tagFilter: null,
   actions: closedActions,
   ...closedFilterMenu,
-  tagPicker: tagPicker(),
+  tagPicker: null,
+  creation: null,
   previewFailed: false,
   documents: {},
   documentLoadFailed: null,
@@ -139,11 +159,16 @@ export const Message = defineMessageUnion({
   ClosedTagFilterOptions: {},
   SelectedTagFilter: { value: Schema.NullOr(ItemId) },
   ClearedTagFilter: {},
-  GotTagPickerMessage: { id: ItemId, message: Tokenizer.Message },
-  RemovedTag: { id: ItemId },
+  GotTagPopoverMessage: { id: ItemId, message: Popover.Message },
+  GotTagSearchMessage: { id: ItemId, message: MultiCombobox.Message },
   PreviewReady: { id: ItemId },
   PreviewFailed: { id: ItemId },
+  OpenedCreate: { source: UploadSource },
+  ClosedCreate: {},
+  DismissedCreate: {},
+  EditedCreation: { field: Edits.Field, value: Schema.String },
   CreatedDocument: {},
+  DraftTagAdded: { request: ItemId, tag: Tag },
   DocumentLoaded: { request: ItemId, document: FileDocument },
   DocumentSaved: {
     request: ItemId,
@@ -239,6 +264,7 @@ const failureMessages = {
   Upload: "Could not upload the file. Try again.",
   Tags: "Could not save the file tags. Try again.",
   CreateDocument: "Could not create the document. Try again.",
+  AddDraftTag: "Could not create the tag. Try again.",
   ReadDocument: "Could not load the document. Try again.",
   SaveDocument: "Could not save the document. Your edits are still here.",
   Delete: "Could not delete the file. Try again.",
@@ -249,6 +275,7 @@ const Request = Command.define("RequestFiles", {
   messages: [
     Message.Loaded,
     Message.DocumentLoaded,
+    Message.DraftTagAdded,
     Message.DocumentSaved,
     Message.Deleted,
     Message.DeleteConflict,
@@ -277,7 +304,7 @@ const Request = Command.define("RequestFiles", {
         case "ReadDocument": {
           const response =
             operation._tag === "CreateDocument"
-              ? await send(fileDocumentsApi, writeJson("POST", {}))
+              ? await send(fileDocumentsApi, writeJson("POST", operation.input))
               : await send(fileDocumentApi(operation.id));
           if (response.status === 401) return expired;
           if (!response.ok) return failed(failureMessages[operation._tag]);
@@ -286,6 +313,18 @@ const Request = Command.define("RequestFiles", {
             document: Schema.decodeUnknownSync(FileDocument)(
               await response.json(),
             ),
+          });
+        }
+        case "AddDraftTag": {
+          const response = await send(
+            tagsApi,
+            writeJson("POST", { name: operation.name }),
+          );
+          if (response.status === 401) return expired;
+          if (!response.ok) return failed(failureMessages.AddDraftTag);
+          return Message.DraftTagAdded({
+            request,
+            tag: Schema.decodeUnknownSync(Tag)(await response.json()),
           });
         }
         case "SaveDocument": {
@@ -502,9 +541,126 @@ const start = (model: Model, operation: Operation) => {
   };
 };
 
-const toTagPickerMessage =
-  (id: string) => (message: typeof Tokenizer.Message.Type) =>
-    Message.GotTagPickerMessage({ id, message });
+export const writingCreation = (model: Model) =>
+  model.request?.operation._tag === "CreateDocument" ||
+  model.request?.operation._tag === "AddDraftTag";
+
+const tagTarget = (model: Model, id: string) =>
+  model.creation
+    ? model.creation.id === id
+      ? model.creation
+      : null
+    : model.selectedId === id
+      ? selectedFile(model)
+      : null;
+
+const updateTagPopover = (
+  model: Model,
+  id: string,
+  message: typeof Popover.Message.Type,
+): Update.Return<Model, Message> => {
+  if (!tagTarget(model, id) || !model.index) return { model };
+  const key = tagPickerId(id);
+  const picker = model.tagPicker?.popover.id === key ? model.tagPicker : null;
+  const previous = picker?.popover ?? Popover.init({ id: key });
+  const result = Popover.update(previous, message);
+  if (!picker && !result.model.isOpen) return { model };
+  return {
+    model: {
+      ...model,
+      tagPicker: {
+        popover: result.model,
+        search:
+          previous.isOpen && picker
+            ? picker.search
+            : MultiCombobox.init(`${key}-search`),
+      },
+    },
+    commands: Command.mapMessages(result.commands ?? [], (message) =>
+      Message.GotTagPopoverMessage({ id, message }),
+    ),
+  };
+};
+
+const toggleTags = (tagIds: readonly string[], value: string) =>
+  value === clearTagChoice
+    ? []
+    : tagIds.includes(value)
+      ? tagIds.filter((id) => id !== value)
+      : [...tagIds, value];
+
+const updateTagSearch = (
+  model: Model,
+  id: string,
+  message: typeof MultiCombobox.Message.Type,
+): Update.Return<Model, Message> => {
+  const picker = model.tagPicker;
+  const target = tagTarget(model, id);
+  if (
+    !target ||
+    !picker?.popover.isOpen ||
+    picker.popover.id !== tagPickerId(id)
+  )
+    return { model };
+  const result = MultiCombobox.update(picker.search, message);
+  const next = { ...model, tagPicker: { ...picker, search: result.model } };
+  const selection = result.outMessage;
+  if (selection?._tag !== "Selected")
+    return {
+      model: next,
+      commands: Command.mapMessages(result.commands ?? [], (message) =>
+        Message.GotTagSearchMessage({ id, message }),
+      ),
+    };
+  if (model.request) return { model: next };
+  const { value } = selection;
+  const { tagIds } = target;
+  const { choices } = tagChoices(
+    picker.search.inputValue,
+    tagIds,
+    model.index?.tags ?? [],
+  );
+  if (
+    value !== clearTagChoice &&
+    !choices.some((choice) => choice.id === value && !choice.disabled)
+  )
+    return { model: next };
+  const name = value.startsWith(createTagPrefix)
+    ? value.slice(createTagPrefix.length)
+    : null;
+  const reset = {
+    ...next,
+    tagPicker: {
+      ...picker,
+      search: {
+        ...result.model,
+        inputValue: name ? "" : picker.search.inputValue,
+        maybeActiveItemIndex: Option.none(),
+      },
+    },
+  };
+  if (model.creation)
+    return name
+      ? start(reset, { _tag: "AddDraftTag", id, name })
+      : {
+          model: {
+            ...reset,
+            creation: {
+              ...model.creation,
+              tagIds: toggleTags(tagIds, value),
+              error: null,
+            },
+          },
+        };
+  if (!("revision" in target)) return { model: next };
+  return start(reset, {
+    _tag: "Tags",
+    id,
+    revision: target.revision,
+    tagIds: name ? tagIds : toggleTags(tagIds, value),
+    ...(name ? { newTagName: name } : {}),
+  });
+};
 
 export const toFilterPopoverMessage = (message: typeof Popover.Message.Type) =>
   Message.GotFilterPopoverMessage({ message });
@@ -545,9 +701,20 @@ const replaceFile = (model: Model, file: StoredFile): Model => ({
   },
 });
 
+const withTag = (model: Model, tag: Tag | null): Model =>
+  tag && model.index && !model.index.tags.some(({ id }) => id === tag.id)
+    ? { ...model, index: { ...model.index, tags: [...model.index.tags, tag] } }
+    : model;
+
 const applyIndex = (model: Model, index: typeof FileIndex.Type): Model => ({
   ...model,
   index,
+  creation: model.creation && {
+    ...model.creation,
+    tagIds: model.creation.tagIds.filter((tagId) =>
+      index.tags.some(({ id }) => id === tagId),
+    ),
+  },
   tagFilter: index.tags.some(({ id }) => id === model.tagFilter)
     ? model.tagFilter
     : null,
@@ -573,7 +740,7 @@ const transition = (
             : {
                 ...current,
                 selectedId: id,
-                tagPicker: tagPicker(),
+                tagPicker: null,
                 previewFailed: false,
                 documentLoadFailed: null,
               };
@@ -636,70 +803,10 @@ const transition = (
               commands: [FocusTagFilter({ target: "button" })],
             };
       },
-      GotTagPickerMessage: ({ id, message }) => {
-        const file = selectedFile(model);
-        if (!file || id !== file.id) return { model };
-        const result = Tokenizer.update(model.tagPicker, message);
-        const next = { ...model, tagPicker: result.model };
-        const commands = Command.mapMessages(
-          result.commands ?? [],
-          toTagPickerMessage(id),
-        );
-        const selection = result.outMessage;
-        if (
-          model.request ||
-          file.tagIds.length >= itemTagLimit ||
-          selection?._tag !== "Selected"
-        )
-          return { model: next, commands };
-        const tags = model.index?.tags ?? [];
-        const reset = {
-          ...next,
-          tagPicker: {
-            ...next.tagPicker,
-            inputValue: "",
-            maybeActiveItemIndex: Option.none(),
-          },
-        };
-        const operation = {
-          _tag: "Tags",
-          id,
-          revision: file.revision,
-        } as const;
-        const { value } = selection;
-        if (value.startsWith(createTagPrefix)) {
-          const { name, canCreate } = searchTags(
-            result.model.inputValue,
-            file.tagIds,
-            tags,
-          );
-          if (canCreate && value === `${createTagPrefix}${name}`)
-            return start(reset, {
-              ...operation,
-              tagIds: file.tagIds,
-              newTagName: name,
-            });
-        }
-        if (
-          tags.some((tag) => tag.id === value) &&
-          !file.tagIds.includes(value)
-        )
-          return start(reset, {
-            ...operation,
-            tagIds: [...file.tagIds, value],
-          });
-        return { model: next, commands };
-      },
-      RemovedTag: ({ id }) => {
-        const file = selectedFile(model);
-        if (!file?.tagIds.includes(id)) return { model };
-        return start(model, {
-          _tag: "Tags",
-          id: file.id,
-          revision: file.revision,
-          tagIds: file.tagIds.filter((tag) => tag !== id),
-        });
-      },
+      GotTagPopoverMessage: ({ id, message }) =>
+        updateTagPopover(model, id, message),
+      GotTagSearchMessage: ({ id, message }) =>
+        updateTagSearch(model, id, message),
       PreviewReady: ({ id }) => ({
         model:
           id === model.selectedId ? { ...model, previewFailed: false } : model,
@@ -711,7 +818,95 @@ const transition = (
       Loaded: ({ index }) => ({
         model: applyIndex({ ...model, request: null }, index),
       }),
-      CreatedDocument: () => start(model, { _tag: "CreateDocument" }),
+      OpenedCreate: ({ source }) => {
+        if (
+          model.creation ||
+          model.deletion ||
+          (source === "header" && (!model.index || model.request))
+        )
+          return { model };
+        const next = {
+          ...model,
+          tagPicker: null,
+          refreshPending:
+            model.refreshPending ||
+            (source === "create" && model.index !== null),
+          creation: {
+            id: crypto.randomUUID(),
+            source,
+            title: "",
+            markdown: "",
+            tagIds: [],
+            error: null,
+          },
+        };
+        return model.index ? { model: next } : start(next, { _tag: "Load" });
+      },
+      ClosedCreate: () => ({
+        model:
+          model.creation && !writingCreation(model)
+            ? { ...model, creation: null, tagPicker: null }
+            : model,
+      }),
+      DismissedCreate: () =>
+        model.creation && model.tagPicker?.popover.isOpen
+          ? updateTagPopover(
+              model,
+              model.creation.id,
+              Popover.Message.RequestedClose(),
+            )
+          : transition(model, Message.ClosedCreate()),
+      EditedCreation: ({ field, value }) => ({
+        model:
+          model.creation && model.request?.operation._tag !== "CreateDocument"
+            ? {
+                ...model,
+                creation: { ...model.creation, [field]: value, error: null },
+              }
+            : model,
+      }),
+      CreatedDocument: () => {
+        const { creation, index, request } = model;
+        if (!creation || !index || request) return { model };
+        const { id, source, tagIds, markdown } = creation;
+        const title = creation.title.trim();
+        if (
+          !Schema.is(DocumentTitle)(title) ||
+          !Schema.is(DocumentMarkdown)(markdown)
+        )
+          return { model };
+        return start(
+          { ...model, creation: { ...creation, error: null }, tagPicker: null },
+          {
+            _tag: "CreateDocument",
+            source,
+            input: { id, title, markdown, tagIds },
+          },
+        );
+      },
+      DraftTagAdded: ({ tag }) => {
+        const { creation } = model;
+        const operation = model.request?.operation;
+        const next = withTag({ ...model, request: null }, tag);
+        if (
+          !creation ||
+          operation?._tag !== "AddDraftTag" ||
+          operation.id !== creation.id
+        )
+          return { model: next };
+        return {
+          model: {
+            ...next,
+            creation: {
+              ...creation,
+              tagIds: creation.tagIds.includes(tag.id)
+                ? creation.tagIds
+                : [...creation.tagIds, tag.id],
+              error: null,
+            },
+          },
+        };
+      },
       DocumentLoaded: ({ document }) => {
         const operation = model.request?.operation;
         const { file } = document;
@@ -725,10 +920,15 @@ const transition = (
         );
         return operation?._tag === "CreateDocument"
           ? {
-              model: { ...next, tagFilter: null },
+              model: {
+                ...next,
+                creation: null,
+                tagPicker: null,
+                tagFilter: null,
+              },
               outMessage: OutMessage.OpenFile({
                 id: file.id,
-                source: "header",
+                source: operation.source,
               }),
             }
           : { model: next };
@@ -929,20 +1129,16 @@ const transition = (
         const operation = model.request?.operation;
         const draft = model.documents[file.id];
         const next = replaceFile(
-          {
-            ...model,
-            index: model.index && {
-              ...model.index,
-              tags:
-                tag && !model.index.tags.some(({ id }) => id === tag.id)
-                  ? [...model.index.tags, tag]
-                  : model.index.tags,
+          withTag(
+            {
+              ...model,
+              request: null,
+              error: conflict
+                ? "This file’s tags changed elsewhere. Try again."
+                : null,
             },
-            request: null,
-            error: conflict
-              ? "This file’s tags changed elsewhere. Try again."
-              : null,
-          },
+            tag,
+          ),
           file,
         );
         return {
@@ -959,6 +1155,12 @@ const transition = (
       Failed: ({ error }) => {
         const operation = model.request?.operation;
         const next = { ...model, request: null };
+        if (
+          model.creation &&
+          (operation?._tag === "CreateDocument" ||
+            operation?._tag === "AddDraftTag")
+        )
+          return { model: { ...next, creation: { ...model.creation, error } } };
         if (operation?._tag === "SaveDocument") {
           const draft = model.documents[operation.id];
           if (draft)

@@ -8,6 +8,8 @@ import {
 import { Effect, Schema, Stream } from "effect";
 import type { Attribute, Html, HtmlBuilder } from "foldkit/html";
 
+export const creationDialogId = "workspace-create-dialog";
+
 export const screenHeader = <Message>(
   props: {
     title?: string;

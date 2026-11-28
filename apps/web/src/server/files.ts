@@ -4,6 +4,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import {
   FileDeletion,
+  FileDocumentCreate,
   FileDocumentUpdate,
   FileTagUpdate,
   fileDocumentApi,
@@ -224,12 +225,28 @@ export const filesRoutes = (
     ),
     route("POST", fileDocumentsApi, (account) =>
       Effect.gen(function* () {
-        const now = yield* Clock.currentTimeMillis;
-        const document = yield* Effect.tryPromise(() =>
-          createDocument(db, bucket, account, now),
+        const input = yield* HttpServerRequest.schemaBodyJson(
+          FileDocumentCreate,
+        ).pipe(
+          Effect.provideService(
+            HttpServerRequest.MaxBodySize,
+            ByteSize.kibibytes(128),
+          ),
+          Effect.option,
         );
-        notifyItemChange(account, filesChanged);
-        return yield* json(document, 201);
+        if (input._tag === "None")
+          return yield* jsonError(
+            400,
+            "Check the document title, body, and tags.",
+          );
+        const now = yield* Clock.currentTimeMillis;
+        const { document, changed } = yield* Effect.tryPromise(() =>
+          createDocument(db, bucket, account, input.value, now),
+        );
+        if (!document)
+          return yield* jsonError(400, "One or more tags are unavailable.");
+        if (changed) notifyItemChange(account, filesChanged);
+        return yield* json(document, changed ? 201 : 200);
       }),
     ),
     route("GET", fileDocumentApi(":id"), (account) =>

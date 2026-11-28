@@ -76,6 +76,12 @@ export const FileDocument = Schema.Struct({
   markdown: DocumentMarkdown,
 });
 export type FileDocument = typeof FileDocument.Type;
+export const FileDocumentCreate = Schema.Struct({
+  id: Schema.optionalKey(ItemId),
+  title: Schema.optionalKey(DocumentTitle),
+  markdown: Schema.optionalKey(DocumentMarkdown),
+  tagIds: Schema.optionalKey(ItemTagIds),
+});
 export const FileDocumentUpdate = Schema.Struct({
   revision: ItemId,
   title: DocumentTitle,

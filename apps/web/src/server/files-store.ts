@@ -3,6 +3,7 @@ import {
   fileImageKey,
   fileImagesApi,
   type FileDocument,
+  type FileDocumentCreate,
   type FileDocumentUpdate,
   type FileTagUpdate,
   type StoredFile,
@@ -251,12 +252,20 @@ export const createDocument = async (
   db: D1Database,
   bucket: R2Bucket,
   account: string,
+  {
+    id = crypto.randomUUID(),
+    title = "Untitled document",
+    markdown = "",
+    tagIds = [],
+  }: typeof FileDocumentCreate.Type,
   now: number,
-): Promise<FileDocument> => {
-  const id = crypto.randomUUID();
+) => {
+  const existing = await readDocument(db, bucket, account, id);
+  if (existing) return { document: existing, changed: false };
   const revision = crypto.randomUUID();
   const key = documentKey(account, id, revision);
-  const title = "Untitled document";
+  const bytes = new TextEncoder().encode(markdown);
+  const ids = JSON.stringify([...new Set(tagIds)]);
   if (
     !(await reserveObject(
       db,
@@ -266,25 +275,28 @@ export const createDocument = async (
       key,
       "body",
       markdownType,
-      new Uint8Array(),
+      bytes,
       now,
     ))
   )
     throw new Error("Could not reserve the document body.");
-  await db.batch([
+  const [, , , , , saved] = await db.batch<FileRow>([
     db
       .prepare(
         `INSERT INTO items (account_id, id, kind, title, revision, created_at, updated_at)
        SELECT ?1, ?2, 'file', ?3, ?4, ?5, ?5
-       WHERE EXISTS (SELECT 1 FROM file_objects WHERE key = ?6 AND state = 'pending')`,
+       WHERE EXISTS (SELECT 1 FROM file_objects WHERE key = ?6 AND state = 'pending')
+         AND ${tagsAreAvailable("?7")}
+       ON CONFLICT DO NOTHING`,
       )
-      .bind(account, id, title, revision, now, key),
+      .bind(account, id, title, revision, now, key, ids),
     db
       .prepare(
         `INSERT INTO files (account_id, item_id, media_type, size, document_key)
-       SELECT ?1, ?2, ?4, 0, ?5 WHERE ${claimed}`,
+       SELECT ?1, ?2, ?4, ?5, ?6 WHERE ${claimed}`,
       )
-      .bind(account, id, revision, markdownType, key),
+      .bind(account, id, revision, markdownType, bytes.byteLength, key),
+    insertTags(db, account, id, revision, ids),
     db
       .prepare(
         `UPDATE file_objects SET state = 'live', expires_at = NULL
@@ -292,10 +304,12 @@ export const createDocument = async (
       )
       .bind(account, id, revision, key),
     incrementItemVersion(db, "file", claimed).bind(account, id, revision),
+    fileStatement(db, account, id),
   ]);
-  const file = await getFile(db, account, id);
-  if (!file) throw new Error("Could not create the document.");
-  return { file, markdown: "" };
+  const row = saved!.results[0];
+  return row?.revision === revision
+    ? { document: { file: decodeFile(row), markdown }, changed: true }
+    : { document: await readDocument(db, bucket, account, id), changed: false };
 };
 
 export const readDocument = async (

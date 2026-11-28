@@ -19,7 +19,7 @@ import {
 } from "@orumai/ui";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import type { Tag } from "./items-contract.ts";
-import { createTagPrefix } from "./tag-picker.ts";
+import { tagProperty } from "./tag-picker-view.ts";
 import { profileAvatar } from "./people.ts";
 import type { PersonSummary } from "./people-contract.ts";
 import {
@@ -30,7 +30,6 @@ import {
   pickerId,
   type PickerTarget,
   propertyLabels,
-  tagChoices,
 } from "./task-properties.ts";
 import { type Task, taskPriorities, taskStatuses } from "./tasks-contract.ts";
 import { creationFieldsLocked, Message, type Model } from "./tasks.ts";
@@ -69,7 +68,6 @@ export const assigneeOptions = (["owner", "oru", ""] as const).map((value) => ({
   label: assigneeLabels[value],
 }));
 
-export const tagIconPaths = ["M20 13.5 13.5 20 4 10.5V4h6.5zM8 8h.01"];
 const chevron = ["m7 10 5 5 5-5"];
 
 const dateLabel = (date: string) => {
@@ -145,31 +143,6 @@ const propertyMedia = (
   return outlineIcon(h, displays[value]!.icon);
 };
 
-const tagLabel = (
-  names: readonly string[],
-  surface: PickerTarget["surface"],
-  h: HtmlBuilder<Message>,
-) => {
-  if (!names.length) return "Add tags";
-  if (names.length === 1) return names[0]!;
-  if (surface !== "row") {
-    const summary = `${names.length} tags`;
-    return names.length === 2 && names.every((name) => name.length <= 10)
-      ? h.span(
-          [h.Class("task-detail-tag-pair")],
-          [h.span([], [names.join(", ")]), h.span([], [summary])],
-        )
-      : summary;
-  }
-  return h.span(
-    [h.Class("task-tag-names")],
-    [
-      h.span([h.Class("task-tag-name")], [names[0]!]),
-      h.span([], [`+${names.length - 1}`]),
-    ],
-  );
-};
-
 export const taskProperty = (
   model: Model,
   task: Pick<Task, "id" | PickerTarget["field"]>,
@@ -183,6 +156,27 @@ export const taskProperty = (
   const id = pickerId(target);
   const picker =
     model.picker && pickerId(model.picker) === id ? model.picker : null;
+  if (field === "tagIds")
+    return tagProperty(
+      {
+        id,
+        picker,
+        tags,
+        tagIds: task.tagIds,
+        item: "task",
+        row: surface === "row",
+        disabled:
+          surface === "creation" &&
+          (creationFieldsLocked(model) || !model.index),
+        creatingDisabled: model.request !== null,
+        error: model.tagPickerError,
+        toPopoverMessage: (message) =>
+          Message.GotPropertyPopover({ target, message }),
+        toSearchMessage: (message) =>
+          Message.GotPropertySearch({ target, message }),
+      },
+      h,
+    );
   const open = picker?.popover.isOpen ?? false;
   const label = propertyLabels[field];
   let displayed: string;
@@ -194,42 +188,13 @@ export const taskProperty = (
     content?: Html;
     disabled?: boolean;
   }> = [];
-  let error: string | null = null;
   const placeholder = {
-    tagIds: "Search tags",
     status: "Search statuses",
     priority: "Search priorities",
     assignee: "Search assignees",
     dueOn: "",
   }[field];
-  if (field === "tagIds") {
-    const names = tags
-      .filter(({ id }) => task.tagIds.includes(id))
-      .map(({ name }) => name);
-    displayed = names.length ? names.join(", ") : "Add tags";
-    trigger = valueContent(
-      field,
-      names.length ? "set" : "",
-      outlineIcon(h, tagIconPaths),
-      tagLabel(names, surface, h),
-      h,
-    );
-    selectedValues = task.tagIds;
-    if (picker && open) {
-      const result = tagChoices(picker.search.inputValue, task.tagIds, tags);
-      options.push(
-        ...result.choices.map((choice) => ({
-          ...choice,
-          disabled:
-            choice.disabled ||
-            (choice.id.startsWith(createTagPrefix) && model.request !== null),
-        })),
-      );
-      if (task.tagIds.length)
-        options.push({ id: clearChoice, name: "Clear all tags" });
-      error = model.tagPickerError ?? result.error;
-    }
-  } else if (field === "dueOn") {
+  if (field === "dueOn") {
     displayed = task.dueOn ? dateLabel(task.dueOn) : "Set due date";
     trigger = valueContent(
       field,
@@ -308,27 +273,16 @@ export const taskProperty = (
                   model: picker.search,
                   items: options,
                   selectedValues,
-                  single: field !== "tagIds",
+                  single: true,
                   searchable: field !== "dueOn",
                   label: field === "dueOn" ? label : placeholder,
                   placeholder,
-                  emptyMessage:
-                    field === "tagIds"
-                      ? "No matching tags."
-                      : "No matching options.",
+                  emptyMessage: "No matching options.",
                   toParentMessage: (message) =>
                     Message.GotPropertySearch({ target, message }),
                 },
                 h,
               ),
-              ...(error
-                ? [
-                    h.p(
-                      [h.Role("status"), h.Class("task-picker-feedback")],
-                      [error],
-                    ),
-                  ]
-                : []),
             ],
           );
   return Popover.view(
@@ -336,9 +290,7 @@ export const taskProperty = (
       model: picker?.popover ?? Popover.init({ id }),
       label,
       triggerLabel: `${label}: ${displayed}`,
-      disabled:
-        surface === "creation" &&
-        (creationFieldsLocked(model) || (field === "tagIds" && !model.index)),
+      disabled: surface === "creation" && creationFieldsLocked(model),
       triggerButton: {
         variant: surface === "row" ? "quiet" : "ghost",
         size: "sm",

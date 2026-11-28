@@ -3,10 +3,12 @@ import {
   type TaskAttachment,
   taskAttachmentObjectKey,
 } from "../task-attachment-contract.ts";
+import { claimed } from "./items-store.ts";
 
 const columns =
   "id, name, media_type AS mediaType, size, created_at AS createdAt";
 const pendingLifetime = 60 * 60_000;
+const imageUndoWindow = 60 * 60_000;
 
 export const listTaskAttachments = async (
   db: D1Database,
@@ -17,6 +19,7 @@ export const listTaskAttachments = async (
     .prepare(
       `SELECT ${columns} FROM task_attachments
        WHERE account_id = ? AND task_id = ? AND state = 'ready'
+         AND inline_delete_after IS NULL
        ORDER BY created_at, id`,
     )
     .bind(account, taskId)
@@ -33,7 +36,8 @@ const getAttachment = (
   db
     .prepare(
       `SELECT ${columns} FROM task_attachments
-       WHERE account_id = ? AND task_id = ? AND id = ? AND state = 'ready'`,
+       WHERE account_id = ? AND task_id = ? AND id = ?
+         AND (state = 'staged' OR (state = 'ready' AND inline_delete_after IS NULL))`,
     )
     .bind(account, taskId, id)
     .first<TaskAttachment>();
@@ -61,18 +65,28 @@ export const createTaskAttachment = async (
   bytes: ArrayBuffer,
   now: number,
   id: string = crypto.randomUUID(),
+  inline = false,
 ) => {
   const size = bytes.byteLength;
   const reserved = await db
     .prepare(
       `INSERT INTO task_attachments
-        (account_id, task_id, id, name, media_type, size, created_at, state)
-       SELECT account_id, item_id, ?, ?, ?, ?, ?, 'pending'
+        (account_id, task_id, id, name, media_type, size, created_at, state, inline_delete_after)
+       SELECT account_id, item_id, ?, ?, ?, ?, ?, 'pending', ?
        FROM tasks WHERE account_id = ? AND item_id = ?
        ON CONFLICT DO NOTHING
        RETURNING id`,
     )
-    .bind(id, metadata.name, metadata.mediaType, size, now, account, taskId)
+    .bind(
+      id,
+      metadata.name,
+      metadata.mediaType,
+      size,
+      now,
+      inline ? now + pendingLifetime : null,
+      account,
+      taskId,
+    )
     .first<{ id: string }>();
   if (!reserved) {
     const existing = await db
@@ -89,7 +103,7 @@ export const createTaskAttachment = async (
       existing.size !== size
     )
       throw new Error("Screenshot ID already in use.");
-    if (existing.state === "ready")
+    if (existing.state === "ready" || existing.state === "staged")
       return getAttachment(db, account, taskId, id);
   }
 
@@ -104,7 +118,8 @@ export const createTaskAttachment = async (
   try {
     const saved = await db
       .prepare(
-        `UPDATE task_attachments SET state = 'ready'
+        `UPDATE task_attachments
+         SET state = CASE WHEN inline_delete_after IS NULL THEN 'ready' ELSE 'staged' END
          WHERE account_id = ? AND task_id = ? AND id = ? AND state = 'pending'
          RETURNING ${columns}`,
       )
@@ -119,6 +134,48 @@ export const createTaskAttachment = async (
   return getAttachment(db, account, taskId, id);
 };
 
+// Claim these changes in the same batch as the description write. An unsaved
+// or conflicting deletion must leave the attachment available.
+export const reconcileTaskImages = (
+  db: D1Database,
+  account: string,
+  taskId: string,
+  revision: string,
+  linked: ReadonlySet<string>,
+  unlinked: readonly string[],
+  now: number,
+) => [
+  ...(linked.size
+    ? [
+        db
+          .prepare(
+            `UPDATE task_attachments SET state = 'ready', inline_delete_after = NULL
+     WHERE account_id = ?1 AND task_id = ?2 AND ${claimed}
+       AND state IN ('ready', 'staged') AND inline_delete_after IS NOT NULL
+       AND id IN (SELECT value FROM json_each(?4))`,
+          )
+          .bind(account, taskId, revision, JSON.stringify([...linked])),
+      ]
+    : []),
+  ...(unlinked.length
+    ? [
+        db
+          .prepare(
+            `UPDATE task_attachments SET inline_delete_after = ?5
+     WHERE account_id = ?1 AND task_id = ?2 AND ${claimed} AND state = 'ready'
+       AND id IN (SELECT value FROM json_each(?4))`,
+          )
+          .bind(
+            account,
+            taskId,
+            revision,
+            JSON.stringify(unlinked),
+            now + imageUndoWindow,
+          ),
+      ]
+    : []),
+];
+
 export const removeTaskAttachment = (
   db: D1Database,
   account: string,
@@ -128,7 +185,7 @@ export const removeTaskAttachment = (
   db
     .prepare(
       `UPDATE task_attachments SET state = 'removed'
-       WHERE account_id = ? AND task_id = ? AND id = ? AND state IN ('ready', 'removed')
+       WHERE account_id = ? AND task_id = ? AND id = ? AND state IN ('ready', 'staged', 'removed')
        RETURNING id`,
     )
     .bind(account, taskId, id)
@@ -169,11 +226,12 @@ const collectRemovedAttachments = async (
        WHERE (account_id, task_id, id) IN (
          SELECT account_id, task_id, id FROM task_attachments
          WHERE state = 'removed' OR (state = 'pending' AND created_at <= ?)
+            OR (state IN ('ready', 'staged') AND inline_delete_after <= ?)
          ORDER BY created_at, id LIMIT 100
        )
        RETURNING account_id AS account, task_id AS taskId, id`,
     )
-    .bind(now - pendingLifetime)
+    .bind(now - pendingLifetime, now)
     .all<{ account: string; taskId: string; id: string }>();
   if (!results.length) return;
   await bucket.delete(

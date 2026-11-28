@@ -87,7 +87,8 @@ export const taskAttachments = sqliteTable(
       .notNull(),
     size: integer().notNull(),
     createdAt: integer("created_at").notNull(),
-    state: text({ enum: ["pending", "ready", "removed"] }).notNull(),
+    state: text({ enum: ["pending", "staged", "ready", "removed"] }).notNull(),
+    inlineDeleteAfter: integer("inline_delete_after"),
   },
   (table) => [
     primaryKey({ columns: [table.accountId, table.taskId, table.id] }),

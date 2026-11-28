@@ -344,7 +344,7 @@ export const taskProperty = (
         surface === "creation" &&
         (creationFieldsLocked(model) || (field === "tagIds" && !model.index)),
       triggerButton: {
-        variant: surface === "row" ? "quiet" : "subtle",
+        variant: surface === "row" ? "quiet" : "ghost",
         size: "sm",
       },
       triggerClassName: `task-property-trigger task-property-${field}`,

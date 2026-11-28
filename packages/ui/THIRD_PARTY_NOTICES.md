@@ -30,6 +30,9 @@ components from the same CreaseUI revision using Orumai tokens.
 `src/toolbar.ts` and `src/toggle.ts` adapt the StyleX Toolbar and Toggle
 components from the same CreaseUI revision using Orumai tokens.
 
+`src/typography.ts` adapts the StyleX Typography styles from the same
+CreaseUI revision for native document elements.
+
 MIT License
 
 Copyright (c) 2026 Potti1234

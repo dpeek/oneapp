@@ -1,7 +1,10 @@
 import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
 import { expect, it } from "@effect/vitest";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
-import { taskAttachmentObjectKey } from "../task-attachment-contract.ts";
+import {
+  taskAttachmentApi,
+  taskAttachmentObjectKey,
+} from "../task-attachment-contract.ts";
 import {
   collectTaskAttachments,
   createTaskAttachment,
@@ -10,7 +13,7 @@ import {
   readTaskAttachment,
   removeTaskAttachment,
 } from "./task-attachments-store.ts";
-import { createTask, deleteTask } from "./tasks-store.ts";
+import { createTask, deleteTask, updateTask } from "./tasks-store.ts";
 
 it("keeps screenshots private by task and retries cleanup after revoking access", async () => {
   using sqlite = new Database(":memory:");
@@ -26,7 +29,13 @@ it("keeps screenshots private by task and retries cleanup after revoking access"
       bind: (...parameters: SQLQueryBindings[]) => prepare(sql, parameters),
       first: async () => read()[0] ?? null,
       all: async () => ({ results: read() }),
-      run: async () => ({ results: read() }),
+      run: async () => {
+        const results = read();
+        const meta = sqlite
+          .query<{ changes: number }, []>("SELECT changes() AS changes")
+          .get();
+        return { results, meta };
+      },
     };
   };
   const db = {
@@ -46,7 +55,12 @@ it("keeps screenshots private by task and retries cleanup after revoking access"
     { id: task, title: "Screenshot task" },
     1,
   );
-  await createTask(db, owner, { id: elsewhere, title: "Different task" }, 1);
+  const otherTask = await createTask(
+    db,
+    owner,
+    { id: elsewhere, title: "Different task" },
+    1,
+  );
   await createTask(
     db,
     { ...owner, accountId: "other" },
@@ -192,4 +206,84 @@ it("keeps screenshots private by task and retries cleanup after revoking access"
     retried[0],
   ]);
   expect(blobs.size).toBe(1);
+
+  const inlineId = crypto.randomUUID();
+  const inlineKey = taskAttachmentObjectKey("owner", elsewhere, inlineId);
+  const reference = `![Screenshot](${taskAttachmentApi(elsewhere, inlineId)})`;
+  await createTaskAttachment(
+    db,
+    bucket,
+    "owner",
+    elsewhere,
+    metadata,
+    bytes,
+    7_300_000,
+    inlineId,
+    true,
+  );
+  expect(
+    (await listTaskAttachments(db, "owner", elsewhere)).map(({ id }) => id),
+  ).not.toContain(inlineId);
+  expect(
+    await readTaskAttachment(db, bucket, "owner", elsewhere, inlineId),
+  ).not.toBeNull();
+
+  let current = otherTask.task!;
+  const save = async (description: string, now: number) => {
+    const result = await updateTask(
+      db,
+      "owner",
+      elsewhere,
+      { ...current, description },
+      now,
+    );
+    expect(result.changed).toBe(true);
+    current = result.task!;
+  };
+  await save(`${reference}\n\n${reference}`, 7_300_001);
+  expect(
+    (await listTaskAttachments(db, "owner", elsewhere)).map(({ id }) => id),
+  ).toContain(inlineId);
+  await save(reference, 7_300_002);
+  expect(
+    await readTaskAttachment(db, bucket, "owner", elsewhere, inlineId),
+  ).not.toBeNull();
+
+  const conflict = await updateTask(
+    db,
+    "owner",
+    elsewhere,
+    {
+      ...current,
+      revision: otherTask.task!.revision,
+      description: "",
+    },
+    7_300_003,
+  );
+  expect(conflict.changed).toBe(false);
+  expect(
+    await readTaskAttachment(db, bucket, "owner", elsewhere, inlineId),
+  ).not.toBeNull();
+
+  await save("", 7_300_004);
+  expect(
+    await readTaskAttachment(db, bucket, "owner", elsewhere, inlineId),
+  ).toBeNull();
+  expect(blobs.has(inlineKey)).toBe(true);
+  await save(reference, 7_300_005);
+  expect(
+    await readTaskAttachment(db, bucket, "owner", elsewhere, inlineId),
+  ).not.toBeNull();
+  await save("", 7_300_006);
+  await collectTaskAttachments(db, bucket, 10_900_006);
+  expect(blobs.has(inlineKey)).toBe(false);
+  const tooLate = await updateTask(
+    db,
+    "owner",
+    elsewhere,
+    { ...current, description: reference },
+    10_900_007,
+  );
+  expect(tooLate.changed).toBe(false);
+  expect(tooLate.task?.description).toBe("");
 });

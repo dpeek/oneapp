@@ -1,0 +1,1 @@
+ALTER TABLE `task_attachments` ADD `inline_delete_after` integer;

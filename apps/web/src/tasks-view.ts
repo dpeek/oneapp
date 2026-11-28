@@ -187,16 +187,6 @@ const taskListLabels = {
   complete: "Complete",
   all: "All tasks",
 } satisfies Record<TaskList, string>;
-const taskDateTimeFormat = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "medium",
-  timeStyle: "short",
-});
-const taskTimestamp = (value: number, h: HtmlBuilder<Message>) =>
-  h.time(
-    [h.Datetime(new Date(value).toISOString())],
-    [taskDateTimeFormat.format(value)],
-  );
-
 const rowPropertyFields = [
   ["status", "Status"],
   ["priority", "Priority"],
@@ -530,27 +520,15 @@ export const createView = Submodel.defineView(
   ) => {
     const creation = model.creation;
     if (!creation) return h.empty;
-    const { draft, saved, upload, screenshots, validatingScreenshots } =
-      creation;
+    const { draft, saved, upload, validatingScreenshots } = creation;
     const locked = creationFieldsLocked(model);
     const submitting = model.request?.operation._tag === "Create";
     const loadError = model.index ? null : (model.error?.message ?? null);
-    const status = upload
-      ? `Uploading screenshot ${upload.current} of ${upload.total}…`
-      : validatingScreenshots
-        ? "Checking screenshots…"
-        : null;
     return h.form(
       [
         h.Class("task-create-form"),
         h.OnSubmit(
           saved ? Message.RetriedDraftScreenshots() : Message.Created(),
-        ),
-        h.OnMount(
-          Mount.mapMessage(
-            Attachments.WatchEditor({ taskId: draft.id, draft: true }),
-            toDraftScreenshotMessage,
-          ),
         ),
       ],
       [
@@ -562,23 +540,12 @@ export const createView = Submodel.defineView(
               locked,
               titleEdited: creation.titleEdited,
             }),
-            Attachments.draftSection(
-              screenshots,
-              {
-                locked,
-                status,
-                error: creation.screenshotError,
-                onRemove: (id) => Message.RemovedDraftScreenshot({ id }),
-                toParent: toDraftScreenshotMessage,
-              },
-              h,
-            ),
             alert(
               {
                 message: saved
                   ? upload
                     ? null
-                    : "Task created. Retry the screenshots listed above or finish without them."
+                    : "Task created. Retry the image uploads or finish without the remaining images."
                   : (creation.error ?? loadError),
                 severity: "error",
                 announcement: "status",
@@ -628,7 +595,7 @@ export const createView = Submodel.defineView(
                       saved
                         ? upload
                           ? "Uploading…"
-                          : "Retry screenshots"
+                          : "Retry image uploads"
                         : submitting
                           ? "Adding…"
                           : "Add task",
@@ -790,7 +757,7 @@ const taskDocumentTitle = (
 
 const taskDocumentDescription = (
   model: Model,
-  task: Pick<Task, "id" | "description">,
+  task: Pick<Task, "id" | "description"> & Partial<Pick<Task, "revision">>,
   h: HtmlBuilder<Message>,
   creation?: CreationForm,
 ) => {
@@ -800,6 +767,18 @@ const taskDocumentDescription = (
     h.Key(task.id),
     editor.Value(draft?.value ?? task.description),
     editor.ReadOnly(creation?.locked ?? false),
+    editor.TaskId(task.id),
+    editor.TaskRevision(task.revision ?? null),
+    editor.InlineImageUploads(
+      (creation && model.creation?.inlineImageUploads) ||
+        model.attachments.inlineImageUploads,
+    ),
+    editor.OnDescriptionImagePasted((image) => {
+      const picked = Attachments.Message.Picked({ taskId: task.id, ...image });
+      return creation
+        ? toDraftScreenshotMessage(picked)
+        : toAttachmentsMessage(picked);
+    }),
     editor.OnDescriptionEdited((value) =>
       Message.EditedText({ id: task.id, field: "description", value }),
     ),
@@ -815,7 +794,8 @@ const taskDocumentDescription = (
 
 const taskDocument = (
   model: Model,
-  task: Pick<Task, "id" | TextField | Property>,
+  task: Pick<Task, "id" | TextField | Property> &
+    Partial<Pick<Task, "revision">>,
   tags: readonly Tag[],
   viewInputs: ViewInputs,
   h: HtmlBuilder<Message>,
@@ -963,47 +943,13 @@ const taskDetail = (
           ]
         : [
             h.div(
-              [
-                h.Key(task.id),
-                h.Class("task-editor"),
-                h.OnMount(
-                  Mount.mapMessage(
-                    Attachments.WatchEditor({ taskId: task.id, draft: false }),
-                    toAttachmentsMessage,
-                  ),
-                ),
-              ],
+              [h.Key(task.id), h.Class("task-editor")],
               [
                 ...taskDocument(model, task, tags, viewInputs, h),
                 taskMailSources(task.description, h),
-                Attachments.section(
-                  task.id,
-                  model.attachments,
-                  toAttachmentsMessage,
-                  h,
-                ),
                 ...(task.latestRun
                   ? [latestRunDetails(task.latestRun, model.runActivityTime, h)]
                   : []),
-                h.dl(
-                  [h.Class("task-timestamps")],
-                  [
-                    h.div(
-                      [],
-                      [
-                        h.dt([], ["Created"]),
-                        h.dd([], [taskTimestamp(task.createdAt, h)]),
-                      ],
-                    ),
-                    h.div(
-                      [],
-                      [
-                        h.dt([], ["Updated"]),
-                        h.dd([], [taskTimestamp(task.updatedAt, h)]),
-                      ],
-                    ),
-                  ],
-                ),
               ],
             ),
           ]),

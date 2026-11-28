@@ -7,10 +7,13 @@ const styles = stylex.create({
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
-    minBlockSize: { default: "2rem", "@media (pointer: coarse)": "2.75rem" },
-    minInlineSize: { default: "2rem", "@media (pointer: coarse)": "2.75rem" },
+    minBlockSize: { default: "1.75rem", "@media (pointer: coarse)": "2.75rem" },
+    minInlineSize: {
+      default: "1.75rem",
+      "@media (pointer: coarse)": "2.75rem",
+    },
     paddingInline: "0.375rem",
-    border: 0,
+    borderStyle: "none",
     borderRadius: controls.radius,
     backgroundColor: {
       default: "transparent",

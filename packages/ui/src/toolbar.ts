@@ -2,6 +2,9 @@ import * as stylex from "@stylexjs/stylex";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { controls } from "./tokens.stylex.ts";
 
+const compactSurfacePadding = "0.25rem";
+const compactSurfaceBorderWidth = "1px";
+
 const styles = stylex.create({
   layout: {
     display: "flex",
@@ -12,9 +15,11 @@ const styles = stylex.create({
   },
   compactSurface: {
     boxSizing: "border-box",
-    padding: "0.25rem",
-    border: `1px solid ${controls.border}`,
-    borderRadius: controls.radius,
+    padding: compactSurfacePadding,
+    borderColor: controls.border,
+    borderStyle: "solid",
+    borderWidth: compactSurfaceBorderWidth,
+    borderRadius: `calc(${controls.radius} + ${compactSurfacePadding} + ${compactSurfaceBorderWidth})`,
     backgroundColor: controls.popover,
     color: controls.foreground,
     boxShadow: "0 4px 16px rgb(0 0 0 / 18%)",

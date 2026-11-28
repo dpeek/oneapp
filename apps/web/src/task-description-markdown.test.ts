@@ -10,11 +10,15 @@ import {
 } from "@lexical/list";
 import { HeadingNode, QuoteNode } from "@lexical/rich-text";
 import { $createTextNode, $getRoot, createEditor } from "lexical";
+import { taskAttachmentApi } from "./task-attachment-contract.ts";
+import { omitTaskImageBlocks } from "./task-image-markdown.ts";
 import {
+  $createTaskImage,
   $loadDescription,
   $serializeDescription,
   parseDescription,
   PreservedMarkdownNode,
+  TaskImageNode,
 } from "./task-description-markdown.ts";
 
 describe("task description Markdown", () => {
@@ -124,5 +128,66 @@ describe("task description Markdown", () => {
     });
     editor.update(() => $loadDescription(blocks), { discrete: true });
     expect(editor.read(() => $getRoot().getTextContent())).toBe("");
+  });
+
+  it("renders only stand-alone images from the task's attachment route", () => {
+    const taskId = crypto.randomUUID();
+    const imageId = crypto.randomUUID();
+    const url = taskAttachmentApi(taskId, imageId);
+    const source = [
+      `![Local](${url} "Screenshot")`,
+      `![Other task](${taskAttachmentApi(crypto.randomUUID(), imageId)})`,
+      "![Remote](https://example.com/image.png)",
+      `Before ![Inline](${url}) after`,
+    ].join("\n\n");
+    const editor = createEditor({
+      nodes: [TaskImageNode, PreservedMarkdownNode],
+    });
+    editor.update(() => $loadDescription(parseDescription(source, taskId)), {
+      discrete: true,
+    });
+    expect(
+      editor.read(() =>
+        $getRoot()
+          .getChildren()
+          .map((node) => node.getType()),
+      ),
+    ).toEqual([
+      TaskImageNode.getType(),
+      PreservedMarkdownNode.getType(),
+      PreservedMarkdownNode.getType(),
+      PreservedMarkdownNode.getType(),
+      "paragraph",
+    ]);
+    expect(editor.read($serializeDescription)).toBe(source);
+  });
+
+  it("serializes a pasted image only after the upload succeeds", () => {
+    const uploadId = crypto.randomUUID();
+    const url = taskAttachmentApi(crypto.randomUUID(), uploadId);
+    const editor = createEditor({ nodes: [TaskImageNode] });
+    editor.update(
+      () => {
+        $getRoot().append(
+          $createTaskImage({ url, alt: "Pasted", title: null, uploadId }),
+        );
+      },
+      { discrete: true },
+    );
+    expect(editor.read($serializeDescription)).toBe("");
+    expect(
+      editor.read(() => $serializeDescription((id) => id === uploadId)),
+    ).toBe(`![Pasted](${url})`);
+  });
+
+  it("omits unfinished draft images while preserving text and successful images", () => {
+    const taskId = crypto.randomUUID();
+    const failed = crypto.randomUUID();
+    const omitted = `![Pending](${taskAttachmentApi(taskId, failed)})`;
+    const saved = `![Saved](${taskAttachmentApi(taskId, crypto.randomUUID())})`;
+    const markdown = ["Before", omitted, saved, "After", omitted].join("\n\n");
+    expect(omitTaskImageBlocks(markdown, taskId, new Set([failed]))).toBe(
+      ["Before", saved, "After"].join("\n\n"),
+    );
   });
 });

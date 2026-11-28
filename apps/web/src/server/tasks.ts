@@ -17,6 +17,7 @@ import {
   taskAttachmentLimit,
   taskAttachmentLimitMiB,
   taskAttachmentsApi,
+  taskInlineImageHeader,
 } from "../task-attachment-contract.ts";
 import { latestTaskDeploymentPath } from "../task-run-contract.ts";
 import {
@@ -177,6 +178,7 @@ export const tasksRoutes = (
             body.value,
             now,
             id,
+            request.headers[taskInlineImageHeader] === "1",
           ),
         );
         return yield* attachment
@@ -325,7 +327,10 @@ export const tasksRoutes = (
               }
               if (result.task.revision !== input.value.revision)
                 return yield* json(result.task, 409);
-              return yield* jsonError(400, "One or more tags are unavailable.");
+              return yield* jsonError(
+                400,
+                "One or more tags or images are unavailable.",
+              );
             }),
           ),
         ),

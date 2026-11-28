@@ -14,6 +14,7 @@ import {
   $isQuoteNode,
   type HeadingTagType,
 } from "@lexical/rich-text";
+import { Schema } from "effect";
 import {
   $createLineBreakNode,
   $createParagraphNode,
@@ -30,11 +31,17 @@ import {
   type LexicalNode,
   type TextFormatType,
 } from "lexical";
-import type { List, Paragraph, PhrasingContent, RootContent } from "mdast";
-import { fromMarkdown } from "mdast-util-from-markdown";
-import { gfmFromMarkdown, gfmToMarkdown } from "mdast-util-gfm";
+import type {
+  Image,
+  List,
+  Paragraph,
+  PhrasingContent,
+  RootContent,
+} from "mdast";
+import { gfmToMarkdown } from "mdast-util-gfm";
 import { toMarkdown } from "mdast-util-to-markdown";
-import { gfm } from "micromark-extension-gfm";
+import { ItemId } from "./items-contract.ts";
+import { parseTaskMarkdown, taskImageBlock } from "./task-image-markdown.ts";
 
 const softBreak = createState("taskDescriptionSoftBreak", {
   parse: (value) => value === true,
@@ -54,6 +61,64 @@ const preservedMarkdown = createState("markdown", {
 const trailingParagraph = createState("taskDescriptionTrailingParagraph", {
   parse: (value) => value === true,
 });
+
+const ImageData = Schema.Struct({
+  url: Schema.String,
+  alt: Schema.String,
+  title: Schema.NullOr(Schema.String),
+  uploadId: Schema.NullOr(ItemId),
+});
+type ImageData = typeof ImageData.Type;
+const imageData = createState("image", {
+  parse: (value): ImageData =>
+    Schema.is(ImageData)(value)
+      ? value
+      : { url: "", alt: "", title: null, uploadId: null },
+});
+
+export class TaskImageNode extends DecoratorNode<null> {
+  $config() {
+    return this.config("task-description-image", {
+      extends: DecoratorNode<null>,
+      stateConfigs: [{ flat: true, stateConfig: imageData }],
+    });
+  }
+
+  isInline() {
+    return false;
+  }
+
+  getImage() {
+    return $getState(this, imageData);
+  }
+
+  createDOM() {
+    const { alt, title } = this.getImage();
+    const figure = document.createElement("figure");
+    figure.className = "task-description-image";
+    figure.contentEditable = "false";
+    const image = document.createElement("img");
+    image.alt = alt;
+    image.loading = "lazy";
+    image.draggable = false;
+    if (title) image.title = title;
+    image.hidden = true;
+    const status = document.createElement("figcaption");
+    status.setAttribute("role", "status");
+    figure.append(image, status);
+    return figure;
+  }
+
+  updateDOM() {
+    return false;
+  }
+}
+
+export const $createTaskImage = (image: ImageData) =>
+  $setState(new TaskImageNode(), imageData, image);
+
+export const $createTrailingParagraph = () =>
+  $setState($createParagraphNode(), trailingParagraph, true);
 
 // Keep a Markdown block the editor cannot represent as a single document node.
 // Its preview is inert text, including when the Markdown contains HTML.
@@ -145,13 +210,10 @@ const supportsBlock = (node: RootContent): boolean => {
 };
 
 type DescriptionBlock =
-  RootContent | { type: "preserved"; value: string } | null;
+  RootContent | Image | { type: "preserved"; value: string } | null;
 
-export const parseDescription = (markdown: string) => {
-  const root = fromMarkdown(markdown, {
-    extensions: [gfm()],
-    mdastExtensions: [gfmFromMarkdown()],
-  });
+export const parseDescription = (markdown: string, taskId?: string) => {
+  const root = parseTaskMarkdown(markdown);
   const blocks: DescriptionBlock[] = [];
   let previousLine = 0;
   for (const block of root.children) {
@@ -160,7 +222,10 @@ export const parseDescription = (markdown: string) => {
     for (let line = previousLine + standardGap; line < start; line++)
       blocks.push(null);
     const offsets = block.position;
-    if (supportsBlock(block) || !offsets) {
+    const image = taskId && taskImageBlock(block, taskId);
+    if (image) {
+      blocks.push(image.image);
+    } else if (supportsBlock(block) || !offsets) {
       blocks.push(block);
     } else {
       let from = offsets.start.offset ?? 0;
@@ -273,6 +338,16 @@ export const $loadDescription = (blocks: DescriptionBlock[]) => {
       continue;
     }
     switch (block.type) {
+      case "image":
+        root.append(
+          $createTaskImage({
+            url: block.url,
+            alt: block.alt ?? "",
+            title: block.title ?? null,
+            uploadId: null,
+          }),
+        );
+        break;
       case "paragraph":
       case "heading": {
         const node =
@@ -313,8 +388,9 @@ export const $loadDescription = (blocks: DescriptionBlock[]) => {
     }
   }
   if (root.isEmpty()) root.append($createParagraphNode());
-  if (root.getLastChild() instanceof PreservedMarkdownNode)
-    root.append($setState($createParagraphNode(), trailingParagraph, true));
+  const last = root.getLastChild();
+  if (last instanceof PreservedMarkdownNode || last instanceof TaskImageNode)
+    root.append($createTrailingParagraph());
 };
 
 const appendInline = (children: PhrasingContent[], node: PhrasingContent) => {
@@ -405,6 +481,13 @@ const $markdownList = (node: ListNode): List => {
 };
 
 const $block = (node: LexicalNode): RootContent | undefined => {
+  if (node instanceof TaskImageNode) {
+    const { url, alt, title } = node.getImage();
+    return {
+      type: "paragraph",
+      children: [{ type: "image", url, alt, title }],
+    };
+  }
   if (node instanceof PreservedMarkdownNode) {
     // mdast emits HTML blocks verbatim, which is also how we emit opaque Markdown.
     return { type: "html", value: node.getTextContent() };
@@ -431,11 +514,17 @@ const $block = (node: LexicalNode): RootContent | undefined => {
   if ($isParagraphNode(node) && !node.isEmpty()) return $paragraph(node);
 };
 
-export const $serializeDescription = () => {
+export const $serializeDescription = (
+  uploaded: (id: string) => boolean = () => false,
+) => {
   const children: RootContent[] = [];
   const gaps = new Map<RootContent, number>();
   let empty = 0;
   for (const node of $getRoot().getChildren()) {
+    if (node instanceof TaskImageNode) {
+      const { uploadId } = node.getImage();
+      if (uploadId && !uploaded(uploadId)) continue;
+    }
     const block = $block(node);
     if (block) {
       gaps.set(block, empty);

@@ -86,6 +86,7 @@ export * as Tooltip from "./tooltip.ts";
 export * as Toast from "./toast.ts";
 export * as Tokenizer from "./tokenizer.ts";
 export { timestamp } from "./timestamp.ts";
+export { documentTypography } from "./typography.ts";
 export { viewToggleGroup } from "./view-switch.ts";
 
 const Model = Schema.Struct({ title: Schema.String });

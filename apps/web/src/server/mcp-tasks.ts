@@ -349,7 +349,7 @@ export const registerTaskTools = (
             return receipt(update.task);
           }
           if (update.task.revision !== revision) return stale();
-          return toolFailure("One or more tag IDs are unavailable.");
+          return toolFailure("One or more tags or images are unavailable.");
         }),
     );
     server.registerTool(

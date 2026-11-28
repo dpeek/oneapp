@@ -47,17 +47,23 @@ import { $setBlocksType } from "@lexical/selection";
 import {
   buttonClassName,
   compactToggleClassName,
+  documentTypography,
   inputClassName,
+  linkIconPaths,
+  taskIconPaths,
   toolbarClassName,
+  trashIconPaths,
 } from "@orumai/ui";
 import {
   $addUpdateTag,
   $createParagraphNode,
   $findMatchingParent,
   $getNearestNodeFromDOMNode,
+  $getNodeByKey,
   $getRoot,
   $getSelection,
   $isElementNode,
+  $isParagraphNode,
   $isRangeSelection,
   $isTextNode,
   $setSelection,
@@ -77,24 +83,40 @@ import {
   defineExtension,
   mergeRegister,
   type ElementNode,
+  type LexicalNode,
+  type NodeKey,
   type RangeSelection,
   type TextFormatType,
 } from "lexical";
+import {
+  type InlineImageUploads,
+  taskAttachmentApi,
+} from "./task-attachment-contract.ts";
 import { taskDescriptionEditor } from "./task-description-editor-contract.ts";
 import {
+  $createTaskImage,
+  $createTrailingParagraph,
   $loadDescription,
   $serializeDescription,
   parseDescription,
   PreservedMarkdownNode,
+  TaskImageNode,
   taskDescriptionLink,
 } from "./task-description-markdown.ts";
 import { taskDescriptionLimit } from "./tasks-contract.ts";
+import { taskImageId } from "./task-image-markdown.ts";
 
 const setBlock = (create: () => ElementNode) => {
   const selection = $getSelection();
   if (!$isRangeSelection(selection)) return;
   $setBlocksType(selection, create);
 };
+
+const $selectionBlock = (selection: RangeSelection) =>
+  $findMatchingParent(
+    selection.anchor.getNode(),
+    (node) => $isElementNode(node) && !node.isInline(),
+  );
 
 // Split a list at its selected item so changing its type leaves its neighbors
 // (and any sublists belonging to the item) in place.
@@ -139,50 +161,82 @@ const $setListType = (type: ListType) => {
   else $insertList(type);
 };
 
+const codeIconPaths = ["m9 6-6 6 6 6", "m15 6 6 6-6 6"] as const;
+
 const blockChoices = [
   {
     label: "Paragraph",
     keywords: "text",
+    iconPaths: ["M12 5H9a4 4 0 1 0 0 8h3M12 5v14m5-14v14M9 5h11"],
     apply: () => setBlock($createParagraphNode),
   },
-  ...[1, 2, 3].map((level) => ({
+  ...(
+    [
+      [1, "m15 10 2-2v8m-2 0h4"],
+      [2, "M15 10a2 2 0 0 1 4 0c0 2-4 4-4 6h4"],
+      [3, "M15 8h4l-2 4h.5a2 2 0 0 1 0 4H15"],
+    ] as const
+  ).map(([level, digit]) => ({
     label: `Heading ${level}`,
     keywords: "# title",
+    iconPaths: ["M4 6v12M11 6v12M4 12h7", digit],
     apply: () =>
       setBlock(() => $createHeadingNode(`h${level}` as HeadingTagType)),
   })),
   {
     label: "Bulleted list",
     keywords: "- * unordered",
+    iconPaths: ["M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"],
     apply: () => $setListType("bullet"),
   },
   {
     label: "Numbered list",
     keywords: "1. ordered",
+    iconPaths: [
+      "M10 6h10M10 12h10M10 18h10",
+      "M4 5h1v5m-1 0h2M4 14a1.5 1.5 0 0 1 3 0c0 1-3 2-3 4h3",
+    ],
     apply: () => $setListType("number"),
   },
   {
     label: "Checklist",
     keywords: "[] checkbox to-do task list",
+    iconPaths: taskIconPaths,
     apply: () => $setListType("check"),
   },
   {
     label: "Block quote",
     keywords: "> quotation",
+    iconPaths: [
+      "M3 12V7h6v5H3m6 0c0 3-1.5 5-4 6",
+      "M14 12V7h6v5h-6m6 0c0 3-1.5 5-4 6",
+    ],
     apply: () => setBlock($createQuoteNode),
   },
   {
     label: "Code block",
     keywords: "``` fenced",
+    iconPaths: codeIconPaths,
     apply: () => setBlock($createCodeNode),
+  },
+  {
+    label: "Image",
+    keywords: "upload photo picture screenshot png jpeg",
+    iconPaths: [
+      "M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z",
+      "m4 16 5-5 4 4 2-2 5 5M15 8h.01",
+    ],
   },
 ];
 
 const formats = [
   ["bold", "B", "Bold"],
   ["italic", "I", "Italic"],
+  ["code", codeIconPaths, "Inline code"],
 ] as const;
-const supportedFormats = new Set<TextFormatType>(["bold", "italic", "code"]);
+const supportedFormats = new Set<TextFormatType>(
+  formats.map(([format]) => format),
+);
 
 const $selectedTextNodes = (selection: RangeSelection) => {
   const [start, end] = selection.isBackward()
@@ -213,13 +267,37 @@ const $selectedLink = (selection: RangeSelection) => {
     : null;
 };
 
-const makeButton = (text: string, label: string, run: () => void) => {
+const makeOutlineIcon = (paths: readonly string[]) => {
+  const svgNamespace = "http://www.w3.org/2000/svg";
+  const icon = document.createElementNS(svgNamespace, "svg");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("width", "16");
+  icon.setAttribute("height", "16");
+  icon.setAttribute("fill", "none");
+  icon.setAttribute("stroke", "currentColor");
+  icon.setAttribute("stroke-width", "2");
+  icon.setAttribute("stroke-linecap", "round");
+  icon.setAttribute("stroke-linejoin", "round");
+  icon.setAttribute("aria-hidden", "true");
+  for (const d of paths) {
+    const path = document.createElementNS(svgNamespace, "path");
+    path.setAttribute("d", d);
+    icon.append(path);
+  }
+  return icon;
+};
+
+const makeButton = (
+  content: string | Node,
+  label: string,
+  run?: () => void,
+) => {
   const button = document.createElement("button");
   button.type = "button";
-  button.textContent = text;
+  button.append(content);
   button.title = label;
   button.setAttribute("aria-label", label);
-  button.addEventListener("click", run);
+  if (run) button.addEventListener("click", run);
   return button;
 };
 
@@ -233,10 +311,14 @@ const descriptionExtension = defineExtension({
     ListNode,
     ListItemNode,
     PreservedMarkdownNode,
+    TaskImageNode,
   ],
   theme: {
-    code: "task-description-code",
+    heading: documentTypography.heading,
+    quote: documentTypography.quote,
+    code: `task-description-code ${documentTypography.codeBlock}`,
     text: {
+      code: documentTypography.inlineCode,
       bold: "task-description-bold",
       italic: "task-description-italic",
     },
@@ -254,21 +336,24 @@ let nextEditorId = 0;
 export class TaskDescriptionEditor extends HTMLElement {
   #id = `task-description-${++nextEditorId}`;
   #body = document.createElement("div");
-  #blockTools = document.createElement("div");
   #floating = document.createElement("div");
   #formatting = document.createElement("div");
-  #insert = makeButton("+", "Insert block", () =>
-    this.#menu.hidden ? this.#openMenu() : this.#closeMenu(true),
-  );
   #menu = document.createElement("div");
-  #search = document.createElement("input");
   #options = document.createElement("div");
+  #imageInput = document.createElement("input");
+  #imageInsertionKey: NodeKey | null = null;
+  #slashBlockKey: NodeKey | null = null;
+  #slashQuery: string | null = null;
   #matches = blockChoices;
   #activeOption = 0;
   #link = document.createElement("div");
   #url = document.createElement("input");
   #linkError = document.createElement("span");
-  #linkButton = makeButton("Link", "Add or edit link", () => this.#openLink());
+  #linkButton = makeButton(
+    makeOutlineIcon(linkIconPaths),
+    "Add or edit link",
+    () => this.#openLink(),
+  );
   #removeLink = makeButton("Remove", "Remove link", () =>
     this.#applyLink(true),
   );
@@ -277,12 +362,16 @@ export class TaskDescriptionEditor extends HTMLElement {
   #editor = buildEditorFromExtensions(descriptionExtension);
   #history = createEmptyHistoryState();
   #selection: RangeSelection | null = null;
-  #selectionRange: Range | null = null;
+  #anchorRange: Range | null = null;
   #stopPositioning: (() => void) | null = null;
   #highlight: Highlight | null = null;
   #listeners: AbortController | null = null;
   #unregister: (() => void) | null = null;
   #value = "";
+  #taskId: string | null = null;
+  #taskRevision: string | null = null;
+  #inlineImageUploads: typeof InlineImageUploads.Type = {};
+  #imagePreviews = new Map<File, string>();
   #visualValue: string | null = null;
   #original = "";
   #canonical = "";
@@ -297,6 +386,33 @@ export class TaskDescriptionEditor extends HTMLElement {
     if (value === this.#value) return;
     this.#value = value;
     if (this.#listeners) this.#receiveValue();
+  }
+
+  set taskId(taskId: string | null) {
+    if (this.#taskId === taskId) return;
+    this.#taskId = taskId;
+    this.#visualValue = null;
+    if (this.#listeners) this.#receiveValue();
+  }
+
+  set taskRevision(revision: string | null) {
+    if (this.#taskRevision === revision) return;
+    this.#taskRevision = revision;
+    if (this.#listeners)
+      queueMicrotask(() => {
+        if (this.#listeners && this.#taskRevision === revision)
+          this.#editor.read(() => this.#syncImages());
+      });
+  }
+
+  set inlineImageUploads(uploads: typeof InlineImageUploads.Type) {
+    if (uploads === this.#inlineImageUploads) return;
+    this.#inlineImageUploads = uploads;
+    if (this.#listeners)
+      queueMicrotask(() => {
+        if (this.#listeners && uploads === this.#inlineImageUploads)
+          this.#editor.read(() => this.#publishDescription());
+      });
   }
 
   get readOnly() {
@@ -408,9 +524,17 @@ export class TaskDescriptionEditor extends HTMLElement {
         PASTE_COMMAND,
         (event) => {
           if (!(event instanceof ClipboardEvent)) return false;
-          // The enclosing task surface owns file pastes. Keep the event bubbling.
-          if (event.clipboardData?.files.length) return true;
           const selection = $getSelection();
+          const file = event.clipboardData?.files[0];
+          if (file) {
+            const taskId = this.#taskId;
+            if (taskId && !this.#readOnly && $isRangeSelection(selection)) {
+              event.preventDefault();
+              event.stopPropagation();
+              this.#insertImage(taskId, file, selection.focus.getNode());
+            }
+            return true;
+          }
           if (!$isRangeSelection(selection)) return false;
           event.preventDefault();
           const text = event.clipboardData?.getData("text/plain");
@@ -435,13 +559,8 @@ export class TaskDescriptionEditor extends HTMLElement {
           if (this.#loading) return;
           editorState.read(() => {
             this.#syncSelection();
-            if (dirtyElements.size || dirtyLeaves.size) {
-              const canonical = $serializeDescription();
-              const markdown =
-                canonical === this.#canonical ? this.#original : canonical;
-              this.#visualValue = markdown;
-              this.#changed(markdown);
-            }
+            if (dirtyElements.size || dirtyLeaves.size)
+              this.#publishDescription();
           });
         },
       ),
@@ -456,6 +575,10 @@ export class TaskDescriptionEditor extends HTMLElement {
     );
     this.addEventListener("focusout", this.#onFocusOut, { signal });
     this.addEventListener("keydown", this.#onKeyDown, {
+      signal,
+      capture: true,
+    });
+    this.#body.addEventListener("beforeinput", this.#onBeforeInput, {
       signal,
       capture: true,
     });
@@ -475,17 +598,16 @@ export class TaskDescriptionEditor extends HTMLElement {
     this.#editor.dispose();
     this.#history = createEmptyHistoryState();
     this.#selection = null;
-    this.#closeMenu(false);
-    this.#closeFormatting();
+    this.#closeMenu();
+    this.#closeFloating();
+    for (const url of this.#imagePreviews.values()) URL.revokeObjectURL(url);
+    this.#imagePreviews.clear();
+    this.#imageInsertionKey = null;
   }
 
   #build() {
     this.#built = true;
     this.classList.add("task-description");
-    this.#blockTools.className = "task-description-block-tools";
-    this.#insert.setAttribute("aria-expanded", "false");
-    this.#insert.setAttribute("aria-controls", `${this.#id}-menu`);
-    this.#blockTools.append(this.#insert);
 
     this.#floating.className = `task-description-floating ${toolbarClassName("compact-surface")}`;
     this.#floating.dataset.slot = "toolbar";
@@ -493,8 +615,12 @@ export class TaskDescriptionEditor extends HTMLElement {
     this.#formatting.className = "task-description-formatting";
     this.#formatting.setAttribute("role", "toolbar");
     this.#formatting.setAttribute("aria-label", "Description formatting");
-    for (const [format, text, label] of formats) {
-      const button = makeButton(text, label, () => this.#toggleFormat(format));
+    for (const [format, content, label] of formats) {
+      const button = makeButton(
+        typeof content === "string" ? content : makeOutlineIcon(content),
+        label,
+        () => this.#toggleFormat(format),
+      );
       button.className = compactToggleClassName;
       button.dataset.slot = "toggle";
       button.dataset.format = format;
@@ -517,21 +643,12 @@ export class TaskDescriptionEditor extends HTMLElement {
         this.#setToolbarTabStop(event.target);
     });
 
-    this.#menu.id = `${this.#id}-menu`;
     this.#menu.className = "task-description-panel";
     this.#menu.hidden = true;
-    this.#search.type = "text";
-    this.#search.placeholder = "Search blocks…";
-    this.#search.setAttribute("aria-label", "Search blocks");
-    this.#search.setAttribute("role", "combobox");
-    this.#search.setAttribute("aria-expanded", "true");
-    this.#search.setAttribute("aria-autocomplete", "list");
     this.#options.id = `${this.#id}-blocks`;
     this.#options.setAttribute("role", "listbox");
-    this.#options.setAttribute("aria-label", "Blocks");
-    this.#search.setAttribute("aria-controls", this.#options.id);
-    this.#search.addEventListener("input", () => this.#renderOptions());
-    this.#menu.append(this.#search, this.#options);
+    this.#options.setAttribute("aria-label", "Insert block");
+    this.#menu.append(this.#options);
 
     this.#link.className = "task-description-link";
     this.#link.hidden = true;
@@ -552,13 +669,28 @@ export class TaskDescriptionEditor extends HTMLElement {
       button.dataset.slot = "button";
     }
     this.#link.append(this.#url, applyLink, this.#removeLink, this.#linkError);
-    this.#floating.append(this.#formatting, this.#link);
+    this.#floating.append(this.#formatting, this.#menu, this.#link);
 
-    this.#body.className = "task-description-body";
+    this.#body.className = `task-description-body ${documentTypography.body}`;
     this.#body.setAttribute("role", "textbox");
     this.#body.setAttribute("aria-label", "Description");
     this.#body.setAttribute("aria-multiline", "true");
     this.#body.dataset.placeholder = "Add a description…";
+    this.#imageInput.type = "file";
+    this.#imageInput.accept = "image/png,image/jpeg,.png,.jpg,.jpeg";
+    this.#imageInput.hidden = true;
+    this.#imageInput.addEventListener("cancel", () => {
+      this.#imageInsertionKey = null;
+    });
+    this.#imageInput.addEventListener("change", () => {
+      const file = this.#imageInput.files?.[0];
+      const key = this.#imageInsertionKey;
+      const taskId = this.#taskId;
+      this.#imageInput.value = "";
+      this.#imageInsertionKey = null;
+      if (!file || !taskId || !key) return;
+      this.#edit(() => this.#insertImage(taskId, file, $getNodeByKey(key)));
+    });
     // Use the visible mark as the pointer target. Lexical handles keyboard
     // interaction, and its touch pointerup must not also toggle on this click.
     for (const type of ["pointerdown", "pointerup"] as const) {
@@ -575,6 +707,18 @@ export class TaskDescriptionEditor extends HTMLElement {
     this.#body.addEventListener(
       "click",
       (event) => {
+        const removeImage =
+          event.target instanceof Element &&
+          event.target.closest("button[data-remove-image]");
+        if (removeImage) {
+          event.preventDefault();
+          event.stopPropagation();
+          this.#edit(() => {
+            const node = $getNearestNodeFromDOMNode(removeImage);
+            if (node instanceof TaskImageNode) node.remove();
+          });
+          return;
+        }
         const mark = this.#checkboxMark(event);
         if (mark) {
           event.preventDefault();
@@ -597,18 +741,12 @@ export class TaskDescriptionEditor extends HTMLElement {
     this.#error.className = "task-description-error";
     this.#error.id = `${this.#id}-error`;
     this.#error.setAttribute("role", "status");
-    this.append(
-      this.#blockTools,
-      this.#menu,
-      this.#body,
-      this.#floating,
-      this.#error,
-    );
+    this.append(this.#body, this.#floating, this.#imageInput, this.#error);
   }
 
   #receiveValue() {
-    this.#closeMenu(false);
-    this.#closeFormatting();
+    this.#closeMenu();
+    this.#closeFloating();
     this.#loadVisual();
     this.#syncEditable();
     this.#validate();
@@ -634,7 +772,7 @@ export class TaskDescriptionEditor extends HTMLElement {
 
   #loadVisual() {
     if (this.#value === this.#visualValue) return;
-    const blocks = parseDescription(this.#value);
+    const blocks = parseDescription(this.#value, this.#taskId ?? undefined);
     this.#loading = true;
     this.#selection = null;
     this.#editor.update(
@@ -647,7 +785,10 @@ export class TaskDescriptionEditor extends HTMLElement {
     this.#editor.dispatchCommand(CLEAR_HISTORY_COMMAND, undefined);
     this.#original = this.#value;
     this.#visualValue = this.#value;
-    this.#canonical = this.#editor.read($serializeDescription);
+    this.#canonical = this.#editor.read(() => {
+      this.#syncImages();
+      return $serializeDescription();
+    });
     this.#history.current = {
       editor: this.#editor,
       editorState: this.#editor.getEditorState(),
@@ -660,10 +801,9 @@ export class TaskDescriptionEditor extends HTMLElement {
     this.#editor.setEditable(editable);
     this.#body.contentEditable = String(editable);
     this.#body.setAttribute("aria-readonly", String(this.#readOnly));
-    this.#insert.disabled = this.#readOnly;
     if (this.#readOnly) {
-      this.#closeMenu(false);
-      this.#closeFormatting();
+      this.#closeMenu();
+      this.#closeFloating();
     }
   }
 
@@ -695,20 +835,128 @@ export class TaskDescriptionEditor extends HTMLElement {
     );
   }
 
+  #insertImage(taskId: string, file: File, anchor: LexicalNode | null) {
+    const id = crypto.randomUUID();
+    const image = $createTaskImage({
+      url: taskAttachmentApi(taskId, id),
+      alt: file.name || "Image",
+      title: null,
+      uploadId: id,
+    });
+    const block = anchor?.isAttached() ? anchor.getTopLevelElement() : null;
+    $addUpdateTag(PASTE_TAG);
+    if ($isParagraphNode(block) && block.isEmpty()) block.replace(image);
+    else if (block) block.insertAfter(image);
+    else $getRoot().append(image);
+    const next = image.getNextSibling();
+    if ($isParagraphNode(next)) next.selectStart();
+    else image.insertAfter($createTrailingParagraph()).selectStart();
+    this.dispatchEvent(
+      new CustomEvent("description-image-pasted", {
+        detail: { id, file },
+        bubbles: true,
+      }),
+    );
+  }
+
+  #syncImages() {
+    for (const [file, url] of this.#imagePreviews) {
+      if (Object.values(this.#inlineImageUploads).includes(file)) continue;
+      URL.revokeObjectURL(url);
+      this.#imagePreviews.delete(file);
+    }
+    for (const node of $getRoot().getChildren()) {
+      if (!(node instanceof TaskImageNode)) continue;
+      const { url, uploadId } = node.getImage();
+      const id = uploadId ?? (this.#taskId && taskImageId(this.#taskId, url));
+      const outcome = id ? this.#inlineImageUploads[id] : undefined;
+      const figure = this.#editor.getElementByKey(node.getKey());
+      const image = figure?.querySelector("img");
+      const status = figure?.querySelector("figcaption");
+      if (!figure || !image || !status) continue;
+      if (!figure.querySelector("button[data-remove-image]")) {
+        const remove = makeButton(
+          makeOutlineIcon(trashIconPaths),
+          "Remove image",
+        );
+        remove.className = buttonClassName({
+          variant: "outline",
+          size: "icon-sm",
+        });
+        remove.dataset.slot = "button";
+        remove.dataset.removeImage = "";
+        figure.append(remove);
+        image.addEventListener("error", () => this.#retryImage(image));
+      }
+      const src =
+        outcome instanceof File
+          ? this.#imagePreview(outcome)
+          : outcome === true || (!uploadId && outcome === undefined)
+            ? url
+            : null;
+      image.hidden = src === null;
+      status.hidden = src !== null;
+      if (!src) {
+        delete image.dataset.imageSource;
+        image.removeAttribute("src");
+      } else if (image.dataset.imageSource !== src) {
+        image.dataset.imageSource = src;
+        image.dataset.taskRevision = this.#taskRevision ?? "";
+        image.src = src;
+      } else if (image.complete && image.naturalWidth === 0) {
+        this.#retryImage(image);
+      }
+      const message = src
+        ? ""
+        : typeof outcome === "string"
+          ? outcome
+          : "Uploading image…";
+      if (status.textContent !== message) status.textContent = message;
+    }
+  }
+
+  #retryImage(image: HTMLImageElement) {
+    const src = image.dataset.imageSource;
+    const revision = this.#taskRevision;
+    if (
+      !src?.startsWith("/") ||
+      !revision ||
+      image.dataset.taskRevision === revision
+    )
+      return;
+    // Undo can render before autosave has restored access to the attachment.
+    image.dataset.taskRevision = revision;
+    image.src = `${src}?revision=${revision}`;
+  }
+
+  #imagePreview(file: File) {
+    const preview = this.#imagePreviews.get(file) ?? URL.createObjectURL(file);
+    this.#imagePreviews.set(file, preview);
+    return preview;
+  }
+
+  #publishDescription() {
+    this.#syncImages();
+    if (this.#readOnly) return;
+    const canonical = $serializeDescription((id) => {
+      const outcome = this.#inlineImageUploads[id];
+      return outcome === true || outcome instanceof File;
+    });
+    const markdown = canonical === this.#canonical ? this.#original : canonical;
+    this.#visualValue = markdown;
+    this.#changed(markdown);
+  }
+
   #flush() {
     this.#editor.read(() => {});
   }
 
   #onFocusOut = (event: FocusEvent) => {
     const next = event.relatedTarget;
-    if (next instanceof Node && this.contains(next)) {
-      if (!this.#body.contains(next) && !this.#floating.contains(next))
-        this.#closeFormatting();
-      return;
-    }
+    if (next instanceof Node && this.contains(next)) return;
     this.#flush();
-    this.#closeMenu(false);
-    this.#closeFormatting();
+    this.#closeMenu();
+    this.#closeFloating();
     this.dispatchEvent(
       new CustomEvent("description-blurred", {
         detail: this.#value,
@@ -731,19 +979,53 @@ export class TaskDescriptionEditor extends HTMLElement {
     );
   }
 
-  #openMenu() {
-    if (this.#readOnly) return;
-    this.#flush();
-    this.#closeFormatting();
-    this.#menu.hidden = false;
-    this.#insert.setAttribute("aria-expanded", "true");
-    this.#search.value = "";
-    this.#renderOptions();
-    this.#search.focus();
+  #onBeforeInput = (event: InputEvent) => {
+    if (
+      this.#readOnly ||
+      event.isComposing ||
+      event.inputType !== "insertText" ||
+      event.data !== "/"
+    )
+      return;
+    this.#editor.read(() => {
+      const selection = $getSelection();
+      if (!$isRangeSelection(selection) || !selection.isCollapsed()) return;
+      const block = $selectionBlock(selection);
+      if ($isElementNode(block) && !$isCodeNode(block) && block.isEmpty())
+        this.#slashBlockKey = block.getKey();
+    });
+  };
+
+  #syncSlashMenu(selection: RangeSelection | null) {
+    const key = this.#slashBlockKey;
+    if (key === null) return false;
+    const block = selection?.isCollapsed() ? $selectionBlock(selection) : null;
+    const element =
+      block?.getKey() === key && this.#editor.getElementByKey(key);
+    const text = block?.getTextContent();
+    if (!element || !text?.startsWith("/") || text.includes("\n")) {
+      this.#closeMenu();
+      return false;
+    }
+
+    if (this.#menu.hidden) {
+      this.#formatting.hidden = true;
+      this.#menu.hidden = false;
+      this.#body.setAttribute("aria-controls", this.#options.id);
+      this.#body.setAttribute("aria-autocomplete", "list");
+    }
+    const query = text.slice(1).trim().toLowerCase();
+    if (query !== this.#slashQuery) {
+      this.#slashQuery = query;
+      this.#renderOptions(query);
+    }
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    this.#anchorFloating(range);
+    return true;
   }
 
-  #renderOptions() {
-    const query = this.#search.value.trim().toLowerCase();
+  #renderOptions(query: string) {
     this.#matches = blockChoices.filter(({ label, keywords }) =>
       `${label.toLowerCase()} ${keywords}`.includes(query),
     );
@@ -752,6 +1034,7 @@ export class TaskDescriptionEditor extends HTMLElement {
       const option = makeButton(choice.label, choice.label, () =>
         this.#applyBlock(index),
       );
+      option.prepend(makeOutlineIcon(choice.iconPaths));
       option.id = `${this.#options.id}-${index}`;
       option.setAttribute("role", "option");
       option.tabIndex = -1;
@@ -775,16 +1058,25 @@ export class TaskDescriptionEditor extends HTMLElement {
     });
     const active = count ? this.#options.children[this.#activeOption] : null;
     if (active) {
-      this.#search.setAttribute("aria-activedescendant", active.id);
+      this.#body.setAttribute("aria-activedescendant", active.id);
       active.scrollIntoView({ block: "nearest", inline: "nearest" });
-    } else this.#search.removeAttribute("aria-activedescendant");
+    } else this.#body.removeAttribute("aria-activedescendant");
   }
 
   #applyBlock(index: number) {
     const choice = this.#matches[index];
-    if (choice) {
-      this.#edit(choice.apply);
-      this.#closeMenu(false);
+    const key = this.#slashBlockKey;
+    if (!choice || key === null) return;
+    this.#closeMenu();
+    this.#edit(() => {
+      const block = $getNodeByKey(key);
+      if (!$isElementNode(block)) return;
+      block.clear().selectStart();
+      choice.apply?.();
+    });
+    if (!choice.apply && this.#taskId) {
+      this.#imageInsertionKey = key;
+      this.#imageInput.click();
     }
   }
 
@@ -792,7 +1084,8 @@ export class TaskDescriptionEditor extends HTMLElement {
     if (!this.#body.contains(document.activeElement)) return;
     const selection = $getSelection();
     this.#selection = $isRangeSelection(selection) ? selection.clone() : null;
-    if (this.#readOnly || !this.#menu.hidden || !this.#link.hidden) return;
+    if (this.#readOnly || !this.#link.hidden) return;
+    if (this.#syncSlashMenu(this.#selection)) return;
 
     const domSelection = document.getSelection();
     const range = domSelection?.rangeCount ? domSelection.getRangeAt(0) : null;
@@ -803,12 +1096,12 @@ export class TaskDescriptionEditor extends HTMLElement {
       !this.#body.contains(range.commonAncestorContainer) ||
       !range.toString()
     ) {
-      this.#closeFormatting();
+      this.#closeFloating();
       return;
     }
     const nodes = $selectedTextNodes(selection);
     if (!nodes.length) {
-      this.#closeFormatting();
+      this.#closeFloating();
       return;
     }
     for (const [format, button] of this.#formatButtons)
@@ -817,9 +1110,13 @@ export class TaskDescriptionEditor extends HTMLElement {
         String(nodes.every((node) => node.hasFormat(format))),
       );
 
-    this.#selectionRange = range.cloneRange();
+    this.#anchorFloating(range.cloneRange());
+  }
+
+  #anchorFloating(range: Range) {
+    this.#anchorRange = range;
     if (this.#stopPositioning) {
-      this.#positionToolbar();
+      this.#positionFloating();
       return;
     }
     this.#floating.style.visibility = "hidden";
@@ -827,25 +1124,25 @@ export class TaskDescriptionEditor extends HTMLElement {
     this.#stopPositioning = autoUpdate(
       this.#reference,
       this.#floating,
-      this.#positionToolbar,
+      this.#positionFloating,
     );
   }
 
   #reference: VirtualElement = {
     contextElement: this.#body,
     getBoundingClientRect: () =>
-      this.#selectionRange?.getBoundingClientRect() ?? new DOMRect(),
-    getClientRects: () => this.#selectionRange?.getClientRects() ?? [],
+      this.#anchorRange?.getBoundingClientRect() ?? new DOMRect(),
+    getClientRects: () => this.#anchorRange?.getClientRects() ?? [],
   };
 
-  #positionToolbar = async () => {
-    const range = this.#selectionRange;
+  #positionFloating = async () => {
+    const range = this.#anchorRange;
     const { x, y, middlewareData } = await computePosition(
       this.#reference,
       this.#floating,
       {
         strategy: "fixed",
-        placement: "top",
+        placement: this.#menu.hidden ? "bottom" : "bottom-start",
         middleware: [
           inline(),
           offset(8),
@@ -855,7 +1152,7 @@ export class TaskDescriptionEditor extends HTMLElement {
         ],
       },
     );
-    if (!range || range !== this.#selectionRange) return;
+    if (!range || range !== this.#anchorRange) return;
     this.#floating.style.left = `${x}px`;
     this.#floating.style.top = `${y}px`;
     this.#floating.style.visibility = middlewareData.hide?.referenceHidden
@@ -863,10 +1160,10 @@ export class TaskDescriptionEditor extends HTMLElement {
       : "";
   };
 
-  #closeFormatting() {
+  #closeFloating() {
     this.#stopPositioning?.();
     this.#stopPositioning = null;
-    this.#selectionRange = null;
+    this.#anchorRange = null;
     this.#resetLink();
     this.#floating.hidePopover();
   }
@@ -894,7 +1191,7 @@ export class TaskDescriptionEditor extends HTMLElement {
   #openLink() {
     this.#flush();
     const selection = this.#selection;
-    const range = this.#selectionRange;
+    const range = this.#anchorRange;
     if (!selection || !range || this.#readOnly) return;
     const url = this.#editor.read(() => $selectedLink(selection)?.getURL());
     this.#url.value = url ?? "";
@@ -958,11 +1255,15 @@ export class TaskDescriptionEditor extends HTMLElement {
     this.#highlight = null;
   }
 
-  #closeMenu(restoreFocus: boolean) {
-    if (restoreFocus) this.#edit(() => {});
+  #closeMenu() {
+    this.#slashBlockKey = null;
+    this.#slashQuery = null;
+    if (this.#menu.hidden) return;
     this.#menu.hidden = true;
-    this.#insert.setAttribute("aria-expanded", "false");
-    if (restoreFocus) this.#editor.read(() => this.#syncSelection());
+    this.#body.removeAttribute("aria-controls");
+    this.#body.removeAttribute("aria-autocomplete");
+    this.#body.removeAttribute("aria-activedescendant");
+    this.#closeFloating();
   }
 
   #onKeyDown = (event: KeyboardEvent) => {
@@ -974,9 +1275,15 @@ export class TaskDescriptionEditor extends HTMLElement {
     if (event.key === "Escape" && (!this.#menu.hidden || !this.#link.hidden)) {
       consume();
       if (!this.#link.hidden) this.#finishLink(() => {});
-      else this.#closeMenu(true);
+      else this.#closeMenu();
     } else if (
-      event.target === this.#search &&
+      !this.#menu.hidden &&
+      this.#matches.length &&
+      event.target === this.#body &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      !event.shiftKey &&
       ["ArrowDown", "ArrowUp", "Enter"].includes(event.key)
     ) {
       consume();
@@ -1014,37 +1321,11 @@ export class TaskDescriptionEditor extends HTMLElement {
         (event.metaKey || event.ctrlKey) &&
         !event.altKey &&
         event.key.toLowerCase() === "k" &&
-        this.#selectionRange
+        this.#menu.hidden &&
+        this.#anchorRange
       ) {
         consume();
         this.#openLink();
-      } else if (
-        event.key === "/" &&
-        !event.ctrlKey &&
-        !event.metaKey &&
-        !event.altKey &&
-        this.#editor.read(() => {
-          const selection = $getSelection();
-          if (
-            !$isRangeSelection(selection) ||
-            !selection.isCollapsed() ||
-            selection.anchor.offset
-          )
-            return false;
-          const anchor = selection.anchor.getNode();
-          const block = $findMatchingParent(
-            anchor,
-            (node) => $isElementNode(node) && !node.isInline(),
-          );
-          return (
-            $isElementNode(block) &&
-            !$isCodeNode(block) &&
-            (anchor === block || block.getFirstDescendant() === anchor)
-          );
-        })
-      ) {
-        consume();
-        this.#openMenu();
       }
     }
   };

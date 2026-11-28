@@ -28,6 +28,8 @@ import {
   taskCalendar,
 } from "./task-properties.ts";
 import * as Attachments from "./task-attachments.ts";
+import { InlineImageUploads } from "./task-attachment-contract.ts";
+import { omitTaskImageBlocks, taskImageIds } from "./task-image-markdown.ts";
 import {
   defaultTaskList,
   defaultTaskStatus,
@@ -69,12 +71,10 @@ const Creation = Schema.Struct({
   preserveView: Schema.Boolean,
   error: Schema.NullOr(Schema.String),
   screenshots: Schema.Array(Attachments.StagedScreenshot),
-  screenshotError: Schema.NullOr(Schema.String),
+  inlineImageUploads: InlineImageUploads,
   validatingScreenshots: Schema.Int,
   saved: Schema.Boolean,
-  upload: Schema.NullOr(
-    Schema.Struct({ request: ItemId, current: Schema.Int, total: Schema.Int }),
-  ),
+  upload: Schema.NullOr(ItemId),
 });
 type Creation = typeof Creation.Type;
 const Operation = Schema.Union([
@@ -172,7 +172,6 @@ export const hasUnsavedChanges = ({ creation, edits, attachments }: Model) => {
         draft.dueOn !== null ||
         draft.assignee !== "owner" ||
         draft.tagIds.length > 0 ||
-        creation.screenshots.length > 0 ||
         creation.validatingScreenshots > 0)) ||
     Object.values(edits).some(
       (edit) =>
@@ -180,7 +179,7 @@ export const hasUnsavedChanges = ({ creation, edits, attachments }: Model) => {
         Edits.changed(edit.pending) ||
         Object.keys(edit.text).length > 0,
     ) ||
-    attachments.request?.operation === "Upload"
+    attachments.pending.length > 0
   );
 };
 export const initial: Model = {
@@ -229,7 +228,6 @@ export const Message = defineMessageUnion({
   Created: {},
   DismissedCreate: {},
   GotDraftScreenshot: { message: Attachments.Message },
-  RemovedDraftScreenshot: { id: ItemId },
   RetriedDraftScreenshots: {},
   FinishedDraftScreenshots: {},
   GotFilterPopoverMessage: { message: Popover.Message },
@@ -969,18 +967,29 @@ export const toDraftScreenshotMessage = (
 const finishCreation = (
   model: Model,
   creation: Creation,
-): Update.ReturnWithOutMessage<Model, Message, OutMessage> => ({
-  model: { ...model, creation: null, picker: null },
-  ...(!creation.preserveView && model.selectedId === null
-    ? { outMessage: OutMessage.OpenTask({ id: creation.draft.id }) }
-    : {}),
-});
+): Update.ReturnWithOutMessage<Model, Message, OutMessage> => {
+  const { id, description } = creation.draft;
+  const task = findTask(model, id);
+  const next = task
+    ? stageEdit(model, task, {
+        description: omitTaskImageBlocks(
+          description,
+          id,
+          new Set(creation.screenshots.map((image) => image.id)),
+        ),
+      })
+    : model;
+  return {
+    model: { ...next, creation: null, picker: null },
+    ...(!creation.preserveView && model.selectedId === null
+      ? { outMessage: OutMessage.OpenTask({ id }) }
+      : {}),
+  };
+};
 
 const uploadDraftScreenshots = (
   model: Model,
   creation: Creation,
-  current: number,
-  total: number,
 ): Update.ReturnWithOutMessage<Model, Message, OutMessage> => {
   const screenshot = creation.screenshots.find(({ error }) => error === null);
   if (!screenshot)
@@ -992,14 +1001,15 @@ const uploadDraftScreenshots = (
   return {
     model: {
       ...model,
-      creation: { ...creation, upload: { request: id, current, total } },
+      creation: { ...creation, upload: id },
     },
     commands: Command.mapMessages(
       [
         Attachments.Run({
-          request: id,
           taskId: creation.draft.id,
-          transfer: { _tag: "Upload", id, name, file },
+          id,
+          name,
+          file,
         }),
       ],
       toDraftScreenshotMessage,
@@ -1023,14 +1033,14 @@ const updateDraftScreenshots = (
           creation: {
             ...creation,
             validatingScreenshots: creation.validatingScreenshots + 1,
-            screenshotError: null,
           },
         },
         commands: Command.mapMessages(
           [
-            Attachments.ValidateDraftScreenshots({
+            Attachments.ValidateDraftScreenshot({
               draftId: creation.draft.id,
-              files: message.files,
+              id: message.id,
+              file: message.file,
             }),
           ],
           toDraftScreenshotMessage,
@@ -1044,32 +1054,37 @@ const updateDraftScreenshots = (
           creation: {
             ...creation,
             validatingScreenshots: creation.validatingScreenshots - 1,
-            screenshots: [...creation.screenshots, ...message.screenshots],
-            screenshotError: message.error ?? creation.screenshotError,
+            screenshots: message.screenshot
+              ? [...creation.screenshots, message.screenshot]
+              : creation.screenshots,
+            inlineImageUploads: {
+              ...creation.inlineImageUploads,
+              [message.id]: message.screenshot?.file ?? message.error!,
+            },
           },
         },
       };
     case "Uploaded":
     case "Failed": {
       const upload = creation.upload;
-      if (upload?.request !== message.request) return { model };
+      if (upload !== message.request) return { model };
       const screenshots =
         message._tag === "Uploaded"
-          ? creation.screenshots.filter(({ id }) => id !== upload.request)
+          ? creation.screenshots.filter(({ id }) => id !== upload)
           : creation.screenshots.map((entry) =>
-              entry.id === upload.request
-                ? { ...entry, error: message.error }
-                : entry,
+              entry.id === upload ? { ...entry, error: message.error } : entry,
             );
-      return uploadDraftScreenshots(
-        model,
-        { ...creation, screenshots },
-        upload.current + 1,
-        upload.total,
-      );
+      return uploadDraftScreenshots(model, {
+        ...creation,
+        screenshots,
+        inlineImageUploads: {
+          ...creation.inlineImageUploads,
+          [upload]: message._tag === "Uploaded" ? true : message.error,
+        },
+      });
     }
     case "SessionExpired":
-      return creation.upload?.request === message.request
+      return creation.upload === message.request
         ? { model, outMessage: OutMessage.SessionExpired() }
         : { model };
     default:
@@ -1141,9 +1156,8 @@ const transition = (
       },
       GotFolderSheetMessage: ({ message }) => foldFolderSheet(model, message),
       GotAttachmentsMessage: ({ message }) =>
-        ((message._tag === "Opened" || message._tag === "Picked") &&
-          message.taskId !== model.selectedId) ||
-        (message._tag === "Picked" && model.creation !== null)
+        message._tag === "Picked" &&
+        (message.taskId !== model.selectedId || model.creation !== null)
           ? { model }
           : foldAttachments(model, message),
       CompletedAssigneeAvatarImageMount: () => ({ model }),
@@ -1224,7 +1238,7 @@ const transition = (
             preserveView,
             error: null,
             screenshots: [],
-            screenshotError: null,
+            inlineImageUploads: {},
             validatingScreenshots: 0,
             saved: false,
             upload: null,
@@ -1252,8 +1266,8 @@ const transition = (
           creation.validatingScreenshots
         )
           return { model };
-        const input = { ...creation.draft, title: creation.draft.title.trim() };
-        if (!Schema.is(TaskCreate)(input))
+        const draft = { ...creation.draft, title: creation.draft.title.trim() };
+        if (!Schema.is(TaskCreate)(draft))
           return {
             model: {
               ...model,
@@ -1266,7 +1280,17 @@ const transition = (
           };
         const result = start(
           { ...model, picker: null, creation: { ...creation, error: null } },
-          { _tag: "Create", input },
+          {
+            _tag: "Create",
+            input: {
+              ...draft,
+              description: omitTaskImageBlocks(
+                draft.description,
+                draft.id,
+                new Set(creation.screenshots.map((image) => image.id)),
+              ),
+            },
+          },
         );
         return {
           model: result.model,
@@ -1275,39 +1299,18 @@ const transition = (
       },
       GotDraftScreenshot: ({ message }) =>
         updateDraftScreenshots(model, message),
-      RemovedDraftScreenshot: ({ id }) => {
-        const creation = model.creation;
-        return creation && !creationFieldsLocked(model)
-          ? {
-              model: {
-                ...model,
-                creation: {
-                  ...creation,
-                  screenshots: creation.screenshots.filter(
-                    (entry) => entry.id !== id,
-                  ),
-                },
-              },
-            }
-          : { model };
-      },
       RetriedDraftScreenshots: () => {
         const creation = model.creation;
         return creation?.saved &&
           !creation.upload &&
           creation.screenshots.length
-          ? uploadDraftScreenshots(
-              model,
-              {
-                ...creation,
-                screenshots: creation.screenshots.map((entry) => ({
-                  ...entry,
-                  error: null,
-                })),
-              },
-              1,
-              creation.screenshots.length,
-            )
+          ? uploadDraftScreenshots(model, {
+              ...creation,
+              screenshots: creation.screenshots.map((entry) => ({
+                ...entry,
+                error: null,
+              })),
+            })
           : { model };
       },
       FinishedDraftScreenshots: () =>
@@ -1576,12 +1579,15 @@ const transition = (
         const next = replaceTask({ ...model, request: null }, task);
         const creation = model.creation;
         if (creation?.draft.id !== task.id) return { model: next };
-        return uploadDraftScreenshots(
-          next,
-          { ...creation, saved: true, screenshotError: null },
-          1,
-          creation.screenshots.length,
+        const images = taskImageIds(creation.draft.description, task.id);
+        const screenshots = creation.screenshots.filter(({ id }) =>
+          images.has(id),
         );
+        return uploadDraftScreenshots(next, {
+          ...creation,
+          saved: true,
+          screenshots,
+        });
       },
       TaskSaved: ({ task, conflict }) => {
         const draft = model.edits[task.id];

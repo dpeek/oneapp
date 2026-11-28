@@ -1,5 +1,6 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import type { Tag } from "../items-contract.ts";
+import { taskImageIds } from "../task-image-markdown.ts";
 import {
   claimed,
   deleteTags,
@@ -17,6 +18,7 @@ import {
   type TaskUpdate,
   type WorkspaceActor,
 } from "../tasks-contract.ts";
+import { reconcileTaskImages } from "./task-attachments-store.ts";
 
 type TaskSummary = Omit<Task, "description">;
 type TaskRow<T extends TaskSummary = Task> = Omit<T, "tagIds" | "latestRun"> & {
@@ -217,15 +219,47 @@ export const updateTask = async (
 ) => {
   const revision = crypto.randomUUID();
   const tagIds = JSON.stringify([...new Set(input.tagIds)]);
-  const [item, , , , , task] = await db.batch<TaskRow>([
+  const previous = await db
+    .prepare(
+      `SELECT description FROM tasks WHERE account_id = ?1 AND item_id = ?2 AND ${claimed}`,
+    )
+    .bind(account, id, input.revision)
+    .first<{ description: string }>();
+  const textChanged = previous && previous.description !== input.description;
+  const previousImages = textChanged
+    ? taskImageIds(previous.description, id)
+    : new Set<string>();
+  const linked = textChanged
+    ? taskImageIds(input.description, id)
+    : new Set<string>();
+  const added = [...linked].filter((image) => !previousImages.has(image));
+  const unlinked = [...previousImages].filter((image) => !linked.has(image));
+  const [item, ...writes] = await db.batch<TaskRow>([
     db
       .prepare(
         `UPDATE items SET title = ?4, revision = ?5, updated_at = ?6
          WHERE account_id = ?1 AND id = ?2 AND revision = ?3 AND kind = 'task'
          AND EXISTS (SELECT 1 FROM tasks WHERE account_id = ?1 AND item_id = ?2)
-         AND ${tagsAreAvailable("?7")}`,
+         AND ${tagsAreAvailable("?7")}
+         AND NOT EXISTS (
+           SELECT 1 FROM json_each(?8) requested
+           WHERE NOT EXISTS (
+             SELECT 1 FROM task_attachments
+             WHERE account_id = ?1 AND task_id = ?2 AND id = requested.value
+               AND state IN ('ready', 'staged')
+           )
+         )`,
       )
-      .bind(account, id, input.revision, input.title, revision, now, tagIds),
+      .bind(
+        account,
+        id,
+        input.revision,
+        input.title,
+        revision,
+        now,
+        tagIds,
+        JSON.stringify(added),
+      ),
     db
       .prepare(
         `UPDATE tasks SET description = ?4, status = ?5, priority = ?6, due_on = ?7,
@@ -245,10 +279,11 @@ export const updateTask = async (
       ),
     deleteTags(db, account, id, revision),
     insertTags(db, account, id, revision, tagIds),
+    ...reconcileTaskImages(db, account, id, revision, linked, unlinked, now),
     recordTaskChange(db, account, id, revision),
     taskStatement(db, account, id),
   ]);
-  const row = task!.results[0];
+  const row = writes.at(-1)!.results[0];
   return {
     changed: item!.meta.changes > 0,
     task: row ? decodeTask(row) : null,

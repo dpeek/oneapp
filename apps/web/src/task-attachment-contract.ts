@@ -9,6 +9,7 @@ export const taskAttachmentApi = (taskId: string, attachmentId: string) =>
   `${taskAttachmentsApi(taskId)}/${attachmentId}` as const;
 
 export const taskAttachmentIdHeader = "x-task-attachment-id";
+export const taskInlineImageHeader = "x-task-inline-image";
 
 export const taskAttachmentLimitMiB = 5;
 export const taskAttachmentLimit = taskAttachmentLimitMiB * 1024 * 1024;
@@ -29,6 +30,15 @@ export type TaskAttachment = typeof TaskAttachment.Type;
 export const TaskAttachments = Schema.Struct({
   attachments: Schema.Array(TaskAttachment),
 });
+
+export const InlineImagePaste = Schema.Struct({
+  id: ItemId,
+  file: Schema.instanceOf(File),
+});
+export const InlineImageUploads = Schema.Record(
+  Schema.String,
+  Schema.Union([Schema.Literal(true), Schema.String, Schema.instanceOf(File)]),
+);
 
 const taskAttachmentPrefix = "task-attachments/";
 export const taskAttachmentObjectKey = (

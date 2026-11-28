@@ -1,5 +1,6 @@
 import * as stylex from "@stylexjs/stylex";
 import type { Html, HtmlBuilder } from "foldkit/html";
+import { controls } from "./tokens.stylex.ts";
 
 const styles = stylex.create({
   layout: {
@@ -8,6 +9,15 @@ const styles = stylex.create({
     justifyContent: "space-between",
     gap: "0.25rem",
     minBlockSize: "1.75rem",
+  },
+  compactSurface: {
+    boxSizing: "border-box",
+    padding: "0.25rem",
+    border: `1px solid ${controls.border}`,
+    borderRadius: controls.radius,
+    backgroundColor: controls.popover,
+    color: controls.foreground,
+    boxShadow: "0 4px 16px rgb(0 0 0 / 18%)",
   },
   slot: {
     display: "flex",
@@ -18,6 +28,12 @@ const styles = stylex.create({
   controls: { flexShrink: 0, flexWrap: "wrap" },
   end: { flexShrink: 0, marginInlineStart: "auto", justifyContent: "flex-end" },
 });
+
+export const toolbarClassName = (variant: "transparent" | "compact-surface") =>
+  stylex.props(
+    styles.layout,
+    variant === "compact-surface" && styles.compactSurface,
+  ).className ?? "";
 
 // Crease UI Toolbar layout. Omit the label for layout-only use.
 export const toolbar = <Message>(
@@ -56,7 +72,7 @@ export const toolbar = <Message>(
         ? []
         : [h.Role("toolbar"), h.AriaLabel(props.label)]),
       h.DataAttribute("slot", "toolbar"),
-      h.Class(stylex.props(styles.layout).className ?? ""),
+      h.Class(toolbarClassName("transparent")),
     ],
     [
       h.div(

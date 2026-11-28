@@ -27,6 +27,9 @@ using Orumai tokens and the installed Foldkit Checkbox primitive.
 `src/empty.ts` and `src/skeleton.ts` adapt the StyleX Empty and Skeleton
 components from the same CreaseUI revision using Orumai tokens.
 
+`src/toolbar.ts` and `src/toggle.ts` adapt the StyleX Toolbar and Toggle
+components from the same CreaseUI revision using Orumai tokens.
+
 MIT License
 
 Copyright (c) 2026 Potti1234

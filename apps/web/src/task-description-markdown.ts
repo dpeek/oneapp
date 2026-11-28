@@ -25,6 +25,7 @@ import {
   $isTextNode,
   $setState,
   createState,
+  DecoratorNode,
   ElementNode,
   type LexicalNode,
   type TextFormatType,
@@ -47,6 +48,43 @@ const itemSpread = createState("taskDescriptionItemSpread", {
 const codeMeta = createState("taskDescriptionCodeMeta", {
   parse: (value) => (typeof value === "string" ? value : null),
 });
+const preservedMarkdown = createState("markdown", {
+  parse: (value) => (typeof value === "string" ? value : ""),
+});
+const trailingParagraph = createState("taskDescriptionTrailingParagraph", {
+  parse: (value) => value === true,
+});
+
+// Keep a Markdown block the editor cannot represent as a single document node.
+// Its preview is inert text, including when the Markdown contains HTML.
+export class PreservedMarkdownNode extends DecoratorNode<null> {
+  $config() {
+    return this.config("task-description-preserved", {
+      extends: DecoratorNode<null>,
+      stateConfigs: [{ flat: true, stateConfig: preservedMarkdown }],
+    });
+  }
+
+  isInline() {
+    return false;
+  }
+
+  getTextContent() {
+    return $getState(this, preservedMarkdown);
+  }
+
+  createDOM() {
+    const preview = document.createElement("div");
+    preview.className = "task-description-preserved";
+    preview.contentEditable = "false";
+    preview.textContent = this.getTextContent();
+    return preview;
+  }
+
+  updateDOM() {
+    return false;
+  }
+}
 
 export const taskDescriptionLink = (value: string) => {
   const href = value.trim();
@@ -106,20 +144,31 @@ const supportsBlock = (node: RootContent): boolean => {
   }
 };
 
+type DescriptionBlock =
+  RootContent | { type: "preserved"; value: string } | null;
+
 export const parseDescription = (markdown: string) => {
   const root = fromMarkdown(markdown, {
     extensions: [gfm()],
     mdastExtensions: [gfmFromMarkdown()],
   });
-  if (!root.children.every(supportsBlock)) return null;
-  const blocks: (RootContent | null)[] = [];
+  const blocks: DescriptionBlock[] = [];
   let previousLine = 0;
   for (const block of root.children) {
     const start = block.position?.start.line ?? previousLine + 1;
     const standardGap = previousLine ? 2 : 1;
     for (let line = previousLine + standardGap; line < start; line++)
       blocks.push(null);
-    blocks.push(block);
+    const offsets = block.position;
+    if (supportsBlock(block) || !offsets) {
+      blocks.push(block);
+    } else {
+      let from = offsets.start.offset ?? 0;
+      let to = offsets.end.offset ?? markdown.length;
+      while (from > 0 && /[ \t]/u.test(markdown.charAt(from - 1))) from--;
+      while (/[ \t]/u.test(markdown.charAt(to))) to++;
+      blocks.push({ type: "preserved", value: markdown.slice(from, to) });
+    }
     previousLine = block.position?.end.line ?? start;
   }
   const lastLine = root.position?.end.line ?? 1;
@@ -216,7 +265,7 @@ const $appendList = (parent: ElementNode, source: List) => {
   }
 };
 
-export const $loadDescription = (blocks: (RootContent | null)[]) => {
+export const $loadDescription = (blocks: DescriptionBlock[]) => {
   const root = $getRoot().clear();
   for (const block of blocks) {
     if (!block) {
@@ -252,9 +301,20 @@ export const $loadDescription = (blocks: (RootContent | null)[]) => {
       case "list":
         $appendList(root, block);
         break;
+      case "preserved":
+        root.append(
+          $setState(
+            new PreservedMarkdownNode(),
+            preservedMarkdown,
+            block.value,
+          ),
+        );
+        break;
     }
   }
   if (root.isEmpty()) root.append($createParagraphNode());
+  if (root.getLastChild() instanceof PreservedMarkdownNode)
+    root.append($setState($createParagraphNode(), trailingParagraph, true));
 };
 
 const appendInline = (children: PhrasingContent[], node: PhrasingContent) => {
@@ -345,6 +405,10 @@ const $markdownList = (node: ListNode): List => {
 };
 
 const $block = (node: LexicalNode): RootContent | undefined => {
+  if (node instanceof PreservedMarkdownNode) {
+    // mdast emits HTML blocks verbatim, which is also how we emit opaque Markdown.
+    return { type: "html", value: node.getTextContent() };
+  }
   if ($isHeadingNode(node)) {
     return {
       type: "heading",
@@ -377,7 +441,7 @@ export const $serializeDescription = () => {
       gaps.set(block, empty);
       children.push(block);
       empty = 0;
-    } else {
+    } else if (node.getNextSibling() || !$getState(node, trailingParagraph)) {
       empty++;
     }
   }

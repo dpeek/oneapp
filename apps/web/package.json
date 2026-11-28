@@ -20,6 +20,7 @@
   "dependencies": {
     "@cf-wasm/photon": "0.4.0",
     "@effect/sql-d1": "~4.1.0",
+    "@floating-ui/dom": "1.8.0",
     "@js-temporal/polyfill": "0.5.1",
     "@lexical/code-core": "0.45.0",
     "@lexical/extension": "0.45.0",

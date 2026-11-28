@@ -1,4 +1,14 @@
 import {
+  autoUpdate,
+  computePosition,
+  flip,
+  hide,
+  inline,
+  offset,
+  shift,
+  type VirtualElement,
+} from "@floating-ui/dom";
+import {
   $createCodeNode,
   $isCodeNode,
   CodeExtension,
@@ -35,6 +45,12 @@ import {
 } from "@lexical/rich-text";
 import { $setBlocksType } from "@lexical/selection";
 import {
+  buttonClassName,
+  compactToggleClassName,
+  inputClassName,
+  toolbarClassName,
+} from "@orumai/ui";
+import {
   $addUpdateTag,
   $createParagraphNode,
   $findMatchingParent,
@@ -57,6 +73,7 @@ import {
   PASTE_COMMAND,
   PASTE_TAG,
   SKIP_DOM_SELECTION_TAG,
+  TEXT_TYPE_TO_FORMAT,
   defineExtension,
   mergeRegister,
   type ElementNode,
@@ -68,6 +85,7 @@ import {
   $loadDescription,
   $serializeDescription,
   parseDescription,
+  PreservedMarkdownNode,
   taskDescriptionLink,
 } from "./task-description-markdown.ts";
 import { taskDescriptionLimit } from "./tasks-contract.ts";
@@ -163,8 +181,37 @@ const blockChoices = [
 const formats = [
   ["bold", "B", "Bold"],
   ["italic", "I", "Italic"],
-  ["code", "<>", "Inline code"],
 ] as const;
+const supportedFormats = new Set<TextFormatType>(["bold", "italic", "code"]);
+
+const $selectedTextNodes = (selection: RangeSelection) => {
+  const [start, end] = selection.isBackward()
+    ? [selection.focus, selection.anchor]
+    : [selection.anchor, selection.focus];
+  return selection
+    .getNodes()
+    .filter($isTextNode)
+    .filter((node) => {
+      const key = node.getKey();
+      const from =
+        start.type === "text" && start.key === key ? start.offset : 0;
+      const to =
+        end.type === "text" && end.key === key
+          ? end.offset
+          : node.getTextContentSize();
+      return from < to;
+    });
+};
+
+const $selectedLink = (selection: RangeSelection) => {
+  const nodes = $selectedTextNodes(selection);
+  const first = nodes[0];
+  const link = first && $findMatchingParent(first, $isLinkNode);
+  return link &&
+    nodes.every((node) => $findMatchingParent(node, $isLinkNode) === link)
+    ? link
+    : null;
+};
 
 const makeButton = (text: string, label: string, run: () => void) => {
   const button = document.createElement("button");
@@ -180,7 +227,13 @@ const descriptionExtension = defineExtension({
   name: "OrumaiTaskDescription",
   dependencies: [CodeExtension, LinkExtension],
   namespace: "OrumaiTaskDescription",
-  nodes: [HeadingNode, QuoteNode, ListNode, ListItemNode],
+  nodes: [
+    HeadingNode,
+    QuoteNode,
+    ListNode,
+    ListItemNode,
+    PreservedMarkdownNode,
+  ],
   theme: {
     code: "task-description-code",
     text: {
@@ -201,15 +254,11 @@ let nextEditorId = 0;
 export class TaskDescriptionEditor extends HTMLElement {
   #id = `task-description-${++nextEditorId}`;
   #body = document.createElement("div");
-  #source = document.createElement("textarea");
-  #sourceField = document.createElement("span");
-  #toolbar = document.createElement("div");
-  #visualTools = document.createElement("div");
+  #blockTools = document.createElement("div");
+  #floating = document.createElement("div");
+  #formatting = document.createElement("div");
   #insert = makeButton("+", "Insert block", () =>
-    this.#menu.hidden ? this.#openMenu() : this.#closePanel(true),
-  );
-  #mode = makeButton("Markdown", "Edit Markdown source", () =>
-    this.#toggleSource(),
+    this.#menu.hidden ? this.#openMenu() : this.#closeMenu(true),
   );
   #menu = document.createElement("div");
   #search = document.createElement("input");
@@ -219,12 +268,18 @@ export class TaskDescriptionEditor extends HTMLElement {
   #link = document.createElement("div");
   #url = document.createElement("input");
   #linkError = document.createElement("span");
-  #sourceNote = document.createElement("p");
+  #linkButton = makeButton("Link", "Add or edit link", () => this.#openLink());
+  #removeLink = makeButton("Remove", "Remove link", () =>
+    this.#applyLink(true),
+  );
   #error = document.createElement("p");
-  #formatButtons = new Map<TextFormatType, HTMLButtonElement>();
+  #formatButtons = new Map<(typeof formats)[number][0], HTMLButtonElement>();
   #editor = buildEditorFromExtensions(descriptionExtension);
   #history = createEmptyHistoryState();
   #selection: RangeSelection | null = null;
+  #selectionRange: Range | null = null;
+  #stopPositioning: (() => void) | null = null;
+  #highlight: Highlight | null = null;
   #listeners: AbortController | null = null;
   #unregister: (() => void) | null = null;
   #value = "";
@@ -232,7 +287,6 @@ export class TaskDescriptionEditor extends HTMLElement {
   #original = "";
   #canonical = "";
   #loading = false;
-  #sourceMode = false;
   #readOnly = false;
   #built = false;
 
@@ -251,7 +305,7 @@ export class TaskDescriptionEditor extends HTMLElement {
   set readOnly(readOnly: boolean) {
     if (this.#readOnly === readOnly) return;
     this.#readOnly = readOnly;
-    if (this.#built) this.#syncMode();
+    if (this.#built) this.#syncEditable();
   }
 
   connectedCallback() {
@@ -274,7 +328,7 @@ export class TaskDescriptionEditor extends HTMLElement {
             transformer.type !== "text-match" &&
             (transformer.type !== "text-format" ||
               transformer.format.every((format) =>
-                this.#formatButtons.has(format),
+                supportedFormats.has(format),
               )),
         ),
         {
@@ -289,7 +343,11 @@ export class TaskDescriptionEditor extends HTMLElement {
         KEY_TAB_COMMAND,
         (event) => {
           const selection = $getSelection();
-          if (!$isRangeSelection(selection) || event.target !== this.#body)
+          if (
+            !$isRangeSelection(selection) ||
+            !selection.isCollapsed() ||
+            event.target !== this.#body
+          )
             return false;
           const item = $findMatchingParent(
             selection.anchor.getNode(),
@@ -343,7 +401,7 @@ export class TaskDescriptionEditor extends HTMLElement {
       ),
       this.#editor.registerCommand(
         FORMAT_TEXT_COMMAND,
-        (format) => !this.#formatButtons.has(format),
+        (format) => !supportedFormats.has(format),
         COMMAND_PRIORITY_HIGH,
       ),
       this.#editor.registerCommand(
@@ -374,20 +432,9 @@ export class TaskDescriptionEditor extends HTMLElement {
       ),
       this.#editor.registerUpdateListener(
         ({ editorState, dirtyElements, dirtyLeaves }) => {
-          if (this.#loading || this.#sourceMode) return;
+          if (this.#loading) return;
           editorState.read(() => {
-            const selection = $getSelection();
-            if (
-              $isRangeSelection(selection) &&
-              this.#body.contains(document.activeElement)
-            ) {
-              this.#selection = selection.clone();
-              for (const [format, button] of this.#formatButtons)
-                button.setAttribute(
-                  "aria-pressed",
-                  String(selection.hasFormat(format)),
-                );
-            }
+            this.#syncSelection();
             if (dirtyElements.size || dirtyLeaves.size) {
               const canonical = $serializeDescription();
               const markdown =
@@ -398,6 +445,14 @@ export class TaskDescriptionEditor extends HTMLElement {
           });
         },
       ),
+    );
+    document.addEventListener(
+      "selectionchange",
+      () => {
+        if (this.#body.contains(document.activeElement))
+          this.#editor.read(() => this.#syncSelection());
+      },
+      { signal },
     );
     this.addEventListener("focusout", this.#onFocusOut, { signal });
     this.addEventListener("keydown", this.#onKeyDown, {
@@ -420,34 +475,47 @@ export class TaskDescriptionEditor extends HTMLElement {
     this.#editor.dispose();
     this.#history = createEmptyHistoryState();
     this.#selection = null;
-    this.#closePanel(false);
+    this.#closeMenu(false);
+    this.#closeFormatting();
   }
 
   #build() {
     this.#built = true;
     this.classList.add("task-description");
-    this.#toolbar.className = "task-description-toolbar";
-    this.#visualTools.className = "task-description-tools";
-    this.#toolbar.setAttribute("role", "group");
-    this.#toolbar.setAttribute("aria-label", "Description formatting");
+    this.#blockTools.className = "task-description-block-tools";
     this.#insert.setAttribute("aria-expanded", "false");
     this.#insert.setAttribute("aria-controls", `${this.#id}-menu`);
-    this.#visualTools.append(this.#insert);
+    this.#blockTools.append(this.#insert);
+
+    this.#floating.className = `task-description-floating ${toolbarClassName("compact-surface")}`;
+    this.#floating.dataset.slot = "toolbar";
+    this.#floating.setAttribute("popover", "manual");
+    this.#formatting.className = "task-description-formatting";
+    this.#formatting.setAttribute("role", "toolbar");
+    this.#formatting.setAttribute("aria-label", "Description formatting");
     for (const [format, text, label] of formats) {
-      const button = makeButton(text, label, () =>
-        this.#edit(() => {
-          this.#editor.dispatchCommand(FORMAT_TEXT_COMMAND, format);
-        }),
-      );
+      const button = makeButton(text, label, () => this.#toggleFormat(format));
+      button.className = compactToggleClassName;
+      button.dataset.slot = "toggle";
       button.dataset.format = format;
       button.setAttribute("aria-pressed", "false");
       this.#formatButtons.set(format, button);
-      this.#visualTools.append(button);
+      this.#formatting.append(button);
     }
-    this.#visualTools.append(
-      makeButton("Link", "Add or edit link", () => this.#openLink()),
+    this.#linkButton.className = compactToggleClassName;
+    this.#linkButton.dataset.slot = "button";
+    this.#linkButton.setAttribute("aria-keyshortcuts", "Control+k Meta+k");
+    this.#formatting.append(this.#linkButton);
+    this.#setToolbarTabStop(
+      this.#formatting.firstElementChild as HTMLButtonElement,
     );
-    this.#toolbar.append(this.#visualTools, this.#mode);
+    this.#formatting.addEventListener("pointerdown", (event) =>
+      event.preventDefault(),
+    );
+    this.#formatting.addEventListener("focusin", (event) => {
+      if (event.target instanceof HTMLButtonElement)
+        this.#setToolbarTabStop(event.target);
+    });
 
     this.#menu.id = `${this.#id}-menu`;
     this.#menu.className = "task-description-panel";
@@ -465,20 +533,26 @@ export class TaskDescriptionEditor extends HTMLElement {
     this.#search.addEventListener("input", () => this.#renderOptions());
     this.#menu.append(this.#search, this.#options);
 
-    this.#link.className = "task-description-panel task-description-link";
+    this.#link.className = "task-description-link";
     this.#link.hidden = true;
     this.#url.type = "text";
+    this.#url.className = inputClassName;
+    this.#url.dataset.slot = "input";
     this.#url.inputMode = "url";
     this.#url.placeholder = "https://…";
     this.#url.setAttribute("aria-label", "Link URL");
+    this.#url.addEventListener("input", () => this.#setLinkError(""));
+    this.#linkError.id = `${this.#id}-link-error`;
     this.#linkError.setAttribute("role", "status");
-    this.#link.append(
-      this.#url,
-      makeButton("Apply", "Apply link", () => this.#applyLink()),
-      makeButton("Remove", "Remove link", () => this.#applyLink(true)),
-      makeButton("Cancel", "Cancel link", () => this.#closePanel(true)),
-      this.#linkError,
+    const applyLink = makeButton("Apply", "Apply link", () =>
+      this.#applyLink(),
     );
+    for (const button of [applyLink, this.#removeLink]) {
+      button.className = buttonClassName({ variant: "ghost", size: "sm" });
+      button.dataset.slot = "button";
+    }
+    this.#link.append(this.#url, applyLink, this.#removeLink, this.#linkError);
+    this.#floating.append(this.#formatting, this.#link);
 
     this.#body.className = "task-description-body";
     this.#body.setAttribute("role", "textbox");
@@ -520,35 +594,23 @@ export class TaskDescriptionEditor extends HTMLElement {
       { capture: true },
     );
 
-    this.#sourceField.className = "task-document-input task-description-source";
-    this.#source.rows = 1;
-    this.#source.setAttribute("aria-label", "Description (Markdown)");
-    this.#source.placeholder = "Add a description…";
-    this.#source.addEventListener("input", () =>
-      this.#changed(this.#source.value),
-    );
-    this.#sourceField.append(this.#source);
-    this.#sourceNote.className = "task-description-note";
-    this.#sourceNote.setAttribute("role", "status");
-    this.#sourceNote.hidden = true;
     this.#error.className = "task-description-error";
     this.#error.id = `${this.#id}-error`;
     this.#error.setAttribute("role", "status");
     this.append(
-      this.#toolbar,
+      this.#blockTools,
       this.#menu,
-      this.#link,
       this.#body,
-      this.#sourceNote,
-      this.#sourceField,
+      this.#floating,
       this.#error,
     );
   }
 
   #receiveValue() {
-    this.#closePanel(false);
-    if (!this.#sourceMode && !this.#loadVisual()) this.#sourceMode = true;
-    this.#syncMode();
+    this.#closeMenu(false);
+    this.#closeFormatting();
+    this.#loadVisual();
+    this.#syncEditable();
     this.#validate();
   }
 
@@ -571,14 +633,8 @@ export class TaskDescriptionEditor extends HTMLElement {
   }
 
   #loadVisual() {
-    if (this.#value === this.#visualValue) return true;
+    if (this.#value === this.#visualValue) return;
     const blocks = parseDescription(this.#value);
-    if (!blocks) {
-      this.#sourceNote.textContent =
-        "This description uses Markdown that needs the source editor. Edit it here to preserve its formatting.";
-      this.#sourceNote.hidden = false;
-      return false;
-    }
     this.#loading = true;
     this.#selection = null;
     this.#editor.update(
@@ -597,48 +653,18 @@ export class TaskDescriptionEditor extends HTMLElement {
       editorState: this.#editor.getEditorState(),
     };
     this.#loading = false;
-    this.#sourceNote.hidden = true;
-    return true;
   }
 
-  #toggleSource() {
-    this.#flush();
-    this.#closePanel(false);
-    if (this.#sourceMode && !this.#loadVisual()) {
-      this.#source.focus();
-      return;
-    }
-    this.#sourceMode = !this.#sourceMode;
-    this.#syncMode();
-    if (this.#sourceMode) this.#source.focus();
-    else this.#edit(() => {});
-  }
-
-  #syncMode() {
-    const editable = !this.#sourceMode && !this.#readOnly;
+  #syncEditable() {
+    const editable = !this.#readOnly;
     this.#editor.setEditable(editable);
     this.#body.contentEditable = String(editable);
     this.#body.setAttribute("aria-readonly", String(this.#readOnly));
-    this.#body.hidden = this.#sourceMode;
-    this.#visualTools.hidden = this.#sourceMode;
-    this.#sourceField.hidden = !this.#sourceMode;
-    this.#source.readOnly = this.#readOnly;
-    this.#mode.textContent = this.#sourceMode ? "Visual editor" : "Markdown";
-    this.#mode.setAttribute(
-      "aria-label",
-      this.#sourceMode ? "Open visual editor" : "Edit Markdown source",
-    );
-    this.#toolbar.querySelectorAll("button").forEach((button) => {
-      button.disabled = this.#readOnly;
-    });
-    if (this.#readOnly) this.#closePanel(false);
-    this.#syncSource();
-  }
-
-  #syncSource() {
-    if (!this.#sourceMode) return;
-    if (this.#source.value !== this.#value) this.#source.value = this.#value;
-    this.#sourceField.dataset.value = this.#source.value;
+    this.#insert.disabled = this.#readOnly;
+    if (this.#readOnly) {
+      this.#closeMenu(false);
+      this.#closeFormatting();
+    }
   }
 
   #validate() {
@@ -648,21 +674,18 @@ export class TaskDescriptionEditor extends HTMLElement {
       excess > 0
         ? `Remove ${excess.toLocaleString()} ${excess === 1 ? "character" : "characters"} to save. The Markdown limit is 20,000 characters.`
         : "";
-    for (const input of [this.#body, this.#source]) {
-      if (excess > 0) {
-        input.setAttribute("aria-invalid", "true");
-        input.setAttribute("aria-describedby", this.#error.id);
-      } else {
-        input.removeAttribute("aria-invalid");
-        input.removeAttribute("aria-describedby");
-      }
+    if (excess > 0) {
+      this.#body.setAttribute("aria-invalid", "true");
+      this.#body.setAttribute("aria-describedby", this.#error.id);
+    } else {
+      this.#body.removeAttribute("aria-invalid");
+      this.#body.removeAttribute("aria-describedby");
     }
   }
 
   #changed(markdown: string) {
     if (markdown === this.#value) return;
     this.#value = markdown;
-    this.#syncSource();
     this.#validate();
     this.dispatchEvent(
       new CustomEvent("description-edited", {
@@ -673,17 +696,19 @@ export class TaskDescriptionEditor extends HTMLElement {
   }
 
   #flush() {
-    if (!this.#sourceMode) this.#editor.read(() => {});
+    this.#editor.read(() => {});
   }
 
   #onFocusOut = (event: FocusEvent) => {
-    if (
-      event.relatedTarget instanceof Node &&
-      this.contains(event.relatedTarget)
-    )
+    const next = event.relatedTarget;
+    if (next instanceof Node && this.contains(next)) {
+      if (!this.#body.contains(next) && !this.#floating.contains(next))
+        this.#closeFormatting();
       return;
+    }
     this.#flush();
-    this.#closePanel(false);
+    this.#closeMenu(false);
+    this.#closeFormatting();
     this.dispatchEvent(
       new CustomEvent("description-blurred", {
         detail: this.#value,
@@ -693,7 +718,7 @@ export class TaskDescriptionEditor extends HTMLElement {
   };
 
   #edit(run: () => void) {
-    if (this.#readOnly || this.#sourceMode) return;
+    if (this.#readOnly) return;
     const selection = this.#selection;
     this.#body.focus({ preventScroll: true });
     this.#editor.update(
@@ -709,7 +734,7 @@ export class TaskDescriptionEditor extends HTMLElement {
   #openMenu() {
     if (this.#readOnly) return;
     this.#flush();
-    this.#link.hidden = true;
+    this.#closeFormatting();
     this.#menu.hidden = false;
     this.#insert.setAttribute("aria-expanded", "true");
     this.#search.value = "";
@@ -759,70 +784,197 @@ export class TaskDescriptionEditor extends HTMLElement {
     const choice = this.#matches[index];
     if (choice) {
       this.#edit(choice.apply);
-      this.#closePanel(false);
+      this.#closeMenu(false);
     }
   }
 
-  #openLink() {
-    if (this.#readOnly) return;
-    this.#flush();
-    this.#closePanel(false);
-    this.#url.value = this.#editor.read(() => {
-      const selection = this.#selection;
-      return selection
-        ? ($findMatchingParent(
-            selection.anchor.getNode(),
-            $isLinkNode,
-          )?.getURL() ?? "")
-        : "";
+  #syncSelection() {
+    if (!this.#body.contains(document.activeElement)) return;
+    const selection = $getSelection();
+    this.#selection = $isRangeSelection(selection) ? selection.clone() : null;
+    if (this.#readOnly || !this.#menu.hidden || !this.#link.hidden) return;
+
+    const domSelection = document.getSelection();
+    const range = domSelection?.rangeCount ? domSelection.getRangeAt(0) : null;
+    if (
+      !$isRangeSelection(selection) ||
+      selection.isCollapsed() ||
+      !range ||
+      !this.#body.contains(range.commonAncestorContainer) ||
+      !range.toString()
+    ) {
+      this.#closeFormatting();
+      return;
+    }
+    const nodes = $selectedTextNodes(selection);
+    if (!nodes.length) {
+      this.#closeFormatting();
+      return;
+    }
+    for (const [format, button] of this.#formatButtons)
+      button.setAttribute(
+        "aria-pressed",
+        String(nodes.every((node) => node.hasFormat(format))),
+      );
+
+    this.#selectionRange = range.cloneRange();
+    if (this.#stopPositioning) {
+      this.#positionToolbar();
+      return;
+    }
+    this.#floating.style.visibility = "hidden";
+    this.#floating.showPopover();
+    this.#stopPositioning = autoUpdate(
+      this.#reference,
+      this.#floating,
+      this.#positionToolbar,
+    );
+  }
+
+  #reference: VirtualElement = {
+    contextElement: this.#body,
+    getBoundingClientRect: () =>
+      this.#selectionRange?.getBoundingClientRect() ?? new DOMRect(),
+    getClientRects: () => this.#selectionRange?.getClientRects() ?? [],
+  };
+
+  #positionToolbar = async () => {
+    const range = this.#selectionRange;
+    const { x, y, middlewareData } = await computePosition(
+      this.#reference,
+      this.#floating,
+      {
+        strategy: "fixed",
+        placement: "top",
+        middleware: [
+          inline(),
+          offset(8),
+          flip({ padding: 8 }),
+          shift({ padding: 8, crossAxis: true }),
+          hide(),
+        ],
+      },
+    );
+    if (!range || range !== this.#selectionRange) return;
+    this.#floating.style.left = `${x}px`;
+    this.#floating.style.top = `${y}px`;
+    this.#floating.style.visibility = middlewareData.hide?.referenceHidden
+      ? "hidden"
+      : "";
+  };
+
+  #closeFormatting() {
+    this.#stopPositioning?.();
+    this.#stopPositioning = null;
+    this.#selectionRange = null;
+    this.#resetLink();
+    this.#floating.hidePopover();
+  }
+
+  #setToolbarTabStop(active: HTMLButtonElement) {
+    for (const button of this.#formatting.querySelectorAll("button"))
+      button.tabIndex = button === active ? 0 : -1;
+  }
+
+  #toggleFormat(format: (typeof formats)[number][0]) {
+    this.#edit(() => {
+      const selection = $getSelection();
+      if (!$isRangeSelection(selection) || selection.isCollapsed()) return;
+      const nodes = $selectedTextNodes(selection);
+      if (nodes.length)
+        selection.formatText(
+          format,
+          nodes.every((node) => node.hasFormat(format))
+            ? 0
+            : TEXT_TYPE_TO_FORMAT[format],
+        );
     });
-    this.#linkError.textContent = "";
+  }
+
+  #openLink() {
+    this.#flush();
+    const selection = this.#selection;
+    const range = this.#selectionRange;
+    if (!selection || !range || this.#readOnly) return;
+    const url = this.#editor.read(() => $selectedLink(selection)?.getURL());
+    this.#url.value = url ?? "";
+    this.#removeLink.hidden = url === undefined;
+    this.#setLinkError("");
     this.#link.hidden = false;
     this.#url.focus();
+    this.#formatting.hidden = true;
     this.#url.select();
+    if (CSS.highlights) {
+      this.#highlight = new Highlight(range);
+      CSS.highlights.set("task-description-selection", this.#highlight);
+    }
   }
 
   #applyLink(remove = false) {
     const url = remove ? null : taskDescriptionLink(this.#url.value);
     if (!remove && !url) {
-      this.#linkError.textContent =
-        "Enter a valid HTTP, HTTPS, mailto or relative link.";
+      this.#setLinkError("Enter a valid HTTP, HTTPS, mailto or relative link.");
       this.#url.focus();
       return;
     }
-    this.#edit(() => {
+    this.#finishLink(() => {
       const selection = $getSelection();
       if (!$isRangeSelection(selection)) return;
-      if (
-        url &&
-        selection.isCollapsed() &&
-        !$findMatchingParent(selection.anchor.getNode(), $isLinkNode)
-      ) {
-        selection.insertText(url);
-        const end = selection.anchor.offset;
-        selection.anchor.set(selection.anchor.key, end - url.length, "text");
-      }
-      $toggleLink(url);
+      const link = $selectedLink(selection);
+      if (url && link) link.setURL(url);
+      else if (link) {
+        for (const child of link.getChildren()) link.insertBefore(child);
+        link.remove();
+      } else $toggleLink(url);
     });
-    this.#closePanel(false);
   }
 
-  #closePanel(restoreFocus: boolean) {
+  #setLinkError(message: string) {
+    this.#linkError.textContent = message;
+    this.#linkError.hidden = !message;
+    if (message) {
+      this.#url.setAttribute("aria-invalid", "true");
+      this.#url.setAttribute("aria-describedby", this.#linkError.id);
+    } else {
+      this.#url.removeAttribute("aria-invalid");
+      this.#url.removeAttribute("aria-describedby");
+    }
+  }
+
+  #finishLink(run: () => void) {
+    this.#edit(run);
+    this.#resetLink();
+    this.#editor.read(() => this.#syncSelection());
+  }
+
+  #resetLink() {
+    this.#formatting.hidden = false;
+    this.#link.hidden = true;
+    if (
+      this.#highlight &&
+      CSS.highlights.get("task-description-selection") === this.#highlight
+    )
+      CSS.highlights.delete("task-description-selection");
+    this.#highlight = null;
+  }
+
+  #closeMenu(restoreFocus: boolean) {
     if (restoreFocus) this.#edit(() => {});
     this.#menu.hidden = true;
-    this.#link.hidden = true;
     this.#insert.setAttribute("aria-expanded", "false");
+    if (restoreFocus) this.#editor.read(() => this.#syncSelection());
   }
 
   #onKeyDown = (event: KeyboardEvent) => {
-    if (event.isComposing || this.#sourceMode || this.#readOnly) return;
+    if (event.isComposing || this.#readOnly) return;
     const consume = () => {
       event.preventDefault();
       event.stopPropagation();
     };
     if (event.key === "Escape" && (!this.#menu.hidden || !this.#link.hidden)) {
       consume();
-      this.#closePanel(true);
+      if (!this.#link.hidden) this.#finishLink(() => {});
+      else this.#closeMenu(true);
     } else if (
       event.target === this.#search &&
       ["ArrowDown", "ArrowUp", "Enter"].includes(event.key)
@@ -837,13 +989,32 @@ export class TaskDescriptionEditor extends HTMLElement {
       consume();
       this.#applyLink();
     } else if (
+      event.target instanceof HTMLButtonElement &&
+      this.#formatting.contains(event.target) &&
+      ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)
+    ) {
+      consume();
+      const buttons = [...this.#formatting.querySelectorAll("button")];
+      const index = buttons.indexOf(event.target);
+      const direction =
+        getComputedStyle(this.#formatting).direction === "rtl" ? -1 : 1;
+      const step = event.key === "ArrowRight" ? direction : -direction;
+      const next =
+        event.key === "Home"
+          ? 0
+          : event.key === "End"
+            ? buttons.length - 1
+            : (index + step + buttons.length) % buttons.length;
+      buttons[next]?.focus();
+    } else if (
       event.target instanceof Node &&
       this.#body.contains(event.target)
     ) {
       if (
         (event.metaKey || event.ctrlKey) &&
         !event.altKey &&
-        event.key.toLowerCase() === "k"
+        event.key.toLowerCase() === "k" &&
+        this.#selectionRange
       ) {
         consume();
         this.#openLink();

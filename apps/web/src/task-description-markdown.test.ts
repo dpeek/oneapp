@@ -14,6 +14,7 @@ import {
   $loadDescription,
   $serializeDescription,
   parseDescription,
+  PreservedMarkdownNode,
 } from "./task-description-markdown.ts";
 
 describe("task description Markdown", () => {
@@ -48,11 +49,9 @@ describe("task description Markdown", () => {
       "const x = 1;",
       "```",
     ].join("\n");
-    const parsed = parseDescription(markdown);
-    expect(parsed).not.toBeNull();
     editor.update(
       () => {
-        $loadDescription(parsed ?? []);
+        $loadDescription(parseDescription(markdown));
         $getRoot()
           .getFirstChildOrThrow()
           .selectEnd()
@@ -71,18 +70,39 @@ describe("task description Markdown", () => {
       /1\. Top\n   [-*] Child\n   [-*] \[x\] Complete\n   [-*] \[ \] Pending/u,
     );
     expect(encoded).toContain("```ts title=fixture\nconst x = 1;\n```");
-    expect(parseDescription(encoded)).not.toBeNull();
     unregister();
   });
 
-  it("uses source for Markdown outside the visual editor's supported structure", () => {
-    for (const markdown of [
+  it("preserves unsupported Markdown verbatim when neighboring content is edited", () => {
+    const editor = createEditor({ nodes: [PreservedMarkdownNode] });
+    const unsupported = [
       "| Name |\n| ---- |\n| Data |",
-      "[Source][link]\n\n[link]: /app/mail#message-fixture",
+      "[Source][link]\n\n  [link]: /app/mail#message-fixture",
       "![Screenshot](/api/tasks/fixture/attachments/fixture)",
       "> A paragraph\n>\n> Another paragraph",
-    ])
-      expect(parseDescription(markdown)).toBeNull();
+      "<div>Raw HTML</div>",
+    ].join("\n\n");
+    const markdown = `Editable text\n\n${unsupported}`;
+
+    editor.update(() => $loadDescription(parseDescription(markdown)), {
+      discrete: true,
+    });
+    expect(editor.read($serializeDescription)).toBe(markdown);
+
+    editor.update(
+      () => {
+        $getRoot().getFirstChildOrThrow().selectEnd().insertText(" today");
+        $getRoot().getLastChildOrThrow().selectEnd().insertText("Another edit");
+      },
+      { discrete: true },
+    );
+    const edited = `Editable text today\n\n${unsupported}\n\nAnother edit`;
+    expect(editor.read($serializeDescription)).toBe(edited);
+
+    editor.update(() => $loadDescription(parseDescription(edited)), {
+      discrete: true,
+    });
+    expect(editor.read($serializeDescription)).toBe(edited);
   });
 
   it("round trips an empty checklist item as a checkbox", () => {
@@ -98,11 +118,11 @@ describe("task description Markdown", () => {
     const markdown = editor.read($serializeDescription);
     expect(markdown).toMatch(/^- \[ \]/u);
     const blocks = parseDescription(markdown);
-    expect(blocks?.[0]).toMatchObject({
+    expect(blocks[0]).toMatchObject({
       type: "list",
       children: [{ checked: false }],
     });
-    editor.update(() => $loadDescription(blocks ?? []), { discrete: true });
+    editor.update(() => $loadDescription(blocks), { discrete: true });
     expect(editor.read(() => $getRoot().getTextContent())).toBe("");
   });
 });

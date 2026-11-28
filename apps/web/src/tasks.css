@@ -323,16 +323,16 @@
 }
 
 @container task-list (width <= 49rem) {
-  .task-table th.task-property-cell {
-    inline-size: 2.75rem;
+  .task-table thead {
+    display: none;
   }
 
-  .task-table :is(th, td).task-property-cell {
+  .task-table td.task-property-cell {
+    inline-size: 2.75rem;
     padding-inline: 0;
     text-align: center;
   }
 
-  .task-table th.task-property-cell > span,
   .task-property-cell .task-property-label {
     position: absolute;
     inline-size: 1px;
@@ -344,7 +344,7 @@
 }
 
 @container task-list (width <= 23rem) {
-  .task-table th.task-property-cell {
+  .task-table td.task-property-cell {
     inline-size: 2.25rem;
   }
 }

@@ -386,7 +386,7 @@ const taskTable = (
                     h.Scope("col"),
                     h.Class(`task-property-cell task-cell-${field}`),
                   ],
-                  [h.span([], [propertyLabels[field]])],
+                  [propertyLabels[field]],
                 ),
               ),
               h.th(

@@ -30,7 +30,6 @@ import {
   writeProfile,
 } from "./people-store.ts";
 
-import { senderIconDomain } from "../mail-domain.ts";
 import { normalizeCompanyDomain } from "../company-domains.ts";
 import { notifyInbox } from "./mail-delivery.ts";
 import {
@@ -141,7 +140,7 @@ const savePerson = async (
   const current = id ? await readProfile(env.DB, id, managed) : null;
   if (id && !current) return { status: "missing" } as const;
   if (input.revision !== current?.revision) return { status: "stale" } as const;
-  const addresses = [...new Set(input.addresses.map(normalizePersonEmail))];
+  const addresses = [...new Set(input.addresses?.map(normalizePersonEmail))];
   const kind = input.kind ?? current?.kind ?? "person";
   const domains =
     kind === "company"
@@ -160,12 +159,13 @@ const savePerson = async (
     return { status: "kind" } as const;
   if (kind === "company" && !input.name.trim())
     return { status: "name" } as const;
+  if (kind === "company" && addresses.length)
+    return { status: "company-address" } as const;
   if (!current?.self && addresses.some((email) => managed.includes(email)))
     return { status: "conflict" } as const;
   if (
-    !current?.self &&
-    addresses.length === 0 &&
-    (kind !== "company" || domains.length === 0)
+    kind === "person" &&
+    (!input.addresses || (!current?.self && addresses.length === 0))
   )
     return { status: "address" } as const;
 
@@ -248,11 +248,7 @@ const savePerson = async (
               kind,
               domains,
               ...(avatarStyle ? { avatarStyle } : {}),
-              iconDomain:
-                domains[0] ??
-                (addresses[0]
-                  ? senderIconDomain([...addresses].sort()[0]!)
-                  : null),
+              iconDomain: domains[0] ?? null,
             }
           : {}),
         photo,
@@ -324,9 +320,11 @@ export const peopleRoutes = (
                 "An email address or domain is already linked to another contact.",
               );
             case "address":
+              return yield* jsonError(400, "Add an email address.");
+            case "company-address":
               return yield* jsonError(
                 400,
-                "Add an email address, or a domain for a company.",
+                "Use website domains for companies and email addresses for people.",
               );
             case "noise-address":
               return yield* jsonError(

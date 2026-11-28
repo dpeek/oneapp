@@ -7,11 +7,13 @@ import { listPeople, managedPersonAddresses } from "./people-store.ts";
 export type ContactFilters = {
   people?: ReadonlySet<string>;
   companies?: {
-    emails: ReadonlySet<string>;
     domains: ReadonlySet<string>;
     ownAddresses: ReadonlySet<string>;
   };
 };
+
+export const hasEmptyContactFilter = ({ people, companies }: ContactFilters) =>
+  people?.size === 0 || companies?.domains.size === 0;
 
 export const resolveContactFilters = async (
   db: MailDatabase,
@@ -44,9 +46,6 @@ export const resolveContactFilters = async (
     ...(companies.length
       ? {
           companies: {
-            emails: new Set(
-              selectedCompanies.flatMap(({ addresses }) => addresses),
-            ),
             domains: new Set(
               selectedCompanies.flatMap(({ domains }) => domains ?? []),
             ),
@@ -78,22 +77,15 @@ export const contactFilterQuery = ({ people, companies }: ContactFilters) => {
   if (companies) {
     conditions.push(
       hasParticipant(`
-      ${address} IN (SELECT value FROM json_each(?))
-      OR (
-        ${address} NOT IN (SELECT value FROM json_each(?))
-        AND EXISTS (
-          SELECT 1 FROM json_each(?) domain
-          WHERE substr(rtrim(${address}, '.'), -length(domain.value) - 1)
-            IN ('@' || domain.value, '.' || domain.value)
-        )
+      ${address} NOT IN (SELECT value FROM json_each(?))
+      AND EXISTS (
+        SELECT 1 FROM json_each(?) domain
+        WHERE substr(rtrim(${address}, '.'), -length(domain.value) - 1)
+          IN ('@' || domain.value, '.' || domain.value)
       )
     `),
     );
-    values.push(
-      json(companies.emails),
-      json(companies.ownAddresses),
-      json(companies.domains),
-    );
+    values.push(json(companies.ownAddresses), json(companies.domains));
   }
   // Older rows have just the raw sender/recipient fields until their
   // formatted addresses are rebuilt. Pass those threads on to the parser.
@@ -120,7 +112,6 @@ export const matchesContactFilters = (
     (!people || addresses.some((address) => people.has(address))) &&
     (!companies ||
       addresses.some((address) => {
-        if (companies.emails.has(address)) return true;
         const at = address.lastIndexOf("@");
         if (at === -1 || companies.ownAddresses.has(address)) return false;
         const host = normalizeCompanyDomain(address.slice(at + 1));

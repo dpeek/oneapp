@@ -1704,6 +1704,7 @@ const update = (
           People.Message.Opened({
             address: message.address,
             suggestedName: message.name,
+            ...(message.linkSender ? { linkSender: true } : {}),
             ...(message.suggestedCompany
               ? { suggestedKind: "company" as const }
               : {}),

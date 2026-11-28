@@ -284,11 +284,11 @@ it("filters conversation members and unread state before paging in mailbox order
   const ownAddress = "mail@cedar.example.com";
   const alexAddress = "alex@team.cedar.example.com";
   const joAddress = "jo@example.net";
-  const pineEmail = "sales@example.org";
+  const pineEmail = "sales@pine.example.net";
   const alex = contact("person", alexAddress);
   const jo = contact("person", joAddress);
   const cedar = contact("company", undefined, "cedar.example.com");
-  const pine = contact("company", pineEmail, "pine.example.net");
+  const pine = contact("company", undefined, "pine.example.net");
   const add = async (
     subject: string,
     from: string,
@@ -341,7 +341,9 @@ it("filters conversation members and unread state before paging in mailbox order
   await add("Jo at similar domain", joAddress, {
     cc: "liaison@notcedar.example.com",
   });
-  await add("Alex noise", alexAddress, { listMail: true });
+  await add("Unknown Cedar sender", "unlinked@cedar.example.com", {
+    cc: alexAddress,
+  });
   await add("Alex archive", alexAddress, { archived: true });
   await add("Alex sent only", ownAddress, {
     folder: "sent",
@@ -374,15 +376,15 @@ it("filters conversation members and unread state before paging in mailbox order
   }: Awaited<ReturnType<typeof listConversations>>) =>
     messages.map(({ subject }) => subject);
   expect(
-    subjects(await listConversations(DB, cursor, "inbox")).every((subject) =>
+    subjects(await listConversations(DB, cursor, "noise")).filter((subject) =>
       subject.startsWith("Unrelated "),
     ),
-  ).toBe(true);
+  ).toHaveLength(20);
   expect(subjects(await list("inbox"))).toEqual([
     "Jo at Pine",
     "Alex at Cedar",
   ]);
-  expect(subjects(await list("noise"))).toEqual(["Alex noise"]);
+  expect(subjects(await list("noise"))).toEqual(["Unknown Cedar sender"]);
   expect(subjects(await list("archive"))).toEqual(["Alex archive"]);
   expect(subjects(await list("all", "read"))).toEqual([
     "Jo with legacy participants",
@@ -900,6 +902,14 @@ it("isolates identical imported messages, conversations, preferences and complet
   await setInboxUnread(personal.DB, first.id, false);
   expect((await inboxUnread(personal.DB)).unreadCount).toBe(0);
   expect((await inboxUnread(work.DB)).unreadCount).toBe(2);
+  await writeProfile(
+    personal.DB,
+    crypto.randomUUID(),
+    undefined,
+    "Alice",
+    ["alice@example.com"],
+    null,
+  );
   await setSenderRule(personal.DB, {
     address: "alice@example.com",
     priority: "noise",

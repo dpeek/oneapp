@@ -101,8 +101,8 @@ export const PersonDraft = Schema.Struct({
   kind: Schema.optionalKey(ContactKind),
   domains: Schema.optionalKey(CompanyDomains),
   name: Schema.Trim.check(Schema.isMaxLength(personNameLimit)),
-  addresses: Schema.Array(PersonEmail).check(
-    Schema.isMaxLength(personAddressLimit),
+  addresses: Schema.optionalKey(
+    Schema.Array(PersonEmail).check(Schema.isMaxLength(personAddressLimit)),
   ),
   noiseChanges: Schema.optionalKey(
     Schema.Array(ContactNoiseChange).check(

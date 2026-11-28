@@ -23,6 +23,7 @@ import {
 import {
   type ContactFilters,
   contactFilterQuery,
+  hasEmptyContactFilter,
   matchesContactFilters,
   resolveContactFilters,
 } from "./mail-conversation-filters.ts";
@@ -52,6 +53,11 @@ const indexedSender = (alias: "m" | "incoming") =>
   `lower(trim(coalesce(json_extract(${alias}.people, '$.sender.address'), ${alias}.sender)))`;
 const senderPriority = (alias: "m" | "incoming") =>
   `SELECT priority FROM mail_sender_rules WHERE mailbox_id = ${alias}.mailbox_id AND address = ${indexedSender(alias)}`;
+const classifiedPriority = (alias: "m" | "incoming") =>
+  `coalesce((${senderPriority(alias)}), CASE WHEN EXISTS (
+    SELECT 1 FROM person_addresses a JOIN people p ON p.id = a.person_id
+    WHERE a.email = ${indexedSender(alias)} AND p.kind = 'person'
+  ) THEN 'signal' ELSE 'noise' END)`;
 const isPersonEmail = Schema.is(PersonEmail);
 const senderRule = (
   address: string | null | undefined,
@@ -460,12 +466,7 @@ export const searchIndexedMail = async (
   db: MailDatabase,
   query: MailSearch,
 ) => {
-  const { people, companies } = query.contacts;
-  if (
-    people?.size === 0 ||
-    (companies?.emails.size === 0 && companies.domains.size === 0)
-  )
-    return [];
+  if (hasEmptyContactFilter(query.contacts)) return [];
   const contact = contactFilterQuery(query.contacts);
   const bodyWords = query.bodyWords;
   const scope = mailboxSql(db);
@@ -490,8 +491,7 @@ export const searchIndexedMail = async (
   `;
   const unreadMembers = `FROM mail_index_messages member
     WHERE ${inThread("member")} AND member.folder = 'inbox' AND member.unread = 1`;
-  const incomingPriority = `coalesce((${senderPriority("incoming")}),
-    CASE WHEN incoming.list_mail = 1 THEN 'noise' ELSE 'signal' END)`;
+  const incomingPriority = classifiedPriority("incoming");
   const viewFilters = {
     all: "",
     sent: `AND EXISTS (SELECT 1 FROM mail_index_messages member
@@ -671,6 +671,7 @@ export const listConversations = async (
   const contacts = filters
     ? await resolveContactFilters(db, filters, mailboxAddresses)
     : {};
+  if (hasEmptyContactFilter(contacts)) return { messages: [], cursor: null };
   const contact = contactFilterQuery(contacts);
   const status = filters?.status ?? "all";
   const unreadMembers = `FROM mail_index_messages member
@@ -703,7 +704,7 @@ export const listConversations = async (
         : ""
     }
     WHERE m.mailbox_id = ${mailboxSql(db)} AND m.deleted = 0 ${all ? "" : "AND m.folder = 'inbox' AND m.archived = ?4"}
-      ${isInboxView(view) ? `AND coalesce((${senderPriority("m")}), CASE WHEN m.list_mail = 1 THEN 'noise' ELSE 'signal' END) = ?5` : ""}
+      ${isInboxView(view) ? `AND ${classifiedPriority("m")} = ?5` : ""}
       AND (?1 IS NULL OR (m.timestamp, m.id) < (?1, ?2))
       AND NOT EXISTS (
         SELECT 1 FROM mail_index_messages newer

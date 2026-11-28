@@ -332,6 +332,7 @@ export const Message = defineMessageUnion({
     name: Schema.String,
     suggestedCompany: Schema.optionalKey(Schema.Boolean),
     suggestedDomain: Schema.optionalKey(Schema.String),
+    linkSender: Schema.optionalKey(Schema.Boolean),
   },
   RequestedReply: {},
   RequestedReplyAll: {},
@@ -3494,6 +3495,14 @@ const entryView = (
   const profiles = findProfiles(model.thread?.profiles);
   const participantAvatars = groupParticipants(participants, profiles);
   const latest = messages.at(-1);
+  const senderAddress = model.thread?.senderRule?.address;
+  const senderProfile = senderAddress ? profiles.get(senderAddress) : undefined;
+  const canLinkSender =
+    model.folder === "noise" &&
+    senderAddress &&
+    (!senderProfile || senderProfile.kind === "company");
+  const incomingSender = messages.findLast(({ folder }) => folder === "inbox")
+    ?.people?.sender;
   const grouped = messages.length > 1;
   const middleCount = model.middleRevealed
     ? 0
@@ -3561,6 +3570,27 @@ const entryView = (
                         ),
                         h,
                         "Participant profiles",
+                      ),
+                    ]
+                  : []),
+                ...(canLinkSender
+                  ? [
+                      button(
+                        {
+                          variant: "outline",
+                          size: "sm",
+                          attributes: [
+                            h.AriaHasPopup("dialog"),
+                            h.AriaControls(personDialogId),
+                          ],
+                          onClick: Message.RequestedPerson({
+                            address: senderAddress,
+                            name: incomingSender?.name ?? "",
+                            linkSender: true,
+                          }),
+                          children: ["Link sender to a person"],
+                        },
+                        h,
                       ),
                     ]
                   : []),

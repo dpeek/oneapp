@@ -9,7 +9,6 @@ import {
   type Person,
   type PersonMatch,
 } from "../people-contract.ts";
-import { senderIconDomain } from "../mail-domain.ts";
 import { ownerId } from "./auth.ts";
 
 type PeopleDb = D1Database;
@@ -20,14 +19,12 @@ type PersonRow = {
   name: string;
   kind: "person" | "company";
   domains: string;
-  iconEmail: string | null;
   photo: string | null;
   avatarStyle: CompanyAvatarStyle | null;
   revision: string;
 };
 const fields = `p.id, p.account_id AS accountId, p.name, p.photo, p.avatar_style AS avatarStyle, p.revision, p.kind,
-  (SELECT json_group_array(domain ORDER BY position) FROM company_domains WHERE company_id = p.id) AS domains,
-  (SELECT email FROM person_addresses WHERE person_id = p.id ORDER BY email LIMIT 1) AS iconEmail`;
+  (SELECT json_group_array(domain ORDER BY position) FROM company_domains WHERE company_id = p.id) AS domains`;
 const fieldsWithAddresses = `${fields},
   (SELECT json_group_array(email ORDER BY email) FROM person_addresses WHERE person_id = p.id) AS emails`;
 type PersonWithEmails = PersonRow & { emails: string };
@@ -80,22 +77,23 @@ const ensureSelf = async (db: PeopleDb) => {
   return created;
 };
 
-const summary = (row: PersonRow) => ({
-  id: row.id,
-  name: row.name,
-  ...(row.kind === "company"
-    ? {
-        kind: row.kind,
-        ...(row.avatarStyle ? { avatarStyle: row.avatarStyle } : {}),
-        domains: JSON.parse(row.domains) as string[],
-        iconDomain:
-          (JSON.parse(row.domains) as string[])[0] ??
-          (row.iconEmail ? senderIconDomain(row.iconEmail) : null),
-      }
-    : {}),
-  photo: row.photo,
-  self: row.accountId === ownerId,
-});
+const summary = (row: PersonRow) => {
+  const domains = JSON.parse(row.domains) as string[];
+  return {
+    id: row.id,
+    name: row.name,
+    ...(row.kind === "company"
+      ? {
+          kind: row.kind,
+          ...(row.avatarStyle ? { avatarStyle: row.avatarStyle } : {}),
+          domains,
+          iconDomain: domains[0] ?? null,
+        }
+      : {}),
+    photo: row.photo,
+    self: row.accountId === ownerId,
+  };
+};
 
 const withAddresses = (
   row: PersonRow,
@@ -106,7 +104,10 @@ const withAddresses = (
   return {
     ...summary(row),
     revision: row.revision,
-    addresses: emails.filter((email) => !managedAddresses.includes(email)),
+    addresses:
+      row.kind === "company"
+        ? []
+        : emails.filter((email) => !managedAddresses.includes(email)),
     managedAddresses,
   };
 };
@@ -191,7 +192,7 @@ export const matchPeople = async (
     .prepare(
       `SELECT a.email, ${fields}
      FROM person_addresses a JOIN people p ON p.id = a.person_id
-     WHERE a.email IN (SELECT value FROM json_each(?))`,
+     WHERE p.kind = 'person' AND a.email IN (SELECT value FROM json_each(?))`,
     )
     .bind(JSON.stringify(emails))
     .all<PersonRow & { email: string }>();
@@ -312,7 +313,7 @@ export const writeProfile = async (
         `INSERT INTO person_addresses (email, person_id)
        SELECT value, ?1 FROM json_each(?3) WHERE ${matchesRevision}`,
       )
-      .bind(id, revision, JSON.stringify(addresses)),
+      .bind(id, revision, JSON.stringify(kind === "person" ? addresses : [])),
     db
       .prepare(
         `DELETE FROM company_domains WHERE company_id = ?1 AND ${matchesRevision}`,
@@ -359,7 +360,9 @@ export const deleteContact = async (
         `INSERT INTO contact_deletions
            (id, receipt, revision, name, kind, photo, avatar_style, addresses, domains, expires_at)
          SELECT p.id, ?3, p.revision, p.name, p.kind, p.photo, p.avatar_style,
-           (SELECT json_group_array(email ORDER BY email) FROM person_addresses WHERE person_id = p.id),
+           CASE WHEN p.kind = 'person' THEN
+             (SELECT json_group_array(email ORDER BY email) FROM person_addresses WHERE person_id = p.id)
+           ELSE '[]' END,
            (SELECT json_group_array(domain ORDER BY position) FROM company_domains WHERE company_id = p.id),
            ?4
          FROM people p WHERE p.id = ?1 AND p.revision = ?2 AND p.account_id IS NULL
@@ -408,7 +411,7 @@ export const restoreContact = async (
       .prepare(
         `INSERT INTO person_addresses (email, person_id)
          SELECT entry.value, d.id FROM contact_deletions d, json_each(d.addresses) entry
-         WHERE ${restored}`,
+         WHERE d.kind = 'person' AND ${restored}`,
       )
       .bind(receipt, revision),
     db

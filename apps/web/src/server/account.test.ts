@@ -879,7 +879,6 @@ it("deletes contacts immediately and restores their details with Undo", async ()
       name: "Example Co",
       kind: "company",
       domains,
-      addresses: [address],
       avatarStyle: "website",
       photo: new Uint8Array([0xff, 0xd8, 0xff, 0xff, 0xd9]).toBase64(),
     },
@@ -907,6 +906,11 @@ it("deletes contacts immediately and restores their details with Undo", async ()
   const deleted = await remove(company);
   expect(deleted.status).toBe(200);
   const { receipt } = await deleted.json();
+  // A pre-upgrade undo receipt may still contain a company address.
+  sqlite.run("UPDATE contact_deletions SET addresses = ? WHERE receipt = ?", [
+    JSON.stringify([address]),
+    receipt,
+  ]);
   const restore = restoreContactPath(receipt);
   expect(await (await remove(company)).json()).toEqual({ receipt });
   expect(await list()).toEqual([self]);
@@ -941,13 +945,19 @@ it("deletes contacts immediately and restores their details with Undo", async ()
   expect((await list()).map(({ id }) => id)).not.toContain(company.id);
   expect(await lookup(address)).toBeNull();
   expect((await remove(replacementPerson)).status).toBe(200);
+  const addressOwner = await call(
+    peopleApiPath,
+    { name: "Support", addresses: [address] },
+    session,
+  );
+  expect(addressOwner.status).toBe(201);
 
   const restored = await write(restore, "POST");
   expect(restored.status).toBe(200);
   const person: Person = await restored.json();
   expect(person).toEqual({ ...company, revision: expect.any(String) });
   expect(person.revision).not.toBe(company.revision);
-  expect(await lookup(address)).toEqual(person);
+  expect(await lookup(address)).toEqual(await addressOwner.json());
   expect(await lookup("orders@mailer.example.com.au")).toEqual(person);
   expect(await lookup("orders@example.com")).toEqual(person);
   expect((await remove(company)).status).toBe(409);
@@ -1039,7 +1049,7 @@ it("saves per-address Noise overrides with contacts in the personal mailbox", as
   ]);
 });
 
-it("stores company aliases and resolves contact lookup across assigned domains", async () => {
+it("accepts name-only companies and matches companies by configured domains", async () => {
   using sqlite = new Database(":memory:");
   const { call, request, signIn, cookies } = await setup(sqlite);
   const session = cookies(await signIn(password));
@@ -1060,11 +1070,10 @@ it("stores company aliases and resolves contact lookup across assigned domains",
   const created = await create({
     kind: "company",
     name: "Acme",
-    addresses: [],
     domains: ["ACME.COM.", "acme.com", "ACME.CO.UK"],
   });
   expect(created.status).toBe(201);
-  let company: Person = await created.json();
+  const company: Person = await created.json();
   expect(company).toMatchObject({
     kind: "company",
     domains: ["acme.com", "acme.co.uk"],
@@ -1087,31 +1096,7 @@ it("stores company aliases and resolves contact lookup across assigned domains",
     name: company.name,
     addresses: ["ACCOUNTS@acme.com", "news@acme.co.uk"],
   });
-  expect(assigned.status).toBe(200);
-  const original = company;
-  company = await assigned.json();
-  expect(company.domains).toEqual(original.domains);
-  expect(await lookup("accounts@acme.com")).toMatchObject({ person: company });
-  expect(await lookup("news@acme.co.uk")).toMatchObject({ person: company });
-  expect(
-    (
-      await save(original, {
-        name: "Stale",
-        addresses: [],
-        domains: ["stale.com"],
-      })
-    ).status,
-  ).toBe(409);
-
-  expect(
-    (
-      await save(company, {
-        name: "Conflicting alias",
-        addresses: ["alice@acme.com"],
-        domains: ["changed.com"],
-      })
-    ).status,
-  ).toBe(409);
+  expect(assigned.status).toBe(400);
   expect(await lookup("accounts@acme.com")).toMatchObject({ person: company });
   expect(await lookup("new@acme.com")).toEqual({ person: company });
   expect(
@@ -1119,12 +1104,26 @@ it("stores company aliases and resolves contact lookup across assigned domains",
       await create({
         kind: "company",
         name: "Duplicate",
-        addresses: ["new@other.com"],
         domains: ["acme.com"],
       })
     ).status,
   ).toBe(409);
-  expect((await lookup("new@other.com")).person).toBeNull();
+  expect(
+    (
+      await create({
+        kind: "company",
+        name: "Address only",
+        addresses: ["new@other.com"],
+      })
+    ).status,
+  ).toBe(400);
+  const nameOnly = await create({ kind: "company", name: "Name only" });
+  expect(nameOnly.status).toBe(201);
+  expect(await nameOnly.json()).toMatchObject({
+    domains: [],
+    addresses: [],
+    iconDomain: null,
+  });
   expect(
     (
       await create({
@@ -1168,15 +1167,21 @@ it("stores company aliases and resolves contact lookup across assigned domains",
       })
     ).status,
   ).toBe(400);
-  const companies = await (
-    await call(`${peopleApiPath}?kind=company`, undefined, session)
-  ).json();
-  expect(companies.people).toEqual([company]);
+  const edited = await save(company, { name: "Acme renamed", domains: [] });
+  expect(edited.status).toBe(200);
+  const editedCompany: Person = await edited.json();
+  expect(editedCompany).toMatchObject({
+    name: "Acme renamed",
+    domains: [],
+    addresses: [],
+  });
+  expect(await lookup("new@acme.com")).toEqual({ person: null });
+  expect((await save(company, { name: "Stale" })).status).toBe(409);
 
-  const converted = await save(company, {
+  const converted = await save(editedCompany, {
     kind: "person",
     name: "Acme contact",
-    addresses: company.addresses,
+    addresses: ["alias@acme.com"],
   });
   expect(converted.status).toBe(200);
   expect((await converted.json()).kind ?? "person").toBe("person");
@@ -1809,14 +1814,17 @@ it("classifies the latest incoming message and applies exact sender overrides be
     size: 1024,
   };
   const empty = async () => ({ objects: [], truncated: false });
-  const { call, db, request, signIn, cookies } = await setup(sqlite, {
-    INBOX_EMAIL_ADDRESS: address,
-    INBOX_MESSAGES: {
-      list: async () => ({ objects: [newsletter], truncated: false }),
-      get: async () => newsletter,
-    } as unknown as WorkerEnv["INBOX_MESSAGES"],
-    SENT_MESSAGES: { list: empty } as unknown as WorkerEnv["SENT_MESSAGES"],
-  });
+  const { call, db, request, session, connect, useTool } = await setupMcp(
+    sqlite,
+    {
+      INBOX_EMAIL_ADDRESS: address,
+      INBOX_MESSAGES: {
+        list: async () => ({ objects: [newsletter], truncated: false }),
+        get: async () => newsletter,
+      } as unknown as WorkerEnv["INBOX_MESSAGES"],
+      SENT_MESSAGES: { list: empty } as unknown as WorkerEnv["SENT_MESSAGES"],
+    },
+  );
   const existing = {
     folder: "inbox" as const,
     from: "bounce@example.net",
@@ -1825,9 +1833,10 @@ it("classifies the latest incoming message and applies exact sender overrides be
     timestamp: 1000,
     messageIds: ["<monthly@example.net>"],
     people: {
-      sender: { address: "News@Example.net", name: "Newsletter" },
+      sender: { address: " News@Example.net ", name: "Newsletter" },
       members: [],
     },
+    listMail: true,
   };
   await indexMail(db, { ...existing, id: newsletter.key });
   sqlite.exec(
@@ -1845,13 +1854,18 @@ it("classifies the latest incoming message and applies exact sender overrides be
     });
   }
   expect((await call(noiseApiPath)).status).toBe(401);
-  const session = cookies(await signIn(password));
+  for (const draft of [
+    { name: "Team", addresses: ["team@example.net"] },
+    { kind: "company", name: "Example", domains: ["example.net"] },
+  ])
+    expect((await call(peopleApiPath, draft, session)).status).toBe(201);
+
   const get = async (path: string) => {
     const response = await call(path, undefined, session);
     expect(response.status).toBe(200);
     return response.json();
   };
-  const rule = (priority: string, csrf = true) =>
+  const rule = (priority: string, csrf = true, sender = "NEWS@EXAMPLE.NET") =>
     request(senderRuleApiPath, {
       method: "PATCH",
       headers: {
@@ -1860,12 +1874,30 @@ it("classifies the latest incoming message and applies exact sender overrides be
         origin: "https://oneapp.example",
         ...(csrf ? { "x-effect-auth-csrf": "1" } : {}),
       },
-      body: JSON.stringify({ address: "NEWS@EXAMPLE.NET", priority }),
+      body: JSON.stringify({ address: sender, priority }),
     });
+  const token = (await connect([mailReadScope])).access_token;
+  const matches = async (view: string) => {
+    const { result, error } = await useTool(token, "search_mail", {
+      view,
+      subject: "Monthly newsletter",
+    });
+    expect(error).toBeUndefined();
+    expect(result?.isError).toBeFalsy();
+    return (
+      result?.structuredContent as {
+        conversations: { matchingMessageId: string }[];
+      }
+    ).conversations;
+  };
   expect(await get(noiseApiPath)).toMatchObject({
     messages: [{ id: newsletter.key }],
     cursor: null,
   });
+  expect(await matches("noise")).toMatchObject([
+    { matchingMessageId: newsletter.key },
+  ]);
+  expect(await matches("inbox")).toEqual([]);
   expect((await rule("signal", false)).status).toBe(403);
   expect((await rule("signal")).status).toBe(204);
   expect(await get(noiseApiPath)).toMatchObject({ messages: [] });
@@ -1884,18 +1916,51 @@ it("classifies the latest incoming message and applies exact sender overrides be
   expect(await get(noiseApiPath)).toMatchObject({
     messages: [{ id: newsletter.key }],
   });
+  expect(
+    (
+      await call(
+        peopleApiPath,
+        {
+          name: "Newsletter author",
+          addresses: ["NEWS@EXAMPLE.NET"],
+        },
+        session,
+      )
+    ).status,
+  ).toBe(201);
+  expect(await get(noiseApiPath)).toMatchObject({ messages: [] });
+  expect(await matches("inbox")).toMatchObject([
+    { matchingMessageId: newsletter.key },
+  ]);
+  expect((await rule("noise")).status).toBe(204);
+  expect(await matches("inbox")).toEqual([]);
+  expect(await get(noiseApiPath)).toMatchObject({
+    messages: [{ id: newsletter.key }],
+  });
+  expect((await rule("automatic")).status).toBe(204);
+
   await indexMail(db, {
     ...existing,
     id: mailId(22),
     timestamp: 2000,
-    from: "team@example.net",
+    from: "unknown@example.net",
     people: undefined,
     listMail: false,
   });
-  expect(await get(noiseApiPath)).toMatchObject({ messages: [] });
+  expect(await get(noiseApiPath)).toMatchObject({
+    messages: [{ id: mailId(22), messageCount: 2 }],
+  });
+  expect(await matches("inbox")).toEqual([]);
+  expect(await matches("noise")).toMatchObject([
+    { matchingMessageId: mailId(22) },
+  ]);
+  expect((await rule("signal", true, "UNKNOWN@EXAMPLE.NET")).status).toBe(204);
   expect(await get(conversationsApiPath)).toMatchObject({
     messages: [{ id: mailId(22), messageCount: 2 }, ...messages.slice(0, 19)],
   });
+  expect(await matches("inbox")).toMatchObject([
+    { matchingMessageId: mailId(22) },
+  ]);
 });
 
 it("groups existing mail across Inbox and Sent as its threads are discovered", async () => {
@@ -2014,6 +2079,10 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
   expect(customer.status).toBe(201);
   expect(publish).toHaveBeenCalledOnce();
   publish.mockClear();
+  await setSenderRule(db, {
+    address: "sender@example.net",
+    priority: "signal",
+  });
   const customerProfile = await customer.json();
   const get = async (path: string) => {
     const result = await call(path, undefined, session);
@@ -4935,7 +5004,6 @@ it("searches live contacts and filters mail conversations only with both grants"
   const company = await create({
     kind: "company",
     name: "Acme",
-    addresses: ["sales@example.org"],
     domains: ["billing.acme.com"],
   });
   const contactsToken = (await connect([contactsReadScope])).access_token;
@@ -5041,10 +5109,16 @@ it("searches live contacts and filters mail conversations only with both grants"
   };
   const thread = ["<quote@example.net>"];
   const alias = await index(1, "alice+quotes@example.net", thread);
-  const explicitCompany = await index(2, "Sales <sales@example.org>", [], true);
+  const legacyCompany = await index(
+    2,
+    "Sales <sales@billing.acme.com>",
+    [],
+    true,
+  );
   const reply = await index(3, "quotes@eu.billing.acme.com", thread);
   await index(4, "No match <outsider@example.net>", [], true);
   await index(5, "quotes@notbilling.acme.com");
+  await index(6, "Sales <sales@example.org>", [], true);
   const personIds = [alice.contacts[0]!.id];
   const companyIds = [billing.contacts[0]!.id];
   for (const args of [{ personIds }, { companyIds }, { personIds, companyIds }])
@@ -5081,7 +5155,7 @@ it("searches live contacts and filters mail conversations only with both grants"
   expect(
     await search({ companyIds, limit: 1, cursor: first.nextCursor }),
   ).toMatchObject({
-    conversations: [{ matchingMessageId: explicitCompany }],
+    conversations: [{ matchingMessageId: legacyCompany }],
     nextCursor: null,
   });
   expect((await search({ personIds, companyIds })).conversations).toMatchObject(
@@ -8720,7 +8794,7 @@ it("uses the oldest unread sender for conversation avatars, then the latest inco
   });
   const session = cookies(await signIn(password));
   const sender = async () => {
-    const response = await call(conversationsApiPath, undefined, session);
+    const response = await call(allMailApiPath, undefined, session);
     expect(response.status).toBe(200);
     const page = (await response.json()) as {
       messages: { avatarSender: { address: string } }[];
@@ -8790,7 +8864,7 @@ it("persists sender avatar overrides separately from Signal/Noise and restores a
   expect((await patch("person", session, false)).status).toBe(403);
   expect((await patch("bogus", session)).status).toBe(400);
   const appearance = async () => {
-    const response = await call(conversationsApiPath, undefined, session);
+    const response = await call(noiseApiPath, undefined, session);
     expect(response.status).toBe(200);
     const page = (await response.json()) as {
       messages: { avatarSender: { appearance: object } }[];
@@ -8848,9 +8922,7 @@ it("persists sender avatar overrides separately from Signal/Noise and restores a
   );
   expect(companyResponse.status).toBe(201);
   const company: Person = await companyResponse.json();
-  const matched = await (
-    await call(conversationsApiPath, undefined, session)
-  ).json();
+  const matched = await (await call(noiseApiPath, undefined, session)).json();
   expect(matched).toMatchObject({
     messages: [
       {

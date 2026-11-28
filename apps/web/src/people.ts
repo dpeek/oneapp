@@ -33,6 +33,7 @@ import {
   personApiPath,
   PersonDraft,
   PersonId,
+  normalizePersonEmail,
   personLookupPath,
   PersonLookup,
   personNameLimit,
@@ -67,6 +68,8 @@ export const Model = Schema.Struct({
   kind: ContactKind,
   suggestedDomains: Schema.Array(Schema.String),
   creating: Schema.Boolean,
+  linkSender: Schema.Boolean,
+  linkPeople: Schema.Array(Person),
   person: Schema.NullOr(Person),
   ready: Schema.Boolean,
   loadRequest: Schema.NullOr(Schema.String),
@@ -105,6 +108,8 @@ export const initial: Model = {
   kind: "person",
   suggestedDomains: [],
   creating: false,
+  linkSender: false,
+  linkPeople: [],
   person: null,
   ready: false,
   loadRequest: null,
@@ -135,15 +140,18 @@ export const Message = defineMessageUnion({
     suggestedName: Schema.optionalKey(Schema.String),
     suggestedKind: Schema.optionalKey(ContactKind),
     suggestedDomain: Schema.optionalKey(Schema.String),
+    linkSender: Schema.optionalKey(Schema.Boolean),
   },
   Created: { kind: ContactKind },
   ChangedKind: { kind: ContactKind },
+  SelectedLinkPerson: { id: Schema.String },
   Closed: {},
   Mounted: {},
   Retried: {},
   Loaded: {
     request: Schema.String,
     person: Schema.NullOr(Person),
+    linkPeople: Schema.optionalKey(Schema.Array(Person)),
   },
   Submitted: {},
   Saved: { request: Schema.String, person: Person },
@@ -215,14 +223,13 @@ export const displayName = (person: Person) =>
 
 type Directory = Model["directory"];
 const names = new Intl.Collator(undefined, { sensitivity: "base" });
+const compareContacts = (first: Person, second: Person) =>
+  names.compare(displayName(first), displayName(second)) ||
+  names.compare(primaryEmail(first), primaryEmail(second));
 export const directoryContacts = (directory: Directory, section: ContactKind) =>
   (directory.records ?? [])
     .filter(({ kind }) => (kind ?? "person") === section)
-    .sort(
-      (first, second) =>
-        names.compare(displayName(first), displayName(second)) ||
-        names.compare(primaryEmail(first), primaryEmail(second)),
-    );
+    .sort(compareContacts);
 
 export const canEditContact = (directory: Directory, person: Person) =>
   !directory.edit &&
@@ -240,12 +247,20 @@ const decodeError = Schema.decodeUnknownOption(
 );
 
 const Load = Command.define("LoadPersonProfile", {
-  args: { request: Schema.String, address: Schema.NullOr(Schema.String) },
+  args: {
+    request: Schema.String,
+    address: Schema.NullOr(Schema.String),
+    linkSender: Schema.Boolean,
+  },
   messages: [Message.Loaded, Message.Failed, Message.SessionExpired],
-  execute: ({ request, address }) =>
+  execute: ({ request, address, linkSender }) =>
     Effect.tryPromise(async (signal) => {
       const response = await fetch(
-        address ? personLookupPath(address) : selfProfilePath,
+        linkSender
+          ? `${peopleApiPath}?kind=person`
+          : address
+            ? personLookupPath(address)
+            : selfProfilePath,
         { cache: "no-store", signal },
       );
       if (response.status === 401) return Message.SessionExpired({ request });
@@ -255,6 +270,15 @@ const Load = Command.define("LoadPersonProfile", {
           error: "Could not load the profile. Try again.",
         });
       const value = await response.json();
+      if (linkSender)
+        return Message.Loaded({
+          request,
+          person: null,
+          linkPeople:
+            Schema.decodeUnknownSync(PeopleList)(value).people.toSorted(
+              compareContacts,
+            ),
+        });
       const person = address
         ? Schema.decodeUnknownSync(PersonLookup)(value).person
         : Schema.decodeUnknownSync(Person)(value);
@@ -436,9 +460,10 @@ const Save = Command.define("SavePersonProfile", {
     request: Schema.String,
     person: Schema.NullOr(Person),
     formId: Schema.String,
+    linkAddress: Schema.optionalKey(Schema.String),
   },
   messages: [Message.Saved, Message.Failed, Message.SessionExpired],
-  execute: ({ request, person, formId }) =>
+  execute: ({ request, person, formId, linkAddress }) =>
     Effect.promise(async (signal) => {
       const fail = (error: string) => Message.Failed({ request, error });
       try {
@@ -484,7 +509,7 @@ const Save = Command.define("SavePersonProfile", {
           }
         }
         const decoded = Schema.decodeUnknownOption(PersonDraft)({
-          name: fields.get("name"),
+          name: linkAddress && person ? person.name : fields.get("name"),
           kind,
           domains:
             kind === "company"
@@ -493,10 +518,16 @@ const Save = Command.define("SavePersonProfile", {
                   .map((domain) => normalizeCompanyDomain(String(domain)))
                   .filter(Boolean)
               : [],
-          addresses: fields
-            .getAll("addresses")
-            .map((address) => String(address).trim())
-            .filter(Boolean),
+          ...(kind === "person"
+            ? {
+                addresses: linkAddress
+                  ? [...new Set([...(person?.addresses ?? []), linkAddress])]
+                  : fields
+                      .getAll("addresses")
+                      .map((address) => String(address).trim())
+                      .filter(Boolean),
+              }
+            : {}),
           ...(noiseChanges
             ? { noiseChanges: JSON.parse(String(noiseChanges)) }
             : {}),
@@ -506,9 +537,9 @@ const Save = Command.define("SavePersonProfile", {
         });
         if (decoded._tag === "None")
           return fail(
-            "Enter a name, up to " +
-              personAddressLimit +
-              " valid email addresses, and valid website domains for a company.",
+            kind === "company"
+              ? "Enter a valid company name and website domains."
+              : `Enter a valid name and up to ${personAddressLimit} email addresses.`,
           );
         const response = await fetch(
           person ? personApiPath(person.id) : peopleApiPath,
@@ -544,7 +575,9 @@ const loadDialog = (model: Model): Update.Return<Model, Message> => {
   const request = crypto.randomUUID();
   return {
     model: { ...model, loadRequest: request, error: null },
-    commands: [Load({ request, address: model.address })],
+    commands: [
+      Load({ request, address: model.address, linkSender: model.linkSender }),
+    ],
   };
 };
 
@@ -677,7 +710,7 @@ export const update = (
         const request = crypto.randomUUID();
         return {
           model: { ...model, selfRequest: request },
-          commands: [Load({ request, address: null })],
+          commands: [Load({ request, address: null, linkSender: false })],
         };
       },
       Created: ({ kind }) =>
@@ -706,7 +739,24 @@ export const update = (
         if (model.person?.self) return { model };
         return { model: { ...model, kind } };
       },
-      Opened: ({ address, suggestedName, suggestedKind, suggestedDomain }) =>
+      SelectedLinkPerson: ({ id }) =>
+        model.linkSender && !model.saveRequest
+          ? {
+              model: {
+                ...model,
+                person:
+                  model.linkPeople.find((person) => person.id === id) ?? null,
+                error: null,
+              },
+            }
+          : { model },
+      Opened: ({
+        address,
+        suggestedName,
+        suggestedKind,
+        suggestedDomain,
+        linkSender = false,
+      }) =>
         model.dialog.isOpen
           ? { model }
           : Update.combine(
@@ -714,6 +764,7 @@ export const update = (
                 ...resetEditor(model),
                 editorKey: crypto.randomUUID(),
                 address,
+                linkSender,
                 kind: suggestedKind ?? "person",
                 suggestedDomains: suggestedDomain ? [suggestedDomain] : [],
                 suggestedName:
@@ -740,7 +791,7 @@ export const update = (
         model.dialog.isOpen && !model.loadRequest
           ? loadDialog(model)
           : { model },
-      Loaded: ({ request, person }) => {
+      Loaded: ({ request, person, linkPeople = [] }) => {
         if (request === model.selfRequest)
           return { model: { ...model, selfRequest: null, self: person } };
         if (request !== model.loadRequest) return { model };
@@ -750,6 +801,7 @@ export const update = (
             loadRequest: null,
             ready: true,
             person,
+            linkPeople,
             kind: person ? (person.kind ?? "person") : model.kind,
             self: person?.self ? person : model.self,
           },
@@ -762,7 +814,16 @@ export const update = (
         const request = crypto.randomUUID();
         return {
           model: { ...model, saveRequest: request, error: null },
-          commands: [Save({ request, person: model.person, formId })],
+          commands: [
+            Save({
+              request,
+              person: model.person,
+              formId,
+              ...(model.linkSender && model.address
+                ? { linkAddress: normalizePersonEmail(model.address) }
+                : {}),
+            }),
+          ],
         };
       },
       Saved: ({ request, person }) => {
@@ -1408,17 +1469,25 @@ const profileForm = (
         ),
         h,
       ),
+      ...(kind === "person"
+        ? [
+            h.fieldset(
+              [
+                h.Key("addresses"),
+                h.Id(`${options.formId}-addresses`),
+                h.Class("person-value-fields"),
+                h.Inert(pending),
+                h.OnMount(
+                  MountContactValues({ name: "addresses", values: emails }),
+                ),
+              ],
+              [],
+            ),
+          ]
+        : []),
       h.fieldset(
         [
-          h.Id(`${options.formId}-addresses`),
-          h.Class("person-value-fields"),
-          h.Inert(pending),
-          h.OnMount(MountContactValues({ name: "addresses", values: emails })),
-        ],
-        [],
-      ),
-      h.fieldset(
-        [
+          h.Key("domains"),
           h.Id(`${options.formId}-domains`),
           h.Class("person-value-fields"),
           h.Hidden(kind !== "company"),
@@ -1474,17 +1543,94 @@ export const editForm = (
     heading,
   });
 
+const linkSenderForm = (
+  model: Model,
+  pending: boolean,
+  h: HtmlBuilder<Message>,
+) =>
+  h.form(
+    [h.Id(formId), h.Class("person-fields"), h.OnSubmit(Message.Submitted())],
+    [
+      h.p([], [model.address ?? ""]),
+      nativeSelect(
+        {
+          label: "Link to",
+          showLabel: true,
+          value: model.person?.id ?? "",
+          options: [
+            { value: "", label: "New person" },
+            ...model.linkPeople.map((person) => ({
+              value: person.id,
+              label:
+                person.name && primaryEmail(person)
+                  ? `${person.name} · ${primaryEmail(person)}`
+                  : displayName(person),
+            })),
+          ],
+          disabled: pending,
+          onChange: (id) => Message.SelectedLinkPerson({ id }),
+        },
+        h,
+      ),
+      ...(model.person
+        ? []
+        : [
+            field(
+              "Display name",
+              input(
+                [
+                  h.Name("name"),
+                  h.Type("text"),
+                  h.Value(model.suggestedName),
+                  h.Maxlength(personNameLimit),
+                  h.Readonly(pending),
+                ],
+                h,
+              ),
+              h,
+            ),
+          ]),
+      Dialog.footer(
+        [
+          button(
+            {
+              variant: "outline",
+              size: "sm",
+              disabled: pending,
+              onClick: Message.Closed(),
+              children: ["Cancel"],
+            },
+            h,
+          ),
+          button(
+            {
+              type: "submit",
+              size: "sm",
+              disabled: pending,
+              focusableWhenDisabled: true,
+              children: [pending ? "Linking…" : "Link sender"],
+            },
+            h,
+          ),
+        ],
+        h,
+      ),
+    ],
+  );
+
 export const view = Submodel.defineView<Model, Message>((model, h) => {
   const { person, address } = model;
-  const heading = model.creating
-    ? model.kind === "company"
-      ? "New company"
-      : "New person"
-    : person?.self || !address
-      ? "Your profile"
-      : model.kind === "company"
-        ? "Company profile"
-        : "Contact profile";
+  const heading = model.linkSender
+    ? "Link sender to a person"
+    : model.creating
+      ? model.kind === "company"
+        ? "New company"
+        : "New person"
+      : person?.self || !address
+        ? "Your profile"
+        : model.kind === "company"
+          ? "Company profile"
+          : "Contact profile";
   const pending = model.saveRequest !== null;
   return Dialog.view(
     {
@@ -1499,57 +1645,59 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
             ...(model.loadRequest
               ? [h.p([h.Role("status")], ["Loading profile…"])]
               : []),
-            ...(model.ready
-              ? [
-                  ...(person?.managedAddresses.length
-                    ? [
-                        h.div(
-                          [h.Class("person-managed-emails")],
-                          [
-                            h.strong([], ["Account addresses"]),
-                            h.p([], [person.managedAddresses.join(", ")]),
-                          ],
+            ...(model.ready && model.linkSender
+              ? [linkSenderForm(model, pending, h)]
+              : model.ready
+                ? [
+                    ...(person?.managedAddresses.length
+                      ? [
+                          h.div(
+                            [h.Class("person-managed-emails")],
+                            [
+                              h.strong([], ["Account addresses"]),
+                              h.p([], [person.managedAddresses.join(", ")]),
+                            ],
+                          ),
+                        ]
+                      : []),
+                    profileForm(h, person, address, pending, {
+                      formId,
+                      key: model.editorKey,
+                      submit: Message.Submitted(),
+                      cancel: Message.Closed(),
+                      suggestedName: model.suggestedName,
+                      kind: model.kind,
+                      domains: model.suggestedDomains,
+                    }),
+                  ]
+                : [
+                    Dialog.footer(
+                      [
+                        button(
+                          {
+                            variant: "outline",
+                            size: "sm",
+                            onClick: Message.Closed(),
+                            children: ["Close"],
+                          },
+                          h,
                         ),
-                      ]
-                    : []),
-                  profileForm(h, person, address, pending, {
-                    formId,
-                    key: model.editorKey,
-                    submit: Message.Submitted(),
-                    cancel: Message.Closed(),
-                    suggestedName: model.suggestedName,
-                    kind: model.kind,
-                    domains: model.suggestedDomains,
-                  }),
-                ]
-              : [
-                  Dialog.footer(
-                    [
-                      button(
-                        {
-                          variant: "outline",
-                          size: "sm",
-                          onClick: Message.Closed(),
-                          children: ["Close"],
-                        },
-                        h,
-                      ),
-                      ...(!model.loadRequest
-                        ? [
-                            button(
-                              {
-                                size: "sm",
-                                onClick: Message.Retried(),
-                                children: ["Retry"],
-                              },
-                              h,
-                            ),
-                          ]
-                        : []),
-                    ],
-                    h,
-                  ),
-                ]),
+                        ...(!model.loadRequest
+                          ? [
+                              button(
+                                {
+                                  size: "sm",
+                                  onClick: Message.Retried(),
+                                  children: ["Retry"],
+                                },
+                                h,
+                              ),
+                            ]
+                          : []),
+                      ],
+                      h,
+                    ),
+                  ]),
           ],
         ),
       toParentMessage: toDialogMessage,

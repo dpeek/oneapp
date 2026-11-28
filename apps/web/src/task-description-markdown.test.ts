@@ -1,3 +1,4 @@
+import { taskAttachmentsApi } from "./task-attachment-contract.ts";
 import { describe, expect, it } from "@effect/vitest";
 import { CodeNode } from "@lexical/code-core";
 import { LinkNode } from "@lexical/link";
@@ -13,13 +14,13 @@ import { $createTextNode, $getRoot, createEditor } from "lexical";
 import { taskAttachmentApi } from "./task-attachment-contract.ts";
 import { omitTaskImageBlocks } from "./task-image-markdown.ts";
 import {
-  $createTaskImage,
+  $createMarkdownImage,
   $loadDescription,
   $serializeDescription,
   parseDescription,
   PreservedMarkdownNode,
-  TaskImageNode,
-} from "./task-description-markdown.ts";
+  MarkdownImageNode,
+} from "./markdown.ts";
 
 describe("task description Markdown", () => {
   it("preserves mixed nested blocks, check states, mail links and hard breaks after an edit", () => {
@@ -141,11 +142,15 @@ describe("task description Markdown", () => {
       `Before ![Inline](${url}) after`,
     ].join("\n\n");
     const editor = createEditor({
-      nodes: [TaskImageNode, PreservedMarkdownNode],
+      nodes: [MarkdownImageNode, PreservedMarkdownNode],
     });
-    editor.update(() => $loadDescription(parseDescription(source, taskId)), {
-      discrete: true,
-    });
+    editor.update(
+      () =>
+        $loadDescription(parseDescription(source, taskAttachmentsApi(taskId))),
+      {
+        discrete: true,
+      },
+    );
     expect(
       editor.read(() =>
         $getRoot()
@@ -153,7 +158,7 @@ describe("task description Markdown", () => {
           .map((node) => node.getType()),
       ),
     ).toEqual([
-      TaskImageNode.getType(),
+      MarkdownImageNode.getType(),
       PreservedMarkdownNode.getType(),
       PreservedMarkdownNode.getType(),
       PreservedMarkdownNode.getType(),
@@ -165,11 +170,11 @@ describe("task description Markdown", () => {
   it("serializes a pasted image only after the upload succeeds", () => {
     const uploadId = crypto.randomUUID();
     const url = taskAttachmentApi(crypto.randomUUID(), uploadId);
-    const editor = createEditor({ nodes: [TaskImageNode] });
+    const editor = createEditor({ nodes: [MarkdownImageNode] });
     editor.update(
       () => {
         $getRoot().append(
-          $createTaskImage({ url, alt: "Pasted", title: null, uploadId }),
+          $createMarkdownImage({ url, alt: "Pasted", title: null, uploadId }),
         );
       },
       { discrete: true },

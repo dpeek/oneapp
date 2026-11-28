@@ -1,3 +1,4 @@
+import { taskAttachmentsApi } from "./task-attachment-contract.ts";
 import {
   alert,
   button,
@@ -23,7 +24,7 @@ import { Effect, Option, Stream } from "effect";
 import { Mount, Submodel } from "foldkit";
 import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html";
 import * as Attachments from "./task-attachments.ts";
-import { taskDescriptionEditor } from "./task-description-editor-contract.ts";
+import { markdownEditor } from "./markdown-editor-contract.ts";
 import { taskDescriptionView } from "./task-description-view.ts";
 import { mailMessageLink, mailRouteFor } from "./inbox-contract.ts";
 import { tagNameKey, type Tag } from "./items-contract.ts";
@@ -780,13 +781,16 @@ const taskDocumentDescription = (
   if (!creation && task.status !== defaultTaskStatus)
     return taskDescriptionView(task, h);
   const draft = creation ? undefined : model.edits[task.id]?.text.description;
-  const editor = taskDescriptionEditor.withMessage(h);
+  const editor = markdownEditor.withMessage(h);
   return editor([
     h.Key(task.id),
     editor.Value(draft?.value ?? task.description),
     editor.ReadOnly(creation?.locked ?? false),
-    editor.TaskId(task.id),
-    editor.TaskRevision(task.revision ?? null),
+    editor.ImageCollection(taskAttachmentsApi(task.id)),
+    editor.Label("Description"),
+    editor.Placeholder("Add a description…"),
+    editor.Limit(taskDescriptionLimit),
+    editor.Revision(task.revision ?? null),
     editor.InlineImageUploads(
       (creation && model.creation?.inlineImageUploads) ||
         model.attachments.inlineImageUploads,

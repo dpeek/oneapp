@@ -245,12 +245,23 @@ export const restoreDatabase = async (
       .query("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?")
       .get(name);
   const hasFiles = hasTable("files");
+  const hasFileObjects = hasTable("file_objects");
   const hasTaskAttachments = hasTable("task_attachments");
   const fileKeys: string[] = [];
   if (hasFiles) {
     const rows = db
       .query<{ key: string }, []>(
-        "SELECT account_id || '/' || item_id AS key FROM files",
+        hasFileObjects
+          ? "SELECT coalesce(document_key, account_id || '/' || item_id) AS key FROM files"
+          : "SELECT account_id || '/' || item_id AS key FROM files",
+      )
+      .all();
+    for (const { key } of rows) fileKeys.push(key);
+  }
+  if (hasFileObjects) {
+    const rows = db
+      .query<{ key: string }, []>(
+        "SELECT key FROM file_objects WHERE kind = 'image' AND state = 'live' AND expires_at IS NULL",
       )
       .all();
     for (const { key } of rows) fileKeys.push(key);

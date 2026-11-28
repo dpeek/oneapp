@@ -8,6 +8,13 @@ export const filesApi = "/api/files";
 export const filesChanged = "files.changed";
 export const filePath = (id: string) => `${filesPath}/${id}`;
 export const fileApi = (id: string) => `${filesApi}/${id}` as const;
+export const fileDocumentsApi = `${filesApi}/documents`;
+export const fileDocumentApi = (id: string) =>
+  `${fileApi(id)}/document` as const;
+export const fileImagesApi = (id: string) =>
+  `${fileDocumentApi(id)}/images` as const;
+export const fileImageApi = (id: string, imageId: string) =>
+  `${fileImagesApi(id)}/${imageId}` as const;
 export const fileContentApi = (id: string, action: "preview" | "download") =>
   `${fileApi(id)}/${action}` as const;
 
@@ -42,6 +49,7 @@ export const StoredFile = Schema.Struct({
   createdAt: Schema.Number,
   tagIds: ItemTagIds,
   previewType: Schema.NullOr(FilePreviewType),
+  authored: Schema.Boolean,
 });
 export type StoredFile = typeof StoredFile.Type;
 export const FileIndex = Schema.Struct({
@@ -53,3 +61,25 @@ export const FileTagUpdate = Schema.Struct({
   revision: ItemId,
   tagIds: ItemTagIds,
 });
+export const FileDeletion = Schema.Struct({ revision: ItemId });
+export const documentTitleLimit = 200;
+export const documentMarkdownLimit = 20_000;
+export const DocumentTitle = Schema.NonEmptyString.check(
+  Schema.isTrimmed(),
+  Schema.isMaxLength(documentTitleLimit),
+);
+export const DocumentMarkdown = Schema.String.check(
+  Schema.isMaxLength(documentMarkdownLimit),
+);
+export const FileDocument = Schema.Struct({
+  file: StoredFile,
+  markdown: DocumentMarkdown,
+});
+export type FileDocument = typeof FileDocument.Type;
+export const FileDocumentUpdate = Schema.Struct({
+  revision: ItemId,
+  title: DocumentTitle,
+  markdown: DocumentMarkdown,
+});
+export const fileImageKey = (account: string, id: string, image: string) =>
+  `document-images/${account}/${id}/${image}`;

@@ -41,7 +41,7 @@ import type {
 import { gfmToMarkdown } from "mdast-util-gfm";
 import { toMarkdown } from "mdast-util-to-markdown";
 import { ItemId } from "./items-contract.ts";
-import { parseTaskMarkdown, taskImageBlock } from "./task-image-markdown.ts";
+import { parseMarkdown, markdownImageBlock } from "./markdown-images.ts";
 
 const softBreak = createState("taskDescriptionSoftBreak", {
   parse: (value) => value === true,
@@ -76,7 +76,7 @@ const imageData = createState("image", {
       : { url: "", alt: "", title: null, uploadId: null },
 });
 
-export class TaskImageNode extends DecoratorNode<null> {
+export class MarkdownImageNode extends DecoratorNode<null> {
   $config() {
     return this.config("task-description-image", {
       extends: DecoratorNode<null>,
@@ -114,8 +114,8 @@ export class TaskImageNode extends DecoratorNode<null> {
   }
 }
 
-export const $createTaskImage = (image: ImageData) =>
-  $setState(new TaskImageNode(), imageData, image);
+export const $createMarkdownImage = (image: ImageData) =>
+  $setState(new MarkdownImageNode(), imageData, image);
 
 export const $createTrailingParagraph = () =>
   $setState($createParagraphNode(), trailingParagraph, true);
@@ -212,8 +212,11 @@ const supportsBlock = (node: RootContent): boolean => {
 type DescriptionBlock =
   RootContent | Image | { type: "preserved"; value: string } | null;
 
-export const parseDescription = (markdown: string, taskId?: string) => {
-  const root = parseTaskMarkdown(markdown);
+export const parseDescription = (
+  markdown: string,
+  imageCollection?: string,
+) => {
+  const root = parseMarkdown(markdown);
   const blocks: DescriptionBlock[] = [];
   let previousLine = 0;
   for (const block of root.children) {
@@ -222,7 +225,7 @@ export const parseDescription = (markdown: string, taskId?: string) => {
     for (let line = previousLine + standardGap; line < start; line++)
       blocks.push(null);
     const offsets = block.position;
-    const image = taskId && taskImageBlock(block, taskId);
+    const image = imageCollection && markdownImageBlock(block, imageCollection);
     if (image) {
       blocks.push(image.image);
     } else if (supportsBlock(block) || !offsets) {
@@ -340,7 +343,7 @@ export const $loadDescription = (blocks: DescriptionBlock[]) => {
     switch (block.type) {
       case "image":
         root.append(
-          $createTaskImage({
+          $createMarkdownImage({
             url: block.url,
             alt: block.alt ?? "",
             title: block.title ?? null,
@@ -389,7 +392,10 @@ export const $loadDescription = (blocks: DescriptionBlock[]) => {
   }
   if (root.isEmpty()) root.append($createParagraphNode());
   const last = root.getLastChild();
-  if (last instanceof PreservedMarkdownNode || last instanceof TaskImageNode)
+  if (
+    last instanceof PreservedMarkdownNode ||
+    last instanceof MarkdownImageNode
+  )
     root.append($createTrailingParagraph());
 };
 
@@ -481,7 +487,7 @@ const $markdownList = (node: ListNode): List => {
 };
 
 const $block = (node: LexicalNode): RootContent | undefined => {
-  if (node instanceof TaskImageNode) {
+  if (node instanceof MarkdownImageNode) {
     const { url, alt, title } = node.getImage();
     return {
       type: "paragraph",
@@ -521,7 +527,7 @@ export const $serializeDescription = (
   const gaps = new Map<RootContent, number>();
   let empty = 0;
   for (const node of $getRoot().getChildren()) {
-    if (node instanceof TaskImageNode) {
+    if (node instanceof MarkdownImageNode) {
       const { uploadId } = node.getImage();
       if (uploadId && !uploaded(uploadId)) continue;
     }

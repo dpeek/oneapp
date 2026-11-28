@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { FileName } from "./files-contract.ts";
+import { ImageMediaType, imageUploadLimit } from "./image-upload.ts";
 import { ItemId } from "./items-contract.ts";
 import { taskApi } from "./tasks-contract.ts";
 
@@ -11,18 +12,18 @@ export const taskAttachmentApi = (taskId: string, attachmentId: string) =>
 export const taskAttachmentIdHeader = "x-task-attachment-id";
 export const taskInlineImageHeader = "x-task-inline-image";
 
-export const taskAttachmentLimitMiB = 5;
-export const taskAttachmentLimit = taskAttachmentLimitMiB * 1024 * 1024;
-export const TaskAttachmentMediaType = Schema.Literals([
-  "image/png",
-  "image/jpeg",
-]);
+export {
+  imageUploadLimitMiB as taskAttachmentLimitMiB,
+  imageUploadLimit as taskAttachmentLimit,
+  ImageMediaType as TaskAttachmentMediaType,
+} from "./image-upload.ts";
+
 export const TaskAttachment = Schema.Struct({
   id: ItemId,
   name: FileName,
-  mediaType: TaskAttachmentMediaType,
+  mediaType: ImageMediaType,
   size: Schema.Int.check(
-    Schema.isBetween({ minimum: 1, maximum: taskAttachmentLimit }),
+    Schema.isBetween({ minimum: 1, maximum: imageUploadLimit }),
   ),
   createdAt: Schema.Number,
 });
@@ -30,15 +31,6 @@ export type TaskAttachment = typeof TaskAttachment.Type;
 export const TaskAttachments = Schema.Struct({
   attachments: Schema.Array(TaskAttachment),
 });
-
-export const InlineImagePaste = Schema.Struct({
-  id: ItemId,
-  file: Schema.instanceOf(File),
-});
-export const InlineImageUploads = Schema.Record(
-  Schema.String,
-  Schema.Union([Schema.Literal(true), Schema.String, Schema.instanceOf(File)]),
-);
 
 const taskAttachmentPrefix = "task-attachments/";
 export const taskAttachmentObjectKey = (

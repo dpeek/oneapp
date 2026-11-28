@@ -85,6 +85,7 @@ import {
   passwordRecoveryRoutes,
   resetLinkRenderer,
 } from "./password-recovery.ts";
+import { collectFileObjects } from "./files-store.ts";
 import { filesRoutes } from "./files.ts";
 import { tasksRoutes } from "./tasks.ts";
 import { collectTaskAttachments } from "./task-attachments-store.ts";
@@ -191,6 +192,9 @@ export default {
       await Promise.all([
         collectAttachments(env.DB, env.VAULT_FILES),
         collectDeletedContacts(env),
+        collectFileObjects(env.DB, env.FILE_UPLOADS).catch(() =>
+          console.warn("Could not collect file objects"),
+        ),
         collectTaskAttachments(env.DB, env.FILE_UPLOADS).catch(() =>
           console.warn("Could not collect task screenshots"),
         ),

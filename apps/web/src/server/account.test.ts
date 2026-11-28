@@ -47,6 +47,11 @@ import {
 import {
   fileApi,
   fileContentApi,
+  FileDocument,
+  fileDocumentApi,
+  fileDocumentsApi,
+  fileImageApi,
+  fileImageKey,
   filePath,
   FileIndex,
   fileNameHeader,
@@ -643,6 +648,177 @@ it("requires session ownership for uploaded file metadata, previews and download
     "filename*=UTF-8''R%C3%A9sum%C3%A9%20%22draft%22.png",
   );
   expect(new Uint8Array(await download.arrayBuffer())).toEqual(bytes);
+});
+
+it("keeps document Markdown and images private and retries file object cleanup", async () => {
+  using sqlite = new Database(":memory:");
+  const objects = new Map<
+    string,
+    { bytes: ArrayBuffer; httpMetadata?: { contentType: string } }
+  >();
+  let failDelete = false;
+  const { env, request, signIn, cookies, call } = await setup(sqlite, {
+    FILE_UPLOADS: {
+      put: async (
+        key: string,
+        input: Uint8Array | ArrayBuffer,
+        options?: { httpMetadata?: { contentType: string } },
+      ) => {
+        if (objects.has(key)) return null;
+        const bytes =
+          input instanceof Uint8Array ? input.slice().buffer : input.slice(0);
+        objects.set(key, { bytes, httpMetadata: options?.httpMetadata });
+        return { size: bytes.byteLength };
+      },
+      get: async (key: string) => {
+        const object = objects.get(key);
+        return object
+          ? {
+              body: new Response(object.bytes).body,
+              size: object.bytes.byteLength,
+              httpMetadata: object.httpMetadata,
+              arrayBuffer: async () => object.bytes,
+            }
+          : null;
+      },
+      delete: async (keys: string[]) => {
+        if (failDelete) throw new Error("R2 temporarily unavailable");
+        keys.forEach((key) => objects.delete(key));
+      },
+    } as unknown as WorkerEnv["FILE_UPLOADS"],
+  });
+  const cookie = cookies(await signIn(password));
+  const headers = { cookie, origin: env.APP_ORIGIN, "x-effect-auth-csrf": "1" };
+  const read = (path: string) => request(path, { headers });
+  const write = (path: string, method: "PUT" | "DELETE", body: object) =>
+    request(path, {
+      method,
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  const decodeDocument = async (response: Response) =>
+    Schema.decodeUnknownSync(FileDocument)(await response.json());
+
+  const created = await call(fileDocumentsApi, {}, cookie);
+  expect(created.status).toBe(201);
+  const original = await decodeDocument(created);
+  const { id, revision } = original.file;
+  const documentUrl = fileDocumentApi(id);
+  const imageUrl = fileImageApi(id, crypto.randomUUID());
+  expect(original.file.authored).toBe(true);
+  expect((await request(documentUrl, {})).status).toBe(401);
+  expect((await read(fileContentApi(id, "download"))).status).toBe(404);
+
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const uploadImage = (path: string, body: Uint8Array<ArrayBuffer>) =>
+    request(path, { method: "POST", headers, body });
+  expect((await uploadImage(imageUrl, new Uint8Array([1, 2, 3]))).status).toBe(
+    415,
+  );
+  expect((await uploadImage(imageUrl, png)).status).toBe(201);
+  expect((await request(imageUrl, {})).status).toBe(401);
+  const { id: tagId } = Schema.decodeUnknownSync(Tag)(
+    await (await call(tagsApi, { name: "Reference" }, cookie)).json(),
+  );
+  const markdown = `\uFEFF# Résumé 🐈
+
+![Fixture](${imageUrl})`;
+  const title = "Fixture notes";
+  const firstSave = await write(documentUrl, "PUT", {
+    revision,
+    title,
+    markdown,
+  });
+  expect(firstSave.status).toBe(200);
+  const saved = await decodeDocument(firstSave);
+  expect(saved.file.size).toBe(new TextEncoder().encode(markdown).byteLength);
+  expect(await decodeDocument(await read(documentUrl))).toEqual(saved);
+  const image = await read(imageUrl);
+  expect(image.headers.get("content-type")).toBe("image/png");
+  expect(new Uint8Array(await image.arrayBuffer())).toEqual(png);
+
+  const tagged = Schema.decodeUnknownSync(StoredFile)(
+    await (
+      await write(fileApi(id), "PUT", {
+        revision: saved.file.revision,
+        tagIds: [tagId],
+      })
+    ).json(),
+  );
+  expect(
+    (await write(fileApi(id), "DELETE", { revision: saved.file.revision }))
+      .status,
+  ).toBe(409);
+  const conflict = await write(documentUrl, "PUT", {
+    revision: saved.file.revision,
+    title,
+    markdown: "Stale text",
+  });
+  expect(conflict.status).toBe(409);
+  expect((await decodeDocument(conflict)).markdown).toBe(markdown);
+  const unlinked = await decodeDocument(
+    await write(documentUrl, "PUT", {
+      revision: tagged.revision,
+      title,
+      markdown: "Removed image",
+    }),
+  );
+  expect((await read(imageUrl)).status).toBe(404);
+  const restored = await decodeDocument(
+    await write(documentUrl, "PUT", {
+      revision: unlinked.file.revision,
+      title,
+      markdown,
+    }),
+  );
+  expect((await read(imageUrl)).status).toBe(200);
+
+  const abandonedId = crypto.randomUUID();
+  const abandonedUrl = fileImageApi(id, abandonedId);
+  expect((await uploadImage(abandonedUrl, png)).status).toBe(201);
+  const abandonedKey = fileImageKey("owner", id, abandonedId);
+  sqlite
+    .query("UPDATE file_objects SET expires_at = 0 WHERE key = ?")
+    .run(abandonedKey);
+  const { collectFileObjects } = await import("./files-store.ts");
+  await collectFileObjects(env.DB, env.FILE_UPLOADS);
+  expect(objects.has(abandonedKey)).toBe(false);
+  expect((await read(abandonedUrl)).status).toBe(404);
+  expect((await read(imageUrl)).status).toBe(200);
+
+  const upload = await request(filesApi, {
+    method: "POST",
+    headers: {
+      ...headers,
+      [fileNameHeader]: "uploaded.png",
+      "content-type": "image/png",
+    },
+    body: png,
+  });
+  const regular = Schema.decodeUnknownSync(StoredFile)(await upload.json());
+  const pendingImage = fileImageApi(id, crypto.randomUUID());
+  expect((await uploadImage(pendingImage, png)).status).toBe(201);
+  failDelete = true;
+  expect(
+    (await write(fileApi(id), "DELETE", { revision: restored.file.revision }))
+      .status,
+  ).toBe(204);
+  expect(
+    (await write(fileApi(regular.id), "DELETE", { revision: regular.revision }))
+      .status,
+  ).toBe(204);
+  expect((await read(imageUrl)).status).toBe(404);
+  expect((await read(pendingImage)).status).toBe(404);
+  expect((await read(documentUrl)).status).toBe(404);
+  expect((await read(fileContentApi(regular.id, "download"))).status).toBe(404);
+  expect(await (await read(filesApi)).json()).toMatchObject({
+    files: [],
+    tags: [{ id: tagId, name: "Reference" }],
+  });
+  expect(objects.size).toBeGreaterThan(0);
+  failDelete = false;
+  await collectFileObjects(env.DB, env.FILE_UPLOADS);
+  expect(objects.size).toBe(0);
 });
 
 it("imports a 2 MiB calendar with an older recurring event", async () => {

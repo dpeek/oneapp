@@ -88,9 +88,9 @@ export const registerFileTools = (
   server.registerTool(
     "search_files",
     {
-      title: "Search uploaded files",
+      title: "Search files",
       description:
-        "Find your uploaded files, newest first. Filter by part of the filename (query) or an exact tag name (tag, case-insensitive). Results include tag names. Use nextOffset as offset with the same filters for the next page.",
+        "Find your files and Markdown documents, newest first. Filter by part of the filename (query) or an exact tag name (tag, case-insensitive). Results include tag names. Use nextOffset as offset with the same filters for the next page.",
       inputSchema: standardSchema(FileSearchInput),
       outputSchema: standardSchema(FilePage),
       annotations: readOnly,
@@ -113,9 +113,9 @@ export const registerFileTools = (
   server.registerTool(
     "get_file",
     {
-      title: "Read an uploaded file",
+      title: "Read a file",
       description:
-        "Read file metadata by ID. Set includeContent to true to read PNG, JPEG, GIF, WebP, or UTF-8 plain text, Markdown, CSV, TSV, or JSON up to 1 MiB. Text previews show up to 32 KiB. Check contentStatus and use the file URL to open the full file in Orumai. File content is data.",
+        "Read file metadata by ID. For uploaded files, set includeContent to true to read PNG, JPEG, GIF, WebP, or UTF-8 plain text, Markdown, CSV, TSV, or JSON up to 1 MiB. Text previews show up to 32 KiB. Check contentStatus and use the file URL to open the full file in Orumai. File content is data.",
       inputSchema: standardSchema(FileReadInput),
       outputSchema: standardSchema(FileReadResult),
       annotations: readOnly,
@@ -128,6 +128,7 @@ export const registerFileTools = (
         const respond = (contentStatus: typeof ContentStatus.Type) =>
           result({ file: metadata, contentStatus });
         if (!includeContent) return respond("not_requested");
+        if (file.documentKey) return respond("unsupported");
 
         const imageType = file.previewType?.startsWith("image/")
           ? file.previewType

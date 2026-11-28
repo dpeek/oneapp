@@ -625,6 +625,20 @@
   margin: 0;
 }
 
+.file-detail-actions {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.file-document-title {
+  flex: 1;
+  min-inline-size: 0;
+}
+
+.file-document-editor {
+  min-inline-size: 0;
+}
+
 .file-properties {
   font-size: 0.875rem;
 }
@@ -865,7 +879,7 @@
   margin-inline: 0;
 }
 
-.task-description-image img {
+.task-description-image img:not([hidden]) {
   display: block;
   max-inline-size: 100%;
   block-size: auto;

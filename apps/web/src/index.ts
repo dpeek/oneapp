@@ -5,7 +5,7 @@ import {
   selectedMailboxUrl,
 } from "./mailbox-client.ts";
 import "./mail-editor.ts";
-import "./task-description-editor.ts";
+import "./markdown-editor.ts";
 import * as PushSettings from "./push-settings.ts";
 import {
   clearPushAfterSignOut,
@@ -94,6 +94,7 @@ import * as Files from "./files.ts";
 import {
   filesChanged,
   filePath,
+  filesPath,
   FileRoute,
   fileRouteFor,
 } from "./files-contract.ts";
@@ -658,6 +659,13 @@ const foldFiles = Update.foldChild({
                 title: out.error,
               },
             })
+          : { model };
+      if (out._tag === "OpenList")
+        return model.page === "files"
+          ? {
+              model,
+              commands: [Navigate({ href: filesPath, mode: "replace" })],
+            }
           : { model };
       if (out.source === "header" && model.page !== "files") return { model };
       return Update.combine(model, [

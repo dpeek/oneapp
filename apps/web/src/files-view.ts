@@ -3,6 +3,7 @@ import {
   button,
   buttonClassName,
   empty,
+  Dialog,
   filesIconPaths,
   input,
   item,
@@ -12,15 +13,19 @@ import {
   plusIcon,
   skeleton,
   Tokenizer,
+  trashIconPaths,
   visuallyHiddenStatus,
 } from "@orumai/ui";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import { Mount, Submodel } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { fileSize, renderPdf } from "./file-display.ts";
 import { filterChoice, filterMenu } from "./filter-menu.ts";
 import {
+  documentMarkdownLimit,
+  documentTitleLimit,
   fileContentApi,
+  fileImagesApi,
   filePath,
   filesPath,
   fileUploadLimit,
@@ -29,12 +34,14 @@ import {
 import {
   fileActionMenu,
   fileActionsId,
+  fileDeleteDialogId,
   filterOptionsId,
   matchesFileFilter,
   Message,
   selectedFile,
   toActionMenuMessage,
   toFilterPopoverMessage,
+  toDeleteDialogMessage,
   uploadInputId,
   type Model,
 } from "./files.ts";
@@ -44,6 +51,8 @@ import {
   tagNameLimit,
   type Tag,
 } from "./items-contract.ts";
+import { markdownEditor } from "./markdown-editor-contract.ts";
+import { changed, uploading } from "./file-document-edits.ts";
 import { searchTags } from "./tag-picker.ts";
 import { screenHeader, screenHeaderBack, workspace } from "./workspace.ts";
 
@@ -80,13 +89,237 @@ const downloadLink = (file: StoredFile, h: HtmlBuilder<Message>) =>
     [downloadIcon(h)],
   );
 
+const deleteFileDialog = (model: Model, h: HtmlBuilder<Message>) => {
+  const { deletion } = model;
+  const pending = model.request?.operation._tag === "Delete";
+  const file = selectedFile(model);
+  const stale = !!deletion && deletion.revision !== file?.revision;
+  return Dialog.view(
+    {
+      model: model.deleteDialog,
+      title: "Delete file?",
+      alertDescription: `“${deletion?.name ?? ""}” will be permanently deleted${file?.authored ? " along with its images" : ""}.`,
+      toParentMessage: toDeleteDialogMessage,
+      content: (initialFocus) =>
+        h.div(
+          [],
+          [
+            alert(
+              {
+                message: deletion?.completed
+                  ? null
+                  : stale
+                    ? "This file changed elsewhere. Close this dialog and review the latest version before deleting."
+                    : (deletion?.error ?? null),
+                severity: "error",
+                announcement: "alert",
+              },
+              h,
+            ),
+            Dialog.footer(
+              [
+                button(
+                  {
+                    variant: "outline",
+                    disabled: pending,
+                    attributes: initialFocus,
+                    onClick: toDeleteDialogMessage(
+                      Dialog.Message.RequestedClose(),
+                    ),
+                    children: ["Cancel"],
+                  },
+                  h,
+                ),
+                button(
+                  {
+                    variant: "destructive",
+                    disabled: pending || stale,
+                    focusableWhenDisabled: pending,
+                    attributes: [h.AriaBusy(pending)],
+                    onClick: Message.ConfirmedDelete(),
+                    children: [pending ? "Deleting…" : "Delete file"],
+                  },
+                  h,
+                ),
+              ],
+              h,
+            ),
+          ],
+        ),
+    },
+    h,
+  );
+};
+
+const documentTitle = (
+  model: Model,
+  file: StoredFile,
+  h: HtmlBuilder<Message>,
+) => {
+  const draft = model.documents[file.id];
+  if (!draft) return h.h2([], [file.name]);
+  const blur = Message.BlurredDocument({ id: file.id });
+  return h.div(
+    [h.Class("task-document-title file-document-title")],
+    [
+      h.h2(
+        [h.Class("task-document-title-text")],
+        [
+          h.span(
+            [
+              h.Class("task-document-input"),
+              h.DataAttribute("value", draft.title),
+            ],
+            [
+              h.textarea([
+                h.Rows(1),
+                h.AriaLabel("Document title"),
+                h.Value(draft.title),
+                h.Maxlength(documentTitleLimit),
+                h.Placeholder("Document title"),
+                h.AriaInvalid(!draft.title.trim()),
+                h.OnInput((value) =>
+                  Message.EditedDocument({
+                    id: file.id,
+                    field: "title",
+                    value: value.replace(/[\r\n]+/gu, " "),
+                  }),
+                ),
+                h.OnBlur(blur),
+                h.OnKeyDownPreventDefault((key) =>
+                  key === "Enter" ? Option.some(blur) : Option.none(),
+                ),
+              ]),
+            ],
+          ),
+        ],
+      ),
+      draft.title.trim()
+        ? h.empty
+        : h.p(
+            [h.Role("status"), h.Class("task-title-error")],
+            ["Enter a document title."],
+          ),
+    ],
+  );
+};
+
+const documentEditor = (
+  model: Model,
+  file: StoredFile,
+  available: boolean,
+  h: HtmlBuilder<Message>,
+) => {
+  const draft = model.documents[file.id];
+  if (!draft)
+    return h.p(
+      [h.Role("status")],
+      [
+        model.documentLoadFailed === file.id
+          ? "Document body is unavailable."
+          : "Loading document…",
+      ],
+    );
+  const editor = markdownEditor.withMessage(h);
+  const saving =
+    model.request?.operation._tag === "SaveDocument" &&
+    model.request.operation.id === file.id;
+  const message = !available
+    ? "This document is unavailable. Your edits are still here."
+    : draft.latest
+      ? "This document changed elsewhere. Your edits are still here."
+      : draft.error;
+  return h.div(
+    [h.Class("file-document-editor")],
+    [
+      editor([
+        h.Key(file.id),
+        editor.Value(draft.markdown),
+        editor.Label("Document body"),
+        editor.Placeholder("Write something…"),
+        editor.Limit(documentMarkdownLimit),
+        editor.ReadOnly(false),
+        editor.ImageCollection(fileImagesApi(file.id)),
+        editor.Revision(draft.saved.file.revision),
+        editor.InlineImageUploads(draft.uploads),
+        editor.OnDescriptionEdited((value) =>
+          Message.EditedDocument({ id: file.id, field: "markdown", value }),
+        ),
+        editor.OnDescriptionBlurred(() =>
+          Message.BlurredDocument({ id: file.id }),
+        ),
+        editor.OnDescriptionImagePasted((image) =>
+          Message.PickedDocumentImage({ documentId: file.id, ...image }),
+        ),
+      ]),
+      h.p(
+        [h.Role("status"), h.Class("task-save-state")],
+        [
+          saving
+            ? "Saving…"
+            : changed(draft) &&
+                (draft.timer || draft.queued) &&
+                !message &&
+                !uploading(draft) &&
+                draft.title.trim() &&
+                draft.markdown.length <= documentMarkdownLimit
+              ? "Saving…"
+              : "",
+        ],
+      ),
+      alert(
+        {
+          message,
+          severity: "error",
+          announcement: "status",
+          action:
+            message && available
+              ? h.div(
+                  [h.Class("task-edit-recovery")],
+                  [
+                    button(
+                      {
+                        variant: "outline",
+                        size: "sm",
+                        onClick: Message.RetriedDocument({ id: file.id }),
+                        children: [
+                          draft.latest ? "Apply my edits" : "Retry save",
+                        ],
+                      },
+                      h,
+                    ),
+                    draft.latest
+                      ? button(
+                          {
+                            variant: "ghost",
+                            size: "sm",
+                            onClick: Message.DiscardedDocumentEdits({
+                              id: file.id,
+                            }),
+                            children: ["Use saved values"],
+                          },
+                          h,
+                        )
+                      : h.empty,
+                  ],
+                )
+              : undefined,
+        },
+        h,
+      ),
+    ],
+  );
+};
+
 const fileDetail = (
   model: Model,
   tags: readonly Tag[],
   h: HtmlBuilder<Message>,
 ) => {
-  const file = selectedFile(model);
+  const savedFile = selectedFile(model);
   const id = model.selectedId;
+  const draft = id ? model.documents[id] : undefined;
+  const file = savedFile ?? (draft && changed(draft) ? draft.saved.file : null);
   const detail = () => {
     if (!file)
       return h.p(model.error || model.request ? [] : [h.Role("status")], [
@@ -103,49 +336,82 @@ const fileDetail = (
       [
         h.div(
           [h.Class("file-detail-heading")],
-          [h.h2([], [file.name]), downloadLink(file, h)],
-        ),
-        h.dl(
-          [h.Class("file-properties")],
           [
-            h.div([], [h.dt([], ["Media type"]), h.dd([], [file.mediaType])]),
-            h.div(
-              [],
-              [
-                h.dt([], ["Size"]),
-                h.dd(
+            file.authored
+              ? documentTitle(model, file, h)
+              : h.h2([], [file.name]),
+            savedFile
+              ? h.div(
+                  [h.Class("file-detail-actions")],
                   [
-                    h.Title(
-                      `${new Intl.NumberFormat().format(file.size)} bytes`,
+                    file.authored ? h.empty : downloadLink(file, h),
+                    button(
+                      {
+                        variant: "ghost",
+                        size: "icon-sm",
+                        ariaLabel: "Delete file",
+                        dialogId: fileDeleteDialogId,
+                        attributes: [h.Title("Delete file")],
+                        disabled:
+                          model.request !== null || model.deletion !== null,
+                        onClick: Message.RequestedDelete(),
+                        children: [outlineIcon(h, trashIconPaths)],
+                      },
+                      h,
                     ),
                   ],
-                  [fileSize(file.size)],
+                )
+              : h.empty,
+          ],
+        ),
+        file.authored
+          ? h.empty
+          : h.dl(
+              [h.Class("file-properties")],
+              [
+                h.div(
+                  [],
+                  [h.dt([], ["Media type"]), h.dd([], [file.mediaType])],
+                ),
+                h.div(
+                  [],
+                  [
+                    h.dt([], ["Size"]),
+                    h.dd(
+                      [
+                        h.Title(
+                          `${new Intl.NumberFormat().format(file.size)} bytes`,
+                        ),
+                      ],
+                      [fileSize(file.size)],
+                    ),
+                  ],
                 ),
               ],
             ),
-          ],
-        ),
-        Tokenizer.view(
-          {
-            model: model.tagPicker,
-            label: "Tags",
-            placeholder: "Search or create tags",
-            emptyMessage: "No matching tags",
-            items: search.items,
-            selected: tags.filter(({ id }) => file.tagIds.includes(id)),
-            maxLength: tagNameLimit,
-            busy: model.request !== null,
-            full,
-            description: full
-              ? `A file can have up to ${itemTagLimit} tags.`
-              : null,
-            error: search.error,
-            toParentMessage: (message) =>
-              Message.GotTagPickerMessage({ id: file.id, message }),
-            onRemove: (id) => Message.RemovedTag({ id }),
-          },
-          h,
-        ),
+        savedFile
+          ? Tokenizer.view(
+              {
+                model: model.tagPicker,
+                label: "Tags",
+                placeholder: "Search or create tags",
+                emptyMessage: "No matching tags",
+                items: search.items,
+                selected: tags.filter(({ id }) => file.tagIds.includes(id)),
+                maxLength: tagNameLimit,
+                busy: model.request !== null,
+                full,
+                description: full
+                  ? `A file can have up to ${itemTagLimit} tags.`
+                  : null,
+                error: search.error,
+                toParentMessage: (message) =>
+                  Message.GotTagPickerMessage({ id: file.id, message }),
+                onRemove: (id) => Message.RemovedTag({ id }),
+              },
+              h,
+            )
+          : h.empty,
         alert(
           {
             message: model.previewFailed
@@ -156,6 +422,9 @@ const fileDetail = (
           },
           h,
         ),
+        ...(file.authored
+          ? [documentEditor(model, file, savedFile !== null, h)]
+          : []),
         ...(model.previewFailed
           ? []
           : file.previewType === "application/pdf"
@@ -249,12 +518,16 @@ const fileRow = (
       icon: outlineIcon(h, filesIconPaths),
       disabled: false,
     },
-    {
-      action: "download",
-      label: "Download",
-      icon: downloadIcon(h),
-      disabled: false,
-    },
+    ...(file.authored
+      ? []
+      : [
+          {
+            action: "download" as const,
+            label: "Download",
+            icon: downloadIcon(h),
+            disabled: false,
+          },
+        ]),
   ] as const;
   return item(
     {
@@ -275,7 +548,10 @@ const fileRow = (
       description: h.div(
         [h.Class("file-row-metadata")],
         [
-          h.span([], [fileSize(file.size)]),
+          h.span(
+            [],
+            [file.authored ? "Markdown document" : fileSize(file.size)],
+          ),
           ...file.tagIds.flatMap((id) => {
             const name = tagMap.get(id);
             return name
@@ -314,7 +590,7 @@ const fileList = (
       ? null
       : hasFiles
         ? "No files match this tag"
-        : "No files uploaded";
+        : "No files yet";
   return h.section(
     [
       h.Class("workspace-list file-list"),
@@ -372,11 +648,11 @@ const uploadControl = (model: Model, h: HtmlBuilder<Message>) =>
     [
       h.span(
         [
-          h.Class(buttonClassName({ size: "sm" })),
+          h.Class(buttonClassName({ size: "sm", variant: "outline" })),
           h.DataAttribute("slot", "button"),
           h.AriaHidden(true),
         ],
-        [plusIcon(h, "16"), "File"],
+        ["Upload file"],
       ),
       input<Message>(
         [
@@ -419,7 +695,16 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
               ]
             : [],
           controls: [fileFilters(model, tags, h)],
-          primaryAction: uploadControl(model, h),
+          endControls: [uploadControl(model, h)],
+          primaryAction: button(
+            {
+              size: "sm",
+              disabled: model.request !== null || model.index === null,
+              onClick: Message.CreatedDocument(),
+              children: [plusIcon(h, "16"), "New Markdown document"],
+            },
+            h,
+          ),
           feedback: [
             visuallyHiddenStatus(loadStatus, h),
             h.p(
@@ -432,7 +717,8 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
                 severity: "error",
                 announcement: "status",
                 action:
-                  model.error && !model.index
+                  model.error &&
+                  (!model.index || model.documentLoadFailed !== null)
                     ? button(
                         {
                           variant: "outline",
@@ -451,6 +737,7 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
         h,
       ),
       hasSelection: model.selectedId !== null,
+      sheet: deleteFileDialog(model, h),
       list: fileList(model, tags, h),
       ...(model.selectedId ? { detail: fileDetail(model, tags, h) } : {}),
     },

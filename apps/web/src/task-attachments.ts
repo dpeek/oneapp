@@ -7,6 +7,8 @@ import { ItemId } from "./items-contract.ts";
 import {
   InlineImagePaste,
   InlineImageUploads,
+} from "./markdown-editor-contract.ts";
+import {
   TaskAttachment,
   TaskAttachmentMediaType,
   taskAttachmentIdHeader,

@@ -77,4 +77,4 @@ export {
   taskChanges,
   taskRuns,
 } from "./task-tables.ts";
-export { fileChanges, files } from "./file-tables.ts";
+export { fileChanges, fileObjects, files } from "./file-tables.ts";

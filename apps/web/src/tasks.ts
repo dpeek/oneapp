@@ -28,7 +28,8 @@ import {
   taskCalendar,
 } from "./task-properties.ts";
 import * as Attachments from "./task-attachments.ts";
-import { InlineImageUploads } from "./task-attachment-contract.ts";
+import { InlineImageUploads } from "./markdown-editor-contract.ts";
+
 import { omitTaskImageBlocks, taskImageIds } from "./task-image-markdown.ts";
 import {
   defaultTaskList,

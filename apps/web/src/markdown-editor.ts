@@ -89,22 +89,20 @@ import {
   type TextFormatType,
 } from "lexical";
 import {
+  markdownEditor,
   type InlineImageUploads,
-  taskAttachmentApi,
-} from "./task-attachment-contract.ts";
-import { taskDescriptionEditor } from "./task-description-editor-contract.ts";
+} from "./markdown-editor-contract.ts";
 import {
-  $createTaskImage,
+  $createMarkdownImage,
   $createTrailingParagraph,
   $loadDescription,
   $serializeDescription,
   parseDescription,
   PreservedMarkdownNode,
-  TaskImageNode,
+  MarkdownImageNode,
   taskDescriptionLink,
-} from "./task-description-markdown.ts";
-import { taskDescriptionLimit } from "./tasks-contract.ts";
-import { taskImageId } from "./task-image-markdown.ts";
+} from "./markdown.ts";
+import { markdownImageId } from "./markdown-images.ts";
 
 const setBlock = (create: () => ElementNode) => {
   const selection = $getSelection();
@@ -311,7 +309,7 @@ const descriptionExtension = defineExtension({
     ListNode,
     ListItemNode,
     PreservedMarkdownNode,
-    TaskImageNode,
+    MarkdownImageNode,
   ],
   theme: {
     heading: documentTypography.heading,
@@ -333,7 +331,7 @@ const descriptionExtension = defineExtension({
 
 let nextEditorId = 0;
 
-export class TaskDescriptionEditor extends HTMLElement {
+export class MarkdownEditor extends HTMLElement {
   #id = `task-description-${++nextEditorId}`;
   #body = document.createElement("div");
   #floating = document.createElement("div");
@@ -368,8 +366,9 @@ export class TaskDescriptionEditor extends HTMLElement {
   #listeners: AbortController | null = null;
   #unregister: (() => void) | null = null;
   #value = "";
-  #taskId: string | null = null;
-  #taskRevision: string | null = null;
+  #limit = 20_000;
+  #imageCollection: string | null = null;
+  #revision: string | null = null;
   #inlineImageUploads: typeof InlineImageUploads.Type = {};
   #imagePreviews = new Map<File, string>();
   #visualValue: string | null = null;
@@ -388,19 +387,32 @@ export class TaskDescriptionEditor extends HTMLElement {
     if (this.#listeners) this.#receiveValue();
   }
 
-  set taskId(taskId: string | null) {
-    if (this.#taskId === taskId) return;
-    this.#taskId = taskId;
+  set label(label: string) {
+    this.#body.setAttribute("aria-label", label);
+  }
+
+  set placeholder(placeholder: string) {
+    this.#body.dataset.placeholder = placeholder;
+  }
+
+  set limit(limit: number) {
+    this.#limit = limit;
+    if (this.#listeners) this.#validate();
+  }
+
+  set imageCollection(imageCollection: string | null) {
+    if (this.#imageCollection === imageCollection) return;
+    this.#imageCollection = imageCollection;
     this.#visualValue = null;
     if (this.#listeners) this.#receiveValue();
   }
 
-  set taskRevision(revision: string | null) {
-    if (this.#taskRevision === revision) return;
-    this.#taskRevision = revision;
+  set revision(revision: string | null) {
+    if (this.#revision === revision) return;
+    this.#revision = revision;
     if (this.#listeners)
       queueMicrotask(() => {
-        if (this.#listeners && this.#taskRevision === revision)
+        if (this.#listeners && this.#revision === revision)
           this.#editor.read(() => this.#syncImages());
       });
   }
@@ -527,11 +539,19 @@ export class TaskDescriptionEditor extends HTMLElement {
           const selection = $getSelection();
           const file = event.clipboardData?.files[0];
           if (file) {
-            const taskId = this.#taskId;
-            if (taskId && !this.#readOnly && $isRangeSelection(selection)) {
+            const imageCollection = this.#imageCollection;
+            if (
+              imageCollection &&
+              !this.#readOnly &&
+              $isRangeSelection(selection)
+            ) {
               event.preventDefault();
               event.stopPropagation();
-              this.#insertImage(taskId, file, selection.focus.getNode());
+              this.#insertImage(
+                imageCollection,
+                file,
+                selection.focus.getNode(),
+              );
             }
             return true;
           }
@@ -673,9 +693,7 @@ export class TaskDescriptionEditor extends HTMLElement {
 
     this.#body.className = `task-description-body ${documentTypography.body}`;
     this.#body.setAttribute("role", "textbox");
-    this.#body.setAttribute("aria-label", "Description");
     this.#body.setAttribute("aria-multiline", "true");
-    this.#body.dataset.placeholder = "Add a description…";
     this.#imageInput.type = "file";
     this.#imageInput.accept = "image/png,image/jpeg,.png,.jpg,.jpeg";
     this.#imageInput.hidden = true;
@@ -685,11 +703,13 @@ export class TaskDescriptionEditor extends HTMLElement {
     this.#imageInput.addEventListener("change", () => {
       const file = this.#imageInput.files?.[0];
       const key = this.#imageInsertionKey;
-      const taskId = this.#taskId;
+      const imageCollection = this.#imageCollection;
       this.#imageInput.value = "";
       this.#imageInsertionKey = null;
-      if (!file || !taskId || !key) return;
-      this.#edit(() => this.#insertImage(taskId, file, $getNodeByKey(key)));
+      if (!file || !imageCollection || !key) return;
+      this.#edit(() =>
+        this.#insertImage(imageCollection, file, $getNodeByKey(key)),
+      );
     });
     // Use the visible mark as the pointer target. Lexical handles keyboard
     // interaction, and its touch pointerup must not also toggle on this click.
@@ -715,7 +735,7 @@ export class TaskDescriptionEditor extends HTMLElement {
           event.stopPropagation();
           this.#edit(() => {
             const node = $getNearestNodeFromDOMNode(removeImage);
-            if (node instanceof TaskImageNode) node.remove();
+            if (node instanceof MarkdownImageNode) node.remove();
           });
           return;
         }
@@ -772,7 +792,10 @@ export class TaskDescriptionEditor extends HTMLElement {
 
   #loadVisual() {
     if (this.#value === this.#visualValue) return;
-    const blocks = parseDescription(this.#value, this.#taskId ?? undefined);
+    const blocks = parseDescription(
+      this.#value,
+      this.#imageCollection ?? undefined,
+    );
     this.#loading = true;
     this.#selection = null;
     this.#editor.update(
@@ -808,11 +831,11 @@ export class TaskDescriptionEditor extends HTMLElement {
   }
 
   #validate() {
-    const excess = this.#value.length - taskDescriptionLimit;
+    const excess = this.#value.length - this.#limit;
     this.#error.hidden = excess <= 0;
     this.#error.textContent =
       excess > 0
-        ? `Remove ${excess.toLocaleString()} ${excess === 1 ? "character" : "characters"} to save. The Markdown limit is 20,000 characters.`
+        ? `Remove ${excess.toLocaleString()} ${excess === 1 ? "character" : "characters"} to save. The Markdown limit is ${this.#limit.toLocaleString()} characters.`
         : "";
     if (excess > 0) {
       this.#body.setAttribute("aria-invalid", "true");
@@ -835,10 +858,14 @@ export class TaskDescriptionEditor extends HTMLElement {
     );
   }
 
-  #insertImage(taskId: string, file: File, anchor: LexicalNode | null) {
+  #insertImage(
+    imageCollection: string,
+    file: File,
+    anchor: LexicalNode | null,
+  ) {
     const id = crypto.randomUUID();
-    const image = $createTaskImage({
-      url: taskAttachmentApi(taskId, id),
+    const image = $createMarkdownImage({
+      url: `${imageCollection}/${id}`,
       alt: file.name || "Image",
       title: null,
       uploadId: id,
@@ -866,9 +893,11 @@ export class TaskDescriptionEditor extends HTMLElement {
       this.#imagePreviews.delete(file);
     }
     for (const node of $getRoot().getChildren()) {
-      if (!(node instanceof TaskImageNode)) continue;
+      if (!(node instanceof MarkdownImageNode)) continue;
       const { url, uploadId } = node.getImage();
-      const id = uploadId ?? (this.#taskId && taskImageId(this.#taskId, url));
+      const id =
+        uploadId ??
+        (this.#imageCollection && markdownImageId(this.#imageCollection, url));
       const outcome = id ? this.#inlineImageUploads[id] : undefined;
       const figure = this.#editor.getElementByKey(node.getKey());
       const image = figure?.querySelector("img");
@@ -895,37 +924,38 @@ export class TaskDescriptionEditor extends HTMLElement {
             ? url
             : null;
       image.hidden = src === null;
-      status.hidden = src !== null;
       if (!src) {
         delete image.dataset.imageSource;
         image.removeAttribute("src");
       } else if (image.dataset.imageSource !== src) {
         image.dataset.imageSource = src;
-        image.dataset.taskRevision = this.#taskRevision ?? "";
+        image.dataset.revision = this.#revision ?? "";
         image.src = src;
       } else if (image.complete && image.naturalWidth === 0) {
         this.#retryImage(image);
       }
-      const message = src
-        ? ""
-        : typeof outcome === "string"
+      const message =
+        typeof outcome === "string"
           ? outcome
-          : "Uploading image…";
+          : !src || outcome instanceof File
+            ? "Uploading image…"
+            : "";
+      status.hidden = message === "";
       if (status.textContent !== message) status.textContent = message;
     }
   }
 
   #retryImage(image: HTMLImageElement) {
     const src = image.dataset.imageSource;
-    const revision = this.#taskRevision;
+    const revision = this.#revision;
     if (
       !src?.startsWith("/") ||
       !revision ||
-      image.dataset.taskRevision === revision
+      image.dataset.revision === revision
     )
       return;
     // Undo can render before autosave has restored access to the attachment.
-    image.dataset.taskRevision = revision;
+    image.dataset.revision = revision;
     image.src = `${src}?revision=${revision}`;
   }
 
@@ -1074,7 +1104,7 @@ export class TaskDescriptionEditor extends HTMLElement {
       block.clear().selectStart();
       choice.apply?.();
     });
-    if (!choice.apply && this.#taskId) {
+    if (!choice.apply && this.#imageCollection) {
       this.#imageInsertionKey = key;
       this.#imageInput.click();
     }
@@ -1331,4 +1361,4 @@ export class TaskDescriptionEditor extends HTMLElement {
   };
 }
 
-customElements.define(taskDescriptionEditor.tag, TaskDescriptionEditor);
+customElements.define(markdownEditor.tag, MarkdownEditor);

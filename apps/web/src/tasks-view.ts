@@ -19,7 +19,7 @@ import {
   Tooltip,
   visuallyHiddenStatus,
 } from "@orumai/ui";
-import { Effect, Option } from "effect";
+import { Effect, Option, Stream } from "effect";
 import { Mount, Submodel } from "foldkit";
 import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html";
 import * as Attachments from "./task-attachments.ts";
@@ -50,6 +50,8 @@ import {
   deleteDialogId,
   filterOptionsId,
   editedTask,
+  isListVisible,
+  isSplitView,
   Message,
   selectedTask,
   taskSortMenu,
@@ -65,7 +67,13 @@ import {
   type Model,
 } from "./tasks.ts";
 import { filterChoice, filterMenu } from "./filter-menu.ts";
-import { screenHeader, screenHeaderBack, workspace } from "./workspace.ts";
+import {
+  screenHeader,
+  screenHeaderBack,
+  watchWorkspaceWidth,
+  workspace,
+  workspaceLayoutButton,
+} from "./workspace.ts";
 
 import { type TextField, saving } from "./task-edits.ts";
 import { type Property } from "./task-properties.ts";
@@ -230,6 +238,9 @@ const taskRow = (
                   h.Class("task-row-link"),
                   h.Href(taskPath(task.id)),
                   h.DataAttribute("task-id", task.id),
+                  ...(model.selectedId === task.id
+                    ? [h.AriaCurrent("page")]
+                    : []),
                   h.Title(task.title),
                 ],
                 [task.title],
@@ -473,7 +484,7 @@ const taskList = (
     [
       h.Class("workspace-list task-list"),
       h.AriaLabel("Task list"),
-      h.Inert(model.selectedId !== null),
+      h.Inert(!isListVisible(model)),
       h.Tabindex(-1),
     ],
     [
@@ -623,6 +634,14 @@ const FocusDetail = Mount.define("FocusTaskDetail", {
         element.focus({ preventScroll: true });
       return Message.FocusUpdated();
     }),
+});
+
+const WatchLayout = Mount.defineStream("WatchTaskLayout", {
+  messages: [Message.ChangedLayoutWidth],
+  execute: () =>
+    watchWorkspaceWidth().pipe(
+      Stream.map((wide) => Message.ChangedLayoutWidth({ wide })),
+    ),
 });
 
 const deleteTaskDialog = (model: Model, h: HtmlBuilder<Message>) => {
@@ -984,12 +1003,13 @@ export const view = Submodel.defineView(function tasksView(
 ) {
   const tags = sortedTags(model);
   const { selectedId, folderSheet, list } = model;
+  const listVisible = isListVisible(model);
   const label = taskListLabels[list];
   const addTask = button(
     {
       size: "sm",
       ariaLabel: "Add task",
-      attributes: [h.Id(addTaskButtonId)],
+      attributes: [h.Key(addTaskButtonId), h.Id(addTaskButtonId)],
       disabled: model.request !== null || !model.index,
       dialogId: creationDialogId,
       onClick: Message.OpenedCreate({ preserveView: false }),
@@ -1008,12 +1028,14 @@ export const view = Submodel.defineView(function tasksView(
     (!model.index && model.creation) || model.error?.announcedInCreation;
   return workspace(
     {
-      className: "workspace-stacked tasks-workspace",
+      className: "tasks-workspace",
+      attributes: [h.OnMount(WatchLayout())],
+      layout: isSplitView(model) ? "split" : "stacked",
       header: screenHeader(
         {
-          title: selectedId ? undefined : label,
+          title: listVisible ? label : undefined,
           navigation: [
-            ...(selectedId
+            ...(!listVisible
               ? [
                   screenHeaderBack(
                     { href: taskListPath(list), label: `Back to ${label}` },
@@ -1040,24 +1062,33 @@ export const view = Submodel.defineView(function tasksView(
               ],
             ),
           ],
-          controls: selectedId
-            ? []
-            : [taskFilters(model, tags, h), taskSort(model, h)],
-          primaryAction: selectedId
-            ? button(
-                {
-                  variant: "ghost",
-                  size: "icon-sm",
-                  ariaLabel: "Delete task",
-                  dialogId: deleteDialogId,
-                  attributes: [h.Title("Delete task")],
-                  disabled: !selectedTask(model) || model.request !== null,
-                  onClick: Message.RequestedDelete(),
-                  children: [outlineIcon(h, trashIconPaths)],
-                },
-                h,
-              )
-            : addTask,
+          controls: listVisible
+            ? [taskFilters(model, tags, h), taskSort(model, h)]
+            : [],
+          endControls: [
+            workspaceLayoutButton(model.layout, Message.ToggledSplitView(), h),
+            ...(selectedId
+              ? [
+                  button(
+                    {
+                      variant: "ghost",
+                      size: "icon-sm",
+                      ariaLabel: "Delete task",
+                      dialogId: deleteDialogId,
+                      attributes: [
+                        h.Key(deleteDialogId),
+                        h.Title("Delete task"),
+                      ],
+                      disabled: !selectedTask(model) || model.request !== null,
+                      onClick: Message.RequestedDelete(),
+                      children: [outlineIcon(h, trashIconPaths)],
+                    },
+                    h,
+                  ),
+                ]
+              : []),
+          ],
+          primaryAction: listVisible ? addTask : undefined,
           feedback: [
             h.div(
               [h.Class("task-save-state"), h.Role("status")],

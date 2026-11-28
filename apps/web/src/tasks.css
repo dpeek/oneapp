@@ -88,6 +88,10 @@
   }
 }
 
+.task-row:has(.task-row-link[aria-current="page"]) > td {
+  background: var(--selected);
+}
+
 .task-row-main {
   display: flex;
   flex-wrap: wrap;

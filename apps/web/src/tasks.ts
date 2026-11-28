@@ -57,6 +57,7 @@ import {
   taskListFilters,
   toggleFilter,
 } from "./tasks-filters.ts";
+import { readWorkspaceLayout, WorkspaceLayout } from "./workspace.ts";
 
 const Draft = Schema.Struct({
   ...TaskFields.fields,
@@ -111,6 +112,7 @@ const filterTags = MultiCombobox.init("task-filter-tags");
 const closedFilterOptions = { filterCategory: null, filterTags };
 const Sort = Schema.Literals(["updated", "priority", "due"]);
 const defaultSort = "updated";
+const splitViewKey = "orumai.tasks.splitView";
 const sortMenu = DropdownMenu.SingleSelect.init({ id: "task-sort" });
 const closedTaskMenus = {
   filterPopover,
@@ -121,6 +123,7 @@ export const taskSortMenu =
   DropdownMenu.SingleSelect.create<typeof Sort.Type>();
 export const Model = Schema.Struct({
   index: Schema.NullOr(TaskSnapshot),
+  layout: WorkspaceLayout,
   folderSheet: Sheet.Model,
   list: TaskList,
   selectedId: Schema.NullOr(ItemId),
@@ -184,6 +187,7 @@ export const hasUnsavedChanges = ({ creation, edits, attachments }: Model) => {
 };
 export const initial: Model = {
   index: null,
+  layout: { wide: false, split: false },
   folderSheet: Sheet.init({ id: "task-views" }),
   list: defaultTaskList,
   selectedId: null,
@@ -205,8 +209,20 @@ export const initial: Model = {
   error: null,
 };
 
+export const init = (): Model => ({
+  ...initial,
+  layout: readWorkspaceLayout(splitViewKey),
+});
+
+export const isSplitView = ({ layout }: Model) => layout.wide && layout.split;
+export const isListVisible = (model: Model) =>
+  model.selectedId === null || isSplitView(model);
+
 export const Message = defineMessageUnion({
   Opened: { ...TaskRoute.fields, refresh: Schema.Boolean },
+  ChangedLayoutWidth: { wide: Schema.Boolean },
+  ToggledSplitView: {},
+  FinishedSavingSplitView: {},
   GotFolderSheetMessage: { message: Sheet.Message },
   GotAttachmentsMessage: { message: Attachments.Message },
   CompletedAssigneeAvatarImageMount: {},
@@ -270,7 +286,7 @@ export const Message = defineMessageUnion({
 export type Message = typeof Message.Type;
 export const OutMessage = defineMessageUnion({
   OpenTask: { id: ItemId },
-  OpenList: {},
+  OpenList: { mode: Schema.Literals(["push", "replace"]) },
   SessionExpired: {},
 });
 export type OutMessage = typeof OutMessage.Type;
@@ -405,6 +421,16 @@ const FocusFilterTrigger = Command.define("FocusTaskFilterTrigger", {
   execute: focus(`#${Popover.buttonId(filterPopover.id)}`, {
     preventScroll: true,
   }).pipe(Effect.ignore, Effect.as(Message.FocusUpdated())),
+});
+
+const SaveSplitView = Command.define("SaveTaskSplitView", {
+  args: { split: Schema.Boolean },
+  messages: [Message.FinishedSavingSplitView],
+  execute: ({ split }) =>
+    Effect.try(() => localStorage.setItem(splitViewKey, String(split))).pipe(
+      Effect.ignore,
+      Effect.as(Message.FinishedSavingSplitView()),
+    ),
 });
 
 const FocusList = Command.define("FocusTaskList", {
@@ -981,7 +1007,7 @@ const finishCreation = (
     : model;
   return {
     model: { ...next, creation: null, picker: null },
-    ...(!creation.preserveView && model.selectedId === null
+    ...(!creation.preserveView
       ? { outMessage: OutMessage.OpenTask({ id }) }
       : {}),
   };
@@ -1107,6 +1133,34 @@ const transition = (
   return Message.match<Update.ReturnWithOutMessage<Model, Message, OutMessage>>(
     message,
     {
+      ChangedLayoutWidth: ({ wide }) => {
+        if (model.layout.wide === wide) return { model };
+        const next = { ...model, layout: { ...model.layout, wide } };
+        return {
+          model:
+            isListVisible(model) && !isListVisible(next)
+              ? {
+                  ...next,
+                  ...closedTaskMenus,
+                  ...(next.picker?.surface === "row"
+                    ? { picker: null, tagPickerError: null }
+                    : {}),
+                }
+              : next,
+        };
+      },
+      ToggledSplitView: () => {
+        if (!model.layout.wide) return { model };
+        const split = !model.layout.split;
+        return {
+          model: { ...model, layout: { ...model.layout, split } },
+          commands: [SaveSplitView({ split })],
+          ...(!split && model.selectedId
+            ? { outMessage: OutMessage.OpenList({ mode: "push" }) }
+            : {}),
+        };
+      },
+      FinishedSavingSplitView: () => ({ model }),
       Opened: ({ id, list, refresh }) => {
         const nextList = list ?? (refresh ? defaultTaskList : model.list);
         const listChanged = nextList !== model.list;
@@ -1535,7 +1589,7 @@ const transition = (
           model: { ...result.model, deletion: null },
           ...(model.deletion?.completed &&
           model.deletion.id === model.selectedId
-            ? { outMessage: OutMessage.OpenList() }
+            ? { outMessage: OutMessage.OpenList({ mode: "replace" }) }
             : {}),
         };
       },

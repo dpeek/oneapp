@@ -1,4 +1,11 @@
-import { backIcon, buttonClassName, toolbar } from "@orumai/ui";
+import {
+  backIcon,
+  button,
+  buttonClassName,
+  outlineIcon,
+  toolbar,
+} from "@orumai/ui";
+import { Effect, Schema, Stream } from "effect";
 import type { Attribute, Html, HtmlBuilder } from "foldkit/html";
 
 export const screenHeader = <Message>(
@@ -95,3 +102,51 @@ export const workspace = <Message>(
   );
 
 export const workspaceDrawerMedia = "(max-width: 64rem)";
+
+const workspaceSplitMedia = "(min-width: 72rem)";
+const columnsIconPath =
+  "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2ZM12 3v18";
+const listIconPath = "M3 6h18M3 12h12M3 18h18";
+
+export const WorkspaceLayout = Schema.Struct({
+  wide: Schema.Boolean,
+  split: Schema.Boolean,
+});
+
+export const readWorkspaceLayout = (
+  key: string,
+): typeof WorkspaceLayout.Type => ({
+  wide: matchMedia(workspaceSplitMedia).matches,
+  split: Effect.try(() => localStorage.getItem(key) === "true").pipe(
+    Effect.orElseSucceed(() => false),
+    Effect.runSync,
+  ),
+});
+
+export const watchWorkspaceWidth = () => {
+  const media = matchMedia(workspaceSplitMedia);
+  return Stream.fromEventListener<MediaQueryListEvent>(media, "change").pipe(
+    Stream.map(({ matches }) => matches),
+    Stream.prepend([media.matches]),
+  );
+};
+
+export const workspaceLayoutButton = <Message>(
+  layout: typeof WorkspaceLayout.Type,
+  onClick: Message,
+  h: HtmlBuilder<Message>,
+) =>
+  layout.wide
+    ? button(
+        {
+          size: "icon-sm",
+          variant: "ghost",
+          ariaLabel: layout.split ? "Show list only" : "Show split view",
+          onClick,
+          children: [
+            outlineIcon(h, [layout.split ? listIconPath : columnsIconPath]),
+          ],
+        },
+        h,
+      )
+    : h.empty;

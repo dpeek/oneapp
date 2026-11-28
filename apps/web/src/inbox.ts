@@ -108,7 +108,15 @@ import {
   type PersonSummary,
 } from "./people-contract.ts";
 import { mailAvatar } from "./mail-avatar.ts";
-import { screenHeader, workspace, workspaceDrawerMedia } from "./workspace.ts";
+import {
+  readWorkspaceLayout,
+  screenHeader,
+  watchWorkspaceWidth,
+  workspace,
+  workspaceDrawerMedia,
+  WorkspaceLayout,
+  workspaceLayoutButton,
+} from "./workspace.ts";
 
 const MessageLocation = Schema.Struct({
   folder: MailFolder,
@@ -171,7 +179,6 @@ const rowActions = ItemActionMenu.init("mail-row-actions");
 const newEmailButtonId = "mail-new-email";
 const emptyTrashDialogId = "mail-empty-trash";
 const splitViewKey = "orumai.mail.splitView";
-const splitViewMedia = "(min-width: 72rem)";
 
 const LiveChange = Schema.Struct({
   version: Schema.NullOr(Schema.Number),
@@ -180,7 +187,7 @@ const LiveChange = Schema.Struct({
 
 export const Model = Schema.Struct({
   folder: MailboxView,
-  layout: Schema.Struct({ wide: Schema.Boolean, split: Schema.Boolean }),
+  layout: WorkspaceLayout,
   filters: Filters.Model,
   folderSheet: Sheet.Model,
   conversationMenu: DropdownMenu.Model,
@@ -303,13 +310,7 @@ export const initial: Model = {
 
 export const init = (): Model => ({
   ...initial,
-  layout: {
-    wide: matchMedia(splitViewMedia).matches,
-    split: Effect.try(() => localStorage.getItem(splitViewKey) === "true").pipe(
-      Effect.orElseSucceed(() => false),
-      Effect.runSync,
-    ),
-  },
+  layout: readWorkspaceLayout(splitViewKey),
 });
 
 const isSplitView = ({ layout }: Model) => layout.wide && layout.split;
@@ -566,14 +567,10 @@ const FocusEntry = Mount.define("FocusInboxEntry", {
 
 const WatchLayout = Mount.defineStream("WatchMailLayout", {
   messages: [Message.ChangedLayoutWidth],
-  execute: () => {
-    const media = matchMedia(splitViewMedia);
-    return Stream.fromEventListener<MediaQueryListEvent>(media, "change").pipe(
-      Stream.map(({ matches }) => matches),
-      Stream.prepend([media.matches]),
+  execute: () =>
+    watchWorkspaceWidth().pipe(
       Stream.map((wide) => Message.ChangedLayoutWidth({ wide })),
-    );
-  },
+    ),
 });
 
 const SaveSplitView = Command.define("SaveMailSplitView", {
@@ -3195,10 +3192,6 @@ const mailIcon = (h: HtmlBuilder<Message>, path: string) =>
     [h.path([h.D(path)], [])],
   );
 
-const columns2IconPath =
-  "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2ZM12 3v18";
-const textAlignStartIconPath = "M3 6h18M3 12h12M3 18h18";
-
 const restoreIconPath = "M9 14 4 9l5-5M4 9h10a5 5 0 0 1 0 10";
 const readIconPath = "M3 5h18v14H3zM3 6l9 7 9-7";
 
@@ -3909,29 +3902,9 @@ const inboxView = (
           viewControls: showPrioritySwitch
             ? [inboxPrioritySwitch(model.folder, h), ...listIndicator]
             : undefined,
-          endControls: model.layout.wide
-            ? [
-                button(
-                  {
-                    size: "icon-sm",
-                    variant: "ghost",
-                    ariaLabel: model.layout.split
-                      ? "Show list only"
-                      : "Show split view",
-                    onClick: Message.ToggledSplitView(),
-                    children: [
-                      mailIcon(
-                        h,
-                        model.layout.split
-                          ? textAlignStartIconPath
-                          : columns2IconPath,
-                      ),
-                    ],
-                  },
-                  h,
-                ),
-              ]
-            : undefined,
+          endControls: [
+            workspaceLayoutButton(model.layout, Message.ToggledSplitView(), h),
+          ],
           primaryAction: button(
             {
               size: "sm",

@@ -575,7 +575,7 @@ const foldTaskFeature = Update.foldChild({
                   out._tag === "OpenList"
                     ? taskListPath(model.tasks.list)
                     : taskPath(out.id),
-                mode: out._tag === "OpenList" ? "replace" : "push",
+                mode: out._tag === "OpenList" ? out.mode : "push",
               }),
             ],
           }
@@ -1272,7 +1272,7 @@ const update = (
         people: People.initial,
         calendar: Calendar.initial(),
         calendarRoute: model.calendarRoute,
-        tasks: Tasks.initial,
+        tasks: Tasks.init(),
         files: Files.initial,
         fileRoute: model.fileRoute,
         creationDialog: Dialog.init({ id: Tasks.creationDialogId }),

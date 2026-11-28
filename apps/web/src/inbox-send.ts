@@ -1,3 +1,4 @@
+import { mailFetch } from "./mailbox-client.ts";
 import { Schema } from "effect";
 import {
   ReplyCompletion,
@@ -51,7 +52,7 @@ export const sendInboxRequest = async (
   signal: AbortSignal,
 ): Promise<SendResult> => {
   try {
-    const response = await fetch(path, {
+    const response = await mailFetch(path, {
       method: "POST",
       headers: {
         "content-type": "application/json",

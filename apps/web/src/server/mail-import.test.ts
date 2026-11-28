@@ -1054,7 +1054,7 @@ it("scopes index rebuilds and scan checkpoints to each mailbox storage namespace
   ).toEqual([{ mailbox_id: "personal" }, { mailbox_id: "work" }]);
 });
 
-it("keeps mailbox identities independent of login and resolves exact routes before catch-all", async () => {
+it("keeps mailbox identities independent of login and resolves only enabled exact routes", async () => {
   using sqlite = new Database(":memory:");
   const store = await setup(sqlite);
   await ensureDefaultMailbox(
@@ -1072,7 +1072,7 @@ it("keeps mailbox identities independent of login and resolves exact routes befo
     )?.canSend,
   ).toBe(0);
   sqlite.exec(
-    "INSERT INTO accounts (id, active, security_revision) VALUES ('family', 1, '1'); INSERT INTO mailboxes (id, owner_account_id, name) VALUES ('family', 'family', 'Personal'); INSERT INTO mailbox_addresses VALUES ('family@winterpeek.com', 'family', 1, 0); INSERT INTO mail_domain_routes VALUES ('winterpeek.com', 'personal');",
+    "INSERT INTO accounts (id, active, security_revision) VALUES ('family', 1, '1'); INSERT INTO mailboxes (id, owner_account_id, name) VALUES ('family', 'family', 'Personal'); INSERT INTO mail_inbound_routes VALUES ('family@winterpeek.com', 'family', 1);",
   );
   expect(await resolveMailRecipient(store.DB, "DAVID@WINTERPEEK.COM")).toBe(
     "personal",
@@ -1082,10 +1082,10 @@ it("keeps mailbox identities independent of login and resolves exact routes befo
   );
   expect(
     await resolveMailRecipient(store.DB, "unassigned@winterpeek.com"),
-  ).toBe("personal");
+  ).toBeNull();
   expect(await resolveMailRecipient(store.DB, "mail@unrelated.com")).toBeNull();
   sqlite.exec(
-    "UPDATE mailbox_addresses SET can_receive = 0 WHERE address = 'family@winterpeek.com'",
+    "UPDATE mail_inbound_routes SET enabled = 0 WHERE address = 'family@winterpeek.com'",
   );
   expect(
     await resolveMailRecipient(store.DB, "family@winterpeek.com"),
@@ -1101,4 +1101,47 @@ it("keeps mailbox identities independent of login and resolves exact routes befo
   );
   await ensureDefaultMailbox(store.DB, "mail@app.example", "mail@app.example");
   expect(await mailboxIdentities(store.DB)).toHaveLength(3);
+});
+
+it("migrates existing inbound and disabled addresses and retires the legacy mailbox identity", async () => {
+  using sqlite = new Database(":memory:");
+  const root = new URL("../../drizzle/", import.meta.url).pathname;
+  const migrations = [...new Bun.Glob("*/migration.sql").scanSync(root)].sort();
+  const inbound = migrations.find((file) =>
+    file.includes("_inbound_mail_routes/"),
+  )!;
+  for (const file of migrations.slice(0, migrations.indexOf(inbound)))
+    sqlite.exec(await Bun.file(root + file).text());
+  sqlite.exec(`
+    INSERT INTO accounts (id, active, security_revision) VALUES ('owner', 1, '1');
+    INSERT INTO mailboxes (id, owner_account_id, name) VALUES ('personal', 'owner', 'Personal');
+    INSERT INTO mailbox_addresses (address, mailbox_id, can_receive, can_send) VALUES
+      ('mail@dpeek.com', 'personal', 1, 1),
+      ('quiet@dpeek.com', 'personal', 0, 0),
+      ('mail@app.dpeek.com', 'personal', 1, 0);
+    INSERT INTO mail_domain_routes VALUES ('dpeek.com', 'personal');
+    INSERT INTO people (id, account_id, name, revision) VALUES ('profile', 'owner', '', '1');
+    INSERT INTO person_addresses VALUES ('mail@app.dpeek.com', 'profile');
+  `);
+  sqlite.exec(await Bun.file(root + inbound).text());
+  expect(
+    sqlite.query("SELECT * FROM mail_inbound_routes ORDER BY address").all(),
+  ).toEqual([
+    { address: "mail@dpeek.com", mailbox_id: "personal", enabled: 1 },
+    { address: "quiet@dpeek.com", mailbox_id: "personal", enabled: 0 },
+  ]);
+  expect(
+    sqlite
+      .query("SELECT address FROM mailbox_addresses WHERE can_send = 1")
+      .all(),
+  ).toEqual([{ address: "mail@dpeek.com" }]);
+  expect(
+    sqlite
+      .query(
+        "SELECT address FROM mailbox_addresses WHERE address = 'mail@app.dpeek.com'",
+      )
+      .get(),
+  ).toBeNull();
+  expect(sqlite.query("SELECT * FROM mail_domain_routes").all()).toEqual([]);
+  expect(sqlite.query("SELECT * FROM person_addresses").all()).toEqual([]);
 });

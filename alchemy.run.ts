@@ -1,9 +1,10 @@
 import * as Cloudflare from "@alchemy.run/cloudflare";
+import * as dns from "@distilled.cloud/cloudflare/dns";
 import { taskRunnerMcpPath } from "./packages/core/src/cli-auth.ts";
 import { workspacePath } from "./packages/core/src/index.ts";
 import * as Alchemy from "alchemy";
 import * as Output from "alchemy/Output";
-import { Config, Effect, Layer, Option, Redacted } from "effect";
+import { Config, Effect, Layer, Option, Redacted, Stream } from "effect";
 import {
   forgotPasswordPage,
   resetPasswordPage,
@@ -12,8 +13,10 @@ import type { InboxUpdates } from "./apps/web/src/server/cloudflare-worker.ts";
 import {
   primaryMailAddress,
   primaryMailDomain,
-  exactMailDomain,
+  orumaiMailDomain,
+  winterpeekMailDomain,
   seedMailRoutes,
+  initialMailAliases,
 } from "./apps/web/src/server/mail-routing.ts";
 import { provisionOwner } from "./apps/web/src/server/provision-owner.ts";
 
@@ -43,15 +46,48 @@ const provisionMailRoutes = Alchemy.Action(
   "ProvisionMailRoutes",
   Effect.gen(function* () {
     const database = yield* Cloudflare.D1.QueryDatabase(Database);
-    return Effect.fn(function* (_input: {
+    return Effect.fn(function* ({
+      aliases,
+    }: {
       databaseId: string;
       ownerReady: boolean;
+      aliases: string;
     }) {
       const db = yield* database.raw;
-      yield* Effect.tryPromise(() => seedMailRoutes(db));
+      yield* Effect.tryPromise(() => seedMailRoutes(db, aliases));
       return { ready: true };
     });
   }).pipe(Effect.provide(Cloudflare.D1.QueryDatabaseLocal)),
+);
+
+const removeWinterpeekNullMx = Alchemy.Action(
+  "RemoveWinterpeekNullMx",
+  Effect.fn(function* (_input: { routesReady: boolean; workerName: string }) {
+    const { accountId } = yield* Cloudflare.CloudflareEnvironment.current;
+    const zoneId = yield* Cloudflare.Zone.resolveZoneId({
+      accountId,
+      zone: winterpeekMailDomain,
+      hostname: winterpeekMailDomain,
+    });
+    yield* dns.listRecords
+      .items({
+        zoneId,
+        name: { exact: winterpeekMailDomain },
+        type: "MX",
+      })
+      .pipe(
+        Stream.runForEach((record) =>
+          record.type === "MX" &&
+          record.priority === 0 &&
+          record.content === "."
+            ? dns
+                .deleteRecord({ zoneId, dnsRecordId: record.id })
+                .pipe(Effect.asVoid)
+            : Effect.void,
+        ),
+      );
+    return { zoneId };
+  }),
 );
 
 export const Web = Cloudflare.Worker(
@@ -255,15 +291,21 @@ export default Alchemy.Stack(
       const routes = yield* provisionMailRoutes({
         databaseId: database.databaseId,
         ownerReady: owner.ready,
+        aliases: initialMailAliases,
+      });
+      const winterpeek = yield* removeWinterpeekNullMx({
+        routesReady: routes.ready,
+        workerName: worker.workerName,
       });
       for (const [id, domain] of [
-        ["Dpeek", primaryMailDomain],
-        ["Orumai", exactMailDomain],
+        ["Dpeek", routes.ready.pipe(Output.map(() => primaryMailDomain))],
+        ["Orumai", routes.ready.pipe(Output.map(() => orumaiMailDomain))],
+        ["Winterpeek", winterpeek.zoneId],
       ] as const) {
         // Wait for D1 before enabling ingress. Routing also provisions the
         // apex MX records on Cloudflare DNS.
         const routing = yield* Cloudflare.Email.Routing(`${id}EmailRouting`, {
-          zone: routes.ready.pipe(Output.map(() => domain)),
+          zone: domain,
         }).pipe(Alchemy.RemovalPolicy.retain());
         yield* Cloudflare.Email.CatchAll(`${id}EmailCatchAll`, {
           zone: routing.zoneId,

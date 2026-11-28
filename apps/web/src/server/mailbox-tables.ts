@@ -28,13 +28,27 @@ export const mailboxAddresses = sqliteTable(
     mailboxId: text("mailbox_id")
       .notNull()
       .references(() => mailboxes.id),
+    // Kept for the previously deployed Worker while it shares this database.
     canReceive: integer("can_receive").notNull().default(0),
     canSend: integer("can_send").notNull().default(0),
   },
   (table) => [index("mailbox_addresses_mailbox").on(table.mailboxId)],
 );
 
-// Catch-all delivery is separate from permission to send as an address.
+export const mailInboundRoutes = sqliteTable(
+  "mail_inbound_routes",
+  {
+    address: text().primaryKey(),
+    mailboxId: text("mailbox_id")
+      .notNull()
+      .references(() => mailboxes.id),
+    enabled: integer({ mode: "boolean" }).notNull(),
+  },
+  (table) => [index("mail_inbound_routes_mailbox").on(table.mailboxId)],
+);
+
+// Retained during the Worker rollout so the previous version can still
+// resolve an unknown recipient. The migration empties this table.
 export const mailDomainRoutes = sqliteTable("mail_domain_routes", {
   domain: text().primaryKey(),
   mailboxId: text("mailbox_id")

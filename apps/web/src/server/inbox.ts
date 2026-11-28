@@ -70,7 +70,7 @@ import {
   readRawMailPreview,
 } from "./mail-content.ts";
 import { jsonError, privateHeaders } from "./api-response.ts";
-import { AppAuth, ownerId, type authHttp } from "./auth.ts";
+import { ownerId, type authHttp } from "./auth.ts";
 import {
   indexMail,
   isMailingList,
@@ -138,6 +138,7 @@ type InboxEnv = Pick<
 > & {
   DB: MailDatabase;
   mailboxAddresses: readonly string[];
+  accountId?: string;
 } & MailSenderBindings;
 type InboxBucket = InboxEnv["INBOX_MESSAGES"];
 
@@ -331,7 +332,7 @@ const loadConversation = async (env: InboxEnv, id: string) => {
 };
 
 const profilesFor = async (env: InboxEnv, addresses: string[]) =>
-  addresses.length
+  addresses.length && env.accountId === ownerId
     ? matchPeople(
         env.DB,
         addresses,
@@ -481,14 +482,7 @@ const downloadOriginal = async (bucket: InboxBucket, id: string) => {
   );
 };
 
-const requireInboxOwner = Effect.gen(function* () {
-  const auth = yield* AppAuth;
-  const session = yield* auth.requireSession;
-  return session.subjectId === ownerId;
-});
-
 const inboxErrors = {
-  AuthenticationRequired: () => jsonError(401, "Sign in required"),
   UnknownError: () => jsonError(503, "Could not load your mail. Try again."),
 };
 
@@ -590,8 +584,9 @@ const sendEmail = (env: InboxEnv, defer: (work: Promise<unknown>) => void) =>
         "Enter valid recipients, a subject, and a message within the form limits.",
       );
     if (
-      !(yield* Effect.tryPromise(() => sender.limit.limit({ key: ownerId })))
-        .success
+      !(yield* Effect.tryPromise(() =>
+        sender.limit.limit({ key: env.accountId ?? ownerId }),
+      )).success
     )
       return yield* sendRateLimit();
 
@@ -641,8 +636,9 @@ const sendInlineReply = (
     if (body._tag === "None")
       return yield* jsonError(400, "Enter a reply within the form limits.");
     if (
-      !(yield* Effect.tryPromise(() => sender.limit.limit({ key: ownerId })))
-        .success
+      !(yield* Effect.tryPromise(() =>
+        sender.limit.limit({ key: env.accountId ?? ownerId }),
+      )).success
     )
       return yield* sendRateLimit();
 
@@ -678,8 +674,6 @@ export const inboxRoutes = (
 ) => {
   const list = (folder: MailFolder) =>
     Effect.gen(function* () {
-      if (!(yield* requireInboxOwner))
-        return yield* jsonError(403, "Access denied");
       const query = yield* listQuery.pipe(Effect.option);
       if (query._tag === "None")
         return yield* jsonError(400, "Invalid page cursor");
@@ -716,8 +710,6 @@ export const inboxRoutes = (
 
   const read = (folder: MailFolder | "trash", original = false) =>
     Effect.gen(function* () {
-      if (!(yield* requireInboxOwner))
-        return yield* jsonError(403, "Access denied");
       const query = yield* HttpServerRequest.schemaSearchParams(
         Schema.Struct({
           images: Schema.optionalKey(Schema.Literals(["safe", "all"])),
@@ -836,8 +828,6 @@ export const inboxRoutes = (
       return HttpServerResponse.empty({ status: 204, headers: privateHeaders });
     });
     return Effect.gen(function* () {
-      if (!(yield* requireInboxOwner))
-        return yield* jsonError(403, "Access denied");
       return yield* http.protect(deleteMessage);
     }).pipe(
       Effect.catchTags({
@@ -851,8 +841,6 @@ export const inboxRoutes = (
 
   const readAttachment = (preview: boolean) =>
     Effect.gen(function* () {
-      if (!(yield* requireInboxOwner))
-        return yield* jsonError(403, "Access denied");
       const { id, part } = yield* HttpRouter.params;
       if (
         !isMailMessageId(id) ||
@@ -970,8 +958,6 @@ export const inboxRoutes = (
       "DELETE",
       trashApiPath,
       Effect.gen(function* () {
-        if (!(yield* requireInboxOwner))
-          return yield* jsonError(403, "Access denied");
         return yield* http.protect(
           Effect.gen(function* () {
             yield* Effect.tryPromise(() => emptyMailTrash(env)).pipe(
@@ -996,8 +982,6 @@ export const inboxRoutes = (
       "GET",
       trashApiPath,
       Effect.gen(function* () {
-        if (!(yield* requireInboxOwner))
-          return yield* jsonError(403, "Access denied");
         const query = yield* listQuery.pipe(Effect.option);
         if (query._tag === "None")
           return yield* jsonError(400, "Invalid page cursor");
@@ -1042,8 +1026,6 @@ export const inboxRoutes = (
       "POST",
       `${trashBatchApiPath}/:batchId/restore`,
       Effect.gen(function* () {
-        if (!(yield* requireInboxOwner))
-          return yield* jsonError(403, "Access denied");
         return yield* http.protect(recoverBatch);
       }).pipe(
         Effect.catchTags({
@@ -1056,8 +1038,6 @@ export const inboxRoutes = (
       "POST",
       `${inboxApiPath}/trash/:id/restore`,
       Effect.gen(function* () {
-        if (!(yield* requireInboxOwner))
-          return yield* jsonError(403, "Access denied");
         return yield* http.protect(recover);
       }).pipe(
         Effect.catchTags({
@@ -1085,8 +1065,6 @@ export const inboxRoutes = (
       "POST",
       path,
       Effect.gen(function* () {
-        if (!(yield* requireInboxOwner))
-          return yield* jsonError(403, "Access denied");
         return yield* http.protect(action);
       }).pipe(
         Effect.catchTags({
@@ -1127,8 +1105,6 @@ export const inboxRoutes = (
 
   const listThreads = (view: Parameters<typeof listConversations>[2]) =>
     Effect.gen(function* () {
-      if (!(yield* requireInboxOwner))
-        return yield* jsonError(403, "Access denied");
       const query = yield* conversationListQuery.pipe(Effect.option);
       if (query._tag === "None")
         return yield* jsonError(400, "Invalid conversation list parameters");
@@ -1201,8 +1177,6 @@ export const inboxRoutes = (
       "PATCH",
       senderAppearanceApiPath,
       Effect.gen(function* () {
-        if (!(yield* requireInboxOwner))
-          return yield* jsonError(403, "Access denied");
         return yield* http.protect(updateSenderAppearance);
       }).pipe(
         Effect.catchTags({
@@ -1219,8 +1193,6 @@ export const inboxRoutes = (
       "GET",
       inboxVersionPath,
       Effect.gen(function* () {
-        if (!(yield* requireInboxOwner))
-          return yield* jsonError(403, "Access denied");
         const { since } = yield* HttpServerRequest.ParsedSearchParams;
         const row = yield* Effect.tryPromise(() =>
           env.DB.prepare(
@@ -1242,8 +1214,6 @@ export const inboxRoutes = (
       "GET",
       inboxUnreadPath,
       Effect.gen(function* () {
-        if (!(yield* requireInboxOwner))
-          return yield* jsonError(403, "Access denied");
         const unread = yield* Effect.tryPromise(() => inboxUnread(env.DB));
         const sender = inboxSender(env);
         return yield* HttpServerResponse.schemaJson(InboxUnread)(
@@ -1256,8 +1226,6 @@ export const inboxRoutes = (
       "PATCH",
       `${inboxApiPath}/:id/read`,
       Effect.gen(function* () {
-        if (!(yield* requireInboxOwner))
-          return yield* jsonError(403, "Access denied");
         return yield* http.protect(updateReadStatus);
       }).pipe(
         Effect.catchTags({
@@ -1274,8 +1242,6 @@ export const inboxRoutes = (
       "GET",
       noiseSendersApiPath,
       Effect.gen(function* () {
-        if (!(yield* requireInboxOwner))
-          return yield* jsonError(403, "Access denied");
         const senders = yield* Effect.tryPromise(() =>
           readNoiseSenders(env.DB),
         );
@@ -1290,8 +1256,6 @@ export const inboxRoutes = (
       "PATCH",
       senderRuleApiPath,
       Effect.gen(function* () {
-        if (!(yield* requireInboxOwner))
-          return yield* jsonError(403, "Access denied");
         return yield* http.protect(updateSenderRule);
       }).pipe(
         Effect.catchTags({
@@ -1306,8 +1270,6 @@ export const inboxRoutes = (
       "PATCH",
       `${conversationsApiPath}/:id/archive`,
       Effect.gen(function* () {
-        if (!(yield* requireInboxOwner))
-          return yield* jsonError(403, "Access denied");
         return yield* http.protect(updateArchive);
       }).pipe(
         Effect.catchTags({
@@ -1322,8 +1284,6 @@ export const inboxRoutes = (
       "DELETE",
       `${conversationsApiPath}/:id`,
       Effect.gen(function* () {
-        if (!(yield* requireInboxOwner))
-          return yield* jsonError(403, "Access denied");
         return yield* http.protect(
           Effect.gen(function* () {
             const { id } = yield* HttpRouter.params;
@@ -1352,8 +1312,6 @@ export const inboxRoutes = (
       "GET",
       `${conversationsApiPath}/:id`,
       Effect.gen(function* () {
-        if (!(yield* requireInboxOwner))
-          return yield* jsonError(403, "Access denied");
         const { id } = yield* HttpRouter.params;
         if (!isMailMessageId(id)) return yield* notFound();
         const query = yield* conversationThreadQuery.pipe(Effect.option);

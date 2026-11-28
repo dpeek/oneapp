@@ -10,6 +10,7 @@ import {
   type PersonMatch,
 } from "../people-contract.ts";
 import { ownerId } from "./auth.ts";
+import { retiredMailAddress } from "../mail-settings-contract.ts";
 
 type PeopleDb = D1Database;
 const isPersonEmail = Schema.is(PersonEmail);
@@ -42,7 +43,9 @@ export const managedPersonAddresses = async (
     .all<{ value: string }>();
   const identities = await db
     .prepare(
-      "SELECT address FROM mailbox_addresses a JOIN mailboxes b ON b.id = a.mailbox_id WHERE b.owner_account_id = ?",
+      `SELECT address FROM mail_inbound_routes a JOIN mailboxes b ON b.id = a.mailbox_id WHERE b.owner_account_id = ?1
+       UNION
+       SELECT address FROM mailbox_addresses a JOIN mailboxes b ON b.id = a.mailbox_id WHERE b.owner_account_id = ?1 AND a.can_send = 1`,
     )
     .bind(ownerId)
     .all<{ address: string }>();
@@ -52,7 +55,9 @@ export const managedPersonAddresses = async (
         mailbox,
         ...identities.results.map(({ address }) => address),
         ...results.map(({ value }) => value),
-      ].flatMap((email) => (email ? [normalizePersonEmail(email)] : [])),
+      ]
+        .flatMap((email) => (email ? [normalizePersonEmail(email)] : []))
+        .filter((email) => email !== retiredMailAddress),
     ),
   ];
 };

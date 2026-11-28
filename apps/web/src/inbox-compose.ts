@@ -1,3 +1,4 @@
+import { mailFetch } from "./mailbox-client.ts";
 import {
   alert,
   button,
@@ -207,7 +208,7 @@ const Send = Command.define("SendInboxEmail", {
         });
       try {
         for (const file of reply?.forwarded ?? []) {
-          const response = await fetch(
+          const response = await mailFetch(
             inboxAttachmentApi(reply!.originalId, file.part),
             { signal },
           );

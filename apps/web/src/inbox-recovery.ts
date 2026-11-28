@@ -1,3 +1,4 @@
+import { mailFetch } from "./mailbox-client.ts";
 import { Effect, Schema } from "effect";
 import { Command, Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";
@@ -48,7 +49,7 @@ const Restore = Command.define("RestoreDeletedMail", {
       const path = batchId
         ? trashBatchRestoreApi(batchId)
         : `${trashApiPath}/${id}/restore`;
-      const response = await fetch(path, {
+      const response = await mailFetch(path, {
         method: "POST",
         headers: { "x-effect-auth-csrf": "1" },
         signal,

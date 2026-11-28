@@ -1,3 +1,9 @@
+import * as MailSettings from "./mail-settings.ts";
+import {
+  mailboxFromSearch,
+  selectedMailbox,
+  selectedMailboxUrl,
+} from "./mailbox-client.ts";
 import "./mail-editor.ts";
 import "./task-description-editor.ts";
 import * as PushSettings from "./push-settings.ts";
@@ -137,6 +143,7 @@ const Model = Schema.Struct({
   settingsSheet: Sheet.Model,
   tagSettings: TagSettings.Model,
   pushSettings: PushSettings.Model,
+  mailSettings: MailSettings.Model,
   vaultSetup: VaultSetup.Model,
   inbox: Inbox.Model,
   people: People.Model,
@@ -178,6 +185,7 @@ const Message = defineMessageUnion({
   GotAccountSettingsMessage: { message: AccountSettings.Message },
   GotSettingsSheetMessage: { message: Sheet.Message },
   GotPushSettingsMessage: { message: PushSettings.Message },
+  GotMailSettingsMessage: { message: MailSettings.Message },
   CompletedAccountSettingsRequest: {
     request: Schema.String,
     message: AccountSettings.Message,
@@ -261,6 +269,16 @@ const foldVaultSetup = Update.foldChild({
   write: (model, vaultSetup) => ({ ...model, vaultSetup }),
   toParentMessage: toVaultSetupMessage,
 });
+const toMailSettingsMessage = (message: typeof MailSettings.Message.Type) =>
+  Message.GotMailSettingsMessage({ message });
+const foldMailSettings = Update.foldChild({
+  update: MailSettings.update,
+  read: (model: Model) =>
+    model.account ? Option.some(model.mailSettings) : Option.none(),
+  write: (model, mailSettings) => ({ ...model, mailSettings }),
+  toParentMessage: toMailSettingsMessage,
+});
+
 const toInboxMessage = (message: typeof Inbox.Message.Type) =>
   Message.GotInboxMessage({ message });
 const foldInbox = Update.foldChild({
@@ -1029,14 +1047,22 @@ const loadPage = (
     );
   if (model.page === "vault")
     return foldVaultSetup(model, VaultSetup.Message.Requested());
-  if (model.mailRoute)
-    return foldInbox(
-      model,
-      Inbox.Message.Opened({
-        ...model.mailRoute,
-        refresh: previousPage !== "mail",
-      }),
-    );
+  const mail = model.mailRoute;
+  if (mail)
+    return Update.combine(model, [
+      (next) =>
+        previousPage === "mail"
+          ? { model: next }
+          : foldMailSettings(next, MailSettings.Message.RequestedMailboxes()),
+      (next) =>
+        foldInbox(
+          next,
+          Inbox.Message.Opened({
+            ...mail,
+            refresh: previousPage !== "mail",
+          }),
+        ),
+    ]);
   if (model.peopleRoute)
     return foldPeople(
       model,
@@ -1055,6 +1081,8 @@ const loadPage = (
           }),
         (next) => foldPeople(next, People.Message.RequestedSelf()),
       ]);
+    case "mail":
+      return foldMailSettings(model, MailSettings.Message.Requested());
     case "notifications":
       return foldPushSettings(model, PushSettings.Message.Requested());
     case "clients":
@@ -1079,6 +1107,7 @@ const init: Runtime.RoutingApplicationInit<Model, Message> = (url) => {
     settingsSheet: Sheet.init({ id: settingsSheetId }),
     tagSettings: TagSettings.initial,
     pushSettings: PushSettings.initial,
+    mailSettings: MailSettings.initial,
     vaultSetup: VaultSetup.initial,
     inbox: Inbox.initial,
     people: People.initial,
@@ -1122,7 +1151,9 @@ const update = (
       if (
         request._tag === "Internal" &&
         !isApproval(model) &&
-        pageFor(request.url.pathname)
+        pageFor(request.url.pathname) &&
+        mailboxFromSearch(Option.getOrElse(request.url.search, () => "")) ===
+          selectedMailbox()
       ) {
         const from = Update.combine(model, [
           closeNavigationOverflow,
@@ -1235,6 +1266,7 @@ const update = (
         settingsSheet: Sheet.init({ id: settingsSheetId }),
         tagSettings: TagSettings.initial,
         pushSettings: PushSettings.initial,
+        mailSettings: MailSettings.initial,
         vaultSetup: VaultSetup.initial,
         inbox: Inbox.init(),
         people: People.initial,
@@ -1333,6 +1365,11 @@ const update = (
         ? update(model, Message.GotAccountSettingsMessage({ message }))
         : { model },
     GotPushSettingsMessage: ({ message }) => foldPushSettings(model, message),
+    GotMailSettingsMessage: ({ message }) =>
+      message._tag === "SessionExpired" &&
+      message.request === model.mailSettings.request
+        ? update(model, Message.LoadedAccount({ account: null }))
+        : foldMailSettings(model, message),
     GotAccountSettingsMessage: ({ message }) => {
       const account = model.account;
       if (!account) return { model };
@@ -1730,7 +1767,7 @@ const update = (
           model,
           commands: [
             Navigate({
-              href: folderPath(model.mailRoute.folder),
+              href: selectedMailboxUrl(folderPath(model.mailRoute.folder)),
               mode: "push",
             }),
           ],
@@ -1772,7 +1809,7 @@ const update = (
           commands: [
             ...(result.commands ?? []),
             Navigate({
-              href: folderPath(model.mailRoute.folder),
+              href: selectedMailboxUrl(folderPath(model.mailRoute.folder)),
               mode: "push",
             }),
           ],
@@ -1792,7 +1829,10 @@ const update = (
           ...result,
           commands: [
             ...(result.commands ?? []),
-            Navigate({ href: folderPath("trash"), mode: "replace" }),
+            Navigate({
+              href: selectedMailboxUrl(folderPath("trash")),
+              mode: "replace",
+            }),
           ],
         };
       if (
@@ -1814,9 +1854,11 @@ const update = (
           commands: [
             ...(result.commands ?? []),
             Navigate({
-              href: next
-                ? mailMessagePage(moving.folder, next.id)
-                : folderPath(moving.folder),
+              href: selectedMailboxUrl(
+                next
+                  ? mailMessagePage(moving.folder, next.id)
+                  : folderPath(moving.folder),
+              ),
               mode: "replace",
             }),
           ],
@@ -1836,7 +1878,7 @@ const update = (
           commands: [
             ...(result.commands ?? []),
             Navigate({
-              href: folderPath(model.mailRoute.folder),
+              href: selectedMailboxUrl(folderPath(model.mailRoute.folder)),
               mode: "replace",
             }),
           ],
@@ -1939,6 +1981,14 @@ const settingsView = (model: Model, h: HtmlBuilder<Message>) => {
     account: () => accountSettingsView(model, h),
     notifications: () => [
       PushSettings.view(model.pushSettings, toPushSettingsMessage, h),
+    ],
+    mail: () => [
+      h.submodel({
+        slotId: "mail-settings",
+        view: MailSettings.view,
+        model: model.mailSettings,
+        toParentMessage: toMailSettingsMessage,
+      }),
     ],
     clients: () => [
       h.submodel({
@@ -2181,6 +2231,13 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
                   slotId: "inbox",
                   view: Inbox.view,
                   model: model.inbox,
+                  viewInputs: {
+                    mailboxes: model.mailSettings.mailboxes,
+                    mailboxesError:
+                      model.mailSettings.mailboxes === null
+                        ? model.mailSettings.error
+                        : "",
+                  },
                   toParentMessage: toInboxMessage,
                 }),
               calendar: () =>

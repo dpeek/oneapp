@@ -35,6 +35,7 @@
     "@alchemy.run/cloudflare-runtime": "2.0.0-beta.85",
     "@alchemy.run/sql": "2.0.0-beta.85",
     "@cloudflare/workers-auth": "0.18.1",
+    "@distilled.cloud/cloudflare": "1.0.0-rc.18",
     "@effect/platform-bun": "~4.1.0",
     "@effect/platform-node": "~4.1.0",
     "@effect/vitest": "~4.1.0",

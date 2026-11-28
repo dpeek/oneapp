@@ -2513,3 +2513,44 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
     padding-block-end: 0.5rem;
   }
 }
+
+.settings-mail {
+  display: grid;
+  gap: 1.75rem;
+}
+
+.settings-mail-domains {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem 1.25rem;
+  margin: 0;
+  padding-inline-start: 1rem;
+}
+
+.settings-mail-route-form {
+  display: grid;
+  gap: 0.75rem;
+  margin-block: 0.5rem;
+}
+
+.settings-mail-route-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.settings-mail-status {
+  margin: 0;
+}
+
+.settings-mail-status:empty {
+  display: none;
+}
+
+.mailbox-nav-divider {
+  border: 0;
+  border-block-start: 1px solid var(--border);
+  margin: 0.5rem 0.75rem;
+}

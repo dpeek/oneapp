@@ -1,4 +1,10 @@
 import {
+  inboundRoutesApiPath,
+  mailboxesApiPath,
+  mailboxUrl,
+  mailSettingsApiPath,
+} from "../mail-settings-contract.ts";
+import {
   ensureDefaultMailbox,
   mailDatabase,
   scopeMailStore,
@@ -5465,11 +5471,15 @@ it("routes apex SMTP recipients to their mailboxes and sends from the primary ad
     },
   );
   const publish = vi.fn(async () => {});
-  const inbox = vi.fn((_mailboxId: string) => ({ publish }));
+  const socket = vi.fn(
+    async (_url: string, _init: RequestInit) =>
+      new Response(null, { status: 204 }),
+  );
+  const inbox = vi.fn((_mailboxId: string) => ({ publish, fetch: socket }));
   const send = vi.fn(async (_message: EmailMessageBuilder) => ({
     messageId: "<apex-routing@example.net>",
   }));
-  const { env, call, cookies, signIn } = await setup(sqlite, {
+  const { env, call, cookies, request, signIn } = await setup(sqlite, {
     INBOX_EMAIL_ADDRESS: address,
     INBOX_MESSAGES: {
       put,
@@ -5486,31 +5496,97 @@ it("routes apex SMTP recipients to their mailboxes and sends from the primary ad
       list: async () => ({ objects: [], truncated: false }),
     } as unknown as WorkerEnv["SENT_MESSAGES"],
   });
-  sqlite.exec(`
-    INSERT INTO accounts (id, active, security_revision) VALUES ('team-fixture', 1, '1');
-    INSERT INTO mailboxes (id, owner_account_id, name) VALUES ('work', 'team-fixture', 'Work');
-    INSERT INTO mailbox_addresses VALUES
-      ('existing@dpeek.com', 'personal', 1, 0),
-      ('dispatch@dpeek.com', 'work', 1, 0),
-      ('blocked@dpeek.com', 'work', 0, 0);
-    INSERT INTO mail_domain_routes VALUES ('orumai.app', 'personal');
-  `);
+  const session = cookies(await signIn(password));
+  expect((await call(mailSettingsApiPath)).status).toBe(401);
+  expect((await call(inboundRoutesApiPath, {})).status).toBe(401);
   await seedMailRoutes(env.DB);
+  const created = await call(mailboxesApiPath, { name: "  Work  " }, session);
+  expect(created.status).toBe(201);
+  const work = (await created.json()) as { id: string; name: string };
+  expect(work.name).toBe("Work");
+  const create = (address: string, mailboxId: string, enabled = true) =>
+    call(inboundRoutesApiPath, { address, mailboxId, enabled }, session);
+  const edit = (address: string, mailboxId: string, enabled: boolean) =>
+    request(inboundRoutesApiPath, {
+      method: "PUT",
+      headers: {
+        "content-type": "application/json",
+        "x-effect-auth-csrf": "1",
+        origin: env.APP_ORIGIN,
+        cookie: session,
+      },
+      body: JSON.stringify({ address, mailboxId, enabled }),
+    });
+  expect((await create("Existing@dpeek.com", "personal")).status).toBe(201);
+  expect((await create("dispatch@dpeek.com", work.id)).status).toBe(201);
+  expect((await create("blocked@dpeek.com", work.id, false)).status).toBe(201);
+  expect((await create("existing@dpeek.com", work.id)).status).toBe(409);
+  expect((await create("invalid@other.example", work.id)).status).toBe(400);
+  expect((await create("*@dpeek.com", work.id)).status).toBe(400);
+  expect((await edit("support@orumai.app", work.id, false)).status).toBe(200);
+  expect((await edit(address, work.id, false)).status).toBe(200);
   await seedMailRoutes(env.DB);
   env.INBOX_EMAIL_FROM = address;
-
-  const aliases = ["support@orumai.app", "team@orumai.app", "admin@orumai.app"];
   expect(
-    sqlite
-      .query(
-        "SELECT address, can_receive, can_send FROM mailbox_addresses WHERE address LIKE '%@orumai.app' ORDER BY address",
+    await (await call(mailSettingsApiPath, undefined, session)).json(),
+  ).toMatchObject({
+    domains: ["dpeek.com", "orumai.app", "winterpeek.com"],
+    mailboxes: [{ id: "personal", name: "Personal" }, work],
+    routes: expect.arrayContaining([
+      { address: "support@orumai.app", mailboxId: work.id, enabled: false },
+      { address, mailboxId: work.id, enabled: false },
+      { address: "david@winterpeek.com", mailboxId: "personal", enabled: true },
+    ]),
+  });
+  expect(
+    await (await call(conversationsApiPath, undefined, session)).json(),
+  ).toMatchObject({ sender: address });
+  expect(
+    await (
+      await call(mailboxUrl(conversationsApiPath, work.id), undefined, session)
+    ).json(),
+  ).not.toHaveProperty("sender");
+  expect((await edit(address, "personal", true)).status).toBe(200);
+
+  sqlite.exec(`
+    INSERT INTO accounts (id, active, security_revision) VALUES ('team-fixture', 1, '1');
+    INSERT INTO mailboxes (id, owner_account_id, name) VALUES ('restricted', 'team-fixture', 'Restricted');
+  `);
+  expect(
+    (
+      await call(
+        mailboxUrl(conversationsApiPath, "restricted"),
+        undefined,
+        session,
       )
-      .all(),
-  ).toEqual(
-    aliases
-      .toSorted()
-      .map((alias) => ({ address: alias, can_receive: 1, can_send: 0 })),
-  );
+    ).status,
+  ).toBe(403);
+  const socketHeaders = {
+    upgrade: "websocket",
+    origin: env.APP_ORIGIN,
+    cookie: session,
+  };
+  expect(
+    (
+      await request(mailboxUrl(workspaceEventsPath, "restricted"), {
+        headers: socketHeaders,
+      })
+    ).status,
+  ).toBe(403);
+  expect(
+    (
+      await request(mailboxUrl(workspaceEventsPath, work.id), {
+        headers: socketHeaders,
+      })
+    ).status,
+  ).toBe(204);
+  expect(inbox).toHaveBeenLastCalledWith(work.id);
+  expect(
+    new Headers(socket.mock.lastCall?.[1].headers).get(
+      "x-oneapp-inbox-mailbox",
+    ),
+  ).toBe(work.id);
+
   const receive = async (to: string) => {
     const from = "sender@example.net";
     const headers = new Headers({ subject: `Fixture for ${to}`, to: address });
@@ -5545,14 +5621,17 @@ it("routes apex SMTP recipients to their mailboxes and sends from the primary ad
     for (const to of [
       address,
       "existing@dpeek.com",
-      "unlisted@dpeek.com",
-      ...aliases,
+      "team@orumai.app",
+      "admin@orumai.app",
+      "david@winterpeek.com",
       "dispatch@dpeek.com",
     ]) {
       expect(await receive(to)).not.toHaveBeenCalled();
       const [key, , metadata] = put.mock.lastCall!;
-      const mailboxId = to === "dispatch@dpeek.com" ? "work" : "personal";
-      expect(key.startsWith("mailboxes/work/")).toBe(mailboxId === "work");
+      const mailboxId = to === "dispatch@dpeek.com" ? work.id : "personal";
+      expect(key.startsWith(`mailboxes/${work.id}/`)).toBe(
+        mailboxId === work.id,
+      );
       expect(metadata.customMetadata.envelopeTo).toBe(to);
       expect(inbox).toHaveBeenLastCalledWith(mailboxId);
       expect(
@@ -5563,21 +5642,37 @@ it("routes apex SMTP recipients to their mailboxes and sends from the primary ad
         mailbox_id: mailboxId,
       });
     }
-    for (const to of ["unassigned@orumai.app", "blocked@dpeek.com"]) {
+    for (const to of [
+      "unlisted@dpeek.com",
+      "unassigned@orumai.app",
+      "blocked@dpeek.com",
+      "support@orumai.app",
+      "mail@app.dpeek.com",
+    ]) {
       expect(await receive(to)).toHaveBeenCalledWith("Unknown recipient");
     }
-    expect(put).toHaveBeenCalledTimes(7);
+    expect(put).toHaveBeenCalledTimes(6);
   } finally {
     vi.unstubAllGlobals();
   }
 
-  const session = cookies(await signIn(password));
+  const personal = await (
+    await call(allMailApiPath, undefined, session)
+  ).json();
+  expect(personal).toMatchObject({ address, sender: address });
   expect(
-    await (await call(conversationsApiPath, undefined, session)).json(),
-  ).toMatchObject({
-    address,
-    sender: address,
-  });
+    personal.messages.map(({ subject }: { subject: string }) => subject),
+  ).not.toContain("Fixture for dispatch@dpeek.com");
+  const selected = await (
+    await call(mailboxUrl(allMailApiPath, work.id), undefined, session)
+  ).json();
+  expect(selected.messages).toMatchObject([
+    { subject: "Fixture for dispatch@dpeek.com" },
+  ]);
+  expect(
+    (await call(inboxMessageApi(selected.messages[0].id), undefined, session))
+      .status,
+  ).toBe(404);
   const response = await call(
     inboxSendPath,
     { to: "recipient@example.net", subject: "Apex sender", text: "Fixture" },

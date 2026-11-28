@@ -1,12 +1,14 @@
 import { workspacePath } from "@orumai/core";
-import { navigationLinks, outlineIcon } from "@orumai/ui";
+import { mailIconPaths, navigationLinks, outlineIcon } from "@orumai/ui";
 import { Schema } from "effect";
+import { mailSettingsPath } from "./mail-settings-contract.ts";
 import type { HtmlBuilder } from "foldkit/html";
 
 export const settingsPath = `${workspacePath}/settings`;
 export const SettingsSection = Schema.Literals([
   "account",
   "notifications",
+  "mail",
   "clients",
   "tags",
 ]);
@@ -28,6 +30,11 @@ const destinations = {
       "M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9",
       "M10 21a2 2 0 0 0 4 0",
     ],
+  },
+  mail: {
+    href: mailSettingsPath,
+    label: "Mail",
+    paths: mailIconPaths,
   },
   clients: {
     href: `${settingsPath}/clients`,

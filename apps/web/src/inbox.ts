@@ -1,4 +1,15 @@
 import {
+  defaultMailboxId,
+  mailboxUrl,
+  mailSettingsPath,
+  type Mailbox,
+} from "./mail-settings-contract.ts";
+import {
+  mailFetch,
+  selectedMailbox,
+  selectedMailboxUrl,
+} from "./mailbox-client.ts";
+import {
   alert,
   avatarGroup,
   backIcon,
@@ -76,6 +87,7 @@ import {
   type MailPerson,
   mailMessageApi,
   mailMessagePage,
+  mailPath,
   noiseApiPath,
   trashApiPath,
   TrashedConversation,
@@ -692,10 +704,13 @@ const LoadList = Command.define("LoadInboxList", {
       let page: typeof MailPage.Type | null = null;
       do {
         if (nextCursor !== null) params.set("cursor", nextCursor);
-        const response = await fetch(params.size ? path + "?" + params : path, {
-          cache: "no-store",
-          signal,
-        });
+        const response = await mailFetch(
+          params.size ? path + "?" + params : path,
+          {
+            cache: "no-store",
+            signal,
+          },
+        );
         if (response.status === 401) return Message.SessionExpired({ request });
         if (!response.ok) return Message.ListFailed({ request });
         const payload = await response.json();
@@ -723,7 +738,7 @@ const LoadUnread = Command.define("LoadInboxUnread", {
   ],
   execute: ({ request }) =>
     Effect.tryPromise(async (signal) => {
-      const response = await fetch(inboxUnreadPath, {
+      const response = await mailFetch(inboxUnreadPath, {
         cache: "no-store",
         signal,
       });
@@ -747,7 +762,7 @@ const SetUnread = Command.define("SetInboxUnread", {
   ],
   execute: ({ request, id, unread }) =>
     Effect.tryPromise(async (signal) => {
-      const response = await fetch(inboxReadApi(id), {
+      const response = await mailFetch(inboxReadApi(id), {
         method: "PATCH",
         headers: {
           "content-type": "application/json",
@@ -789,7 +804,7 @@ const LoadThread = Command.define("LoadMailConversation", {
         if (filters.people.length || filters.companies.length)
           params.set("filters", JSON.stringify({ ...filters, status: "all" }));
       }
-      const response = await fetch(
+      const response = await mailFetch(
         conversationApi(id) + (params.size ? "?" + params : ""),
         {
           cache: "no-store",
@@ -819,7 +834,7 @@ const LoadEntry = Command.define("LoadInboxEntry", {
   messages: [Message.LoadedEntry, Message.EntryFailed, Message.SessionExpired],
   execute: ({ request, id, folder, trash }) =>
     Effect.tryPromise(async (signal) => {
-      const response = await fetch(
+      const response = await mailFetch(
         trash ? `${trashApiPath}/${id}` : mailMessageApi(folder, id),
         {
           cache: "no-store",
@@ -859,7 +874,7 @@ const LoadImages = Command.define("LoadMailImages", {
   ],
   execute: ({ request, id, folder, includeBlocked, trash }) =>
     Effect.tryPromise(async (signal) => {
-      const response = await fetch(
+      const response = await mailFetch(
         `${trash ? `${trashApiPath}/${id}` : mailMessageApi(folder, id)}?images=${includeBlocked ? "all" : "safe"}`,
         { cache: "no-store", signal, headers: { "x-effect-auth-csrf": "1" } },
       );
@@ -887,7 +902,7 @@ const DeleteEntry = Command.define("DeleteInboxEntry", {
   ],
   execute: ({ request, id, folder, conversationView }) =>
     Effect.tryPromise(async (signal) => {
-      const response = await fetch(
+      const response = await mailFetch(
         conversationView ? conversationApi(id) : mailMessageApi(folder, id),
         {
           method: "DELETE",
@@ -919,7 +934,7 @@ const EmptyTrash = Command.define("EmptyMailTrash", {
   ],
   execute: ({ request }) =>
     Effect.tryPromise(async (signal) => {
-      const response = await fetch(trashApiPath, {
+      const response = await mailFetch(trashApiPath, {
         method: "DELETE",
         headers: { "x-effect-auth-csrf": "1" },
         signal,
@@ -942,7 +957,7 @@ const SaveArchive = Command.define("SaveConversationArchive", {
   ],
   execute: ({ id, archived, request }) =>
     Effect.tryPromise(async (signal) => {
-      const response = await fetch(conversationArchiveApi(id), {
+      const response = await mailFetch(conversationArchiveApi(id), {
         method: "PATCH",
         headers: {
           "content-type": "application/json",
@@ -981,7 +996,7 @@ const SaveSenderRule = Command.define("SaveMailSenderRule", {
   ],
   execute: ({ request, address, priority }) =>
     Effect.tryPromise(async (signal) => {
-      const response = await fetch(senderRuleApiPath, {
+      const response = await mailFetch(senderRuleApiPath, {
         method: "PATCH",
         headers: {
           "content-type": "application/json",
@@ -1005,9 +1020,9 @@ const DownloadOriginal = Command.define("DownloadInboxOriginal", {
   execute: ({ id, trash }) =>
     Effect.sync(() => {
       const link = document.createElement("a");
-      link.href = trash
-        ? `${trashApiPath}/${id}/original`
-        : inboxOriginalApi(id);
+      link.href = selectedMailboxUrl(
+        trash ? `${trashApiPath}/${id}/original` : inboxOriginalApi(id),
+      );
       link.download = id;
       document.body.append(link);
       link.click();
@@ -2650,7 +2665,7 @@ const messageItem = (
   return item(
     {
       key: message.id,
-      href: mailMessagePage(model.folder, message.id),
+      href: selectedMailboxUrl(mailMessagePage(model.folder, message.id)),
       linkTitleOnly: true,
       title: subject,
       attributes: actions.length
@@ -2768,7 +2783,7 @@ const inboxPrioritySwitch = (selected: MailboxView, h: HtmlBuilder<Message>) =>
       label: "Inbox priority",
       variant: "pills",
       destinations: (["inbox", "noise"] as const).map((folder) => ({
-        href: folderPath(folder),
+        href: selectedMailboxUrl(folderPath(folder)),
         label: folder === "inbox" ? "Signal" : "Noise",
         current: folder === selected,
       })),
@@ -3714,10 +3729,31 @@ const mailboxIcons = {
   trash: "M3 6h18M8 6V3h8v3M5 6l1 15h12l1-15M10 10v7m4-7v7",
 } as const;
 
-const folderNavigation = (model: Model, h: HtmlBuilder<Message>) =>
+const folderNavigation = (
+  model: Model,
+  mailboxes: readonly Mailbox[] | null,
+  h: HtmlBuilder<Message>,
+) =>
   h.div(
     [],
     [
+      ...(mailboxes?.length
+        ? [
+            navigationLinks(
+              {
+                label: "Your mailboxes",
+                variant: "sidebar",
+                destinations: mailboxes.map(({ id, name }) => ({
+                  href: mailboxUrl(mailPath, id),
+                  label: name,
+                  current: id === selectedMailbox(),
+                })),
+              },
+              h,
+            ),
+            h.hr([h.Class("mailbox-nav-divider")]),
+          ]
+        : []),
       navigationLinks(
         {
           label: "Mailbox navigation",
@@ -3725,7 +3761,7 @@ const folderNavigation = (model: Model, h: HtmlBuilder<Message>) =>
           destinations: (
             ["inbox", "sent", "all", "archive", "trash"] as const
           ).map((folder) => ({
-            href: folderPath(folder),
+            href: selectedMailboxUrl(folderPath(folder)),
             label: mailboxLabels[folder],
             icon: mailIcon(h, mailboxIcons[folder]),
             current:
@@ -3736,10 +3772,28 @@ const folderNavigation = (model: Model, h: HtmlBuilder<Message>) =>
         },
         h,
       ),
+      h.hr([h.Class("mailbox-nav-divider")]),
+      navigationLinks(
+        {
+          label: "Mail settings",
+          variant: "sidebar",
+          destinations: [{ href: mailSettingsPath, label: "Mail settings" }],
+        },
+        h,
+      ),
     ],
   );
 
-export const view = Submodel.defineView<Model, Message>((snapshot, h) => {
+type ViewInputs = {
+  mailboxes: readonly Mailbox[] | null;
+  mailboxesError: string;
+};
+
+const inboxView = (
+  snapshot: Model,
+  { mailboxes, mailboxesError }: ViewInputs,
+  h: HtmlBuilder<Message>,
+) => {
   const entry = snapshot.entry;
   const pending = entry && snapshot.readRequests[entry.id];
   const model = {
@@ -3752,6 +3806,8 @@ export const view = Submodel.defineView<Model, Message>((snapshot, h) => {
         : entry,
     unreadCount: visibleUnreadCount(snapshot),
   };
+  const mailbox = mailboxes?.find(({ id }) => id === selectedMailbox());
+  const unavailable = mailboxes !== null && !mailbox;
   const listVisible = isListVisible(model);
   const showPrioritySwitch = listVisible && isInboxView(model.folder);
   const listIndicator = listVisible
@@ -3781,7 +3837,10 @@ export const view = Submodel.defineView<Model, Message>((snapshot, h) => {
       layout: isSplitView(model) ? "split" : "stacked",
       header: screenHeader(
         {
-          title: mailboxLabels[model.folder],
+          title:
+            mailbox && mailbox.id !== defaultMailboxId
+              ? `${mailbox.name} · ${mailboxLabels[model.folder]}`
+              : mailboxLabels[model.folder],
           navigation: [
             ...(!listVisible
               ? [
@@ -3888,8 +3947,25 @@ export const view = Submodel.defineView<Model, Message>((snapshot, h) => {
         },
         h,
       ),
-      sidebar: folderNavigation(model, h),
-      list: listView(model, h),
+      sidebar: folderNavigation(model, mailboxes, h),
+      list:
+        unavailable || mailboxesError
+          ? h.div(
+              [h.Class("inbox-status"), h.Role("status")],
+              [
+                h.p(
+                  [],
+                  [
+                    mailboxesError ||
+                      (mailboxes?.length
+                        ? "Select a mailbox you own."
+                        : "Create a mailbox in Mail settings to get started."),
+                  ],
+                ),
+                h.a([h.Href(mailSettingsPath)], ["Mail settings"]),
+              ],
+            )
+          : listView(model, h),
       ...(model.selected
         ? { detail: entryView(model, model.selected, h) }
         : {}),
@@ -3898,7 +3974,7 @@ export const view = Submodel.defineView<Model, Message>((snapshot, h) => {
         {
           model: model.folderSheet,
           title: "Mail folders",
-          content: folderNavigation(model, h),
+          content: folderNavigation(model, mailboxes, h),
           toParentMessage: (message) =>
             Message.GotFolderSheetMessage({ message }),
         },
@@ -3907,4 +3983,6 @@ export const view = Submodel.defineView<Model, Message>((snapshot, h) => {
     },
     h,
   );
-});
+};
+
+export const view = Submodel.defineView<Model, Message, ViewInputs>(inboxView);

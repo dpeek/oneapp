@@ -27,7 +27,7 @@ const bucketResources = {
 const dataTables = [
   "mailboxes",
   "mailbox_addresses",
-  "mail_domain_routes",
+  "mail_inbound_routes",
   "mail_index_messages",
   "mail_index_keys",
   "mail_index_scans",

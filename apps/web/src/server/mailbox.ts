@@ -4,7 +4,11 @@ import { MailMessageId } from "../inbox-contract.ts";
 import { ownerId } from "./auth.ts";
 import { PersonEmail, normalizePersonEmail } from "../people-contract.ts";
 
-export const defaultMailboxId = "personal";
+import {
+  defaultMailboxId,
+  retiredMailAddress,
+} from "../mail-settings-contract.ts";
+export { defaultMailboxId } from "../mail-settings-contract.ts";
 import { MailboxId } from "@orumai/core/mail-import";
 export { MailboxId } from "@orumai/core/mail-import";
 export type MailDatabase = D1Database & { readonly mailboxId: string };
@@ -26,18 +30,22 @@ export const mailDatabase = (db: D1Database, id: string): MailDatabase => {
 export const mailboxSql = (db: MailDatabase) =>
   `'${Schema.decodeUnknownSync(MailboxId)(db.mailboxId)}'`;
 
+export const findMailbox = (db: D1Database, id: string, accountId: string) => {
+  return db
+    .prepare(
+      "SELECT id, owner_account_id AS ownerAccountId, name FROM mailboxes WHERE id = ? AND owner_account_id = ?",
+    )
+    .bind(id, accountId)
+    .first<{ id: string; ownerAccountId: string; name: string }>();
+};
+
 export const requireMailbox = async (
   db: D1Database,
   id: string,
   accountId: string,
 ) => {
   Schema.decodeUnknownSync(MailboxId)(id);
-  const mailbox = await db
-    .prepare(
-      "SELECT id, owner_account_id AS ownerAccountId, name FROM mailboxes WHERE id = ? AND owner_account_id = ?",
-    )
-    .bind(id, accountId)
-    .first<{ id: string; ownerAccountId: string; name: string }>();
+  const mailbox = await findMailbox(db, id, accountId);
   if (!mailbox) throw new Error("Mailbox is unavailable to this account");
   return mailbox;
 };
@@ -55,37 +63,44 @@ export const ensureDefaultMailbox = async (
     .bind(defaultMailboxId, ownerId)
     .run();
   await requireMailbox(db, defaultMailboxId, ownerId);
-  const identities = new Set(
-    [receivingAddress, sendingAddress, ...(aliases?.split(",") ?? [])]
-      .filter((v): v is string => Boolean(v?.trim()))
+  const receiving = new Set(
+    [receivingAddress, ...(aliases?.split(",") ?? [])]
+      .filter((address): address is string => Boolean(address?.trim()))
       .map(normalizePersonEmail),
   );
-  for (const address of identities) {
+  receiving.delete(retiredMailAddress);
+  const statements = [...receiving].map((address) => {
     Schema.decodeUnknownSync(PersonEmail)(address);
-    // Bootstrap only: changing a login or redeploying must not overwrite
-    // manually managed routing or sending permissions.
-    await db
+    return db
       .prepare(
-        "INSERT OR IGNORE INTO mailbox_addresses (address, mailbox_id, can_receive, can_send) VALUES (?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO mail_inbound_routes (address, mailbox_id, enabled) VALUES (?, ?, 1)",
       )
-      .bind(
-        address,
-        defaultMailboxId,
-        Number(
-          address === normalizePersonEmail(receivingAddress ?? "") ||
-            (aliases?.split(",").map(normalizePersonEmail).includes(address) ??
-              false),
-        ),
-        Number(address === normalizePersonEmail(sendingAddress ?? "")),
-      )
-      .run();
+      .bind(address, defaultMailboxId);
+  });
+  const sender = normalizePersonEmail(sendingAddress ?? "");
+  if (sender && sender !== retiredMailAddress) {
+    Schema.decodeUnknownSync(PersonEmail)(sender);
+    statements.push(
+      db
+        .prepare(
+          "INSERT OR IGNORE INTO mailbox_addresses (address, mailbox_id, can_send) VALUES (?, ?, 1)",
+        )
+        .bind(sender, defaultMailboxId),
+    );
   }
+  // Bootstrap only. Persisted receiving and sending decisions survive redeploys.
+  if (statements.length) await db.batch(statements);
 };
 
 export const mailboxIdentities = async (db: MailDatabase) => {
   const { results } = await db
     .prepare(
-      "SELECT address, can_receive AS canReceive, can_send AS canSend FROM mailbox_addresses WHERE mailbox_id = ? ORDER BY address",
+      `SELECT address, max(canReceive) AS canReceive, max(canSend) AS canSend
+       FROM (
+         SELECT address, enabled AS canReceive, 0 AS canSend FROM mail_inbound_routes WHERE mailbox_id = ?1
+         UNION ALL
+         SELECT address, 0, can_send FROM mailbox_addresses WHERE mailbox_id = ?1 AND can_send = 1
+       ) GROUP BY address ORDER BY address`,
     )
     .bind(db.mailboxId)
     .all<{ address: string; canReceive: number; canSend: number }>();
@@ -106,24 +121,13 @@ export const resolveMailRecipient = async (
 ) => {
   const address = normalizePersonEmail(recipient);
   if (!Schema.is(PersonEmail)(address)) return null;
-  // An explicit address reserves its name even when receiving is disabled.
-  const exact = await db
+  const route = await db
     .prepare(
-      "SELECT mailbox_id AS mailboxId, can_receive AS canReceive FROM mailbox_addresses WHERE address = ?",
+      "SELECT mailbox_id AS mailboxId FROM mail_inbound_routes WHERE address = ? AND enabled = 1",
     )
     .bind(address)
-    .first<{ mailboxId: string; canReceive: number }>();
-  if (exact) return exact.canReceive ? exact.mailboxId : null;
-  return (
-    (
-      await db
-        .prepare(
-          "SELECT mailbox_id AS mailboxId FROM mail_domain_routes WHERE domain = ?",
-        )
-        .bind(address.slice(address.lastIndexOf("@") + 1))
-        .first<{ mailboxId: string }>()
-    )?.mailboxId ?? null
-  );
+    .first<{ mailboxId: string }>();
+  return route?.mailboxId ?? null;
 };
 
 // Existing personal-mailbox objects retain their keys and URLs. New mailboxes

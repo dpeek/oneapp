@@ -1,3 +1,5 @@
+import { selectedMailbox, selectedMailboxUrl } from "./mailbox-client.ts";
+import { defaultMailboxId, mailboxUrl } from "./mail-settings-contract.ts";
 import { Effect, Queue, Schema, Stream } from "effect";
 import { filesChanged } from "./files-contract.ts";
 import {
@@ -50,12 +52,7 @@ export const changes = Stream.callback<
   (queue) =>
     Effect.acquireRelease(
       Effect.sync(() => {
-        const url = new URL(workspaceEventsPath, window.location.href);
-        url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
         let stopped = false;
-        let socket: WebSocket | undefined;
-        let retry: number | undefined;
-        let delay = 1000;
         let mailVersion = -1;
         let latestDeployment: TaskDeployment | null | undefined;
         const checks = new AbortController();
@@ -69,7 +66,7 @@ export const changes = Stream.callback<
         };
         const checkMail = coalescedCheck(checks.signal, async () => {
           const result = await checkIndex(
-            inboxVersionPath,
+            selectedMailboxUrl(inboxVersionPath),
             mailVersion,
             InboxVersion,
             checks.signal,
@@ -107,28 +104,48 @@ export const changes = Stream.callback<
           checkDeployment();
           changed(tagsChanged);
         };
-        const connect = () => {
-          const connection = new WebSocket(url);
-          socket = connection;
-          connection.onopen = () => {
-            delay = 1000;
-            refresh();
+        const connect = (mailboxId: string, watchMail: boolean) => {
+          const watchWorkspace = mailboxId === defaultMailboxId;
+          const url = new URL(
+            mailboxUrl(workspaceEventsPath, mailboxId),
+            window.location.href,
+          );
+          url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+          let socket: WebSocket;
+          let retry: number | undefined;
+          let delay = 1000;
+          const open = () => {
+            socket = new WebSocket(url);
+            socket.onopen = () => {
+              delay = 1000;
+              if (watchMail) checkMail();
+              if (watchWorkspace) {
+                checkDeployment();
+                changed(tagsChanged);
+              }
+            };
+            socket.onmessage = ({ data }) => {
+              if (data === inboxChanged && watchMail) checkMail();
+              if (!watchWorkspace) return;
+              if (data === tasksChanged) checkDeployment();
+              if (
+                data === tasksChanged ||
+                data === filesChanged ||
+                data === tagsChanged
+              )
+                changed(data);
+            };
+            socket.onclose = (event) => {
+              if (stopped) return;
+              if (event.code === 1008) refresh();
+              retry = window.setTimeout(open, delay);
+              delay = Math.min(delay * 2, 30_000);
+            };
           };
-          connection.onmessage = ({ data }) => {
-            if (data === inboxChanged) checkMail();
-            if (data === tasksChanged) checkDeployment();
-            if (
-              data === tasksChanged ||
-              data === filesChanged ||
-              data === tagsChanged
-            )
-              changed(data);
-          };
-          connection.onclose = (event) => {
-            if (stopped) return;
-            if (event.code === 1008) refresh();
-            retry = window.setTimeout(connect, delay);
-            delay = Math.min(delay * 2, 30_000);
+          open();
+          return () => {
+            window.clearTimeout(retry);
+            socket.close();
           };
         };
         const resumed = () => {
@@ -142,7 +159,13 @@ export const changes = Stream.callback<
         }, 30_000);
         checkMail();
         checkDeployment();
-        connect();
+        const mailboxId = selectedMailbox();
+        const stopWorkspace = connect(
+          defaultMailboxId,
+          mailboxId === defaultMailboxId,
+        );
+        const stopMailbox =
+          mailboxId === defaultMailboxId ? undefined : connect(mailboxId, true);
         return () => {
           document.removeEventListener("visibilitychange", resumed);
           window.removeEventListener("online", resumed);
@@ -150,8 +173,8 @@ export const changes = Stream.callback<
           stopped = true;
           checks.abort();
           window.clearInterval(poll);
-          window.clearTimeout(retry);
-          socket?.close();
+          stopWorkspace();
+          stopMailbox?.();
         };
       }),
       (stop) => Effect.sync(stop),
@@ -165,7 +188,8 @@ export const checkIndex = async <A>(
   schema: Schema.Decoder<A>,
   signal: AbortSignal,
 ) => {
-  const response = await fetch(`${path}?since=${version}`, {
+  const separator = path.includes("?") ? "&" : "?";
+  const response = await fetch(`${path}${separator}since=${version}`, {
     signal,
     cache: "no-store",
   });

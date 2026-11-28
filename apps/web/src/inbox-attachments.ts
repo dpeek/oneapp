@@ -1,3 +1,4 @@
+import { mailFetch, selectedMailboxUrl } from "./mailbox-client.ts";
 import { button, buttonClassName, Dialog, outlineIcon } from "@orumai/ui";
 import { fileSize, renderPdf } from "./file-display.ts";
 import { Effect, Option, Schema } from "effect";
@@ -106,10 +107,13 @@ const RenderDocument = Mount.define("RenderInboxAttachmentDocument", {
   messages: [Message.Ready, Message.Failed, Message.SessionExpired],
   execute: ({ element, id, part, request, kind, trash }) =>
     Effect.tryPromise(async (signal) => {
-      const response = await fetch(inboxAttachmentPreviewApi(id, part, trash), {
-        cache: "no-store",
-        signal,
-      });
+      const response = await mailFetch(
+        inboxAttachmentPreviewApi(id, part, trash),
+        {
+          cache: "no-store",
+          signal,
+        },
+      );
       if (response.status === 401) return Message.SessionExpired({ request });
       if (!response.ok) return Message.Failed({ request });
       if (kind === "pdf") {
@@ -133,7 +137,9 @@ const downloadLink = (
 ) =>
   h.a(
     [
-      h.Href(inboxAttachmentApi(id, attachment.part, trash)),
+      h.Href(
+        selectedMailboxUrl(inboxAttachmentApi(id, attachment.part, trash)),
+      ),
       h.Download(attachment.name),
       h.DataAttribute("slot", "button"),
       h.AriaLabel(`Download ${attachment.name}`),
@@ -169,7 +175,11 @@ const previewContent = (
           ? [
               h.img([
                 h.Class("inbox-attachment-image"),
-                h.Src(inboxAttachmentPreviewApi(id, part, trash)),
+                h.Src(
+                  selectedMailboxUrl(
+                    inboxAttachmentPreviewApi(id, part, trash),
+                  ),
+                ),
                 h.Alt(attachment.name),
                 h.OnLoad(Message.Ready({ request })),
                 h.OnError(Message.Failed({ request })),

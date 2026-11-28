@@ -7,7 +7,8 @@ import { removeSessionPush } from "./push-store.ts";
 import {
   defaultMailboxId,
   ensureDefaultMailbox,
-  requireMailbox,
+  findMailbox,
+  MailboxId,
   resolveMailRecipient,
   mailDatabase,
   mailboxBucket,
@@ -21,7 +22,7 @@ import { isWorkspacePath } from "@orumai/core";
 import { cliLoginPath, taskRunnerScope } from "@orumai/core/cli-auth";
 import { EmailDelivery } from "@yielded/auth";
 import { ProofDispatchScheduler } from "@yielded/auth/Proofs";
-import { Effect, Layer, Redacted } from "effect";
+import { Effect, Layer, Redacted, Schema } from "effect";
 import {
   HttpRouter,
   HttpServer,
@@ -29,6 +30,9 @@ import {
   HttpServerResponse,
 } from "effect/http";
 import { accountPath } from "../account-contract.ts";
+import { inboxApiPath } from "../inbox-contract.ts";
+import { mailboxParameter } from "../mail-settings-contract.ts";
+import { mailSettingsRoutes } from "./mail-settings.ts";
 import {
   taskRunnerEventsPath,
   workspaceEventsPath,
@@ -94,6 +98,9 @@ import {
   runnerSocketTokenHeader,
 } from "./workspace-events.ts";
 
+const requestedMailbox = (url: URL) =>
+  url.searchParams.get(mailboxParameter) ?? defaultMailboxId;
+
 const health = HttpRouter.add(
   "GET",
   "/api/health",
@@ -108,20 +115,9 @@ export default {
       ForwardableEmailMessage,
       "from" | "to" | "headers" | "raw" | "rawSize" | "setReject"
     >,
-    env: Pick<
-      WorkerEnv,
-      "DB" | "INBOX_EMAIL_ADDRESS" | "INBOX_MESSAGES" | "INBOX_UPDATES"
-    > &
-      Partial<Pick<WorkerEnv, "MAILBOX_ALIASES" | "INBOX_EMAIL_FROM">> &
-      PushEnv,
+    env: Pick<WorkerEnv, "DB" | "INBOX_MESSAGES" | "INBOX_UPDATES"> & PushEnv,
     context?: { waitUntil(promise: Promise<unknown>): void },
   ) {
-    await ensureDefaultMailbox(
-      env.DB,
-      env.INBOX_EMAIL_ADDRESS,
-      env.INBOX_EMAIL_FROM,
-      env.MAILBOX_ALIASES,
-    );
     const mailboxId = await resolveMailRecipient(env.DB, message.to);
     if (!mailboxId) {
       message.setReject("Unknown recipient");
@@ -384,6 +380,19 @@ export default {
         ),
       );
     };
+    const browserMailbox = async (id: string, accountId: string) => {
+      if (!Schema.is(MailboxId)(id)) return null;
+      const mailbox = await findMailbox(env.DB, id, accountId);
+      if (mailbox || id !== defaultMailboxId || accountId !== ownerId)
+        return mailbox;
+      await ensureDefaultMailbox(
+        env.DB,
+        env.INBOX_EMAIL_ADDRESS,
+        env.INBOX_EMAIL_FROM,
+        env.MAILBOX_ALIASES,
+      );
+      return findMailbox(env.DB, id, accountId);
+    };
     if (path === workspaceEventsPath || path === taskRunnerEventsPath) {
       if (request.method !== "GET")
         return new Response(null, {
@@ -430,27 +439,18 @@ export default {
         const session = await verifyBrowserSession();
         if (!session)
           return new Response(null, { status: 401, headers: privateHeaders });
-        if (session.subjectId !== ownerId)
+        const mailboxId = requestedMailbox(url);
+        if (!(await browserMailbox(mailboxId, session.subjectId)))
           return new Response(null, { status: 403, headers: privateHeaders });
-        await ensureDefaultMailbox(
-          env.DB,
-          env.INBOX_EMAIL_ADDRESS,
-          env.INBOX_EMAIL_FROM,
-          env.MAILBOX_ALIASES,
-        );
-        await requireMailbox(env.DB, defaultMailboxId, session.subjectId);
         // Return the native response so its WebSocket survives the upgrade.
-        return await env.INBOX_UPDATES.getByName(defaultMailboxId).fetch(
-          request.url,
-          {
-            headers: {
-              upgrade: "websocket",
-              [inboxSessionHeaders.mailbox]: defaultMailboxId,
-              [inboxSessionHeaders.id]: session.sessionId,
-              [inboxSessionHeaders.revision]: session.securityRevision,
-            },
+        return await env.INBOX_UPDATES.getByName(mailboxId).fetch(request.url, {
+          headers: {
+            upgrade: "websocket",
+            [inboxSessionHeaders.mailbox]: mailboxId,
+            [inboxSessionHeaders.id]: session.sessionId,
+            [inboxSessionHeaders.revision]: session.securityRevision,
           },
-        );
+        });
       } catch {
         return new Response(null, { status: 503, headers: privateHeaders });
       }
@@ -481,19 +481,32 @@ export default {
       }
     }
     let mailRoutes: ReturnType<typeof inboxRoutes> = Layer.empty;
-    if (path.startsWith("/api/inbox")) {
-      await ensureDefaultMailbox(
-        env.DB,
-        env.INBOX_EMAIL_ADDRESS,
-        env.INBOX_EMAIL_FROM,
-        env.MAILBOX_ALIASES,
-      );
-      const store = scopeMailStore(env, defaultMailboxId);
+    if (path === inboxApiPath || path.startsWith(`${inboxApiPath}/`)) {
+      const session = await verifyBrowserSession();
+      if (!session)
+        return Response.json(
+          { error: "Sign in required" },
+          {
+            status: 401,
+            headers: privateHeaders,
+          },
+        );
+      const mailboxId = requestedMailbox(url);
+      if (!(await browserMailbox(mailboxId, session.subjectId)))
+        return Response.json(
+          { error: "Select a mailbox you own." },
+          {
+            status: 403,
+            headers: privateHeaders,
+          },
+        );
+      const store = scopeMailStore(env, mailboxId);
       const identities = await mailboxIdentities(store.DB);
       mailRoutes = inboxRoutes(
         http,
         {
           ...store,
+          accountId: session.subjectId,
           // Permission in the mailbox and support from the sending transport
           // must both be present. Aliases never imply send-as permission.
           INBOX_EMAIL_FROM: mailboxSendAddress(
@@ -534,6 +547,7 @@ export default {
           passwordRecoveryRoutes(http, emailTransport !== disabledEmail),
           linksRoutes(http),
           mailRoutes,
+          mailSettingsRoutes(http, env),
           mailImportRoutes(env, defer),
           peopleRoutes(http, env, defer),
           calendarRoutes(http, env),

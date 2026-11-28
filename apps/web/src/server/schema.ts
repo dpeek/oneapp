@@ -1,6 +1,7 @@
 export {
   mailboxes,
   mailboxAddresses,
+  mailInboundRoutes,
   mailDomainRoutes,
 } from "./mailbox-tables.ts";
 import { authTables } from "./database.ts";

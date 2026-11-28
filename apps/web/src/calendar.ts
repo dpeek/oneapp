@@ -156,7 +156,6 @@ const importChooseId = "calendar-import-choose";
 const formDialogId = "calendar-form-dialog";
 const deleteDialogId = "calendar-delete-event";
 const calendarTodayId = "calendar-today";
-const newEventId = "calendar-new-event";
 const newCalendarId = "calendar-new-calendar";
 const calendarDrawerId = "calendar-drawer";
 const editEventId = (series: boolean) =>
@@ -229,7 +228,7 @@ export const Message = defineMessageUnion({
   SavedCalendar: {},
   OpenedEvent: SelectedEvent.fields,
   ClosedEventDetails: { anchorId: Schema.String },
-  NewEvent: { day: Schema.String, minute: Schema.NullOr(Schema.Number) },
+  NewEvent: Slot.fields,
   OpenedCreate: { useCalendarContext: Schema.Boolean },
   FocusedSlot: { slot: Slot },
   EditEvent: { series: Schema.Boolean },
@@ -1086,7 +1085,7 @@ export const update = (
                   calendarId: model.visible,
                 }),
               },
-              minute === null ? newEventId : slotId({ day, minute }),
+              slotId({ day, minute }),
             ),
       OpenedCreate: ({ useCalendarContext }) => {
         if (busy(model)) return { model };
@@ -2647,19 +2646,6 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
             : [period],
           endControls: model.stackedToolbar ? [] : viewControls,
           viewControlsBelow: model.stackedToolbar,
-          primaryAction: button(
-            {
-              size: "sm",
-              ariaLabel: "New event",
-              dialogId: formDialogId,
-              attributes: [h.Id(newEventId)],
-              disabled:
-                disabled || (model.visible !== null && !selectedCalendar),
-              onClick: Message.NewEvent({ day: model.date, minute: null }),
-              children: [plusIcon(h, "16"), "Event"],
-            },
-            h,
-          ),
         },
         h,
       ),

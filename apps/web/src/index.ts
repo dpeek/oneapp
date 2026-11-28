@@ -106,7 +106,6 @@ import * as Tasks from "./tasks.ts";
 import { TaskDeployment } from "./task-run-contract.ts";
 import {
   taskListPath,
-  taskPath,
   TaskRoute,
   taskRouteFor,
   tasksChanged,
@@ -580,11 +579,8 @@ const foldTaskFeature = Update.foldChild({
             model,
             commands: [
               Navigate({
-                href:
-                  out._tag === "OpenList"
-                    ? taskListPath(model.tasks.list)
-                    : taskPath(out.id),
-                mode: out._tag === "OpenList" ? out.mode : "push",
+                href: taskListPath(model.tasks.list),
+                mode: out.mode,
               }),
             ],
           }
@@ -677,7 +673,6 @@ const foldFilesFeature = Update.foldChild({
               commands: [Navigate({ href: filesPath, mode: "replace" })],
             }
           : { model };
-      if (out.source === "header" && model.page !== "files") return { model };
       return Update.combine(model, [
         (current) =>
           applyNotification(current, {
@@ -758,15 +753,9 @@ const foldCreationMenu = Update.foldChild({
             }),
           );
         case "task":
-          return foldTasks(
-            model,
-            Tasks.Message.OpenedCreate({ preserveView: true }),
-          );
+          return foldTasks(model, Tasks.Message.OpenedCreate());
         case "document":
-          return foldFiles(
-            model,
-            Files.Message.OpenedCreate({ source: "create" }),
-          );
+          return foldFiles(model, Files.Message.OpenedCreate());
         case "email":
           return Inbox.composeSender(model.inbox)
             ? closeCreationMenu({ ...model, pendingCreateAction: "email" })
@@ -2260,7 +2249,6 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
                   model: model.links,
                   viewInputs: {
                     disabled: model.pending,
-                    creationDialogId: model.creationDialog.id,
                   },
                   toParentMessage: toLinksMessage,
                 }),
@@ -2346,7 +2334,6 @@ const pageView = (model: Model, h: HtmlBuilder<Message>): Document => {
           h.OnChange((value) =>
             toFilesMessage(
               Files.Message.PickedFile({
-                source: "create",
                 selected: value !== "",
               }),
             ),

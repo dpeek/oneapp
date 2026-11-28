@@ -10,7 +10,6 @@ import {
   ItemActionMenu,
   itemGroup,
   outlineIcon,
-  plusIcon,
   trashIconPaths,
 } from "@orumai/ui";
 import { Effect, Option, Schema } from "effect";
@@ -29,7 +28,6 @@ import { screenHeader } from "./workspace.ts";
 
 export const creationUrlId = "create-link-url";
 const creationErrorId = `${creationUrlId}-error`;
-const createLinkButtonId = "create-link-button";
 const actionsId = "saved-link-actions";
 const invalidUrl = "Enter a valid HTTP or HTTPS URL without credentials.";
 const actions = [
@@ -200,7 +198,9 @@ const RecoverDeletedLinkFocus = Command.define("RecoverDeletedLinkFocus", {
           // A pending delete may finish after the user has moved focus elsewhere.
           if (document.activeElement === document.body) {
             if (neighborId === null) {
-              document.getElementById(createLinkButtonId)?.focus();
+              document
+                .querySelector<HTMLElement>(".links .workspace-header")
+                ?.focus();
             } else {
               const trigger = document.getElementById(
                 ItemActionMenu.triggerId(actionsId, neighborId),
@@ -582,30 +582,16 @@ const savedLinkRow = (
   );
 };
 
-type ViewInputs = { disabled: boolean; creationDialogId: string };
+type ViewInputs = { disabled: boolean };
 
 export const view = Submodel.defineView<Model, Message, ViewInputs>(
-  (model, { disabled, creationDialogId }, h) =>
+  (model, { disabled }, h) =>
     h.section(
       [h.Class("links"), h.OnUnmount(Message.UnmountedLinks())],
       [
         screenHeader(
           {
             title: "Links",
-            primaryAction: button(
-              {
-                size: "sm",
-                attributes: [h.Id(createLinkButtonId)],
-                ariaLabel: "Save link",
-                dialogId: creationDialogId,
-                disabled:
-                  disabled ||
-                  (model.request !== null && !writingCreation(model)),
-                onClick: Message.OpenedCreate(),
-                children: [plusIcon(h, "16"), "Link"],
-              },
-              h,
-            ),
             feedback: [
               h.p(
                 [h.Class("workspace-header-progress"), h.Role("status")],

@@ -654,34 +654,6 @@
   block-size: auto;
 }
 
-.file-upload {
-  position: relative;
-  display: inline-flex;
-}
-
-.file-upload input {
-  position: absolute;
-  inset: 0;
-  inline-size: 100%;
-  block-size: 100%;
-  opacity: 0;
-  cursor: pointer;
-}
-
-.file-upload:focus-within {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-  border-radius: var(--control-pill-radius);
-}
-
-.file-upload:has(input:disabled) {
-  opacity: 0.6;
-}
-
-.file-upload input:disabled {
-  cursor: default;
-}
-
 .task-description {
   display: grid;
   min-inline-size: 0;

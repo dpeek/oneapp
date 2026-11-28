@@ -60,13 +60,10 @@ focus treatment as part of that migration.
   visible. Use the view controls slot for groups such as date navigation and
   view switches that can wrap below the heading. Keep DOM order aligned with
   visual order at every width.
-- Put a single small rounded primary Button at the far end, including on the
-  first-use empty screen. Use a plus icon and a noun as the visible label
-  and a descriptive accessible name such as “Add task” or “Upload file”. Use
-  the same Button styles with a native file input when the action opens a file
-  chooser. Use small rounded ghost controls for secondary actions, with an
-  accessible name for each icon-only control. Allow 44px targets on coarse
-  pointers.
+- Use the primary navigation Create trigger for record types available in its
+  menu, including on first-use empty screens. Use small rounded ghost controls
+  for secondary actions, with an accessible name for each icon-only control.
+  Allow 44px targets on coarse pointers.
 - Reuse the web app's [`filter-menu.ts`](../../apps/web/src/filter-menu.ts)
   for the filter icon, selected count, and Clear action. Keep text feedback
   below the action row. Screen headers use native Tab order. Reserve roving

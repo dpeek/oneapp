@@ -36,17 +36,14 @@ import { InlineImagePaste } from "./markdown-editor-contract.ts";
 import { clearTagChoice, createTagPrefix, tagChoices } from "./tag-picker.ts";
 import { checkIndex } from "./workspace-changes.ts";
 
-export const uploadInputId = "files-upload";
 export const createUploadInputId = "create-file-upload";
 export const fileDeleteDialogId = "file-delete-dialog";
 export const creationTitleId = "file-create-title";
 export const fileActionsId = "file-actions";
 export const fileActionMenu = ItemActionMenu.create<"open" | "download">();
 const closedActions = ItemActionMenu.init(fileActionsId);
-const UploadSource = Schema.Literals(["header", "create"]);
 const Creation = Schema.Struct({
   id: ItemId,
-  source: UploadSource,
   title: Schema.String,
   markdown: Schema.String,
   tagIds: ItemTagIds,
@@ -73,7 +70,6 @@ const closedFilterMenu = {
 const Operation = Schema.Union([
   Schema.TaggedStruct("Load", {}),
   Schema.TaggedStruct("CreateDocument", {
-    source: UploadSource,
     input: FileDocumentCreate,
   }),
   Schema.TaggedStruct("AddDraftTag", { id: ItemId, name: TagName }),
@@ -83,7 +79,7 @@ const Operation = Schema.Union([
     input: FileDocumentUpdate,
   }),
   Schema.TaggedStruct("Delete", { id: ItemId, input: FileDeletion }),
-  Schema.TaggedStruct("Upload", { source: UploadSource }),
+  Schema.TaggedStruct("Upload", {}),
   Schema.TaggedStruct("Tags", {
     id: ItemId,
     revision: ItemId,
@@ -153,7 +149,7 @@ export const Message = defineMessageUnion({
   GotActionMenu: { message: ItemActionMenu.Message },
   Unmounted: {},
   ActivatedFileAction: {},
-  PickedFile: { source: UploadSource, selected: Schema.Boolean },
+  PickedFile: { selected: Schema.Boolean },
   GotFilterPopoverMessage: { message: Popover.Message },
   OpenedTagFilterOptions: { focusOptions: Schema.Boolean },
   ClosedTagFilterOptions: {},
@@ -163,7 +159,7 @@ export const Message = defineMessageUnion({
   GotTagSearchMessage: { id: ItemId, message: MultiCombobox.Message },
   PreviewReady: { id: ItemId },
   PreviewFailed: { id: ItemId },
-  OpenedCreate: { source: UploadSource },
+  OpenedCreate: {},
   ClosedCreate: {},
   DismissedCreate: {},
   EditedCreation: { field: Edits.Field, value: Schema.String },
@@ -205,7 +201,7 @@ export const Message = defineMessageUnion({
 });
 export type Message = typeof Message.Type;
 export const OutMessage = defineMessageUnion({
-  OpenFile: { id: ItemId, source: UploadSource },
+  OpenFile: { id: ItemId },
   OpenList: {},
   UploadFailed: { error: Schema.String },
   SessionExpired: {},
@@ -368,9 +364,7 @@ const Request = Command.define("RequestFiles", {
           return Message.Deleted({ request, id: operation.id });
         }
         case "Upload": {
-          const input = document.getElementById(
-            operation.source === "create" ? createUploadInputId : uploadInputId,
-          );
+          const input = document.getElementById(createUploadInputId);
           const file =
             input instanceof HTMLInputElement ? input.files?.[0] : undefined;
           if (input instanceof HTMLInputElement) input.value = "";
@@ -775,8 +769,8 @@ const transition = (
       GotActionMenu: ({ message }) => foldActionMenu(model, message),
       Unmounted: () => ({ model: { ...model, actions: closedActions } }),
       ActivatedFileAction: () => ({ model }),
-      PickedFile: ({ source, selected }) =>
-        selected ? start(model, { _tag: "Upload", source }) : { model },
+      PickedFile: ({ selected }) =>
+        selected ? start(model, { _tag: "Upload" }) : { model },
       GotFilterPopoverMessage: ({ message }) =>
         foldFilterPopover(model, message),
       OpenedTagFilterOptions: ({ focusOptions }) => {
@@ -818,22 +812,14 @@ const transition = (
       Loaded: ({ index }) => ({
         model: applyIndex({ ...model, request: null }, index),
       }),
-      OpenedCreate: ({ source }) => {
-        if (
-          model.creation ||
-          model.deletion ||
-          (source === "header" && (!model.index || model.request))
-        )
-          return { model };
+      OpenedCreate: () => {
+        if (model.creation || model.deletion) return { model };
         const next = {
           ...model,
           tagPicker: null,
-          refreshPending:
-            model.refreshPending ||
-            (source === "create" && model.index !== null),
+          refreshPending: model.refreshPending || model.index !== null,
           creation: {
             id: crypto.randomUUID(),
-            source,
             title: "",
             markdown: "",
             tagIds: [],
@@ -868,7 +854,7 @@ const transition = (
       CreatedDocument: () => {
         const { creation, index, request } = model;
         if (!creation || !index || request) return { model };
-        const { id, source, tagIds, markdown } = creation;
+        const { id, tagIds, markdown } = creation;
         const title = creation.title.trim();
         if (
           !Schema.is(DocumentTitle)(title) ||
@@ -879,7 +865,6 @@ const transition = (
           { ...model, creation: { ...creation, error: null }, tagPicker: null },
           {
             _tag: "CreateDocument",
-            source,
             input: { id, title, markdown, tagIds },
           },
         );
@@ -926,10 +911,7 @@ const transition = (
                 tagPicker: null,
                 tagFilter: null,
               },
-              outMessage: OutMessage.OpenFile({
-                id: file.id,
-                source: operation.source,
-              }),
+              outMessage: OutMessage.OpenFile({ id: file.id }),
             }
           : { model: next };
       },
@@ -1119,10 +1101,7 @@ const transition = (
             request: null,
             tagFilter: null,
           },
-          outMessage: OutMessage.OpenFile({
-            id: file.id,
-            source: operation.source,
-          }),
+          outMessage: OutMessage.OpenFile({ id: file.id }),
         };
       },
       SavedTags: ({ file, tag, conflict }) => {
@@ -1178,7 +1157,7 @@ const transition = (
               ? { documentLoadFailed: operation.id }
               : {}),
           },
-          ...(operation?._tag === "Upload" && operation.source === "create"
+          ...(operation?._tag === "Upload"
             ? { outMessage: OutMessage.UploadFailed({ error }) }
             : {}),
         };

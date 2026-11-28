@@ -52,7 +52,6 @@ export const dialogId = "person-profile-dialog";
 const formId = "person-profile-form";
 const profileNameSelector = `#${formId} input[name="name"]`;
 export const contactActionsId = "contact-actions";
-export const addContactButtonId = "add-contact";
 export const contactActionMenu = ItemActionMenu.create<
   "open" | "edit" | "delete"
 >();
@@ -407,7 +406,7 @@ const FocusDirectory = Command.define("FocusPeopleDirectory", {
               : null;
             const target = trigger?.getClientRects().length
               ? trigger
-              : (link ?? document.getElementById(addContactButtonId) ?? list);
+              : (link ?? list);
             target.focus({ preventScroll: !recover });
           }
           return Message.Mounted();

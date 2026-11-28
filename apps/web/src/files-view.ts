@@ -5,12 +5,10 @@ import {
   empty,
   Dialog,
   filesIconPaths,
-  input,
   item,
   ItemActionMenu,
   itemGroup,
   outlineIcon,
-  plusIcon,
   skeleton,
   trashIconPaths,
   visuallyHiddenStatus,
@@ -44,19 +42,13 @@ import {
   toActionMenuMessage,
   toFilterPopoverMessage,
   toDeleteDialogMessage,
-  uploadInputId,
   type Model,
 } from "./files.ts";
 import { ItemId, type Tag } from "./items-contract.ts";
 import { markdownEditor } from "./markdown-editor-contract.ts";
 import { changed, uploading } from "./file-document-edits.ts";
 import { tagProperty } from "./tag-picker-view.ts";
-import {
-  creationDialogId,
-  screenHeader,
-  screenHeaderBack,
-  workspace,
-} from "./workspace.ts";
+import { screenHeader, screenHeaderBack, workspace } from "./workspace.ts";
 
 const RenderPdf = Mount.define("RenderFilePdf", {
   args: { id: ItemId },
@@ -792,33 +784,6 @@ const fileList = (
   );
 };
 
-const uploadControl = (model: Model, h: HtmlBuilder<Message>) =>
-  h.label(
-    [h.Class("file-upload")],
-    [
-      h.span(
-        [
-          h.Class(buttonClassName({ size: "sm", variant: "outline" })),
-          h.DataAttribute("slot", "button"),
-          h.AriaHidden(true),
-        ],
-        [plusIcon(h, "16"), "Upload"],
-      ),
-      input<Message>(
-        [
-          h.Type("file"),
-          h.Id(uploadInputId),
-          h.AriaLabel("Upload file"),
-          h.Disabled(model.request !== null || model.index === null),
-          h.OnChange((value) =>
-            Message.PickedFile({ source: "header", selected: value !== "" }),
-          ),
-        ],
-        h,
-      ),
-    ],
-  );
-
 export const view = Submodel.defineView<Model, Message>((model, h) => {
   const tags = sortedTags(model);
   const operation = model.request?.operation._tag;
@@ -843,18 +808,6 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
               ]
             : [],
           controls: [fileFilters(model, tags, h)],
-          endControls: [uploadControl(model, h)],
-          primaryAction: button(
-            {
-              size: "sm",
-              disabled: model.request !== null || model.index === null,
-              ariaLabel: "Add document",
-              dialogId: creationDialogId,
-              onClick: Message.OpenedCreate({ source: "header" }),
-              children: [plusIcon(h, "16"), "Document"],
-            },
-            h,
-          ),
           feedback: [
             visuallyHiddenStatus(loadStatus, h),
             h.p(

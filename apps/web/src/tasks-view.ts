@@ -10,7 +10,6 @@ import {
   MultiCombobox,
   navigationLinks,
   outlineIcon,
-  plusIcon,
   Sheet,
   skeleton,
   spinnerIcon,
@@ -42,7 +41,6 @@ import { taskFilterCount } from "./tasks-filters.ts";
 import {
   FilterCategory,
   activityTooltip,
-  addTaskButtonId,
   creationFieldsLocked,
   creationSubmitId,
   creationTitleId,
@@ -68,7 +66,6 @@ import {
 } from "./tasks.ts";
 import { filterChoice, filterMenu } from "./filter-menu.ts";
 import {
-  creationDialogId,
   screenHeader,
   screenHeaderBack,
   watchWorkspaceWidth,
@@ -1003,18 +1000,6 @@ export const view = Submodel.defineView(function tasksView(
   const { selectedId, folderSheet, list } = model;
   const listVisible = isListVisible(model);
   const label = taskListLabels[list];
-  const addTask = button(
-    {
-      size: "sm",
-      ariaLabel: "Add task",
-      attributes: [h.Key(addTaskButtonId), h.Id(addTaskButtonId)],
-      disabled: model.request !== null || !model.index,
-      dialogId: creationDialogId,
-      onClick: Message.OpenedCreate({ preserveView: false }),
-      children: [plusIcon(h, "16"), "Task"],
-    },
-    h,
-  );
   const loadStatus =
     model.request?.operation._tag === "Load" && !model.creation
       ? model.index
@@ -1086,7 +1071,6 @@ export const view = Submodel.defineView(function tasksView(
                 ]
               : []),
           ],
-          primaryAction: listVisible ? addTask : undefined,
           feedback: [
             h.div(
               [h.Class("task-save-state"), h.Role("status")],

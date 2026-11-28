@@ -5,7 +5,6 @@ import {
   itemGroup,
   navigationLinks,
   outlineIcon,
-  plusIcon,
   Sheet,
   spinner,
   trashIconPaths,
@@ -21,13 +20,11 @@ import {
   type Person,
 } from "./people-contract.ts";
 import {
-  addContactButtonId,
   canDeleteContact,
   canEditContact,
   contactActionMenu,
   contactActionsId,
   detailEditButtonId,
-  dialogId,
   directoryContacts,
   displayName,
   editForm,
@@ -331,7 +328,6 @@ export const view = Submodel.defineView<
   const person = directory.records?.find(({ id }) => id === selected);
   const currentSection = person?.kind ?? section;
   const backLabel = `Back to ${sectionLabels[currentSection]}`;
-  const contactLabel = section === "company" ? "Company" : "Person";
   const toFolderSheetMessage = (message: typeof Sheet.Message.Type) =>
     Message.GotFolderSheetMessage({ message });
   return workspace(
@@ -371,19 +367,6 @@ export const view = Submodel.defineView<
               ],
             ),
           ],
-          primaryAction: selected
-            ? undefined
-            : button(
-                {
-                  size: "sm",
-                  attributes: [h.Id(addContactButtonId)],
-                  ariaLabel: `Add ${contactLabel.toLowerCase()}`,
-                  dialogId,
-                  onClick: Message.Created({ kind: section }),
-                  children: [plusIcon(h, "16"), contactLabel],
-                },
-                h,
-              ),
         },
         h,
       ),

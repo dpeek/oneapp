@@ -69,7 +69,6 @@ const Draft = Schema.Struct({
 const Creation = Schema.Struct({
   draft: Draft,
   titleEdited: Schema.Boolean,
-  preserveView: Schema.Boolean,
   error: Schema.NullOr(Schema.String),
   screenshots: Schema.Array(Attachments.StagedScreenshot),
   inlineImageUploads: InlineImageUploads,
@@ -102,7 +101,6 @@ export const FilterCategory = Schema.Literals([
 export const filterOptionsId = "task-filter-options";
 export const creationTitleId = "task-create-title-input";
 export const creationSubmitId = "task-create-submit";
-export const addTaskButtonId = "add-task";
 export const deleteDialogId = "task-delete-dialog";
 export const deleteConflictMessage =
   "The task changed. Close this dialog and review the latest task before deleting it.";
@@ -238,7 +236,7 @@ export const Message = defineMessageUnion({
       Schema.Literals(["unchanged", "expired"]),
     ]),
   },
-  OpenedCreate: { preserveView: Schema.Boolean },
+  OpenedCreate: {},
   ClosedCreate: {},
   Created: {},
   DismissedCreate: {},
@@ -284,7 +282,6 @@ export const Message = defineMessageUnion({
 });
 export type Message = typeof Message.Type;
 export const OutMessage = defineMessageUnion({
-  OpenTask: { id: ItemId },
   OpenList: { mode: Schema.Literals(["push", "replace"]) },
   SessionExpired: {},
 });
@@ -455,18 +452,15 @@ const RecoverTaskRowFocus = Command.define("RecoverTaskRowFocus", {
       Effect.andThen(
         Effect.sync(() => {
           if (document.activeElement === document.body) {
-            const workspace = document.querySelector(
-              ".tasks-workspace:not([data-panel])",
+            const list = document.querySelector<HTMLElement>(
+              ".task-list:not([inert])",
             );
             const link = rowId
-              ? workspace?.querySelector<HTMLAnchorElement>(
-                  `.task-list [data-task-id="${rowId}"]`,
+              ? list?.querySelector<HTMLAnchorElement>(
+                  `[data-task-id="${rowId}"]`,
                 )
               : null;
-            const addButton = workspace?.querySelector<HTMLButtonElement>(
-              `#${addTaskButtonId}`,
-            );
-            (link ?? addButton)?.focus();
+            (link ?? list)?.focus();
           }
           return Message.FocusUpdated();
         }),
@@ -1004,12 +998,7 @@ const finishCreation = (
         ),
       })
     : model;
-  return {
-    model: { ...next, creation: null, picker: null },
-    ...(!creation.preserveView
-      ? { outMessage: OutMessage.OpenTask({ id }) }
-      : {}),
-  };
+  return { model: { ...next, creation: null, picker: null } };
 };
 
 const uploadDraftScreenshots = (
@@ -1264,17 +1253,11 @@ const transition = (
             }
           : result;
       },
-      OpenedCreate: ({ preserveView }) => {
-        if (
-          model.creation ||
-          model.deletion ||
-          (!preserveView && (model.request || !model.index))
-        )
-          return { model };
+      OpenedCreate: () => {
+        if (model.creation || model.deletion) return { model };
         const next: Model = {
           ...model,
-          refreshPending:
-            model.refreshPending || (preserveView && model.index !== null),
+          refreshPending: model.refreshPending || model.index !== null,
           picker: null,
           creation: {
             draft: {
@@ -1288,7 +1271,6 @@ const transition = (
               tagIds: [],
             },
             titleEdited: false,
-            preserveView,
             error: null,
             screenshots: [],
             inlineImageUploads: {},

@@ -26,7 +26,6 @@ import {
   navigationLinks,
   noiseIconPath,
   outlineIcon,
-  plusIcon,
   Sheet,
   Popover,
   spinner,
@@ -176,7 +175,6 @@ const conversationMenu = DropdownMenu.create<ConversationAction>();
 const messageMenu = DropdownMenu.create<MessageAction>();
 const rowMenu = ItemActionMenu.create<RowAction>();
 const rowActions = ItemActionMenu.init("mail-row-actions");
-const newEmailButtonId = "mail-new-email";
 const emptyTrashDialogId = "mail-empty-trash";
 const splitViewKey = "orumai.mail.splitView";
 
@@ -626,10 +624,9 @@ const RecoverRowFocus = Command.define("RecoverMailRowFocus", {
                   ItemActionMenu.rowLinkId(rowActions.id, neighborId),
                 )
               : null;
-            const compose = document.getElementById(newEmailButtonId);
             const target = trigger?.getClientRects().length
               ? trigger
-              : (link ?? (compose?.matches(":enabled") ? compose : list));
+              : (link ?? list);
             target.focus({ preventScroll: true });
           }
           return Message.FocusUpdated();
@@ -3905,18 +3902,6 @@ const inboxView = (
           endControls: [
             workspaceLayoutButton(model.layout, Message.ToggledSplitView(), h),
           ],
-          primaryAction: button(
-            {
-              size: "sm",
-              attributes: [h.Id(newEmailButtonId)],
-              ariaLabel: "New email",
-              dialogId: Compose.dialogId,
-              disabled: !composeSender(model),
-              onClick: Message.OpenedCompose(),
-              children: [plusIcon(h, "16"), "Email"],
-            },
-            h,
-          ),
         },
         h,
       ),

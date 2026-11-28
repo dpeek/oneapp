@@ -836,6 +836,31 @@
   text-decoration: underline;
 }
 
+.task-description-rendered {
+  min-block-size: 0;
+  white-space: normal;
+}
+
+.task-description-rendered img {
+  max-inline-size: 100%;
+  block-size: auto;
+  border-radius: var(--control-radius);
+}
+
+.task-description-rendered
+  li:has(> input[type="checkbox"], > p > input[type="checkbox"]) {
+  list-style: none;
+}
+
+.task-description-rendered table {
+  border-collapse: collapse;
+}
+
+.task-description-rendered :is(th, td) {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border);
+}
+
 .task-description-image {
   position: relative;
   inline-size: fit-content;

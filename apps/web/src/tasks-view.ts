@@ -24,12 +24,14 @@ import { Mount, Submodel } from "foldkit";
 import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html";
 import * as Attachments from "./task-attachments.ts";
 import { taskDescriptionEditor } from "./task-description-editor-contract.ts";
+import { taskDescriptionView } from "./task-description-view.ts";
 import { mailMessageLink, mailRouteFor } from "./inbox-contract.ts";
 import { tagNameKey, type Tag } from "./items-contract.ts";
 import { isTaskRunInterrupted, type TaskRun } from "./task-run-contract.ts";
 import {
   type Task,
   TaskList,
+  defaultTaskStatus,
   taskDescriptionLimit,
   taskListPath,
   taskPath,
@@ -757,10 +759,13 @@ const taskDocumentTitle = (
 
 const taskDocumentDescription = (
   model: Model,
-  task: Pick<Task, "id" | "description"> & Partial<Pick<Task, "revision">>,
+  task: Pick<Task, "id" | "description" | "status"> &
+    Partial<Pick<Task, "revision">>,
   h: HtmlBuilder<Message>,
   creation?: CreationForm,
 ) => {
+  if (!creation && task.status !== defaultTaskStatus)
+    return taskDescriptionView(task, h);
   const draft = creation ? undefined : model.edits[task.id]?.text.description;
   const editor = taskDescriptionEditor.withMessage(h);
   return editor([

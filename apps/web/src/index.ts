@@ -1761,6 +1761,22 @@ const update = (
       }
       const result = foldInbox(model, message);
       if (
+        message._tag === "ToggledSplitView" &&
+        model.inbox.layout.split &&
+        !result.model.inbox.layout.split &&
+        model.mailRoute?.id
+      )
+        return {
+          ...result,
+          commands: [
+            ...(result.commands ?? []),
+            Navigate({
+              href: folderPath(model.mailRoute.folder),
+              mode: "push",
+            }),
+          ],
+        };
+      if (
         message._tag === "GotRecoveryMessage" &&
         message.message._tag === "Restored" &&
         model.inbox.recovery.request === message.message.request &&

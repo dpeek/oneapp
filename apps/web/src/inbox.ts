@@ -41,6 +41,7 @@ import {
   collapsibleMiddleCount,
   conversationPeople,
   conversationSubject,
+  formatMailTimestamp,
   splitMailQuote,
 } from "./inbox-display.ts";
 import {
@@ -2636,7 +2637,12 @@ const messageItem = (
     model.selected === message.id ||
     (model.folder !== "sent" &&
       model.thread?.messages.some(({ id }) => id === message.id));
-  const date = timestamp(sent ? message.sentAt : message.lastMessageAt, now, h);
+  const date = timestamp(
+    sent ? message.sentAt : message.lastMessageAt,
+    now,
+    h,
+    formatMailTimestamp,
+  );
   const actions = sent
     ? []
     : withActionIcons(rowActionItems(model, message), h);
@@ -2652,13 +2658,6 @@ const messageItem = (
       media: h.span(
         [h.Class("inbox-list-avatar")],
         [
-          h.span(
-            [
-              h.Class(`inbox-unread-indicator${unread ? " is-unread" : ""}`),
-              h.AriaHidden(true),
-            ],
-            [],
-          ),
           profileAvatar(h, {
             address: lead.address,
             person: leadProfile,
@@ -3176,6 +3175,10 @@ const mailIcon = (h: HtmlBuilder<Message>, path: string) =>
     [h.path([h.D(path)], [])],
   );
 
+const columns2IconPath =
+  "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2ZM12 3v18";
+const textAlignStartIconPath = "M3 6h18M3 12h12M3 18h18";
+
 const restoreIconPath = "M9 14 4 9l5-5M4 9h10a5 5 0 0 1 0 10";
 const readIconPath = "M3 5h18v14H3zM3 6l9 7 9-7";
 
@@ -3609,7 +3612,7 @@ const entryView = (
                     ],
                     trailing: [
                       ...(expanded ? [messageHeaderActions(model, h)] : []),
-                      timestamp(messageTime, now, h),
+                      timestamp(messageTime, now, h, formatMailTimestamp),
                     ],
                     ...(grouped
                       ? {
@@ -3840,11 +3843,20 @@ export const view = Submodel.defineView<Model, Message>((snapshot, h) => {
             ? [
                 button(
                   {
-                    size: "sm",
-                    variant: "quiet",
-                    attributes: [h.AriaPressed(String(model.layout.split))],
+                    size: "icon-sm",
+                    variant: "ghost",
+                    ariaLabel: model.layout.split
+                      ? "Show list only"
+                      : "Show split view",
                     onClick: Message.ToggledSplitView(),
-                    children: ["Split view"],
+                    children: [
+                      mailIcon(
+                        h,
+                        model.layout.split
+                          ? textAlignStartIconPath
+                          : columns2IconPath,
+                      ),
+                    ],
                   },
                   h,
                 ),

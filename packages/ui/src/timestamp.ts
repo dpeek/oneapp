@@ -18,23 +18,27 @@ const exact = new Intl.DateTimeFormat(undefined, {
 });
 
 // Crease Timestamp's auto format uses relative time within a week.
+const relativeTimestamp = (date: Date, now: number) => {
+  const elapsed = Math.round((date.getTime() - now) / 1000);
+  const magnitude = Math.abs(elapsed);
+  const count = (unit: number) =>
+    Math.sign(elapsed) * Math.floor(magnitude / unit);
+  if (magnitude < 10) return relative.format(0, "second");
+  if (magnitude < 60) return relative.format(elapsed, "second");
+  if (magnitude < 3600) return relative.format(count(60), "minute");
+  if (magnitude < 86400) return relative.format(count(3600), "hour");
+  if (magnitude <= 604800) return relative.format(count(86400), "day");
+  return absolute.format(date);
+};
+
 export const timestamp = <Message>(
   value: number,
   now: number,
   h: HtmlBuilder<Message>,
+  format = relativeTimestamp,
 ) => {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return h.empty;
-  const elapsed = Math.round((value - now) / 1000);
-  const magnitude = Math.abs(elapsed);
-  const count = (unit: number) =>
-    Math.sign(elapsed) * Math.floor(magnitude / unit);
-  let label = absolute.format(date);
-  if (magnitude < 10) label = relative.format(0, "second");
-  else if (magnitude < 60) label = relative.format(elapsed, "second");
-  else if (magnitude < 3600) label = relative.format(count(60), "minute");
-  else if (magnitude < 86400) label = relative.format(count(3600), "hour");
-  else if (magnitude <= 604800) label = relative.format(count(86400), "day");
   return h.time(
     [
       h.DataAttribute("slot", "timestamp"),
@@ -42,6 +46,6 @@ export const timestamp = <Message>(
       h.Title(exact.format(date)),
       h.Class(stylex.props(styles.time).className ?? ""),
     ],
-    [label],
+    [format(date, now)],
   );
 };

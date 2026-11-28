@@ -1,5 +1,25 @@
 import type { ConversationMessage, MailPerson } from "./inbox-contract.ts";
 
+const mailTime = new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+const mailDate = new Intl.DateTimeFormat("en-GB", {
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+});
+
+export const formatMailTimestamp = (date: Date, now: number) => {
+  const day = date.toDateString();
+  const localDay = new Date(now);
+  if (day === localDay.toDateString()) return mailTime.format(date);
+  localDay.setDate(localDay.getDate() - 1);
+  if (day === localDay.toDateString()) return "Yesterday";
+  return mailDate.format(date);
+};
+
 export const conversationSubject = (
   messages: readonly Pick<ConversationMessage, "subject">[],
 ) =>

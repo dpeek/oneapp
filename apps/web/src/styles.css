@@ -289,7 +289,8 @@ orumai-vault-reader {
   grid-area: items;
 }
 
-.workspace-stacked .workspace-list {
+.workspace-stacked .workspace-list,
+.inbox.workspace-split .workspace-list {
   border-inline-end: 0;
 }
 
@@ -1544,23 +1545,21 @@ button {
 }
 
 .inbox-list-avatar {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.625rem;
+  display: block;
   --inbox-avatar-size: 2.75rem;
   --inbox-avatar-font-size: 1rem;
 }
 
-.inbox-unread-indicator {
+.inbox-list [data-slot="item"]:has([data-unread])::after {
+  content: "";
+  position: absolute;
+  inset-block-end: 0.5rem;
+  inset-inline-end: 0.5rem;
   inline-size: 0.5rem;
   block-size: 0.5rem;
-  flex-shrink: 0;
-  margin-block-start: 0.4375rem;
   border-radius: 50%;
-}
-
-.inbox-unread-indicator.is-unread {
-  background: var(--primary);
+  background: light-dark(#0075e1, #62adff);
+  pointer-events: none;
 }
 
 .inbox-list button.inbox-profile-avatar {

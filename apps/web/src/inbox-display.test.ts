@@ -1,9 +1,27 @@
 import { expect, it } from "@effect/vitest";
 import {
   collapsibleMiddleCount,
+  formatMailTimestamp,
   mailBodyPreview,
   splitMailQuote,
 } from "./inbox-display.ts";
+
+it("formats timestamps by local calendar day across midnight and a year boundary", () => {
+  const morning = new Date(2026, 0, 1, 9, 5).getTime();
+  const evening = new Date(2026, 0, 1, 21, 5).getTime();
+  expect(formatMailTimestamp(new Date(2026, 0, 1), morning)).toBe("00:00");
+  expect(formatMailTimestamp(new Date(morning), evening)).toBe("09:05");
+  expect(formatMailTimestamp(new Date(evening), evening)).toBe("21:05");
+  expect(formatMailTimestamp(new Date(2025, 11, 31, 23, 59), morning)).toBe(
+    "Yesterday",
+  );
+  expect(formatMailTimestamp(new Date(2025, 11, 31, 0, 1), evening)).toBe(
+    "Yesterday",
+  );
+  expect(formatMailTimestamp(new Date(2025, 11, 30, 23, 59), morning)).toBe(
+    "30/12/2025",
+  );
+});
 
 it("keeps the oldest and newest two messages visible and skips hiding unread or targeted mail", () => {
   const messages = ["first", "second", "third", "fourth", "last"].map((id) => ({

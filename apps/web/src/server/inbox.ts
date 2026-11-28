@@ -130,13 +130,10 @@ import {
 
 type InboxEnv = Pick<
   WorkerEnv,
-  | "APP_ORIGIN"
-  | "INBOX_EMAIL_ADDRESS"
-  | "INBOX_MESSAGES"
-  | "INBOX_UPDATES"
-  | "SENT_MESSAGES"
+  "APP_ORIGIN" | "INBOX_MESSAGES" | "INBOX_UPDATES" | "SENT_MESSAGES"
 > & {
   DB: MailDatabase;
+  receivingAddress?: string;
   mailboxAddresses: readonly string[];
   accountId?: string;
 } & MailSenderBindings;
@@ -333,11 +330,7 @@ const loadConversation = async (env: InboxEnv, id: string) => {
 
 const profilesFor = async (env: InboxEnv, addresses: string[]) =>
   addresses.length && env.accountId === ownerId
-    ? matchPeople(
-        env.DB,
-        addresses,
-        await managedPersonAddresses(env.DB, env.INBOX_EMAIL_ADDRESS),
-      )
+    ? matchPeople(env.DB, addresses, await managedPersonAddresses(env.DB))
     : [];
 
 const replyInfo = (
@@ -402,7 +395,7 @@ const readMessage = async (
   const imported = object.customMetadata?.format === rawMailFormat;
   const to =
     object.customMetadata?.envelopeTo ??
-    (imported ? "" : env.INBOX_EMAIL_ADDRESS) ??
+    (imported ? "" : env.receivingAddress) ??
     "";
   const envelopeFrom = object.customMetadata?.envelopeFrom ?? "";
   const fallback = async (preview: "tooLarge" | "unreadable") => {
@@ -679,7 +672,7 @@ export const inboxRoutes = (
         return yield* jsonError(400, "Invalid page cursor");
       const sender = inboxSender(env);
       const mailbox = {
-        address: env.INBOX_EMAIL_ADDRESS ?? null,
+        address: env.receivingAddress ?? null,
         ...(sender ? { sender: sender.from } : {}),
       };
       if (folder === "sent") {
@@ -1000,7 +993,7 @@ export const inboxRoutes = (
         return yield* HttpServerResponse.schemaJson(ConversationPage)(
           {
             ...page,
-            address: env.INBOX_EMAIL_ADDRESS ?? null,
+            address: env.receivingAddress ?? null,
             ...(env.INBOX_SEND && env.INBOX_EMAIL_FROM
               ? { sender: env.INBOX_EMAIL_FROM }
               : {}),
@@ -1124,7 +1117,7 @@ export const inboxRoutes = (
       return yield* HttpServerResponse.schemaJson(ConversationPage)(
         {
           ...page,
-          address: env.INBOX_EMAIL_ADDRESS ?? null,
+          address: env.receivingAddress ?? null,
           ...(sender ? { sender: sender.from } : {}),
           ...(indexing ? { indexing } : {}),
         },

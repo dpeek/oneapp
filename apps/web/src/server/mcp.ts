@@ -58,7 +58,6 @@ type McpEnv = Pick<
   | "FILE_UPLOADS"
   | "INBOX_MESSAGES"
   | "SENT_MESSAGES"
-  | "INBOX_EMAIL_ADDRESS"
   | "INBOX_UPDATES"
 > &
   MailSenderBindings;
@@ -168,8 +167,7 @@ const createServer = (
   );
   if (actor.kind === "owner" && scopes.includes(ReadFiles))
     registerFileTools(server, origin, ownerId, db, bucket);
-  if (canReadContacts)
-    registerContactTools(server, origin, db, env.INBOX_EMAIL_ADDRESS);
+  if (canReadContacts) registerContactTools(server, origin, db);
   if (
     actor.kind === "owner" &&
     ownerId === appOwnerId &&

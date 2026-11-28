@@ -3,7 +3,9 @@ import type { WorkerEnv } from "../../../../alchemy.run.ts";
 import { Effect, Layer } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
+  exactInboundAddress,
   InboundRoute,
+  InboundRouteEdit,
   inboundRoutesApiPath,
   Mailbox,
   mailboxesApiPath,
@@ -28,20 +30,12 @@ const requireRouteManager = Effect.gen(function* () {
 
 export const mailSettingsRoutes = (
   http: ReturnType<typeof authHttp>,
-  env: Pick<
-    WorkerEnv,
-    "DB" | "INBOX_EMAIL_ADDRESS" | "INBOX_EMAIL_FROM" | "MAILBOX_ALIASES"
-  >,
+  env: Pick<WorkerEnv, "DB" | "INBOX_EMAIL_FROM">,
 ) => {
   const db: D1Database = env.DB;
   const bootstrap = (accountId: string) =>
     accountId === ownerId
-      ? ensureDefaultMailbox(
-          db,
-          env.INBOX_EMAIL_ADDRESS,
-          env.INBOX_EMAIL_FROM,
-          env.MAILBOX_ALIASES,
-        )
+      ? ensureDefaultMailbox(db, env.INBOX_EMAIL_FROM)
       : Promise.resolve();
   const mailboxes = (accountId: string) =>
     db
@@ -63,9 +57,9 @@ export const mailSettingsRoutes = (
       return Promise.all([
         db
           .prepare(
-            "SELECT address, mailbox_id AS mailboxId, enabled FROM mail_inbound_routes ORDER BY address",
+            "SELECT address, mailbox_id AS mailboxId FROM mail_inbound_routes ORDER BY address",
           )
-          .all<Omit<InboundRoute, "enabled"> & { enabled: number }>(),
+          .all<InboundRoute>(),
         db
           .prepare(
             "SELECT id, name FROM mailboxes ORDER BY name COLLATE NOCASE, id",
@@ -77,9 +71,9 @@ export const mailSettingsRoutes = (
     return yield* HttpServerResponse.schemaJson(MailSettings)(
       {
         domains: mailDomains,
-        routes: routes.results
-          .filter(({ address }) => routeDomain(address) !== undefined)
-          .map((route) => ({ ...route, enabled: route.enabled === 1 })),
+        routes: routes.results.filter(
+          ({ address }) => routeDomain(address) !== undefined,
+        ),
         destinations: destinations.results,
         mailboxes: owned.results,
       },
@@ -95,44 +89,64 @@ export const mailSettingsRoutes = (
         .protect(
           Effect.gen(function* () {
             yield* requireRouteManager;
-            const body = yield* HttpServerRequest.schemaBodyJson(
-              InboundRoute,
-            ).pipe(Effect.option);
+            const input: Effect.Effect<
+              { route: InboundRoute; previous: InboundRoute | null },
+              unknown,
+              HttpServerRequest.HttpServerRequest
+            > =
+              method === "POST"
+                ? HttpServerRequest.schemaBodyJson(InboundRoute).pipe(
+                    Effect.map((route) => ({ route, previous: null })),
+                  )
+                : HttpServerRequest.schemaBodyJson(InboundRouteEdit);
+            const body = yield* Effect.option(input);
             if (body._tag === "None")
               return yield* jsonError(
                 400,
                 "Enter a valid address and mailbox.",
               );
-            const { mailboxId, enabled } = body.value;
-            const address = normalizePersonEmail(body.value.address);
-            if (address.includes("*") || !routeDomain(address))
+            const { route, previous } = body.value;
+            const { mailboxId } = route;
+            const [name = "", domain = ""] = route.address
+              .toLowerCase()
+              .split("@");
+            const address = exactInboundAddress(name, domain);
+            if (!address)
               return yield* jsonError(
                 400,
                 "Use an exact address on a configured domain.",
               );
+            const statement = previous
+              ? db
+                  .prepare(
+                    `UPDATE OR IGNORE mail_inbound_routes SET address = ?1, mailbox_id = ?2
+                   WHERE address = ?3 AND mailbox_id = ?4
+                     AND EXISTS (SELECT 1 FROM mailboxes WHERE id = ?2)
+                   RETURNING address`,
+                  )
+                  .bind(
+                    address,
+                    mailboxId,
+                    normalizePersonEmail(previous.address),
+                    previous.mailboxId,
+                  )
+              : db
+                  .prepare(
+                    `INSERT INTO mail_inbound_routes (address, mailbox_id)
+                   SELECT ?1, id FROM mailboxes WHERE id = ?2
+                   ON CONFLICT (address) DO NOTHING RETURNING address`,
+                  )
+                  .bind(address, mailboxId);
             const saved = yield* Effect.tryPromise(() =>
-              db
-                .prepare(
-                  method === "POST"
-                    ? `INSERT INTO mail_inbound_routes (address, mailbox_id, enabled)
-                     SELECT ?1, id, ?3 FROM mailboxes WHERE id = ?2
-                     ON CONFLICT (address) DO NOTHING RETURNING address`
-                    : `UPDATE mail_inbound_routes SET mailbox_id = ?2, enabled = ?3
-                     WHERE address = ?1 AND EXISTS (SELECT 1 FROM mailboxes WHERE id = ?2)
-                     RETURNING address`,
-                )
-                .bind(address, mailboxId, Number(enabled))
-                .first<{ address: string }>(),
+              statement.first<{ address: string }>(),
             );
             if (!saved)
               return yield* jsonError(
                 409,
-                method === "POST"
-                  ? "That address already has a rule or the mailbox is unavailable."
-                  : "The address rule or destination mailbox is unavailable.",
+                "That address already has a rule, or the rule or mailbox has changed. Check the fields or reload Mail settings.",
               );
             return yield* HttpServerResponse.schemaJson(InboundRoute)(
-              { address, mailboxId, enabled },
+              { address, mailboxId },
               {
                 status: method === "POST" ? 201 : 200,
                 headers: privateHeaders,
@@ -142,6 +156,43 @@ export const mailSettingsRoutes = (
         )
         .pipe(Effect.catchTags(errors)),
     );
+
+  const deleteRoute = HttpRouter.add(
+    "DELETE",
+    inboundRoutesApiPath,
+    http
+      .protect(
+        Effect.gen(function* () {
+          yield* requireRouteManager;
+          const body = yield* HttpServerRequest.schemaBodyJson(
+            InboundRoute,
+          ).pipe(Effect.option);
+          if (body._tag === "None")
+            return yield* jsonError(400, "Select an address rule to delete.");
+          const deleted = yield* Effect.tryPromise(() =>
+            db
+              .prepare(
+                "DELETE FROM mail_inbound_routes WHERE address = ? AND mailbox_id = ? RETURNING address",
+              )
+              .bind(
+                normalizePersonEmail(body.value.address),
+                body.value.mailboxId,
+              )
+              .first<{ address: string }>(),
+          );
+          if (!deleted)
+            return yield* jsonError(
+              409,
+              "The address rule has changed. Reload Mail settings and try again.",
+            );
+          return HttpServerResponse.empty({
+            status: 204,
+            headers: privateHeaders,
+          });
+        }),
+      )
+      .pipe(Effect.catchTags(errors)),
+  );
 
   return Layer.mergeAll(
     HttpRouter.add(
@@ -208,5 +259,6 @@ export const mailSettingsRoutes = (
     ),
     saveRoute("POST"),
     saveRoute("PUT"),
+    deleteRoute,
   );
 };

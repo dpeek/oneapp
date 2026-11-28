@@ -25,7 +25,11 @@ const styles = stylex.create({
     minBlockSize: "2.25rem",
     paddingBlock: "0.375rem",
     paddingInline: "0.625rem",
-    borderColor: { default: controls.border, ":focus-visible": controls.focus },
+    borderColor: {
+      default: controls.border,
+      ":focus-visible": controls.focus,
+      '[aria-invalid="true"]': controls.destructive,
+    },
     borderStyle: "solid",
     borderWidth: 1,
     borderRadius: controls.radius,
@@ -37,6 +41,7 @@ const styles = stylex.create({
     outlineStyle: "none",
     boxShadow: {
       ":focus-visible": `0 0 0 1px color-mix(in srgb, ${controls.focus} 35%, transparent)`,
+      ':focus-visible[aria-invalid="true"]': `0 0 0 1px color-mix(in srgb, ${controls.destructive} 35%, transparent)`,
     },
     "::placeholder": { color: controls.mutedForeground },
   },

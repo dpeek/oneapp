@@ -30,10 +30,7 @@ const fieldsWithAddresses = `${fields},
   (SELECT json_group_array(email ORDER BY email) FROM person_addresses WHERE person_id = p.id) AS emails`;
 type PersonWithEmails = PersonRow & { emails: string };
 
-export const managedPersonAddresses = async (
-  db: PeopleDb,
-  mailbox?: string,
-) => {
+export const managedPersonAddresses = async (db: PeopleDb) => {
   const { results } = await db
     .prepare(
       `SELECT value FROM oneapp_auth_identifiers
@@ -52,11 +49,10 @@ export const managedPersonAddresses = async (
   return [
     ...new Set(
       [
-        mailbox,
         ...identities.results.map(({ address }) => address),
         ...results.map(({ value }) => value),
       ]
-        .flatMap((email) => (email ? [normalizePersonEmail(email)] : []))
+        .map(normalizePersonEmail)
         .filter((email) => email !== retiredMailAddress),
     ),
   ];

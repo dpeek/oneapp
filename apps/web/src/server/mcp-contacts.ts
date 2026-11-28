@@ -28,7 +28,6 @@ export const registerContactTools = (
   server: McpServer,
   origin: string,
   db: D1Database,
-  mailboxAddress: string | undefined,
 ) =>
   server.registerTool(
     "search_contacts",
@@ -42,7 +41,7 @@ export const registerContactTools = (
     },
     ({ limit = 50, offset = 0, query = "", kind }) =>
       runTool("Could not search contacts.", async () => {
-        const managed = await managedPersonAddresses(db, mailboxAddress);
+        const managed = await managedPersonAddresses(db);
         const contacts = await searchPeople(db, managed, {
           query: query.trim(),
           kind,

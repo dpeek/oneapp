@@ -47,7 +47,10 @@ const secret = () =>
     omitPadding: true,
   });
 
-export const prepareDev = async (stage: string, email = "mail@dpeek.com") => {
+export const prepareDev = async (
+  stage: string,
+  email = "owner@orumai.test",
+) => {
   if (/[\r\n"\\]/u.test(email))
     throw new Error(
       "The owner email cannot be written to a local environment file.",
@@ -114,9 +117,7 @@ export const startDev = (
       env: {
         ...env,
         ONEAPP_DEV_PORT: String(port),
-        ...(isRestoredStage(stage)
-          ? { ONEAPP_DEV_SNAPSHOT: "true" }
-          : { MAILBOX_ALIASES: "mail@dpeek.com" }),
+        ...(isRestoredStage(stage) ? { ONEAPP_DEV_SNAPSHOT: "true" } : {}),
       },
       stdin: interactive ? "inherit" : "ignore",
       stdout: "inherit",

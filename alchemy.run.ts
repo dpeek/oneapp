@@ -10,14 +10,7 @@ import {
   resetPasswordPage,
 } from "./apps/web/src/password-recovery-contract.ts";
 import type { InboxUpdates } from "./apps/web/src/server/cloudflare-worker.ts";
-import {
-  primaryMailAddress,
-  primaryMailDomain,
-  orumaiMailDomain,
-  winterpeekMailDomain,
-  seedMailRoutes,
-  initialMailAliases,
-} from "./apps/web/src/server/mail-routing.ts";
+import { mailDomains } from "./apps/web/src/mail-settings-contract.ts";
 import { provisionOwner } from "./apps/web/src/server/provision-owner.ts";
 
 const Database = Cloudflare.D1.Database("Database", {
@@ -42,27 +35,12 @@ const ProfilePhotos = Cloudflare.R2.Bucket("ProfilePhotos", {
   publicAccess: false,
 });
 
-const provisionMailRoutes = Alchemy.Action(
-  "ProvisionMailRoutes",
-  Effect.gen(function* () {
-    const database = yield* Cloudflare.D1.QueryDatabase(Database);
-    return Effect.fn(function* ({
-      aliases,
-    }: {
-      databaseId: string;
-      ownerReady: boolean;
-      aliases: string;
-    }) {
-      const db = yield* database.raw;
-      yield* Effect.tryPromise(() => seedMailRoutes(db, aliases));
-      return { ready: true };
-    });
-  }).pipe(Effect.provide(Cloudflare.D1.QueryDatabaseLocal)),
-);
+const [primaryMailDomain, orumaiMailDomain, winterpeekMailDomain] = mailDomains;
+const inboxSenderAddress = `mail@${primaryMailDomain}`;
 
 const removeWinterpeekNullMx = Alchemy.Action(
   "RemoveWinterpeekNullMx",
-  Effect.fn(function* (_input: { routesReady: boolean; workerName: string }) {
+  Effect.fn(function* (_input: { ownerReady: boolean; workerName: string }) {
     const { accountId } = yield* Cloudflare.CloudflareEnvironment.current;
     const zoneId = yield* Cloudflare.Zone.resolveZoneId({
       accountId,
@@ -194,18 +172,12 @@ export const Web = Cloudflare.Worker(
         PUSH_SUBJECT: Config.String("PUSH_SUBJECT").pipe(
           Config.withDefault(""),
         ),
-        MAILBOX_ALIASES: Config.String("MAILBOX_ALIASES").pipe(
-          Config.withDefault(""),
-        ),
         FILE_UPLOADS: FileUploads,
         VAULT_FILES: VaultFiles,
         INBOX_MESSAGES: InboxMessages,
         SENT_MESSAGES: SentMessages,
         PROFILE_PHOTOS: ProfilePhotos,
         INBOX_UPDATES: Cloudflare.DurableObject<InboxUpdates>("InboxUpdates"),
-        ...(production || dev
-          ? { INBOX_EMAIL_ADDRESS: primaryMailAddress }
-          : {}),
         APP_ORIGIN: Cloudflare.Worker.URL,
         BITWARDEN_ICON_LIMIT: Cloudflare.RateLimit("BitwardenIconLimit", {
           namespaceId: 1004,
@@ -239,11 +211,11 @@ export const Web = Cloudflare.Worker(
           ? {
               INBOX_EMAIL_FROM: inboxSending.enabled.pipe(
                 Output.map((enabled): string =>
-                  enabled ? primaryMailAddress : "",
+                  enabled ? inboxSenderAddress : "",
                 ),
               ),
               INBOX_SEND: Cloudflare.Email.SendEmail("InboxSend", {
-                allowedSenderAddresses: [primaryMailAddress],
+                allowedSenderAddresses: [inboxSenderAddress],
               }),
               INBOX_SEND_LIMIT: Cloudflare.RateLimit("InboxSendLimit", {
                 namespaceId: 1005,
@@ -288,18 +260,13 @@ export default Alchemy.Stack(
     });
     const worker = yield* Web;
     if (production) {
-      const routes = yield* provisionMailRoutes({
-        databaseId: database.databaseId,
-        ownerReady: owner.ready,
-        aliases: initialMailAliases,
-      });
       const winterpeek = yield* removeWinterpeekNullMx({
-        routesReady: routes.ready,
+        ownerReady: owner.ready,
         workerName: worker.workerName,
       });
       for (const [id, domain] of [
-        ["Dpeek", routes.ready.pipe(Output.map(() => primaryMailDomain))],
-        ["Orumai", routes.ready.pipe(Output.map(() => orumaiMailDomain))],
+        ["Dpeek", owner.ready.pipe(Output.map(() => primaryMailDomain))],
+        ["Orumai", owner.ready.pipe(Output.map(() => orumaiMailDomain))],
         ["Winterpeek", winterpeek.zoneId],
       ] as const) {
         // Wait for D1 before enabling ingress. Routing also provisions the

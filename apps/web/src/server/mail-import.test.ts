@@ -1054,15 +1054,17 @@ it("scopes index rebuilds and scan checkpoints to each mailbox storage namespace
   ).toEqual([{ mailbox_id: "personal" }, { mailbox_id: "work" }]);
 });
 
-it("keeps mailbox identities independent of login and resolves only enabled exact routes", async () => {
+it("keeps mailbox identities independent of login and resolves only saved exact routes", async () => {
   using sqlite = new Database(":memory:");
   const store = await setup(sqlite);
-  await ensureDefaultMailbox(
-    store.DB,
-    "mail@app.example",
-    "mail@app.example",
-    "mail@dpeek.com,david@winterpeek.com",
-  );
+  await ensureDefaultMailbox(store.DB, "mail@app.example");
+  expect(await resolveMailRecipient(store.DB, "mail@app.example")).toBeNull();
+  sqlite.exec(`
+    INSERT INTO mail_inbound_routes VALUES
+      ('mail@app.example', 'personal'),
+      ('mail@dpeek.com', 'personal'),
+      ('david@winterpeek.com', 'personal');
+  `);
   expect(
     (await mailboxIdentities(store.DB)).map((identity) => identity.address),
   ).toEqual(["david@winterpeek.com", "mail@app.example", "mail@dpeek.com"]);
@@ -1072,7 +1074,7 @@ it("keeps mailbox identities independent of login and resolves only enabled exac
     )?.canSend,
   ).toBe(0);
   sqlite.exec(
-    "INSERT INTO accounts (id, active, security_revision) VALUES ('family', 1, '1'); INSERT INTO mailboxes (id, owner_account_id, name) VALUES ('family', 'family', 'Personal'); INSERT INTO mail_inbound_routes VALUES ('family@winterpeek.com', 'family', 1);",
+    "INSERT INTO accounts (id, active, security_revision) VALUES ('family', 1, '1'); INSERT INTO mailboxes (id, owner_account_id, name) VALUES ('family', 'family', 'Personal'); INSERT INTO mail_inbound_routes VALUES ('family@winterpeek.com', 'family');",
   );
   expect(await resolveMailRecipient(store.DB, "DAVID@WINTERPEEK.COM")).toBe(
     "personal",
@@ -1085,7 +1087,7 @@ it("keeps mailbox identities independent of login and resolves only enabled exac
   ).toBeNull();
   expect(await resolveMailRecipient(store.DB, "mail@unrelated.com")).toBeNull();
   sqlite.exec(
-    "UPDATE mail_inbound_routes SET enabled = 0 WHERE address = 'family@winterpeek.com'",
+    "DELETE FROM mail_inbound_routes WHERE address = 'family@winterpeek.com'",
   );
   expect(
     await resolveMailRecipient(store.DB, "family@winterpeek.com"),
@@ -1099,7 +1101,7 @@ it("keeps mailbox identities independent of login and resolves only enabled exac
   expect((await requireMailbox(store.DB, "personal", "owner")).id).toBe(
     "personal",
   );
-  await ensureDefaultMailbox(store.DB, "mail@app.example", "mail@app.example");
+  await ensureDefaultMailbox(store.DB, "mail@app.example");
   expect(await mailboxIdentities(store.DB)).toHaveLength(3);
 });
 
@@ -1123,13 +1125,11 @@ it("migrates existing inbound and disabled addresses and retires the legacy mail
     INSERT INTO people (id, account_id, name, revision) VALUES ('profile', 'owner', '', '1');
     INSERT INTO person_addresses VALUES ('mail@app.dpeek.com', 'profile');
   `);
-  sqlite.exec(await Bun.file(root + inbound).text());
+  for (const file of migrations.slice(migrations.indexOf(inbound)))
+    sqlite.exec(await Bun.file(root + file).text());
   expect(
     sqlite.query("SELECT * FROM mail_inbound_routes ORDER BY address").all(),
-  ).toEqual([
-    { address: "mail@dpeek.com", mailbox_id: "personal", enabled: 1 },
-    { address: "quiet@dpeek.com", mailbox_id: "personal", enabled: 0 },
-  ]);
+  ).toEqual([{ address: "mail@dpeek.com", mailbox_id: "personal" }]);
   expect(
     sqlite
       .query("SELECT address FROM mailbox_addresses WHERE can_send = 1")

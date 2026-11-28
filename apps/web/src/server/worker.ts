@@ -186,12 +186,7 @@ export default {
     const maintenance =
       event.scheduledTime === undefined ||
       Math.floor(event.scheduledTime / 60_000) % 15 === 0;
-    await ensureDefaultMailbox(
-      env.DB,
-      env.INBOX_EMAIL_ADDRESS,
-      env.INBOX_EMAIL_FROM,
-      env.MAILBOX_ALIASES,
-    );
+    await ensureDefaultMailbox(env.DB, env.INBOX_EMAIL_FROM);
     if (maintenance)
       await Promise.all([
         collectAttachments(env.DB, env.VAULT_FILES),
@@ -385,12 +380,7 @@ export default {
       const mailbox = await findMailbox(env.DB, id, accountId);
       if (mailbox || id !== defaultMailboxId || accountId !== ownerId)
         return mailbox;
-      await ensureDefaultMailbox(
-        env.DB,
-        env.INBOX_EMAIL_ADDRESS,
-        env.INBOX_EMAIL_FROM,
-        env.MAILBOX_ALIASES,
-      );
+      await ensureDefaultMailbox(env.DB, env.INBOX_EMAIL_FROM);
       return findMailbox(env.DB, id, accountId);
     };
     if (path === workspaceEventsPath || path === taskRunnerEventsPath) {
@@ -513,13 +503,11 @@ export default {
             env.INBOX_EMAIL_FROM,
             identities,
           ),
-          INBOX_EMAIL_ADDRESS:
+          receivingAddress:
             identities.find(
-              (identity) =>
-                identity.address === env.INBOX_EMAIL_ADDRESS &&
-                identity.canReceive === 1,
+              ({ canReceive, canSend }) => canReceive === 1 && canSend === 1,
             )?.address ??
-            identities.find((identity) => identity.canReceive === 1)?.address,
+            identities.find(({ canReceive }) => canReceive === 1)?.address,
           mailboxAddresses: identities.map((identity) => identity.address),
         },
         defer,

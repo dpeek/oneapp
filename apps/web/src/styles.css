@@ -2519,26 +2519,61 @@ button.inbox-profile-avatar:has(> [data-variant="square"]),
   gap: 1.75rem;
 }
 
-.settings-mail-domains {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.375rem 1.25rem;
-  margin: 0;
-  padding-inline-start: 1rem;
-}
-
-.settings-mail-route-form {
-  display: grid;
-  gap: 0.75rem;
-  margin-block: 0.5rem;
-}
-
-.settings-mail-route-actions {
+.settings-mail-rules-header {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
+}
+
+.settings-mail-rules-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.settings-mail-table-wrapper {
+  overflow-x: auto;
+}
+
+.settings-mail-table {
+  inline-size: 100%;
+  min-inline-size: 32rem;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+.settings-mail-table :is(th, td) {
+  padding: 0.5rem;
+  text-align: start;
+  vertical-align: top;
+}
+
+.settings-mail-table th {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.settings-mail-table tr > :last-child:not([colspan]) {
+  inline-size: 3.25rem;
+  text-align: center;
+}
+
+.settings-mail-table tr {
+  border-block-end: 1px solid var(--border);
+}
+
+.settings-mail-table [data-slot="native-select-wrapper"] {
+  display: block;
+  inline-size: 100%;
+}
+
+.settings-mail-error {
+  margin: 0.375rem 0 0;
+  color: var(--destructive);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
 }
 
 .settings-mail-status {

@@ -42,7 +42,6 @@ export const mailInboundRoutes = sqliteTable(
     mailboxId: text("mailbox_id")
       .notNull()
       .references(() => mailboxes.id),
-    enabled: integer({ mode: "boolean" }).notNull(),
   },
   (table) => [index("mail_inbound_routes_mailbox").on(table.mailboxId)],
 );

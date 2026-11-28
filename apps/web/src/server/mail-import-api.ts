@@ -69,12 +69,7 @@ export const mailImportRoutes = (
       if (!Schema.is(MailboxId)(mailbox))
         return yield* jsonError(400, "Invalid mailbox ID");
       yield* operation(() =>
-        ensureDefaultMailbox(
-          env.DB,
-          env.INBOX_EMAIL_ADDRESS,
-          env.INBOX_EMAIL_FROM,
-          env.MAILBOX_ALIASES,
-        ),
+        ensureDefaultMailbox(env.DB, env.INBOX_EMAIL_FROM),
       );
       const destination = yield* operation(async () => {
         try {

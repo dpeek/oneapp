@@ -40,12 +40,7 @@ import {
 
 type PeopleEnv = Pick<
   WorkerEnv,
-  | "DB"
-  | "PROFILE_PHOTOS"
-  | "INBOX_EMAIL_ADDRESS"
-  | "INBOX_EMAIL_FROM"
-  | "MAILBOX_ALIASES"
-  | "INBOX_UPDATES"
+  "DB" | "PROFILE_PHOTOS" | "INBOX_EMAIL_FROM" | "INBOX_UPDATES"
 >;
 
 const isId = Schema.is(PersonId);
@@ -136,7 +131,7 @@ const savePerson = async (
   input: typeof PersonDraft.Type,
   defer: (work: Promise<unknown>) => void,
 ) => {
-  const managed = await managedPersonAddresses(env.DB, env.INBOX_EMAIL_ADDRESS);
+  const managed = await managedPersonAddresses(env.DB);
   const current = id ? await readProfile(env.DB, id, managed) : null;
   if (id && !current) return { status: "missing" } as const;
   if (input.revision !== current?.revision) return { status: "stale" } as const;
@@ -185,13 +180,7 @@ const savePerson = async (
   const mailbox = noiseChanges.length
     ? mailDatabase(env.DB, defaultMailboxId)
     : null;
-  if (mailbox)
-    await ensureDefaultMailbox(
-      env.DB,
-      env.INBOX_EMAIL_ADDRESS,
-      env.INBOX_EMAIL_FROM,
-      env.MAILBOX_ALIASES,
-    );
+  if (mailbox) await ensureDefaultMailbox(env.DB, env.INBOX_EMAIL_FROM);
 
   const owner = current?.id ?? crypto.randomUUID();
   const bytes = input.photo ? readPhotoBytes(input.photo) : null;
@@ -272,7 +261,7 @@ export const peopleRoutes = (
   env: PeopleEnv,
   defer: (work: Promise<unknown>) => void,
 ) => {
-  const managed = () => managedPersonAddresses(env.DB, env.INBOX_EMAIL_ADDRESS);
+  const managed = () => managedPersonAddresses(env.DB);
   const notifyContactChange = () =>
     defer(notifyInbox({ ...env, DB: mailDatabase(env.DB, defaultMailboxId) }));
 

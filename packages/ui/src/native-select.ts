@@ -1,5 +1,10 @@
 import * as stylex from "@stylexjs/stylex";
-import type { Html, HtmlBuilder } from "foldkit/html";
+import type {
+  Attribute,
+  ChildAttribute,
+  Html,
+  HtmlBuilder,
+} from "foldkit/html";
 import { createField, field } from "./field.ts";
 import { controls } from "./tokens.stylex.ts";
 
@@ -22,7 +27,11 @@ const styles = stylex.create({
     borderStyle: "solid",
     borderWidth: 1,
     borderRadius: controls.pillRadius,
-    borderColor: { default: controls.border, ":focus-visible": controls.focus },
+    borderColor: {
+      default: controls.border,
+      ":focus-visible": controls.focus,
+      '[aria-invalid="true"]': controls.destructive,
+    },
     backgroundColor: "transparent",
     color: controls.foreground,
     fontFamily: "inherit",
@@ -33,6 +42,7 @@ const styles = stylex.create({
     boxShadow: {
       default: "0 1px 2px rgb(0 0 0 / 5%)",
       ":focus-visible": `0 0 0 1px color-mix(in srgb, ${controls.focus} 35%, transparent)`,
+      ':focus-visible[aria-invalid="true"]': `0 0 0 1px color-mix(in srgb, ${controls.destructive} 35%, transparent)`,
     },
   },
   ghost: {
@@ -89,11 +99,13 @@ export const nativeSelect = <Message>(
     disabled = false,
     variant = "outline",
     showLabel = true,
+    attributes = [],
     onChange,
   }: NativeSelectProps & {
     disabled?: boolean;
     variant?: "outline" | "ghost";
     showLabel?: boolean;
+    attributes?: ReadonlyArray<Attribute<Message> | ChildAttribute>;
     onChange: (value: string) => Message;
   },
   h: HtmlBuilder<Message>,
@@ -116,6 +128,7 @@ export const nativeSelect = <Message>(
           h.Value(value),
           h.Disabled(disabled),
           h.OnChange(onChange),
+          ...attributes,
         ],
         options.map((option) =>
           h.option(

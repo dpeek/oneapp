@@ -1,7 +1,7 @@
 import { workspacePath } from "@orumai/core";
 import { MailboxId } from "@orumai/core/mail-import";
 import { Schema } from "effect";
-import { PersonEmail } from "./people-contract.ts";
+import { normalizePersonEmail, PersonEmail } from "./people-contract.ts";
 
 export const mailSettingsPath = `${workspacePath}/settings/mail`;
 export const mailSettingsApiPath = "/api/mail-settings";
@@ -25,12 +25,27 @@ export type Mailbox = typeof Mailbox.Type;
 export const Mailboxes = Schema.Struct({ mailboxes: Schema.Array(Mailbox) });
 export const NewMailbox = Schema.Struct({ name: MailboxName });
 
+const isPersonEmail = Schema.is(PersonEmail);
+export const exactInboundAddress = (name: string, domain: string) => {
+  const local = name.trim();
+  const address = normalizePersonEmail(`${local}@${domain}`);
+  return local.length <= 64 &&
+    !local.includes("*") &&
+    mailDomains.some((configured) => configured === domain) &&
+    isPersonEmail(address)
+    ? address
+    : null;
+};
+
 export const InboundRoute = Schema.Struct({
   address: PersonEmail,
   mailboxId: MailboxId,
-  enabled: Schema.Boolean,
 });
 export type InboundRoute = typeof InboundRoute.Type;
+export const InboundRouteEdit = Schema.Struct({
+  previous: InboundRoute,
+  route: InboundRoute,
+});
 export const MailSettings = Schema.Struct({
   domains: Schema.Array(Schema.Literals(mailDomains)),
   routes: Schema.Array(InboundRoute),

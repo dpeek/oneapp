@@ -160,7 +160,6 @@ import { digest } from "./digest.ts";
 import { ensureOwner } from "./provision-owner.ts";
 import { mcpOAuth } from "./mcp-oauth.ts";
 import { mailPeople } from "./mail-people.ts";
-import { seedMailRoutes } from "./mail-routing.ts";
 import worker from "./worker.ts";
 import {
   publishWorkspaceChange,
@@ -187,9 +186,7 @@ const setup = async (
   inbox?: Partial<
     Pick<
       WorkerEnv,
-      | "MAILBOX_ALIASES"
       | "INBOX_MESSAGES"
-      | "INBOX_EMAIL_ADDRESS"
       | "INBOX_UPDATES"
       | "INBOX_EMAIL_FROM"
       | "SENT_MESSAGES"
@@ -199,7 +196,11 @@ const setup = async (
       | "PUSH_PRIVATE_KEY"
       | "PUSH_SUBJECT"
     >
-  > & { INBOX_SEND?: SendEmail; INBOX_SEND_LIMIT?: RateLimit },
+  > & {
+    INBOX_SEND?: SendEmail;
+    INBOX_SEND_LIMIT?: RateLimit;
+    receivingAddresses?: readonly string[];
+  },
 ) => {
   const migrationRoot = new URL("../../drizzle/", import.meta.url).pathname;
   for (const entry of Array.from(
@@ -242,10 +243,11 @@ const setup = async (
     string,
     { bytes: Uint8Array<ArrayBuffer>; customMetadata: { sha256: string } }
   >();
+  const { receivingAddresses = [], ...bindings } = inbox ?? {};
   const env = {
     INBOX_MESSAGES: {},
     SENT_MESSAGES: {},
-    ...inbox,
+    ...bindings,
     VAULT_FILES: {
       put: async (
         id: string,
@@ -345,12 +347,13 @@ const setup = async (
       .map((header) => header.split(";")[0])
       .join("; ");
 
-  await ensureDefaultMailbox(
-    env.DB,
-    env.INBOX_EMAIL_ADDRESS,
-    env.INBOX_EMAIL_FROM,
-    env.MAILBOX_ALIASES,
-  );
+  await ensureDefaultMailbox(env.DB, env.INBOX_EMAIL_FROM);
+  for (const address of receivingAddresses)
+    sqlite
+      .query(
+        "INSERT INTO mail_inbound_routes (address, mailbox_id) VALUES (?, 'personal')",
+      )
+      .run(address);
   return {
     env,
     call,
@@ -716,7 +719,7 @@ it("shares private people profiles across aliases and keeps account addresses li
   const mailbox = "mail@app.example.net";
   const photos = new Map<string, Uint8Array<ArrayBuffer>>();
   const { call, request, signIn, cookies, finishWork } = await setup(sqlite, {
-    INBOX_EMAIL_ADDRESS: mailbox,
+    receivingAddresses: [mailbox],
     PROFILE_PHOTOS: {
       put: async (key: string, bytes: Uint8Array<ArrayBuffer>) =>
         photos.set(key, bytes),
@@ -1209,7 +1212,7 @@ it("resolves mail profiles by exact address and the most specific assigned compa
   const mailbox = "mail@billing.acme.com";
   const empty = { list: async () => ({ objects: [], truncated: false }) };
   const { call, db, signIn, cookies } = await setup(sqlite, {
-    INBOX_EMAIL_ADDRESS: mailbox,
+    receivingAddresses: [mailbox],
     INBOX_MESSAGES: {
       ...empty,
       get: async () => null,
@@ -1317,7 +1320,7 @@ it("lets only the owner send plain-text mail from the configured Inbox address",
   const put = vi.fn(save);
   const limit = vi.fn(async (_input: { key: string }) => ({ success: true }));
   const { call, request, signIn, cookies } = await setup(sqlite, {
-    INBOX_EMAIL_ADDRESS: from,
+    receivingAddresses: [from],
     INBOX_EMAIL_FROM: from,
     INBOX_SEND: { send } as SendEmail,
     INBOX_SEND_LIMIT: { limit },
@@ -1494,7 +1497,7 @@ it("sanitizes formatted mail before delivery and preserves its Sent copy", async
   }));
   const copies = new Map<string, string>();
   const { call, signIn, cookies } = await setup(sqlite, {
-    INBOX_EMAIL_ADDRESS: "mail@app.example.net",
+    receivingAddresses: ["mail@app.example.net"],
     INBOX_EMAIL_FROM: "mail@app.example.net",
     INBOX_SEND: { send } as SendEmail,
     INBOX_SEND_LIMIT: { limit: async () => ({ success: true }) },
@@ -1609,7 +1612,7 @@ it("threads replies from the stored message and archives the sent copy", async (
     return {};
   });
   const { call, db, signIn, cookies } = await setup(sqlite, {
-    INBOX_EMAIL_ADDRESS: from,
+    receivingAddresses: [from],
     INBOX_EMAIL_FROM: from,
     INBOX_SEND: { send } as SendEmail,
     INBOX_SEND_LIMIT: { limit: async () => ({ success: true }) },
@@ -1823,7 +1826,7 @@ it("classifies the latest incoming message and applies exact sender overrides be
   const { call, db, request, session, connect, useTool } = await setupMcp(
     sqlite,
     {
-      INBOX_EMAIL_ADDRESS: address,
+      receivingAddresses: [address],
       INBOX_MESSAGES: {
         list: async () => ({ objects: [newsletter], truncated: false }),
         get: async () => newsletter,
@@ -2039,7 +2042,7 @@ it("groups existing mail across Inbox and Sent as its threads are discovered", a
   };
   const publish = vi.fn(async () => {});
   const { call, db, request, signIn, cookies } = await setup(sqlite, {
-    INBOX_EMAIL_ADDRESS: address,
+    receivingAddresses: [address],
     INBOX_UPDATES: {
       getByName: () => ({ publish }),
     } as WorkerEnv["INBOX_UPDATES"],
@@ -2603,7 +2606,7 @@ it("serves received attachments privately and previews only supported media", as
     };
   });
   const { call, signIn, cookies } = await setup(sqlite, {
-    INBOX_EMAIL_ADDRESS: mailbox,
+    receivingAddresses: [mailbox],
     INBOX_MESSAGES: { get } as unknown as WorkerEnv["INBOX_MESSAGES"],
   });
   expect((await call(inboxAttachmentApi(id, 0))).status).toBe(401);
@@ -2705,7 +2708,7 @@ it("returns sanitized HTML and CID images alongside plain text, with a bounded f
     };
   });
   const { call, request, signIn, cookies } = await setup(sqlite, {
-    INBOX_EMAIL_ADDRESS: "mail@app.example.net",
+    receivingAddresses: ["mail@app.example.net"],
     INBOX_MESSAGES: { get } as unknown as WorkerEnv["INBOX_MESSAGES"],
   });
   expect((await call(inboxMessageApi(id))).status).toBe(401);
@@ -2895,7 +2898,7 @@ it("allows the owner to delete and recover stored mail before automatic expiry",
     stored.delete(key);
   });
   const { call, request, signIn, cookies, db } = await setup(sqlite, {
-    INBOX_EMAIL_ADDRESS: address,
+    receivingAddresses: [address],
     INBOX_MESSAGES: {
       list,
       get,
@@ -4531,9 +4534,8 @@ it("sends and threads mail with a separate MCP grant and a durable request ID", 
   const limit = vi.fn(async (_input: { key: string }) => ({ success: true }));
   const { call, connect, names, useTool, request, db, origin, session } =
     await setupMcp(sqlite, {
-      INBOX_EMAIL_ADDRESS: from,
+      receivingAddresses: [from, alias],
       INBOX_EMAIL_FROM: from,
-      MAILBOX_ALIASES: alias,
       INBOX_SEND: { send } as SendEmail,
       INBOX_SEND_LIMIT: { limit },
       INBOX_MESSAGES: {
@@ -4991,7 +4993,7 @@ it("searches live contacts and filters mail conversations only with both grants"
   using sqlite = new Database(":memory:");
   const mailbox = "owner@billing.acme.com";
   const { call, request, connect, names, useTool, db, origin, session } =
-    await setupMcp(sqlite, { INBOX_EMAIL_ADDRESS: mailbox });
+    await setupMcp(sqlite, { receivingAddresses: [mailbox] });
   const create = async (draft: object): Promise<Person> => {
     const response = await call(peopleApiPath, draft, session);
     expect(response.status).toBe(201);
@@ -5480,7 +5482,6 @@ it("routes apex SMTP recipients to their mailboxes and sends from the primary ad
     messageId: "<apex-routing@example.net>",
   }));
   const { env, call, cookies, request, signIn } = await setup(sqlite, {
-    INBOX_EMAIL_ADDRESS: address,
     INBOX_MESSAGES: {
       put,
       get: async () => null,
@@ -5489,6 +5490,7 @@ it("routes apex SMTP recipients to their mailboxes and sends from the primary ad
     INBOX_UPDATES: {
       getByName: inbox,
     } as unknown as WorkerEnv["INBOX_UPDATES"],
+    INBOX_EMAIL_FROM: address,
     INBOX_SEND: { send } as SendEmail,
     INBOX_SEND_LIMIT: { limit: async () => ({ success: true }) },
     SENT_MESSAGES: {
@@ -5499,54 +5501,84 @@ it("routes apex SMTP recipients to their mailboxes and sends from the primary ad
   const session = cookies(await signIn(password));
   expect((await call(mailSettingsApiPath)).status).toBe(401);
   expect((await call(inboundRoutesApiPath, {})).status).toBe(401);
-  await seedMailRoutes(env.DB);
+  const readRules = async () =>
+    (await call(mailSettingsApiPath, undefined, session)).json();
+  expect(await readRules()).toMatchObject({ routes: [] });
+  expect(
+    await (await call(conversationsApiPath, undefined, session)).json(),
+  ).toMatchObject({ address: null, sender: address });
   const created = await call(mailboxesApiPath, { name: "  Work  " }, session);
   expect(created.status).toBe(201);
   const work = (await created.json()) as { id: string; name: string };
   expect(work.name).toBe("Work");
-  const create = (address: string, mailboxId: string, enabled = true) =>
-    call(inboundRoutesApiPath, { address, mailboxId, enabled }, session);
-  const edit = (address: string, mailboxId: string, enabled: boolean) =>
+  const create = (address: string, mailboxId: string) =>
+    call(inboundRoutesApiPath, { address, mailboxId }, session);
+  const change = (method: "PUT" | "DELETE", body: object) =>
     request(inboundRoutesApiPath, {
-      method: "PUT",
+      method,
       headers: {
         "content-type": "application/json",
         "x-effect-auth-csrf": "1",
         origin: env.APP_ORIGIN,
         cookie: session,
       },
-      body: JSON.stringify({ address, mailboxId, enabled }),
+      body: JSON.stringify(body),
     });
+  const original = { address: "dispatch@dpeek.com", mailboxId: "personal" };
+  const updated = { address: "orders@orumai.app", mailboxId: work.id };
+  const deleted = { address: "deleted@winterpeek.com", mailboxId: work.id };
+  expect((await create(address, "personal")).status).toBe(201);
   expect((await create("Existing@dpeek.com", "personal")).status).toBe(201);
-  expect((await create("dispatch@dpeek.com", work.id)).status).toBe(201);
-  expect((await create("blocked@dpeek.com", work.id, false)).status).toBe(201);
+  expect((await create(original.address, original.mailboxId)).status).toBe(201);
+  expect((await create(deleted.address, deleted.mailboxId)).status).toBe(201);
   expect((await create("existing@dpeek.com", work.id)).status).toBe(409);
   expect((await create("invalid@other.example", work.id)).status).toBe(400);
   expect((await create("*@dpeek.com", work.id)).status).toBe(400);
-  expect((await edit("support@orumai.app", work.id, false)).status).toBe(200);
-  expect((await edit(address, work.id, false)).status).toBe(200);
-  await seedMailRoutes(env.DB);
-  env.INBOX_EMAIL_FROM = address;
+  expect((await create("incomplete@dpeek.com", "")).status).toBe(400);
   expect(
-    await (await call(mailSettingsApiPath, undefined, session)).json(),
-  ).toMatchObject({
-    domains: ["dpeek.com", "orumai.app", "winterpeek.com"],
-    mailboxes: [{ id: "personal", name: "Personal" }, work],
-    routes: expect.arrayContaining([
-      { address: "support@orumai.app", mailboxId: work.id, enabled: false },
-      { address, mailboxId: work.id, enabled: false },
-      { address: "david@winterpeek.com", mailboxId: "personal", enabled: true },
-    ]),
+    (
+      await change("PUT", {
+        previous: original,
+        route: { ...updated, address: "existing@dpeek.com" },
+      })
+    ).status,
+  ).toBe(409);
+  expect(
+    (
+      await change("PUT", {
+        previous: original,
+        route: { ...updated, mailboxId: "missing" },
+      })
+    ).status,
+  ).toBe(409);
+  expect(await readRules()).toMatchObject({
+    routes: expect.arrayContaining([original, deleted]),
   });
   expect(
-    await (await call(conversationsApiPath, undefined, session)).json(),
-  ).toMatchObject({ sender: address });
+    (await change("PUT", { previous: original, route: updated })).status,
+  ).toBe(200);
+  expect((await change("DELETE", deleted)).status).toBe(204);
+
+  await worker.scheduled({}, env);
+  expect(await readRules()).toMatchObject({
+    domains: ["dpeek.com", "orumai.app", "winterpeek.com"],
+    mailboxes: [{ id: "personal", name: "Personal" }, work],
+    routes: [
+      { address: "existing@dpeek.com", mailboxId: "personal" },
+      { address, mailboxId: "personal" },
+      updated,
+    ],
+  });
+  expect(
+    await (
+      await call(mailboxUrl(conversationsApiPath, work.id), undefined, session)
+    ).json(),
+  ).toMatchObject({ address: updated.address });
   expect(
     await (
       await call(mailboxUrl(conversationsApiPath, work.id), undefined, session)
     ).json(),
   ).not.toHaveProperty("sender");
-  expect((await edit(address, "personal", true)).status).toBe(200);
 
   sqlite.exec(`
     INSERT INTO accounts (id, active, security_revision) VALUES ('team-fixture', 1, '1');
@@ -5618,17 +5650,10 @@ it("routes apex SMTP recipients to their mailboxes and sends from the primary ad
     },
   );
   try {
-    for (const to of [
-      address,
-      "existing@dpeek.com",
-      "team@orumai.app",
-      "admin@orumai.app",
-      "david@winterpeek.com",
-      "dispatch@dpeek.com",
-    ]) {
+    for (const to of [address, "existing@dpeek.com", updated.address]) {
       expect(await receive(to)).not.toHaveBeenCalled();
       const [key, , metadata] = put.mock.lastCall!;
-      const mailboxId = to === "dispatch@dpeek.com" ? work.id : "personal";
+      const mailboxId = to === updated.address ? work.id : "personal";
       expect(key.startsWith(`mailboxes/${work.id}/`)).toBe(
         mailboxId === work.id,
       );
@@ -5645,13 +5670,17 @@ it("routes apex SMTP recipients to their mailboxes and sends from the primary ad
     for (const to of [
       "unlisted@dpeek.com",
       "unassigned@orumai.app",
-      "blocked@dpeek.com",
-      "support@orumai.app",
+      original.address,
+      deleted.address,
+      email,
       "mail@app.dpeek.com",
     ]) {
       expect(await receive(to)).toHaveBeenCalledWith("Unknown recipient");
     }
-    expect(put).toHaveBeenCalledTimes(6);
+    expect(put).toHaveBeenCalledTimes(3);
+    expect((await create(deleted.address, deleted.mailboxId)).status).toBe(201);
+    expect(await receive(deleted.address)).not.toHaveBeenCalled();
+    expect((await change("DELETE", deleted)).status).toBe(204);
   } finally {
     vi.unstubAllGlobals();
   }
@@ -5662,12 +5691,15 @@ it("routes apex SMTP recipients to their mailboxes and sends from the primary ad
   expect(personal).toMatchObject({ address, sender: address });
   expect(
     personal.messages.map(({ subject }: { subject: string }) => subject),
-  ).not.toContain("Fixture for dispatch@dpeek.com");
+  ).not.toContain(`Fixture for ${updated.address}`);
   const selected = await (
     await call(mailboxUrl(allMailApiPath, work.id), undefined, session)
   ).json();
-  expect(selected.messages).toMatchObject([
-    { subject: "Fixture for dispatch@dpeek.com" },
+  expect(
+    selected.messages.map(({ subject }: { subject: string }) => subject).sort(),
+  ).toEqual([
+    `Fixture for ${deleted.address}`,
+    `Fixture for ${updated.address}`,
   ]);
   expect(
     (await call(inboxMessageApi(selected.messages[0].id), undefined, session))
@@ -5741,7 +5773,7 @@ it("searches legacy imports, incoming MIME and sent replies by body with the mai
     },
   };
   const { connect, useTool, db, env, origin } = await setupMcp(sqlite, {
-    INBOX_EMAIL_ADDRESS: mailAddress,
+    receivingAddresses: [mailAddress],
     INBOX_EMAIL_FROM: mailAddress,
     INBOX_SEND: {
       send: async () => ({ messageId: "<reply@example.net>" }),
@@ -8719,7 +8751,7 @@ it("sends binary attachments to multiple recipients and retains downloadable Sen
   }));
   const copies = new Map<string, string>();
   const { call, request, signIn, cookies } = await setup(sqlite, {
-    INBOX_EMAIL_ADDRESS: "mail@app.example.net",
+    receivingAddresses: ["mail@app.example.net"],
     INBOX_EMAIL_FROM: "mail@app.example.net",
     INBOX_SEND: { send } as SendEmail,
     INBOX_SEND_LIMIT: { limit: async () => ({ success: true }) },
@@ -9066,8 +9098,11 @@ it("uses mailbox aliases for Reply All and never reads another mailbox's origina
     };
   });
   const { call, signIn, cookies } = await setup(sqlite, {
-    INBOX_EMAIL_ADDRESS: "mail@app.example.net",
-    MAILBOX_ALIASES: "mail@dpeek.com,david@winterpeek.com",
+    receivingAddresses: [
+      "mail@app.example.net",
+      "mail@dpeek.com",
+      "david@winterpeek.com",
+    ],
     INBOX_MESSAGES: { get } as unknown as WorkerEnv["INBOX_MESSAGES"],
   });
   const session = cookies(await signIn(password));

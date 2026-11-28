@@ -52,9 +52,7 @@ export const requireMailbox = async (
 
 export const ensureDefaultMailbox = async (
   db: D1Database,
-  receivingAddress?: string,
   sendingAddress?: string,
-  aliases?: string,
 ) => {
   await db
     .prepare(
@@ -63,33 +61,16 @@ export const ensureDefaultMailbox = async (
     .bind(defaultMailboxId, ownerId)
     .run();
   await requireMailbox(db, defaultMailboxId, ownerId);
-  const receiving = new Set(
-    [receivingAddress, ...(aliases?.split(",") ?? [])]
-      .filter((address): address is string => Boolean(address?.trim()))
-      .map(normalizePersonEmail),
-  );
-  receiving.delete(retiredMailAddress);
-  const statements = [...receiving].map((address) => {
-    Schema.decodeUnknownSync(PersonEmail)(address);
-    return db
-      .prepare(
-        "INSERT OR IGNORE INTO mail_inbound_routes (address, mailbox_id, enabled) VALUES (?, ?, 1)",
-      )
-      .bind(address, defaultMailboxId);
-  });
   const sender = normalizePersonEmail(sendingAddress ?? "");
   if (sender && sender !== retiredMailAddress) {
     Schema.decodeUnknownSync(PersonEmail)(sender);
-    statements.push(
-      db
-        .prepare(
-          "INSERT OR IGNORE INTO mailbox_addresses (address, mailbox_id, can_send) VALUES (?, ?, 1)",
-        )
-        .bind(sender, defaultMailboxId),
-    );
+    await db
+      .prepare(
+        "INSERT OR IGNORE INTO mailbox_addresses (address, mailbox_id, can_send) VALUES (?, ?, 1)",
+      )
+      .bind(sender, defaultMailboxId)
+      .run();
   }
-  // Bootstrap only. Persisted receiving and sending decisions survive redeploys.
-  if (statements.length) await db.batch(statements);
 };
 
 export const mailboxIdentities = async (db: MailDatabase) => {
@@ -97,7 +78,7 @@ export const mailboxIdentities = async (db: MailDatabase) => {
     .prepare(
       `SELECT address, max(canReceive) AS canReceive, max(canSend) AS canSend
        FROM (
-         SELECT address, enabled AS canReceive, 0 AS canSend FROM mail_inbound_routes WHERE mailbox_id = ?1
+         SELECT address, 1 AS canReceive, 0 AS canSend FROM mail_inbound_routes WHERE mailbox_id = ?1
          UNION ALL
          SELECT address, 0, can_send FROM mailbox_addresses WHERE mailbox_id = ?1 AND can_send = 1
        ) GROUP BY address ORDER BY address`,
@@ -123,7 +104,7 @@ export const resolveMailRecipient = async (
   if (!Schema.is(PersonEmail)(address)) return null;
   const route = await db
     .prepare(
-      "SELECT mailbox_id AS mailboxId FROM mail_inbound_routes WHERE address = ? AND enabled = 1",
+      "SELECT mailbox_id AS mailboxId FROM mail_inbound_routes WHERE address = ?",
     )
     .bind(address)
     .first<{ mailboxId: string }>();

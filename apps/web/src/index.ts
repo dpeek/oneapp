@@ -1367,7 +1367,7 @@ const update = (
     GotPushSettingsMessage: ({ message }) => foldPushSettings(model, message),
     GotMailSettingsMessage: ({ message }) =>
       message._tag === "SessionExpired" &&
-      message.request === model.mailSettings.request
+      MailSettings.isCurrentRequest(model.mailSettings, message.request)
         ? update(model, Message.LoadedAccount({ account: null }))
         : foldMailSettings(model, message),
     GotAccountSettingsMessage: ({ message }) => {

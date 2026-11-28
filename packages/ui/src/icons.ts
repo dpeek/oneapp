@@ -70,6 +70,11 @@ export const filesIconPaths = [
   "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z",
 ] as const;
 
+export const uploadIconPaths = [
+  "M12 16V3m-5 5 5-5 5 5",
+  "M3 16v3a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3",
+] as const;
+
 export const trashIconPaths = [
   "M3 6h18M9 6V4h6v2m4 0-1 14H6L5 6m5 4v6m4-6v6",
 ] as const;

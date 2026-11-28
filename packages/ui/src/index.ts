@@ -55,6 +55,7 @@ export {
   signalMediumIconPaths,
   taskIconPaths,
   trashIconPaths,
+  uploadIconPaths,
   userCheckIconPaths,
 } from "./icons.ts";
 export { createInputGroup } from "./input-group.ts";

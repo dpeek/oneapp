@@ -147,7 +147,10 @@ body:has(.app-shell, .session-check-loading) {
   color: var(--text);
 }
 
-.app-nav-create,
+.app-nav-create {
+  margin-block-start: auto;
+}
+
 .app-nav-more {
   display: none;
 }
@@ -1309,6 +1312,7 @@ orumai-vault-reader {
   .app-nav-create {
     display: grid;
     place-items: center;
+    margin-block-start: 0;
   }
 
   .app-nav-create > button {
@@ -1420,7 +1424,7 @@ orumai-vault-reader {
   }
 }
 
-@media (display-mode: standalone) and (width > 40rem) and (max-height: 30rem) {
+@media (width > 40rem) and (max-height: 31rem) {
   .app-shell > .app-nav {
     overflow-y: auto;
   }

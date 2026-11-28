@@ -23,7 +23,6 @@ import {
   CommandMenu,
   Dialog,
   field,
-  filesIconPaths,
   input,
   item,
   itemGroup,
@@ -34,6 +33,7 @@ import {
   Sheet,
   spinner,
   taskIconPaths,
+  uploadIconPaths,
 } from "@orumai/ui";
 import * as Client from "@yielded/auth/Client";
 import { Effect, Option, Schedule, Schema, Stream } from "effect";
@@ -710,8 +710,8 @@ const creationItems = [
   },
   {
     value: "upload",
-    label: "File",
-    iconPaths: filesIconPaths,
+    label: "Upload",
+    iconPaths: uploadIconPaths,
   },
 ] as const;
 const creationMenu = CommandMenu.create<

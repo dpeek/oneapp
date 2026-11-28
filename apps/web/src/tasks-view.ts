@@ -76,7 +76,7 @@ import {
 } from "./workspace.ts";
 
 import { type TextField, saving } from "./task-edits.ts";
-import { type Property } from "./task-properties.ts";
+import { propertyLabels, type Property } from "./task-properties.ts";
 import {
   assigneeOptions,
   priorityOptions,
@@ -133,6 +133,7 @@ const runActivity = (
     return Tooltip.tooltip(
       {
         model: activityTooltip(row.model, row.taskId),
+        placement: "bottom-start",
         content: [label, runReason(run, now), run.summary]
           .filter(Boolean)
           .join(" · "),
@@ -198,10 +199,11 @@ const taskListLabels = {
   all: "All tasks",
 } satisfies Record<TaskList, string>;
 const rowPropertyFields = [
-  ["status", "Status"],
-  ["priority", "Priority"],
-  ["assignee", "Assignee"],
-] as const satisfies readonly (readonly [Property, string])[];
+  "status",
+  "priority",
+  "assignee",
+  "tagIds",
+] as const satisfies readonly Property[];
 
 const taskRow = (
   saved: Task,
@@ -230,27 +232,19 @@ const taskRow = (
       h.td(
         [],
         [
-          h.div(
-            [h.Class("task-row-main")],
+          h.a(
             [
-              h.a(
-                [
-                  h.Class("task-row-link"),
-                  h.Href(taskPath(task.id)),
-                  h.DataAttribute("task-id", task.id),
-                  ...(model.selectedId === task.id
-                    ? [h.AriaCurrent("page")]
-                    : []),
-                  h.Title(task.title),
-                ],
-                [task.title],
-              ),
-              taskProperty(model, task, "tagIds", "row", tags, viewInputs, h),
+              h.Class("task-row-link"),
+              h.Href(taskPath(task.id)),
+              h.DataAttribute("task-id", task.id),
+              ...(model.selectedId === task.id ? [h.AriaCurrent("page")] : []),
+              h.Title(task.title),
             ],
+            [h.span([h.Class("task-row-title")], [task.title])],
           ),
         ],
       ),
-      ...rowPropertyFields.map(([field]) =>
+      ...rowPropertyFields.map((field) =>
         h.td(
           [h.Key(field), h.Class(`task-property-cell task-cell-${field}`)],
           [taskProperty(model, task, field, "row", tags, viewInputs, h)],
@@ -387,14 +381,14 @@ const taskTable = (
                 [],
               ),
               h.th([h.Key("Task"), h.Scope("col")], ["Task"]),
-              ...rowPropertyFields.map(([field, label]) =>
+              ...rowPropertyFields.map((field) =>
                 h.th(
                   [
                     h.Key(field),
                     h.Scope("col"),
                     h.Class(`task-property-cell task-cell-${field}`),
                   ],
-                  [h.span([], [label])],
+                  [h.span([], [propertyLabels[field]])],
                 ),
               ),
               h.th(
@@ -420,7 +414,7 @@ const taskPlaceholders = (h: HtmlBuilder<Message>) =>
       [
         h.td([], []),
         h.td([], [skeleton(index % 2 ? "md" : "lg", h)]),
-        ...rowPropertyFields.map(([field]) =>
+        ...rowPropertyFields.map((field) =>
           h.td(
             [h.Key(field), h.Class(`task-property-cell task-cell-${field}`)],
             [skeleton("sm", h)],

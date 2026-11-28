@@ -165,11 +165,7 @@ const tagLabel = (
     [h.Class("task-tag-names")],
     [
       h.span([h.Class("task-tag-name")], [names[0]!]),
-      h.span([h.Class("task-tag-overflow")], [`+${names.length - 1}`]),
-      h.span([h.Class("task-tag-name task-tag-extra")], [names[1]!]),
-      ...(names.length > 2
-        ? [h.span([h.Class("task-tag-extra")], [`+${names.length - 2}`])]
-        : []),
+      h.span([], [`+${names.length - 1}`]),
     ],
   );
 };

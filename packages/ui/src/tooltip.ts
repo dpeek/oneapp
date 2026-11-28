@@ -1,4 +1,5 @@
 import { Tooltip } from "@foldkit/ui";
+import type { Placement } from "@foldkit/ui/anchor";
 import * as stylex from "@stylexjs/stylex";
 import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html";
 import { controls } from "./tokens.stylex.ts";
@@ -27,6 +28,7 @@ export const tooltip = <ParentMessage>(
   props: {
     model: typeof Model.Type;
     content: string;
+    placement?: Placement;
     renderTrigger: (attributes: ReadonlyArray<ChildAttribute>) => Html;
     toParentMessage: (message: typeof Message.Type) => ParentMessage;
   },
@@ -37,7 +39,7 @@ export const tooltip = <ParentMessage>(
     model: props.model,
     view: Tooltip.view,
     viewInputs: {
-      anchor: { placement: "right", gap: 8, portal: false },
+      anchor: { placement: props.placement ?? "right", gap: 8, portal: false },
       toView: ({ trigger, panel, isVisible }) =>
         h.span(
           [h.Class(stylex.props(styles.root).className ?? "")],

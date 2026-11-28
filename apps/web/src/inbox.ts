@@ -332,7 +332,7 @@ export const Message = defineMessageUnion({
     name: Schema.String,
     suggestedCompany: Schema.optionalKey(Schema.Boolean),
     suggestedDomain: Schema.optionalKey(Schema.String),
-    linkSender: Schema.optionalKey(Schema.Boolean),
+    canLinkSender: Schema.optionalKey(Schema.Boolean),
   },
   RequestedReply: {},
   RequestedReplyAll: {},
@@ -2665,6 +2665,7 @@ const messageItem = (
             name: leadProfile?.name || lead.name,
             appearance: lead.appearance,
             editLabel: `Edit profile for ${lead.address}`,
+            canLinkSender: model.folder === "noise",
           }),
         ],
       ),
@@ -3106,6 +3107,7 @@ const profileAvatar = (
     aliases = [],
     appearance,
     editLabel,
+    canLinkSender,
   }: {
     address: string;
     person: PersonSummary | undefined;
@@ -3113,6 +3115,7 @@ const profileAvatar = (
     aliases?: readonly string[];
     appearance?: MailPerson["appearance"];
     editLabel: string;
+    canLinkSender?: boolean;
   },
 ) => {
   const tooltip = participantTooltip(name, address, aliases);
@@ -3136,6 +3139,7 @@ const profileAvatar = (
             Message.RequestedPerson({
               address,
               name,
+              ...(canLinkSender ? { canLinkSender } : {}),
               ...(!person && appearance?.kind === "service"
                 ? {
                     suggestedCompany: true,
@@ -3495,14 +3499,8 @@ const entryView = (
   const profiles = findProfiles(model.thread?.profiles);
   const participantAvatars = groupParticipants(participants, profiles);
   const latest = messages.at(-1);
-  const senderAddress = model.thread?.senderRule?.address;
-  const senderProfile = senderAddress ? profiles.get(senderAddress) : undefined;
-  const canLinkSender =
-    model.folder === "noise" &&
-    senderAddress &&
-    (!senderProfile || senderProfile.kind === "company");
-  const incomingSender = messages.findLast(({ folder }) => folder === "inbox")
-    ?.people?.sender;
+  const noiseSender =
+    model.folder === "noise" ? model.thread?.senderRule?.address : undefined;
   const grouped = messages.length > 1;
   const middleCount = model.middleRevealed
     ? 0
@@ -3565,32 +3563,13 @@ const entryView = (
                               aliases,
                               appearance,
                               editLabel: `Edit participant profile for ${address}`,
+                              canLinkSender:
+                                normalizePersonEmail(address) === noiseSender,
                             }),
                           }),
                         ),
                         h,
                         "Participant profiles",
-                      ),
-                    ]
-                  : []),
-                ...(canLinkSender
-                  ? [
-                      button(
-                        {
-                          variant: "outline",
-                          size: "sm",
-                          attributes: [
-                            h.AriaHasPopup("dialog"),
-                            h.AriaControls(personDialogId),
-                          ],
-                          onClick: Message.RequestedPerson({
-                            address: senderAddress,
-                            name: incomingSender?.name ?? "",
-                            linkSender: true,
-                          }),
-                          children: ["Link sender to a person"],
-                        },
-                        h,
                       ),
                     ]
                   : []),
@@ -3625,6 +3604,8 @@ const entryView = (
                       name,
                       appearance: sender?.appearance,
                       editLabel: `Edit profile for ${address}`,
+                      canLinkSender:
+                        model.folder === "noise" && folder === "inbox",
                     }),
                     summary: [
                       preview

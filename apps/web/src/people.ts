@@ -68,6 +68,7 @@ export const Model = Schema.Struct({
   kind: ContactKind,
   suggestedDomains: Schema.Array(Schema.String),
   creating: Schema.Boolean,
+  canLinkSender: Schema.Boolean,
   linkSender: Schema.Boolean,
   linkPeople: Schema.Array(Person),
   person: Schema.NullOr(Person),
@@ -108,6 +109,7 @@ export const initial: Model = {
   kind: "person",
   suggestedDomains: [],
   creating: false,
+  canLinkSender: false,
   linkSender: false,
   linkPeople: [],
   person: null,
@@ -140,10 +142,11 @@ export const Message = defineMessageUnion({
     suggestedName: Schema.optionalKey(Schema.String),
     suggestedKind: Schema.optionalKey(ContactKind),
     suggestedDomain: Schema.optionalKey(Schema.String),
-    linkSender: Schema.optionalKey(Schema.Boolean),
+    canLinkSender: Schema.optionalKey(Schema.Boolean),
   },
   Created: { kind: ContactKind },
   ChangedKind: { kind: ContactKind },
+  RequestedSenderLink: {},
   SelectedLinkPerson: { id: Schema.String },
   Closed: {},
   Mounted: {},
@@ -599,6 +602,9 @@ const resetEditor = (model: Model): Model => ({
   directory: model.directory,
 });
 
+const canLinkAddress = ({ canLinkSender, person }: Model) =>
+  canLinkSender && (!person || person.kind === "company");
+
 const loadDirectory = (model: Model): Update.Return<Model, Message> => {
   const request = crypto.randomUUID();
   return {
@@ -739,6 +745,14 @@ export const update = (
         if (model.person?.self) return { model };
         return { model: { ...model, kind } };
       },
+      RequestedSenderLink: () =>
+        model.dialog.isOpen &&
+        model.ready &&
+        !model.linkSender &&
+        !model.saveRequest &&
+        canLinkAddress(model)
+          ? loadDialog({ ...model, linkSender: true, ready: false })
+          : { model },
       SelectedLinkPerson: ({ id }) =>
         model.linkSender && !model.saveRequest
           ? {
@@ -755,7 +769,7 @@ export const update = (
         suggestedName,
         suggestedKind,
         suggestedDomain,
-        linkSender = false,
+        canLinkSender = false,
       }) =>
         model.dialog.isOpen
           ? { model }
@@ -764,7 +778,7 @@ export const update = (
                 ...resetEditor(model),
                 editorKey: crypto.randomUUID(),
                 address,
-                linkSender,
+                canLinkSender,
                 kind: suggestedKind ?? "person",
                 suggestedDomains: suggestedDomain ? [suggestedDomain] : [],
                 suggestedName:
@@ -1385,6 +1399,7 @@ const profileForm = (
     formId: string;
     submit: Message;
     cancel: Message;
+    link?: Message;
     suggestedName?: string;
     heading?: string;
     kind?: typeof ContactKind.Type;
@@ -1403,6 +1418,20 @@ const profileForm = (
       ? photoPicker(h, person, name, profileAddress, pending)
       : null;
   const actions = [
+    ...(options.link
+      ? [
+          button(
+            {
+              variant: "ghost",
+              size: "sm",
+              disabled: pending,
+              onClick: options.link,
+              children: ["Link to a person"],
+            },
+            h,
+          ),
+        ]
+      : []),
     button(
       {
         variant: "outline",
@@ -1665,6 +1694,9 @@ export const view = Submodel.defineView<Model, Message>((model, h) => {
                       key: model.editorKey,
                       submit: Message.Submitted(),
                       cancel: Message.Closed(),
+                      ...(canLinkAddress(model)
+                        ? { link: Message.RequestedSenderLink() }
+                        : {}),
                       suggestedName: model.suggestedName,
                       kind: model.kind,
                       domains: model.suggestedDomains,

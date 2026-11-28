@@ -4,6 +4,7 @@ import {
   calendarIconPaths,
   ellipsisIcon,
   filesIconPaths,
+  kbd,
   linkIconPaths,
   mailIconPaths,
   navigationLinks,
@@ -112,9 +113,13 @@ const overflowDestinations = destinations.filter(
   ({ page }) => !primaryPages.has(page),
 );
 const mobileNavMedia = "(max-width: 40rem)";
+const TooltipTarget = Schema.Literals([...Page.literals, "create"]);
+type TooltipTarget = typeof TooltipTarget.Type;
+
+export const creationShortcut = "C";
 
 export const Model = Schema.Struct({
-  tooltips: Schema.Record(Page, Tooltip.Model),
+  tooltips: Schema.Record(TooltipTarget, Tooltip.Model),
   overflow: Popover.Model,
 });
 type Model = typeof Model.Type;
@@ -129,12 +134,13 @@ export const initial: Model = {
     vault: Tooltip.init({ id: "nav-vault" }),
     contacts: Tooltip.init({ id: "nav-contacts" }),
     settings: Tooltip.init({ id: "nav-settings" }),
+    create: Tooltip.init({ id: "nav-create" }),
   },
   overflow: Popover.init({ id: "nav-more" }),
 };
 
 export const Message = defineMessageUnion({
-  GotTooltipMessage: { page: Page, message: Tooltip.Message },
+  GotTooltipMessage: { target: TooltipTarget, message: Tooltip.Message },
   GotOverflowMessage: { message: Popover.Message },
 });
 type Message = typeof Message.Type;
@@ -144,13 +150,14 @@ const foldTooltip = Update.foldChildAt({
     const { model: next, commands } = Tooltip.update(model, message);
     return { model: next, commands };
   },
-  readAt: (model: Model, page: Page) => Option.some(model.tooltips[page]),
-  writeAt: (model, page, tooltip) => ({
+  readAt: (model: Model, target: TooltipTarget) =>
+    Option.some(model.tooltips[target]),
+  writeAt: (model, target, tooltip) => ({
     ...model,
-    tooltips: { ...model.tooltips, [page]: tooltip },
+    tooltips: { ...model.tooltips, [target]: tooltip },
   }),
-  toParentMessage: (page, message) =>
-    Message.GotTooltipMessage({ page, message }),
+  toParentMessage: (target, message) =>
+    Message.GotTooltipMessage({ target, message }),
 });
 
 const toOverflowMessage = (message: typeof Popover.Message.Type) =>
@@ -172,7 +179,8 @@ export const update = (
   message: Message,
 ): Update.Return<Model, Message> =>
   Message.match(message, {
-    GotTooltipMessage: ({ page, message }) => foldTooltip(model, page, message),
+    GotTooltipMessage: ({ target, message }) =>
+      foldTooltip(model, target, message),
     GotOverflowMessage: ({ message }) => foldOverflow(model, message),
   });
 
@@ -259,7 +267,10 @@ export const navigationView = <ParentMessage>(
             content: destination.label,
             toParentMessage: (message) =>
               toParentMessage(
-                Message.GotTooltipMessage({ page: destination.page, message }),
+                Message.GotTooltipMessage({
+                  target: destination.page,
+                  message,
+                }),
               ),
             renderTrigger: (attributes) =>
               h.a(
@@ -300,14 +311,30 @@ export const navigationView = <ParentMessage>(
       h.div(
         [h.Class("app-nav-create")],
         [
-          button(
+          Tooltip.tooltip(
             {
-              variant: "ghost",
-              size: "icon",
-              ariaLabel: "Create",
-              dialogId: create.dialogId,
-              onClick: create.onClick,
-              children: [plusIcon(h, "22")],
+              model: model.tooltips.create,
+              content: ["Create", kbd(creationShortcut, h)],
+              toParentMessage: (message) =>
+                toParentMessage(
+                  Message.GotTooltipMessage({ target: "create", message }),
+                ),
+              renderTrigger: (attributes) =>
+                button(
+                  {
+                    variant: "ghost",
+                    size: "icon",
+                    ariaLabel: "Create",
+                    dialogId: create.dialogId,
+                    onClick: create.onClick,
+                    attributes: [
+                      ...attributes,
+                      h.Attribute("aria-keyshortcuts", creationShortcut),
+                    ],
+                    children: [plusIcon(h, "22")],
+                  },
+                  h,
+                ),
             },
             h,
           ),

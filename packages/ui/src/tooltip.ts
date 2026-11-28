@@ -9,6 +9,9 @@ export const { Model, Message, init, update } = Tooltip;
 const styles = stylex.create({
   root: { display: "inline-flex", position: "relative" },
   panel: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.375rem",
     borderRadius: controls.radius,
     paddingBlock: "0.375rem",
     paddingInline: "0.625rem",
@@ -27,7 +30,7 @@ const styles = stylex.create({
 export const tooltip = <ParentMessage>(
   props: {
     model: typeof Model.Type;
-    content: string;
+    content: string | ReadonlyArray<Html | string>;
     placement?: Placement;
     renderTrigger: (attributes: ReadonlyArray<ChildAttribute>) => Html;
     toParentMessage: (message: typeof Message.Type) => ParentMessage;
@@ -53,7 +56,9 @@ export const tooltip = <ParentMessage>(
                       h.DataAttribute("slot", "tooltip-content"),
                       h.Class(stylex.props(styles.panel).className ?? ""),
                     ],
-                    [props.content],
+                    typeof props.content === "string"
+                      ? [props.content]
+                      : [...props.content],
                   ),
                 ]
               : []),

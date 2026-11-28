@@ -33,6 +33,8 @@ components from the same CreaseUI revision using Orumai tokens.
 `src/typography.ts` adapts the StyleX Typography styles from the same
 CreaseUI revision for native document elements.
 
+`src/kbd.ts` adapts the StyleX Kbd from the same CreaseUI revision.
+
 MIT License
 
 Copyright (c) 2026 Potti1234

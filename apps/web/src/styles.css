@@ -1315,10 +1315,6 @@ orumai-vault-reader {
     margin-block-start: 0;
   }
 
-  .app-nav-create > button {
-    padding: 0;
-  }
-
   .app-nav-more > div {
     display: flex;
     justify-content: center;

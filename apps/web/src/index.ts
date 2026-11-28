@@ -908,7 +908,7 @@ const isEditable = (target: EventTarget | null) =>
     ) !== null);
 
 const isCreationShortcut = (event: KeyboardEvent) =>
-  event.key.toLowerCase() === "c" &&
+  event.key.toUpperCase() === AppNavigation.creationShortcut &&
   !event.defaultPrevented &&
   !event.isComposing &&
   !event.repeat &&

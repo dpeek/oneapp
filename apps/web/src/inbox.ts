@@ -3772,7 +3772,7 @@ export const view = Submodel.defineView<Model, Message>((snapshot, h) => {
         {
           title: mailboxLabels[model.folder],
           navigation: [
-            ...(model.selected
+            ...(!listVisible
               ? [
                   button(
                     {

@@ -29,7 +29,7 @@ const styles = stylex.create({
     borderStyle: "solid",
     borderWidth: 1,
     borderRadius: "0.75rem",
-    backgroundColor: controls.surface,
+    backgroundColor: controls.card,
     boxShadow: "0 12px 28px rgb(0 0 0 / 18%)",
     animationName: {
       default: enter,

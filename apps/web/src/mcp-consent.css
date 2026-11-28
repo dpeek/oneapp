@@ -4,7 +4,7 @@
   color-scheme: light dark;
   font-family: Inter, system-ui, sans-serif;
   color: var(--text);
-  background: var(--canvas);
+  background: var(--surface);
 }
 
 body {
@@ -23,7 +23,7 @@ main {
   padding: clamp(1.25rem, 5vw, 2.25rem);
   border: 1px solid var(--border);
   border-radius: 1rem;
-  background: var(--surface);
+  background: var(--card);
   box-shadow: 0 12px 36px light-dark(#0001, #0003);
   overflow-wrap: anywhere;
 }
@@ -57,7 +57,7 @@ h2 {
   margin: 0;
   padding: 0.75rem 1rem 0.75rem 2rem;
   border-radius: 0.5rem;
-  background: var(--canvas);
+  background: var(--surface);
 }
 
 dl {

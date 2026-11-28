@@ -15,6 +15,7 @@ const styles = stylex.create({
     borderRadius: controls.radius,
     backgroundColor: {
       default: null,
+      ':is([data-variant="outline"])': controls.card,
       "@media (hover: hover)": {
         ':has([data-slot="item-link"]:hover, > [data-slot="item-header"] > [data-item-disclosure]:hover)':
           controls.hover,

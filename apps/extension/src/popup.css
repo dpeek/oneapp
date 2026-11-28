@@ -4,7 +4,7 @@
   color-scheme: light dark;
   font-family: Inter, system-ui, sans-serif;
   color: var(--text);
-  background: var(--canvas);
+  background: var(--surface);
 }
 
 body {

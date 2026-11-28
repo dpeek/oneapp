@@ -37,7 +37,7 @@ const styles = stylex.create({
     borderWidth: 1,
     borderColor: controls.border,
     borderRadius: "0.75rem",
-    backgroundColor: controls.surface,
+    backgroundColor: controls.card,
     color: controls.foreground,
     boxShadow: "0 10px 24px rgb(0 0 0 / 20%)",
   },

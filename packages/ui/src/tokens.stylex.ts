@@ -8,6 +8,7 @@ export const controls = stylex.defineVars({
   destructiveHover: "var(--destructive-hover)",
   onDestructive: "var(--on-destructive)",
   surface: "var(--surface)",
+  card: "var(--card)",
   mutedSurface: "var(--muted-surface)",
   popover: "var(--popover)",
   foreground: "var(--text)",
